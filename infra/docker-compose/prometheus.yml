@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Ray Serve metrics — auto-exported by Ray's built-in Prometheus integration.
+  # RAY_METRICS_EXPORT_PORT=8080 must be set on the ray-serving container.
+  - job_name: ray_serve
+    static_configs:
+      - targets: ['ray-serving:8080']
+    metrics_path: /metrics

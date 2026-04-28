@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project]
+name = "examlops"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    # shared across all components
+    "setuptools>=65,<80",
+    "mlflow==3.11.1",
+    "scikit-learn>=1.3.0",
+    "pandas>=2.0.0",
+    "joblib>=1.3.0",
+    "pyyaml>=6.0",
+    # modelzoo dependencies
+    "torch",
+    "numpy",
+    "sentence-transformers>=2.0.0",
+    "xgboost>=1.7.0",
+    # pipeline / orchestration
+    "prefect>=3.0.0,<4.0",
+    # serving — FastAPI is used as the HTTP layer inside Ray Serve (@serve.ingress)
+    "fastapi>=0.100.0",
+    # ray serving
+    "ray[serve]==2.55.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "httpx>=0.24",        # HTTP client for integration tests
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pandas-stubs>=2.0",
+]
+
+# ─── Tool config ─────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# sys.path manipulation before local imports is intentional in scripts and tests
+"pipelines/**/*.py" = ["E402"]
+"tests/**/*.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
