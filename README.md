@@ -31,7 +31,6 @@ make bootstrap  # one-shot: start dev stack + install all deps
 | 15 | 4-area monorepo: `platform/` `pipelines/` `serving/` `modelzoo/` + uv workspace (`examlops-workspace`) | shipped |
 | 16 | Pipeline ops CLI (`exa pipeline deploy/export-registry/scaffold`) + dashboard Pipelines page + ScaffoldWizard | shipped |
 | 17 | Observability: Alertmanager + OpenTelemetry tracing to Grafana Tempo + React Flow architecture diagram | shipped |
-| 18 | Agent core: `exa_agent/` package, ~34 tools/9 groups, `interrupt()` confirm-before-write, SQLite checkpointer | shipped |
 
 ## Running the Auto-Pipeline
 
