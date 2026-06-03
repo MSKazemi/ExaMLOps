@@ -16,7 +16,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 # ── Exceptions ─────────────────────────────────────────────────────────────────
 
@@ -34,7 +33,7 @@ class JobNotFoundError(SlurmAdapterError):
 
 
 # Map resource-dict keys → sbatch flag names
-_RESOURCE_FLAGS: Dict[str, str] = {
+_RESOURCE_FLAGS: dict[str, str] = {
     "partition":     "--partition",
     "time":          "--time",
     "nodes":         "--nodes",
@@ -60,9 +59,9 @@ class RealSlurmAdapter:
 
     def submit_job(
         self,
-        script_path: Optional[str] = None,
-        resources: Optional[Dict] = None,
-        training_data: Optional[Dict] = None,  # unused in real mode
+        script_path: str | None = None,
+        resources: dict | None = None,
+        training_data: dict | None = None,  # unused in real mode
     ) -> str:
         """Submit a job script via sbatch. Returns the Slurm job ID string."""
         if not script_path:
@@ -94,7 +93,7 @@ class RealSlurmAdapter:
             raise JobSubmissionError("sbatch returned no output")
         return tokens[-1]  # "Submitted batch job 12345678" → "12345678"
 
-    def get_job_status(self, job_id: str) -> Dict:
+    def get_job_status(self, job_id: str) -> dict:
         """Return status dict. Tries squeue (active jobs) then sacct (history)."""
         sq = subprocess.run(
             ["squeue", "-j", job_id, "-h", "-o", "%T|%S|%e"],
