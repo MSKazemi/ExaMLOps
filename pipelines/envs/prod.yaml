@@ -1,0 +1,33 @@
+defaults:
+  backend: minio
+  dummy: false
+  serve_aliases:
+    - Production
+
+models:
+  - name: JPCP
+    lifecycle:
+      - name: Staging
+        metric: rmse
+        threshold: 200.0
+        direction: lower_is_better
+      - name: Canary
+        metric: rmse
+        threshold: 100.0
+        direction: lower_is_better
+      - name: Production
+        metric: rmse
+        threshold: 40.0
+        direction: lower_is_better
+  - name: MACK
+    lifecycle:
+      - name: Production
+        metric: accuracy
+        threshold: 0.85
+        direction: higher_is_better
+  - name: MCBound
+    lifecycle:
+      - name: Production
+        metric: accuracy
+        threshold: 0.85
+        direction: higher_is_better

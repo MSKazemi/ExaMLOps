@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "examlops-serving"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "ExaMLOps model serving — Ray Serve multi-model server + inference pipeline."
+dependencies = [
+    "ray[serve]==2.55.0",
+    "mlflow==3.11.1",
+    "fastapi>=0.100.0",
+    "scikit-learn>=1.3.0",
+    "examlops-pipelines",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["serving*"]

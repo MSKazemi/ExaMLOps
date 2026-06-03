@@ -1,0 +1,2 @@
+[console_scripts]
+exa = examlops.cli.main:app

@@ -1,0 +1,11 @@
+FROM quay.io/jupyter/scipy-notebook:python-3.12
+
+RUN pip install --no-cache-dir \
+    mlflow==3.11.1 \
+    boto3 \
+    "prefect>=3.0.0,<4.0" \
+    "ray[client]==2.55.0" \
+    xgboost \
+    plotly \
+    seaborn \
+    ipywidgets

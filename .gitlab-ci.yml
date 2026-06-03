@@ -1,0 +1,323 @@
+# ExaMLOps — GitLab CI/CD (primary host)
+#
+# Replaces .github/workflows/{ci,deploy}.yml entirely.
+# Pipeline: sanity → test (parallel DAG) → deploy → post-deploy
+#
+# Required CI/CD variables (Settings → CI/CD → Variables):
+#   N1_SSH_KEY          masked, protected — ED25519 private key for n1
+#   N1_HOST_KEY         masked            — known_hosts entry for n1
+#   N1_USER                               — SSH username on n1
+#   N1_HOST                               — 137.204.56.169
+#   N1_DEPLOY_PATH                        — absolute repo path on n1
+#   N1_DEPLOY_REPO                        — GitLab SSH URL of this repo
+#                                           (n1 must have a read-only deploy key)
+#   CONTROL_PLANE_URL                     — http://137.204.56.169:18002
+#   CONTROL_PLANE_TOKEN masked, protected — bearer token for /retrain + /api/changes
+#
+# One-time n1 setup:
+#   1. Generate an ED25519 key pair; add the public key to n1 ~/.ssh/authorized_keys
+#      and store the private key in N1_SSH_KEY; grab the host key with
+#      `ssh-keyscan 137.204.56.169` and store one line in N1_HOST_KEY.
+#   2. Add a read-only GitLab deploy key (Settings → Repository → Deploy keys)
+#      so n1 can `git clone / git pull` from the GitLab repo.
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible  # cancel in-progress runs on re-push
+
+stages:
+  - sanity
+  - test
+  - deploy
+  - post-deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  UV_CACHE_DIR:  "$CI_PROJECT_DIR/.cache/uv"
+  PYTHONPATH:    "${CI_PROJECT_DIR}:${PYTHONPATH}"
+
+# ─── Cache anchors ───────────────────────────────────────────────────────────
+
+.poetry_cache: &poetry_cache
+  key: "$CI_COMMIT_REF_SLUG-poetry"
+  paths:
+    - .cache/pip
+
+.uv_cache: &uv_cache
+  key: "$CI_COMMIT_REF_SLUG-uv"
+  paths:
+    - .cache/uv
+    - .venv
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: SANITY — fast checks that block everything on failure
+# ═══════════════════════════════════════════════════════════════════════════
+
+sanity:python-syntax:
+  stage: sanity
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - >
+      find platform/ pipelines/ serving/ tests/ tools/
+      modelzoo/seanergys_modelzoo/ -name "*.py" -print0
+      | xargs -0 -r python -m py_compile
+
+sanity:check-structure:
+  stage: sanity
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - test -f pyproject.toml
+    - test -d platform/cli/src/examlops
+    - test -d platform/services/dashboard
+    - test -d platform/services/control_plane
+    - test -f platform/infra/docker-compose/docker-compose.yml
+    - test -d pipelines/models
+    - echo "Structure OK"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: TEST — six jobs run in parallel; all need both sanity jobs
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── ModelZoo: unit + smoke + integration (Poetry) ───────────────────────────
+# test_model_pipeline uses is_dummy=True → always runs offline.
+# test_model_train / test_model_save_load use fixture files → auto-skip
+# when fixtures are absent (run `make sample-data` in modelzoo/ to generate).
+# modelzoo/.gitlab-ci.yml continues to serve standalone modelzoo CI; this
+# root pipeline runs the same tests inline — the two coexist without conflict.
+
+test:modelzoo:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  cache:
+    - <<: *poetry_cache
+      policy: pull-push
+  before_script:
+    - pip install --quiet --upgrade pip
+    - pip install --quiet poetry
+    - cd modelzoo
+    - poetry config virtualenvs.create false
+    - poetry install --no-interaction --with dev,ci
+  script:
+    - ruff check seanergys_modelzoo ci tests
+    - ruff format --check seanergys_modelzoo ci tests || true
+    - mypy seanergys_modelzoo ci tests --ignore-missing-imports --explicit-package-bases || true
+    - pytest tests/unit/        -v --tb=short
+    - pytest tests/smoke/       -v --tb=short
+    - pytest tests/integration/ -v --tb=short
+    - python -c "from seanergys_modelzoo.logger.seanergys_logger import SeanergysLogger; print('Import OK')"
+
+# ── Infra: docker-compose validation (3 profiles) ───────────────────────────
+# Requires the GitLab runner to be configured with privileged = true (DinD).
+
+test:infra:compose:
+  stage: test
+  image: docker:25
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  services:
+    - docker:25-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml config --quiet
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml --profile monitoring config --quiet
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml --profile dev config --quiet
+
+# ── Infra: Slurm adapter lint ────────────────────────────────────────────────
+
+test:infra:slurm-lint:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  script:
+    - pip install --quiet ruff
+    - ruff check platform/infra/slurm-adapter/
+
+# ── Infra: Prometheus alert rules ────────────────────────────────────────────
+# Uses the prometheus image directly — promtool is on PATH, no DinD needed.
+
+test:infra:alert-rules:
+  stage: test
+  image:
+    name: prom/prometheus:v2.54.1
+    entrypoint: [""]
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  script:
+    - /bin/promtool check rules platform/infra/docker-compose/alert_rules.yml
+
+# ── ExaMLOps: lint + mypy + unit + dashboard backend ────────────────────────
+# Unit tests cover tests/unit/ (33 files: CLI, control plane, pipelines,
+# serving, inference pipeline, framework adapter, registry integrity, ...).
+# Dashboard backend tests run against a SQLite in-memory DB; conftest.py
+# provides all required env vars (DATABASE_URL, JWT secrets, etc.).
+
+test:examlops:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  cache:
+    - <<: *uv_cache
+      policy: pull-push
+  before_script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv .venv
+    - uv pip install -e ".[dev]"
+  script:
+    - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+    - .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+    - .venv/bin/pytest tests/unit/ -v --tb=short
+    # Dashboard backend (pytest.ini in backend/ sets rootdir → sys.path includes backend/)
+    - pip install -r platform/services/dashboard/backend/requirements.txt -q
+    - pytest platform/services/dashboard/backend/tests/ -v --tb=short
+
+# ── Integration: Ray Serve end-to-end ────────────────────────────────────────
+# Deploys a real Ray+Serve cluster (InferencePipelineIngress → FeatureTransformer
+# → ModelRouter), starts a threading HTTP mock for the downstream MultiModelServer,
+# and verifies the full POST → prediction round-trip.
+# Needs ≥4 CPUs on the runner. allow_failure keeps resource-constrained shared
+# runners from blocking deploy; set allow_failure: false when a dedicated runner
+# with ≥4 CPUs is registered.
+
+test:integration:
+  stage: test
+  image: python:3.12
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  timeout: 15 minutes
+  allow_failure: true
+  cache:
+    - <<: *uv_cache
+      policy: pull
+  before_script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv .venv
+    - uv pip install -e ".[dev]"
+  script:
+    - .venv/bin/pytest tests/integration/ -v --tb=short
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: DEPLOY — SSH to n1 and docker compose up (main branch only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+deploy:n1:
+  stage: deploy
+  image: ubuntu:22.04
+  needs:
+    - test:modelzoo
+    - test:infra:compose
+    - test:infra:slurm-lint
+    - test:infra:alert-rules
+    - test:examlops
+    - test:integration      # allow_failure: true above; deploy still waits for result
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  environment:
+    name: production
+    url: http://$N1_HOST:18099
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf '%s\n' "$N1_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$N1_HOST_KEY" >> ~/.ssh/known_hosts
+    - chmod 600 ~/.ssh/known_hosts
+  script:
+    - |
+      ssh -i ~/.ssh/id_ed25519 "$N1_USER@$N1_HOST" "
+        set -e
+        if [ ! -d \"$N1_DEPLOY_PATH/.git\" ]; then
+          mkdir -p \"$N1_DEPLOY_PATH\"
+          GIT_TERMINAL_PROMPT=0 git clone \"$N1_DEPLOY_REPO\" \"$N1_DEPLOY_PATH\"
+        fi
+        cd \"$N1_DEPLOY_PATH\"
+        GIT_TERMINAL_PROMPT=0 git pull origin main
+        docker compose -f platform/infra/docker-compose/docker-compose.yml up --build -d
+      "
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: POST-DEPLOY — both jobs run in parallel after deploy:n1 (main only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Notify Control Plane of model file changes detected in this push.
+# Uses GitLab SHA variables (CI_COMMIT_BEFORE_SHA / CI_COMMIT_SHA) in place
+# of GitHub's event.before / sha. Fails silently (|| true) if unreachable.
+
+post-deploy:notify-model-changes:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [deploy:n1]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - pip install --quiet httpx
+  script:
+    - |
+      python platform/ci/notify_model_changes.py \
+        --before "$CI_COMMIT_BEFORE_SHA" \
+        --after  "$CI_COMMIT_SHA" \
+        --commit-msg "$CI_COMMIT_MESSAGE" || true
+
+# Trigger Prefect retraining for all registered models after a successful deploy.
+# Exits 1 if any model trigger fails so the post-deploy stage reflects the error.
+
+post-deploy:retrain-push-models:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [deploy:n1]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  variables:
+    MODELS: "JPCP MACK MCBound"
+    RETRAIN_DATASET: "FDataDataset"
+    RETRAIN_DUMMY: "false"
+  script:
+    - pip install --quiet httpx
+    - |
+      python - <<'PYEOF'
+      import httpx, os, sys, json
+
+      url   = os.environ.get("CONTROL_PLANE_URL", "").rstrip("/")
+      token = os.environ.get("CONTROL_PLANE_TOKEN", "")
+      models   = [m for m in os.environ.get("MODELS", "").split() if m]
+      dataset  = os.environ.get("RETRAIN_DATASET", "FDataDataset")
+      is_dummy = os.environ.get("RETRAIN_DUMMY", "false").lower() == "true"
+
+      if not url:
+          print("CONTROL_PLANE_URL not set — skipping retrain push", flush=True)
+          sys.exit(0)
+      if not token:
+          print("CONTROL_PLANE_TOKEN not set — skipping retrain push", flush=True)
+          sys.exit(0)
+
+      headers = {"Authorization": f"Bearer {token}"}
+      results = []
+      for model in models:
+          try:
+              r = httpx.post(
+                  f"{url}/retrain",
+                  json={"model_name": model, "dataset_name": dataset, "is_dummy": is_dummy},
+                  headers=headers,
+                  timeout=15.0,
+              )
+              r.raise_for_status()
+              results.append({"model": model, "status": "triggered", "data": r.json()})
+          except Exception as exc:
+              results.append({"model": model, "status": "failed", "error": str(exc)})
+
+      for entry in results:
+          print(json.dumps(entry), flush=True)
+
+      if any(e["status"] == "failed" for e in results):
+          sys.exit(1)
+      PYEOF

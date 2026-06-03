@@ -1,0 +1,11 @@
+{
+  "_doc": "Variables consumed by tools/scaffold_model.py. The scaffolder uses these defaults when called via 'exa scaffold' without overrides.",
+  "model_name": "MyModel",
+  "task": "performance_prediction",
+  "task_type": "classification",
+  "estimator_import": "from sklearn.ensemble import RandomForestClassifier",
+  "estimator": "RandomForestClassifier",
+  "promotion_metric": "accuracy",
+  "promotion_threshold": 0.7,
+  "promotion_direction": "higher_is_better"
+}

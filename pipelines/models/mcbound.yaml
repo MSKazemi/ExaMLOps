@@ -1,0 +1,52 @@
+name: MCBound
+model_class: MCBound
+config_class: mcbound_config.MCBoundConfiguration
+task_type: classification
+framework: sklearn
+enabled: true
+seanerbus_uuid: 1a2c3b5d-6873-41cb-b221-1612a8787e2c
+
+model:
+  embedding_type: NONE
+  hyperparameters:
+    n_jobs: -1
+
+datasets:
+  - name: FDataDataset
+    backend: zenodo
+    cache_dir: .data_cache/fdata
+    batch_size: 1
+    input_features: [embedding]
+    output_features: [pclass]
+    splits:
+      train:
+        files: ["23_12", "24_01"]
+        filters:
+          - [adt, ">=", "2023-12-01"]
+          - [adt, "<=", "2024-01-31"]
+      validation:
+        files: ["24_02"]
+        filters:
+          - [adt, ">=", "2024-02-01"]
+          - [adt, "<=", "2024-02-28"]
+
+lifecycle:
+  - {name: Staging,    metric: accuracy, threshold: 0.50, direction: higher_is_better}
+  - {name: Canary,     metric: accuracy, threshold: 0.65, direction: higher_is_better}
+  - {name: Production, metric: accuracy, threshold: 0.70, direction: higher_is_better}
+
+serving:
+  model_id: mcbound
+  aliases: [Production, Canary, Staging]
+
+prefect:
+  schedule: "0 2 * * *"
+  deployment_name: examlops-mcbound-nightly
+  work_pool: default-agent
+  concurrency_limit: 1
+
+inference:
+  input_schema:
+    embedding: list[float]
+  output_schema:
+    pclass: int

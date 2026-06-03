@@ -1,0 +1,35 @@
+defaults:
+  dummy: true
+  backend: zenodo
+  serve_aliases:
+    - Production
+    - Canary
+    - Staging
+
+models:
+  - name: JPCP
+    lifecycle:
+      - name: Staging
+        metric: rmse
+        threshold: 9999.0
+        direction: lower_is_better
+      - name: Canary
+        metric: rmse
+        threshold: 9999.0
+        direction: lower_is_better
+      - name: Production
+        metric: rmse
+        threshold: 9999.0
+        direction: lower_is_better
+  - name: MACK
+    lifecycle:
+      - name: Production
+        metric: accuracy
+        threshold: 0.0
+        direction: higher_is_better
+  - name: MCBound
+    lifecycle:
+      - name: Production
+        metric: accuracy
+        threshold: 0.0
+        direction: higher_is_better

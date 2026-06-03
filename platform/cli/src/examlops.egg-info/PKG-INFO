@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: examlops
+Version: 0.1.0
+Summary: ExaMLOps shared schemas and the `exa` operator CLI.
+Requires-Python: >=3.12
+Requires-Dist: typer>=0.12
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: prometheus-client>=0.20
+Requires-Dist: opentelemetry-sdk>=1.27.0
+Requires-Dist: opentelemetry-exporter-otlp-proto-grpc>=1.27.0

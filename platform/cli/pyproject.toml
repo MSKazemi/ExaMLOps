@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "examlops"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "ExaMLOps shared schemas and the `exa` operator CLI."
+dependencies = [
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "prometheus-client>=0.20",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+]
+
+[project.scripts]
+exa = "examlops.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
