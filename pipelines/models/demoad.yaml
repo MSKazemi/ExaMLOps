@@ -1,0 +1,52 @@
+name: DemoAD
+model_class: DemoAD
+config_class: demoad_config.DemoADConfiguration
+task_type: regression
+framework: sklearn
+enabled: true
+seanerbus_uuid: dea9b95f-58c6-4007-887f-ec96afce2341
+
+model:
+  embedding_type: NONE
+  hyperparameters:
+    n_jobs: -1
+
+datasets:
+  - name: FDataDataset
+    backend: zenodo
+    cache_dir: .data_cache/fdata
+    batch_size: 1
+    input_features: [embedding]
+    output_features: [avgpcon]
+    splits:
+      train:
+        files: ["23_12", "24_01"]
+        filters:
+          - [adt, ">=", "2023-12-01"]
+          - [adt, "<=", "2024-01-31"]
+      validation:
+        files: ["24_02"]
+        filters:
+          - [adt, ">=", "2024-02-01"]
+          - [adt, "<=", "2024-02-28"]
+
+lifecycle:
+  - {name: Staging,    metric: accuracy, threshold: 0.56, direction: higher_is_better}
+  - {name: Canary,     metric: accuracy, threshold: 0.63, direction: higher_is_better}
+  - {name: Production, metric: accuracy, threshold: 0.70, direction: higher_is_better}
+
+serving:
+  model_id: demoad
+  aliases: [Production, Canary, Staging]
+
+prefect:
+  schedule: "0 2 * * *"
+  deployment_name: examlops-demoad-nightly
+  work_pool: default-agent
+  concurrency_limit: 1
+
+inference:
+  input_schema:
+    embedding: list[float]
+  output_schema:
+    avgpcon: float

@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libcapnp-dev capnproto \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+RUN pip install --no-cache-dir pycapnp httpx prometheus_client pyyaml
+
+# Copy and install the seanerbus Python bindings
+# (build context is the parent seanergys/ directory so both repos are accessible)
+COPY seanerbus/bindings/python /app/seanerbus-pkg
+RUN pip install --no-cache-dir /app/seanerbus-pkg
+
+# Copy bridge client code from ai-productions
+COPY ai-productions/platform/clients/ /app/clients/
+COPY ai-productions/pipelines/models /app/pipelines/models
+
+WORKDIR /app
+
+CMD ["python", "clients/seanerbus_bridge.py"]

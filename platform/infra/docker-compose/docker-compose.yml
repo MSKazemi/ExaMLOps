@@ -1,0 +1,455 @@
+# Docker Compose project name — scopes ALL resources (containers, networks,
+# volumes) under the "examlops" prefix so they never collide with other
+# projects on the same machine.
+name: examlops
+
+services:
+
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: examlops-postgres
+    container_name: examlops-postgres
+    environment:
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: mlops
+      POSTGRES_DB: mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlops -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO — S3-compatible object store for MLflow artifacts ───────────────────
+  # Dev credentials: minioadmin / minioadmin  (override via .env or env vars)
+  # Production: point MINIO_ROOT_USER / MINIO_ROOT_PASSWORD at your real MinIO.
+  minio:
+    image: minio/minio:latest
+    container_name: examlops-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "19000:9000"   # S3 API  — used by MLflow clients and pipeline code
+      - "19001:9001"   # MinIO Console UI
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot init container — creates the mlflow-artifacts bucket if absent.
+  # Exits 0 immediately after; never restarted.
+  minio-init:
+    image: minio/mc:latest
+    container_name: examlops-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
+        mc mb --ignore-existing local/mlflow-artifacts &&
+        echo '[minio-init] bucket mlflow-artifacts ready.'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    restart: "no"
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: examlops-mlflow
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mlops:mlops@postgres/mlflow
+      --default-artifact-root s3://mlflow-artifacts/
+      --artifacts-destination s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts "*"
+      --cors-allowed-origins "*"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.dashboard
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "15000:5000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    image: examlops-orchestrator
+    container_name: examlops-orchestrator
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_UI_API_URL: /api
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    ports:
+      - "14200:4200"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Ray Serve — multi-model serving, loads ALL Production models from MLflow
+  ray-serving:
+    build:
+      context: ../../..
+      dockerfile: serving/ray_serving/Dockerfile
+    image: examlops-ray-serving
+    container_name: examlops-ray-serving
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MODEL_STAGE: Production
+      RAY_NUM_REPLICAS: "1"
+      RAY_SERVE_PORT: "8001"
+      RAY_METRICS_EXPORT_PORT: "8080"
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+      OTEL_SERVICE_NAME: ray-serving
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.dashboard
+        required: false
+    ports:
+      - "18001:8001"   # Ray Serve HTTP
+      - "18265:8265"   # Ray dashboard
+      - "18080:8080"   # Prometheus metrics (Ray)
+    shm_size: '2gb'
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Control plane — retraining trigger API (Phase 4) ────────────────────────
+  # Sits in front of Prefect so clients/dataplane can POST /retrain without
+  # holding Prefect credentials. Bearer token auth via CONTROL_PLANE_TOKEN.
+  control-plane:
+    build:
+      context: ../../..
+      dockerfile: platform/services/control_plane/Dockerfile
+    image: examlops-control-plane
+    container_name: examlops-control-plane
+    environment:
+      CONTROL_PLANE_PORT: "8002"
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-changeme}
+      PREFECT_API_URL: http://orchestrator:4200/api
+      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-examlops_scheduled_training/nightly}
+      MODELZOO_WEBHOOK_SECRET: ${MODELZOO_WEBHOOK_SECRET:-}
+      MODELZOO_AUTO_RETRAIN: ${MODELZOO_AUTO_RETRAIN:-false}
+      MODELZOO_POLL_SECONDS: ${MODELZOO_POLL_SECONDS:-300}
+      MODELZOO_WATCH_BRANCH: ${MODELZOO_WATCH_BRANCH:-main}
+      GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITLAB_PROJECT_ID: ${GITLAB_PROJECT_ID:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+      OTEL_SERVICE_NAME: control-plane
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.dashboard
+        required: false
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    ports:
+      - "18002:8002"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Optional monitoring stack (start with: make monitoring-up) ─────────────
+  # Run under the "monitoring" profile — not started by dev-up.
+  # Use on a laptop only when you need metrics; stop with make monitoring-down.
+
+  prometheus:
+    build:
+      context: .
+      dockerfile: Dockerfile.prometheus
+    image: examlops-prometheus
+    profiles: [monitoring]
+    container_name: examlops-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "19090:9090"
+    depends_on:
+      - alertmanager
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: [monitoring]
+    container_name: examlops-alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "19093:9093"
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: [monitoring]
+    container_name: examlops-tempo
+    # Run as root so the named volume under /var/tempo is writable (dev convenience).
+    user: "0"
+    command: ["-config.file=/etc/tempo/tempo-config.yml"]
+    volumes:
+      - ./tempo-config.yml:/etc/tempo/tempo-config.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "13200:3200"
+    restart: unless-stopped
+
+  grafana:
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
+    image: examlops-grafana
+    profiles: [monitoring]
+    container_name: examlops-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "13000:3000"
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+  # Loki — log aggregation. Promtail tails Docker stdout/stderr and ships here.
+  loki:
+    image: grafana/loki:2.9.10
+    profiles: [monitoring]
+    container_name: examlops-loki
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "13100:3100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Promtail — log shipper. No per-service code change: it tails container
+  # stdout via the Docker socket and forwards to Loki with compose-service
+  # labels.
+  promtail:
+    image: grafana/promtail:2.9.10
+    profiles: [monitoring]
+    container_name: examlops-promtail
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_data:/tmp
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../../..
+      dockerfile: platform/infra/docker-compose/Dockerfile.dashboard
+    image: examlops-dashboard
+    container_name: examlops-dashboard
+    environment:
+      MLFLOW_URL: http://mlflow:5000
+      PREFECT_URL: http://orchestrator:4200
+      RAY_SERVE_URL: http://ray-serving:8001
+      RAY_DASHBOARD_URL: http://ray-serving:8265
+      PROMETHEUS_URL: http://prometheus:9090
+      GRAFANA_URL: http://grafana:3000
+      PUBLIC_GRAFANA_URL: "http://${PUBLIC_HOST:-localhost}:13000"
+      MINIO_URL: http://minio:9000
+      PUBLIC_MINIO_CONSOLE_URL: http://${PUBLIC_HOST:-localhost}:19001
+      DATABASE_URL: postgresql+asyncpg://mlops:mlops@postgres/mlflow
+      DASHBOARD_VIEWER_PASSWORD: ${DASHBOARD_VIEWER_PASSWORD:?must be set in .env}
+      DASHBOARD_ADMIN_PASSWORD:  ${DASHBOARD_ADMIN_PASSWORD:?must be set in .env}
+      DASHBOARD_JWT_SECRET:      ${DASHBOARD_JWT_SECRET:?must be set in .env}
+      DASHBOARD_JWT_TTL_HOURS:   ${DASHBOARD_JWT_TTL_HOURS:-12}
+      DASHBOARD_SECRET_KEY:      ${DASHBOARD_SECRET_KEY:?must be set in .env}
+      DASHBOARD_PORT: "8099"
+      CONTROL_PLANE_URL: http://control-plane:8002
+      PUBLIC_CONTROL_PLANE_URL: http://${PUBLIC_HOST:-localhost}:18002
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      DASHBOARD_MINIO_BUCKET: dashboard-model-docs
+      GRAFANA_LOKI_EXPLORE_URL: http://${PUBLIC_HOST:-localhost}:13000/explore
+      EXAMLOPS_REPO_URL: ${EXAMLOPS_REPO_URL:-}
+      EXAMLOPS_REPO_BRANCH: ${EXAMLOPS_REPO_BRANCH:-main}
+      PUBLIC_MLFLOW_URL: http://${PUBLIC_HOST:-localhost}:15000
+      PUBLIC_PREFECT_URL: http://${PUBLIC_HOST:-localhost}:14200
+      PUBLIC_RAY_SERVE_URL: http://${PUBLIC_HOST:-localhost}:18001
+      REPO_ROOT: /repo
+      MODELS_YAML_DIR: /repo/pipelines/models
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+      OTEL_SERVICE_NAME: dashboard
+      SEANERBUS_BRIDGE_STATUS_URL: http://seanerbus-bridge:8003
+    ports:
+      - "18099:8099"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-plane:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../../:/repo:rw
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── JupyterHub — multi-user notebook server (make jupyter-up) ────────────
+  # Run under the "jupyter" profile — not started by stack-up.
+  # Each login spawns a dedicated JupyterLab container via DockerSpawner.
+  jupyterhub:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyterhub
+    image: examlops-jupyterhub
+    container_name: examlops-jupyterhub
+    profiles: [jupyter]
+    ports:
+      - "18888:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - jupyter_hub_data:/data
+    environment:
+      DOCKER_NETWORK_NAME: examlops_default
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    env_file:
+      - path: .env
+        required: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/hub/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── SeanerBUS bridge ─────────────────────────────────────────────────────────
+  # Connects to the real SeanerBUS (seanerbus repo docker-compose, port 5398).
+  # Start with: make seanerbus-up
+  # Real SeanerBUS must be running first: cd ../seanerbus && docker compose up -d
+  seanerbus-bridge:
+    build:
+      # context is the parent seanergys/ dir so both repos are accessible
+      context: ../../../..
+      dockerfile: ai-productions/platform/infra/docker-compose/Dockerfile.bridge
+    container_name: examlops-seanerbus-bridge
+    networks:
+      - default
+      - seanerbus-net     # shared with seanerbus repo — allows direct container-to-container connection
+    environment:
+      SEANERBUS_HOST: "${SEANERBUS_HOST:-seanerbus-seanerbus-reqgen-1}"
+      SEANERBUS_PORT: "${SEANERBUS_PORT:-5398}"
+      SEANERBUS_MODE: "reqres"
+      SEANERBUS_RETRAIN_UUID: "${SEANERBUS_RETRAIN_UUID:-}"
+      SEANERBUS_VECTOR_UUID: "${SEANERBUS_VECTOR_UUID:-}"
+      RAY_SERVE_URL: "http://ray-serving:8001"
+      CONTROL_PLANE_URL: "http://control-plane:8002"
+      CONTROL_PLANE_TOKEN: "${CONTROL_PLANE_TOKEN:-}"
+      SEANERBUS_DEFAULT_MODEL: "${SEANERBUS_DEFAULT_MODEL:-JPCP}"
+      SEANERBUS_DEFAULT_ALIAS: "${SEANERBUS_DEFAULT_ALIAS:-Production}"
+      MODELS_YAML_DIR: "/app/pipelines/models"
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.dashboard
+        required: false
+    ports:
+      - "18003:8003"   # bridge HTTP status server — probed by dashboard
+    profiles:
+      - seanerbus
+    depends_on:
+      ray-serving:
+        condition: service_started
+      control-plane:
+        condition: service_healthy
+    restart: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  promtail_data:
+  alertmanager_data:
+  tempo_data:
+  jupyter_hub_data:
+
+networks:
+  seanerbus-net:
+    external: true        # created once: docker network create seanerbus-net
