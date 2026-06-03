@@ -122,6 +122,12 @@ test:infra:compose:
     - docker:25-dind
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
+    # Dummy values satisfy the :? required-variable guards during config validation.
+    # Real secrets live in the deployment .env file on n1 and are never stored here.
+    DASHBOARD_VIEWER_PASSWORD: "ci-dummy"
+    DASHBOARD_ADMIN_PASSWORD: "ci-dummy"
+    DASHBOARD_JWT_SECRET: "ci-dummy-jwt-secret-32-chars-min!"
+    DASHBOARD_SECRET_KEY: "ci-dummy-fernet-key-44-chars-min-pad=="
   script:
     - docker compose -f platform/infra/docker-compose/docker-compose.yml config --quiet
     - docker compose -f platform/infra/docker-compose/docker-compose.yml --profile monitoring config --quiet
