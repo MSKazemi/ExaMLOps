@@ -13,6 +13,19 @@ dependencies = [
 ]
 
 
+[tool.ruff]
+# Ruff config scoped to modelzoo so it does not inherit the stricter root pyproject.
+# Upstream code uses old-style typing (Dict/List/Optional/Tuple) intentionally;
+# only enforce the minimal correctness rules here.
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Upstream model library — only enforce hard syntax / import errors.
+# F401/F811/F541 are widespread in upstream code and not ours to clean up.
+select = ["E4", "E7", "E9", "F"]
+ignore = ["F401", "F811", "F541"]
+
 [tool.pytest.ini_options]
 markers = [
     "zenodo: tests that download from Zenodo (require network)",
