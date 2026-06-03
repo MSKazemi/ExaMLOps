@@ -9,29 +9,6 @@ make help       # list all available targets
 make bootstrap  # one-shot: start dev stack + install all deps
 ```
 
-## Phase Rollout
-
-| Phase | Description | Status |
-|---|---|---|
-| 0 | CI/CD (GitHub Actions + GitLab mirror) + Loki/Promtail centralized logging | shipped |
-| 1 | Pluggable dataset backends — Zenodo / MinIO / Dataplane | shipped |
-| 2 | Cookiecutter model template (`exa scaffold`) + registry-integrity CI guard | shipped |
-| 3 | Multi-stage MLflow lifecycle (Staging/Canary/Production/Archived) + Ray Serve hybrid version routing + auto-reload | shipped |
-| 4 | Control Plane FastAPI (`POST /retrain`) + dataplane/client simulators with drift detection | shipped |
-| 5 | Framework adapters — sklearn / pytorch / huggingface + LLM/agent skeleton | shipped |
-| 6 | Dashboard: model detail page, MDEditor, MinIO image gallery, JWT auth, Alembic migrations | shipped |
-| 7 | SeanerBUS HPC message bridge + monitoring page + GitLab CI retrain-on-merge | shipped |
-| 8 | Dashboard service controls — start/stop/restart + status badges + log tail via Docker socket | shipped |
-| 9 | YAML-driven model registry — base + env overlays, export, per-model lifecycle/backend/serve-alias overrides | shipped |
-| 10 | Inference pipeline — Ray Serve DeploymentGraph with `@serve.batch`; SeanerBUS bridge updated to call `/infer-pipeline/infer` | shipped |
-| 11 | Sysadmin approval gate — CI detects model changes → pending approval in SQLite → `exa approvals approve/reject` or dashboard → Prefect training; `exa` full-platform CLI | shipped |
-| 12 | ModelZoo × Control Plane integration — GitLab/GitHub webhooks + background poller mark models stale on push; freshness badges in dashboard Models page; `exa modelzoo status/events/sync/config` CLI; Config page webhook section | shipped |
-| 13 | Approval gate Prometheus metrics — `GET /metrics` on Control Plane; `examlops_approvals_pending`, `examlops_approval_events_total`, `examlops_approval_age_oldest_seconds`; Prometheus scrape job; provisioned Grafana dashboard | shipped |
-| 14 | Per-model YAML config (`pipelines/models/<name>.yaml`) as single source of truth; `pipelines/model_configs/*.py` shrunk to transforms-only; `model_registry.yaml` deleted; `RAY_MODELS_DIR` env var | shipped |
-| 15 | 4-area monorepo: `platform/` `pipelines/` `serving/` `modelzoo/` + uv workspace (`examlops-workspace`) | shipped |
-| 16 | Pipeline ops CLI (`exa pipeline deploy/export-registry/scaffold`) + dashboard Pipelines page + ScaffoldWizard | shipped |
-| 17 | Observability: Alertmanager + OpenTelemetry tracing to Grafana Tempo + React Flow architecture diagram | shipped |
-
 ## Running the Auto-Pipeline
 
 The pipeline auto-discovers all registered models and executes train → evaluate → MLflow log → promote for every model × dataset combination.
