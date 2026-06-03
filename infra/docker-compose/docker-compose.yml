@@ -1,0 +1,129 @@
+# Docker Compose project name — scopes ALL resources (containers, networks,
+# volumes) under the "examlops" prefix so they never collide with other
+# projects on the same machine.
+name: examlops
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: examlops-postgres
+    environment:
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: mlops
+      POSTGRES_DB: mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlops -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: examlops-mlflow
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mlops:mlops@postgres/mlflow
+      --default-artifact-root mlflow-artifacts:/
+      --artifacts-destination file:///mlartifacts
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts "*"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://mlops:mlops@postgres/mlflow
+      MLFLOW_ARTIFACT_ROOT: /mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlartifacts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  orchestrator:
+    image: prefecthq/prefect:3.6.27-python3.11
+    container_name: examlops-orchestrator
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_UI_API_URL: http://localhost:4200/api
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    ports:
+      - "4200:4200"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Ray Serve — multi-model serving, loads ALL Production models from MLflow
+  ray-serving:
+    build:
+      context: ../..
+      dockerfile: services/ray_serving/Dockerfile
+    container_name: examlops-ray-serving
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_STAGE: Production
+      RAY_NUM_REPLICAS: "1"
+      RAY_SERVE_PORT: "8001"
+      RAY_METRICS_EXPORT_PORT: "8080"
+    ports:
+      - "8001:8001"   # Ray Serve HTTP
+      - "8265:8265"   # Ray dashboard
+      - "8080:8080"   # Prometheus metrics (Ray)
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Optional monitoring stack (start with: make monitoring-up) ─────────────
+  # Run under the "monitoring" profile — not started by dev-up.
+  # Use on a laptop only when you need metrics; stop with make monitoring-down.
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    profiles: [monitoring]
+    container_name: examlops-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    profiles: [monitoring]
+    container_name: examlops-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
+  prometheus_data:
+  grafana_data:
