@@ -11,14 +11,12 @@ Two execution modes:
 
 from __future__ import annotations
 
-import io
 import subprocess
 import time
 import uuid
-from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import joblib
 from sklearn.ensemble import RandomForestRegressor
@@ -27,20 +25,20 @@ from sklearn.ensemble import RandomForestRegressor
 class MockSlurmAdapter:
     """Simulates Slurm job submission and monitoring locally."""
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: str | None = None):
         if working_dir is None:
             working_dir = Path(__file__).parent / "mock_hpc_jobs"
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
-        self._jobs: Dict[str, Dict] = {}
+        self._jobs: dict[str, dict] = {}
 
     # ── Public interface ───────────────────────────────────────────────────────
 
     def submit_job(
         self,
-        script_path: Optional[str] = None,
-        resources: Optional[Dict] = None,
-        training_data: Optional[Dict[str, Any]] = None,
+        script_path: str | None = None,
+        resources: dict | None = None,
+        training_data: dict[str, Any] | None = None,
     ) -> str:
         """
         Submit a job (simulated). Returns a UUID job ID immediately.
@@ -109,7 +107,7 @@ class MockSlurmAdapter:
         print(f"[MockSlurm] Job {job_id} → {job['state']}", flush=True)
         return artifact_path
 
-    def get_job_status(self, job_id: str) -> Dict:
+    def get_job_status(self, job_id: str) -> dict:
         """
         Return status dict matching the RealSlurmAdapter interface:
           {state, exit_code, start_time, end_time}
@@ -139,14 +137,14 @@ class MockSlurmAdapter:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    def _get_job(self, job_id: str) -> Dict:
+    def _get_job(self, job_id: str) -> dict:
         from adapter import JobNotFoundError  # noqa: PLC0415
         if job_id not in self._jobs:
             raise JobNotFoundError(f"Unknown job_id: {job_id}")
         return self._jobs[job_id]
 
     @staticmethod
-    def _run_training(training_data: Dict, model_file: Path, log_lines: list) -> str:
+    def _run_training(training_data: dict, model_file: Path, log_lines: list) -> str:
         """Train a RandomForestRegressor on the supplied data and save to model_file."""
         import numpy as np
 
@@ -178,4 +176,4 @@ class MockSlurmAdapter:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
