@@ -61,7 +61,7 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
         with get_db() as conn:
             snap_rows = conn.execute(
                 f"SELECT prediction FROM drift_snapshots WHERE model=? "
-                f"ORDER BY ts DESC LIMIT {_SNAPSHOT_WINDOW}",
+                f"ORDER BY ts DESC, rowid DESC LIMIT {_SNAPSHOT_WINDOW}",
                 (model,),
             ).fetchall()
         preds = [r["prediction"] for r in snap_rows]
@@ -132,7 +132,7 @@ def baseline(
     with get_db() as conn:
         rows = conn.execute(
             f"SELECT prediction FROM drift_snapshots WHERE model=? "
-            f"ORDER BY ts DESC LIMIT {_BASELINE_WINDOW}",
+            f"ORDER BY ts DESC, rowid DESC LIMIT {_BASELINE_WINDOW}",
             (model,),
         ).fetchall()
     preds = [r["prediction"] for r in rows]
