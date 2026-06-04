@@ -43,7 +43,9 @@ def test_demoad_inference_params_have_required_keys():
 
 
 def test_demoad_instantiates():
-    from seanergys_modelzoo.models.tasks.power_consumption_prediction.demoad.demoad_model import DemoAD
+    from seanergys_modelzoo.models.tasks.power_consumption_prediction.demoad.demoad_model import (
+        DemoAD,
+    )
 
     model = DemoAD(model_hyperparameters={"n_jobs": -1})
     assert model is not None

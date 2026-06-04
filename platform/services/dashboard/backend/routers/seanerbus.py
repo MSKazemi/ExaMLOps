@@ -6,8 +6,6 @@ import logging
 import os
 from pathlib import Path
 
-_DEFAULT_BRIDGE_STATUS_URL = os.getenv("SEANERBUS_BRIDGE_STATUS_URL", "http://localhost:8003")
-
 import httpx
 import yaml as _yaml
 from auth import require_role
@@ -18,6 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from routers.config import URL_KEYS
+
+_DEFAULT_BRIDGE_STATUS_URL = os.getenv("SEANERBUS_BRIDGE_STATUS_URL", "http://localhost:8003")
 
 log = logging.getLogger("dashboard.seanerbus")
 

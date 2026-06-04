@@ -1,7 +1,6 @@
 """Tests for seanerbus_uuid field in ModelYAMLConfig."""
 from pipelines.model_loader import load_model_yaml, scan_model_yamls
 
-
 _MINIMAL_YAML = """
 name: TestModel
 model_class: TestModel

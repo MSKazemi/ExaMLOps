@@ -66,7 +66,6 @@ def test_validate_model_json_output():
 
 def test_validate_model_fail_high_latency():
     import time
-    original_post = __import__("examlops.cli._client", fromlist=["post"]).post
 
     def slow_post(*a, **k):
         time.sleep(0.01)

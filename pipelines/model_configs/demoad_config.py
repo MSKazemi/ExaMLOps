@@ -23,7 +23,6 @@ from seanergys_modelzoo.models.common.seanergys_configurator import (
 )
 from seanergys_modelzoo.models.tasks.power_consumption_prediction.demoad.demoad_model import DemoAD
 
-
 # Regression target — scalar reduction from raw output features.
 
 def _scalar_target_transform(f):

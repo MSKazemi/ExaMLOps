@@ -23,7 +23,6 @@ try:
         get_db,
         get_drift_baseline,
         get_input_baseline,
-        get_traffic_rules,
         init_db,
         list_drift_auto_retrain,
         record_drift_trigger,

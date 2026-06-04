@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sys
 import textwrap
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,9 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "platform
 
 # PyYAML is a declared project dependency and is always available
 import yaml  # noqa: F401 — imported via model_schema_registry
-
 from model_schema_registry import ModelSchemaRegistry  # noqa: E402
-
 
 JPCP_YAML = textwrap.dedent("""\
     name: JPCP
