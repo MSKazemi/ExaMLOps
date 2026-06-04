@@ -13,8 +13,6 @@ import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 # ── stub heavy dependencies so bridge imports succeed without seanerbus ─────
 
 def _ensure_stubs():

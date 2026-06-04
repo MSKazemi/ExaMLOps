@@ -10,7 +10,12 @@ import typer
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
-from examlops.platform_db import get_db, get_promotion_rule, init_db, set_promotion_rule, write_audit_event
+from examlops.platform_db import (
+    get_db,
+    init_db,
+    set_promotion_rule,
+    write_audit_event,
+)
 
 app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
 

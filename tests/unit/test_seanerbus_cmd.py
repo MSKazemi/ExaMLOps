@@ -1,7 +1,8 @@
 import uuid
-import pytest
+
 import yaml
 from typer.testing import CliRunner
+
 from examlops.cli.main import app
 
 runner = CliRunner()

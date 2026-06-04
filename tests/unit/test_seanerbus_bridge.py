@@ -248,7 +248,7 @@ def _make_hpc_job(
     num_nodes: int = 4,
     user_id: int = 7,
     embedding: list | None = None,
-) -> "_HpcJobV1":
+) -> _HpcJobV1:
     """Build a synthetic HpcJobV1 stub."""
     job = _HpcJobV1()
     job.job_id = job_id

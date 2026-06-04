@@ -3,10 +3,8 @@ from __future__ import annotations
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import init_db as _init_platform_db
 from examlops.cli.commands import (
     approvals,
-    audit as audit_cmd,
     config_cmd,
     drift,
     models,
@@ -21,6 +19,10 @@ from examlops.cli.commands import (
     stack,
     status,
 )
+from examlops.cli.commands import (
+    audit as audit_cmd,
+)
+from examlops.platform_db import init_db as _init_platform_db
 
 app = typer.Typer(
     name="exa",
