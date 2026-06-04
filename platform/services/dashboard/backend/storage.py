@@ -23,13 +23,14 @@ class ImageStorage:
         self._session = aioboto3.Session()
 
     def _client(self):
-        return self._session.client(
-            "s3",
-            endpoint_url=self._endpoint_url,
-            aws_access_key_id=self._access_key,
-            aws_secret_access_key=self._secret_key,
-            region_name=self._region,
-        )
+        kwargs: dict = {
+            "aws_access_key_id": self._access_key,
+            "aws_secret_access_key": self._secret_key,
+            "region_name": self._region,
+        }
+        if self._endpoint_url:
+            kwargs["endpoint_url"] = self._endpoint_url
+        return self._session.client("s3", **kwargs)
 
     async def ensure_bucket(self) -> None:
         async with self._client() as s3:

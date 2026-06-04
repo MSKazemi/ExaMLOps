@@ -23,7 +23,10 @@ def _find_root() -> Path:
     raise RuntimeError("Cannot locate project root. Set EXAMLOPS_DOCS_ROOT.")
 
 
-_ROOT = _find_root()
+try:
+    _ROOT: Path | None = _find_root()
+except RuntimeError:
+    _ROOT = None
 
 _SECTIONS: list[dict[str, Any]] = [
     {
@@ -59,6 +62,8 @@ _SECTIONS: list[dict[str, Any]] = [
 
 
 def _safe_resolve(rel_path: str) -> Path:
+    if _ROOT is None:
+        raise HTTPException(status_code=503, detail="Docs root not configured. Set EXAMLOPS_DOCS_ROOT.")
     root_str = str(_ROOT)
     resolved = (_ROOT / rel_path).resolve()
     if not (str(resolved) == root_str or str(resolved).startswith(root_str + "/")):
@@ -68,6 +73,8 @@ def _safe_resolve(rel_path: str) -> Path:
 
 @router.get("/tree")
 async def get_docs_tree() -> list[dict]:
+    if _ROOT is None:
+        return []
     result = []
     for section in _SECTIONS:
         files = [f for f in section["files"] if (_ROOT / f["path"]).exists()]

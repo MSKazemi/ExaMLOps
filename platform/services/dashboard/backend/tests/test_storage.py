@@ -8,10 +8,10 @@ from storage import ImageStorage
 @pytest.fixture
 def storage():
     return ImageStorage(
-        endpoint_url=settings.minio_url,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        bucket=settings.dashboard_minio_bucket,
+        endpoint_url=None,  # no custom endpoint so moto can intercept
+        access_key="test",
+        secret_key="test",
+        bucket="dashboard-model-docs",
         region="us-east-1",
     )
 
