@@ -7,7 +7,7 @@ import typer
 from examlops.cli import _output
 from examlops.cli._enums import StackService
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _COMPOSE_FILE = "platform/infra/docker-compose/docker-compose.yml"
 _BASE_CMD = ["docker", "compose", "-f", _COMPOSE_FILE]

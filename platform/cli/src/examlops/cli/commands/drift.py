@@ -20,7 +20,7 @@ from examlops.platform_db import (
     write_audit_event,
 )
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _SNAPSHOT_WINDOW = 100
 _BASELINE_WINDOW = 500
@@ -166,7 +166,7 @@ def reset(
 # auto-retrain sub-group
 # ---------------------------------------------------------------------------
 
-auto_retrain_app = typer.Typer(no_args_is_help=True)
+auto_retrain_app = typer.Typer(no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 app.add_typer(auto_retrain_app, name="auto-retrain")
 
 _EXAMPLES_AR_ENABLE = (
@@ -319,7 +319,7 @@ def trigger(
 # input drift sub-group (embedding distribution monitoring)
 # ---------------------------------------------------------------------------
 
-input_app = typer.Typer(no_args_is_help=True)
+input_app = typer.Typer(no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 app.add_typer(input_app, name="input")
 
 _INPUT_WINDOW = 200

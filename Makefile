@@ -4,6 +4,8 @@
 # Requires: uv ≥ 0.4  ·  Python 3.12+  ·  Docker with Compose v2
 # =============================================================================
 
+
+
 SHELL := /bin/bash -euo pipefail
 
 # ── Versions ──────────────────────────────────────────────────────────────────
@@ -124,6 +126,16 @@ help: ## Show this help message
 # =============================================================================
 
 full-up: _guard-uv ## Start everything: stack + monitoring + SeanerBUS (reqgen + bridge)
+	@if ! docker network ls --format "{{.Name}}" | grep -q "^seanerbus-net$$"; then \
+	  printf "$(RED)ERROR: Docker network 'seanerbus-net' not found.$(RESET)\n"; \
+	  printf "$(DIM)Run once: docker network create seanerbus-net$(RESET)\n"; \
+	  exit 1; \
+	fi
+	@if [ ! -d "$(SEANERBUS_DIR)" ]; then \
+	  printf "$(RED)ERROR: SeanerBUS repo not found at $(SEANERBUS_DIR)$(RESET)\n"; \
+	  printf "$(DIM)Clone it: git clone <seanerbus-repo> $(SEANERBUS_DIR)$(RESET)\n"; \
+	  exit 1; \
+	fi
 	@printf "$(BOLD)Starting ExaMLOps stack + monitoring + SeanerBUS...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) up -d --build
 	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo

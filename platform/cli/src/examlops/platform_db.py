@@ -89,6 +89,16 @@ def init_db() -> None:
                 stats     TEXT NOT NULL,
                 set_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS model_costs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name  TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                run_id      TEXT,
+                job_id      TEXT,
+                gpu_hours   REAL,
+                cost_usd    REAL,
+                recorded_at TEXT NOT NULL
+            );
         """)
 
 
@@ -236,6 +246,35 @@ def record_drift_trigger(model: str) -> None:
             "UPDATE drift_auto_retrain SET last_triggered=CURRENT_TIMESTAMP WHERE model=?",
             (model,),
         )
+
+
+def record_model_cost(
+    model_name: str,
+    version: int,
+    run_id: str | None,
+    job_id: str | None,
+    gpu_hours: float | None,
+    cost_usd: float | None,
+) -> None:
+    import datetime
+
+    recorded_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO model_costs
+               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at),
+        )
+
+
+def get_model_costs(model_name: str) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
+            (model_name,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _actor() -> str:

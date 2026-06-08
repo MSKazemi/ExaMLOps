@@ -5,7 +5,7 @@ import typer
 from examlops.cli import _output
 from examlops.cli._config import CONFIG_PATH, load_config, write_config
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _EXAMPLES_SHOW = "Examples:\n\n  exa config show"
 _EXAMPLES_INIT = "Examples:\n\n  exa config init"

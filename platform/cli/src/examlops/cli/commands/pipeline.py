@@ -17,7 +17,7 @@ from examlops.platform_db import (
     write_audit_event,
 )
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _GENERATOR = "pipelines/pipeline_generator.py"
 _DEPLOY = "pipelines/deploy.py"

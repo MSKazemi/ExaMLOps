@@ -10,7 +10,7 @@ from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.platform_db import get_traffic_rules, init_db, set_traffic_rules, write_audit_event
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _EXAMPLES_RELOAD = (
     "Examples:\n\n"
