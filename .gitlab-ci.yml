@@ -14,12 +14,26 @@
 #   CONTROL_PLANE_URL                     — http://137.204.56.169:18002
 #   CONTROL_PLANE_TOKEN masked, protected — bearer token for /retrain + /api/changes
 #
+#   LXP_SSH_KEY         masked, protected — ED25519 private key for lxp-cpu01
+#   LXP_HOST_KEY        masked            — known_hosts entry for lxp-cpu01
+#   LXP_USER                              — SSH username on lxp-cpu01
+#   LXP_HOST                              — hostname or IP of lxp-cpu01
+#   LXP_DEPLOY_PATH                       — /nfs/share01/examlops
+#   LXP_DEPLOY_REPO                       — GitLab SSH URL of this repo
+#                                           (lxp-cpu01 must have a read-only deploy key)
+#   LXP_CONTROL_PLANE_URL                 — http://lxp-cpu01:18002
+#   LXP_CONTROL_PLANE_TOKEN masked, protected — bearer token for /retrain + /api/changes
+#
 # One-time n1 setup:
 #   1. Generate an ED25519 key pair; add the public key to n1 ~/.ssh/authorized_keys
 #      and store the private key in N1_SSH_KEY; grab the host key with
 #      `ssh-keyscan 137.204.56.169` and store one line in N1_HOST_KEY.
 #   2. Add a read-only GitLab deploy key (Settings → Repository → Deploy keys)
 #      so n1 can `git clone / git pull` from the GitLab repo.
+#
+# One-time lxp-cpu01 setup:
+#   Run platform/ci/setup_lxp.sh on lxp-cpu01 as the deploy user, then
+#   populate /nfs/share01/examlops/platform/infra/docker-compose/.env.
 
 workflow:
   auto_cancel:
@@ -299,6 +313,48 @@ deploy:n1:
         docker compose -f platform/infra/docker-compose/docker-compose.yml up --build -d
       "
 
+deploy:lxp:
+  stage: deploy
+  image: ubuntu:22.04
+  needs:
+    - job: test:modelzoo
+      optional: true
+    - job: test:infra:compose
+      optional: true
+    - job: test:infra:slurm-lint
+      optional: true
+    - job: test:infra:alert-rules
+      optional: true
+    - job: test:examlops
+      optional: true
+    - job: test:integration
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  environment:
+    name: production-lxp
+    url: http://$LXP_HOST:18099
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf '%s\n' "$LXP_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$LXP_HOST_KEY" >> ~/.ssh/known_hosts
+    - chmod 600 ~/.ssh/known_hosts
+  script:
+    - |
+      ssh -i ~/.ssh/id_ed25519 "$LXP_USER@$LXP_HOST" "
+        set -e
+        if [ ! -d \"$LXP_DEPLOY_PATH/.git\" ]; then
+          mkdir -p \"$LXP_DEPLOY_PATH\"
+          GIT_TERMINAL_PROMPT=0 git clone \"$LXP_DEPLOY_REPO\" \"$LXP_DEPLOY_PATH\"
+        fi
+        cd \"$LXP_DEPLOY_PATH\"
+        GIT_TERMINAL_PROMPT=0 git pull origin main
+        docker compose -f platform/infra/docker-compose/docker-compose.yml up --build -d
+      "
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE: POST-DEPLOY — both jobs run in parallel after deploy:n1 (main only)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -338,6 +394,84 @@ post-deploy:retrain-push-models:
     MODELS: "JPCP MACK MCBound"
     RETRAIN_DATASET: "FDataDataset"
     RETRAIN_DUMMY: "false"
+  script:
+    - pip install --quiet httpx
+    - |
+      python - <<'PYEOF'
+      import httpx, os, sys, json
+
+      url   = os.environ.get("CONTROL_PLANE_URL", "").rstrip("/")
+      token = os.environ.get("CONTROL_PLANE_TOKEN", "")
+      models   = [m for m in os.environ.get("MODELS", "").split() if m]
+      dataset  = os.environ.get("RETRAIN_DATASET", "FDataDataset")
+      is_dummy = os.environ.get("RETRAIN_DUMMY", "false").lower() == "true"
+
+      if not url:
+          print("CONTROL_PLANE_URL not set — skipping retrain push", flush=True)
+          sys.exit(0)
+      if not token:
+          print("CONTROL_PLANE_TOKEN not set — skipping retrain push", flush=True)
+          sys.exit(0)
+
+      headers = {"Authorization": f"Bearer {token}"}
+      results = []
+      for model in models:
+          try:
+              r = httpx.post(
+                  f"{url}/retrain",
+                  json={"model_name": model, "dataset_name": dataset, "is_dummy": is_dummy},
+                  headers=headers,
+                  timeout=15.0,
+              )
+              r.raise_for_status()
+              results.append({"model": model, "status": "triggered", "data": r.json()})
+          except Exception as exc:
+              results.append({"model": model, "status": "failed", "error": str(exc)})
+
+      for entry in results:
+          print(json.dumps(entry), flush=True)
+
+      if any(e["status"] == "failed" for e in results):
+          sys.exit(1)
+      PYEOF
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: POST-DEPLOY (lxp) — parallel after deploy:lxp (main only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+post-deploy:lxp:notify-model-changes:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [deploy:lxp]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  variables:
+    CONTROL_PLANE_URL: $LXP_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $LXP_CONTROL_PLANE_TOKEN
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - pip install --quiet httpx
+  script:
+    - |
+      python platform/ci/notify_model_changes.py \
+        --before "$CI_COMMIT_BEFORE_SHA" \
+        --after  "$CI_COMMIT_SHA" \
+        --commit-msg "$CI_COMMIT_MESSAGE" || true
+
+post-deploy:lxp:retrain-push-models:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [deploy:lxp]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  variables:
+    MODELS: "JPCP MACK MCBound"
+    RETRAIN_DATASET: "FDataDataset"
+    RETRAIN_DUMMY: "false"
+    CONTROL_PLANE_URL: $LXP_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $LXP_CONTROL_PLANE_TOKEN
   script:
     - pip install --quiet httpx
     - |

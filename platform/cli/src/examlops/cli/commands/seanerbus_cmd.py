@@ -10,7 +10,7 @@ import yaml
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 MODELS_DIR = Path("pipelines/models")
 

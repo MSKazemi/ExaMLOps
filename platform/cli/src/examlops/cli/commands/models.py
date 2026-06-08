@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 import urllib.parse
 
 import typer
@@ -16,7 +19,7 @@ def _improvement_direction(metric: str) -> str:
             return "lower"
     return "higher"
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
+app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
 _EXAMPLES_LIST = (
     "Examples:\n\n"
@@ -259,3 +262,174 @@ def lineage(
             for k, v in metrics.items()
         )
         console.print(f"  [bold]Metrics[/bold]         {metric_str}")
+
+
+# ---------------------------------------------------------------------------
+# cost
+# ---------------------------------------------------------------------------
+
+_GPU_COST_PER_HOUR_DEFAULT = 2.50
+
+_EXAMPLES_COST = (
+    "Examples:\n\n"
+    "  exa models cost JPCP\n\n"
+    "  exa models cost JPCP --record\n\n"
+    "  exa --json models cost JPCP"
+)
+
+
+def _mock_slurm_data(model: str, version: int) -> tuple[str, float]:
+    """Return a synthetic (job_id, gpu_hours) pair deterministic on model+version."""
+    import hashlib
+
+    seed = int(hashlib.md5(f"{model}{version}".encode()).hexdigest(), 16)
+    # gpu_hours in [4.0, 24.0], two decimal places
+    gpu_hours = round(4.0 + (seed % 2000) / 100.0, 2)
+    job_id = f"job-{(seed % 90000) + 10000}"
+    return job_id, gpu_hours
+
+
+def _real_sacct(job_id: str) -> float | None:
+    """Query sacct for a given job ID; return gpu_hours or None on failure."""
+    try:
+        out = subprocess.check_output(
+            ["sacct", "-j", job_id, "--format=JobID,Elapsed,AllocTRES", "--noheader", "--parsable2"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    # AllocTRES may contain gres/gpu=N
+    for line in out.splitlines():
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        elapsed_str = parts[1].strip()   # e.g. "02:30:00" or "1-02:30:00"
+        alloc_tres = parts[2].strip()    # e.g. "cpu=16,mem=64G,gres/gpu=2"
+
+        gpu_match = re.search(r"gres/gpu=(\d+)", alloc_tres)
+        if gpu_match is None:
+            continue
+        n_gpus = int(gpu_match.group(1))
+
+        # Parse elapsed: [[D-]HH:]MM:SS
+        elapsed_hours = 0.0
+        time_match = re.fullmatch(r"(?:(\d+)-)?(\d+):(\d+):(\d+)", elapsed_str)
+        if time_match:
+            days = int(time_match.group(1) or 0)
+            hrs = int(time_match.group(2))
+            mins = int(time_match.group(3))
+            secs = int(time_match.group(4))
+            elapsed_hours = days * 24 + hrs + mins / 60 + secs / 3600
+
+        return round(n_gpus * elapsed_hours, 4)
+    return None
+
+
+def _tag_mlflow_version(
+    cfg,
+    model: str,
+    version: str,
+    gpu_hours: float,
+    cost_usd: float,
+) -> None:
+    """Set gpu_hours and cost_usd tags on an MLflow model version (best-effort)."""
+    url = f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/model-versions/set-tag"
+    for key, value in [("gpu_hours", f"{gpu_hours:.4f}"), ("cost_usd", f"{cost_usd:.4f}")]:
+        try:
+            _client.post(url, {"name": model, "version": version, "key": key, "value": value})
+        except _client.ClientError:
+            pass  # tagging is best-effort; don't fail the command
+
+
+@app.command(epilog=_EXAMPLES_COST)
+def cost(
+    model: str = typer.Argument(..., help="Registered model name (e.g. JPCP)"),
+    record: bool = typer.Option(False, "--record", help="Fetch latest Slurm data, record to DB and tag MLflow"),
+):
+    """Show HPC cost history for a model.  Use --record to ingest new data."""
+    from examlops.platform_db import get_model_costs, init_db, record_model_cost
+
+    init_db()
+
+    if record:
+        cfg = load_config()
+
+        # Resolve all versions for this model from MLflow
+        try:
+            rm_data = _client.get(
+                f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/get"
+                f"?name={urllib.parse.quote(model)}"
+            )
+        except _client.ClientError as e:
+            _output.error(str(e))
+            return
+
+        versions = rm_data.get("registered_model", {}).get("latest_versions", [])
+        if not versions:
+            _output.error(f"No versions found for model '{model}' in MLflow")
+            return
+
+        slurm_mode = os.getenv("EXAMLOPS_SLURM_MODE", "mock")
+        gpu_cost = float(os.getenv("GPU_COST_PER_HOUR", str(_GPU_COST_PER_HOUR_DEFAULT)))
+        recorded_count = 0
+
+        for ver in versions:
+            ver_num = int(ver["version"])
+            run_id = ver.get("run_id")
+
+            if slurm_mode == "mock":
+                job_id, gpu_hours = _mock_slurm_data(model, ver_num)
+            else:
+                # In real mode, look up the job_id from the MLflow run tags
+                job_id = None
+                if run_id:
+                    try:
+                        run_data = _client.get(
+                            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}"
+                        )
+                        tags = {
+                            t["key"]: t["value"]
+                            for t in run_data.get("run", {}).get("data", {}).get("tags", [])
+                        }
+                        job_id = tags.get("slurm_job_id")
+                    except _client.ClientError:
+                        pass
+
+                if job_id:
+                    gpu_hours = _real_sacct(job_id)
+                else:
+                    gpu_hours = None
+
+            cost_usd = round(gpu_hours * gpu_cost, 4) if gpu_hours is not None else None
+            record_model_cost(model, ver_num, run_id, job_id, gpu_hours, cost_usd)
+
+            if gpu_hours is not None and cost_usd is not None:
+                _tag_mlflow_version(cfg, model, str(ver_num), gpu_hours, cost_usd)
+
+            recorded_count += 1
+
+        _output.ok(f"Recorded cost data for {recorded_count} version(s) of {model}")
+
+    # Display cost history
+    rows_data = get_model_costs(model)
+    if not rows_data:
+        if not record:
+            _output.console.print(f"[yellow]No cost data for {model}. Run with --record to ingest.[/yellow]")
+        return
+
+    rows = []
+    for r in rows_data:
+        run_short = (r["run_id"] or "—")[:8]
+        gpu_str = f"{r['gpu_hours']:.2f}" if r["gpu_hours"] is not None else "—"
+        cost_str = f"${r['cost_usd']:.2f}" if r["cost_usd"] is not None else "—"
+        rec_date = (r["recorded_at"] or "—")[:10]
+        rows.append([r["version"], run_short, r["job_id"] or "—", gpu_str, cost_str, rec_date])
+
+    _output.print_table(
+        f"Model Cost History: {model}",
+        ["Version", "Run ID", "Job ID", "GPU Hours", "Cost (USD)", "Recorded"],
+        rows,
+    )
