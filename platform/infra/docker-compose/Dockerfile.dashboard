@@ -4,7 +4,7 @@ WORKDIR /app/frontend
 COPY platform/services/dashboard/frontend/package*.json ./
 RUN npm install --include=dev
 COPY platform/services/dashboard/frontend/ ./
-RUN npm run build
+RUN ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build
 
 # ── Stage 2: Python runtime with built frontend ───────────────────────────────
 FROM python:3.12-slim
