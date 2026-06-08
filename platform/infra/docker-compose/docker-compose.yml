@@ -70,6 +70,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
+      network: host
     container_name: examlops-mlflow
     command: >
       mlflow server
@@ -127,6 +128,7 @@ services:
     build:
       context: ../../..
       dockerfile: serving/ray_serving/Dockerfile
+      network: host
     image: examlops-ray-serving
     container_name: examlops-ray-serving
     environment:
@@ -163,6 +165,7 @@ services:
     build:
       context: ../../..
       dockerfile: platform/services/control_plane/Dockerfile
+      network: host
     image: examlops-control-plane
     container_name: examlops-control-plane
     environment:
@@ -309,6 +312,7 @@ services:
     build:
       context: ../../..
       dockerfile: platform/infra/docker-compose/Dockerfile.dashboard
+      network: host
     image: examlops-dashboard
     container_name: examlops-dashboard
     environment:
