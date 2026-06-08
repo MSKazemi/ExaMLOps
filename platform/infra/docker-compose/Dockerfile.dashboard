@@ -1,8 +1,8 @@
 # ── Stage 1: build the React frontend ────────────────────────────────────────
-FROM node:24-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY platform/services/dashboard/frontend/package*.json ./
-RUN npm install --prefer-offline
+RUN npm install
 COPY platform/services/dashboard/frontend/ ./
 RUN npm run build
 
