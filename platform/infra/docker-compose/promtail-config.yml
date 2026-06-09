@@ -19,15 +19,15 @@ scrape_configs:
     docker_sd_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
+        # Filter at the Docker API level — only containers in the examlops project are discovered.
+        filters:
+          - name: label
+            values:
+              - "com.docker.compose.project=examlops"
     relabel_configs:
-      # Keep only containers in the examlops compose project.
-      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
-        target_label: project
-      - source_labels: [project]
-        regex: examlops
-        action: keep
-
       # Surface useful container metadata as labels.
+      - replacement: examlops
+        target_label: project
       - source_labels: [__meta_docker_container_label_com_docker_compose_service]
         target_label: compose_service
       - source_labels: [__meta_docker_container_name]
