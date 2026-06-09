@@ -69,6 +69,13 @@ Cargo.lock.bak
 Thumbs.db
 desktop.ini
 
+# ── ExaMLOps runtime data ────────────────────────────────────────────────────
+platform.db
+agent_memory.db
+*.db
+.data_cache/
+slurm_jobs/
+
 # ── Logs / temp ──────────────────────────────────────────────────────────────
 *.log
 *.tmp
