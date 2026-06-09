@@ -16,7 +16,9 @@ ROOT_DIR        := $(CURDIR)
 COMPOSE_DIR     := platform/infra/docker-compose
 RAY_SERVING_DIR := serving/ray_serving
 MODELZOO_DIR    := modelzoo
-SEANERBUS_DIR   := $(ROOT_DIR)/../../seanerbus
+# lxp layout: /nfs/share01/examlops-seanerbus/seanerbus
+# laptop layout: ../../seanerbus  (two levels up from repo root)
+SEANERBUS_DIR   ?= $(or $(wildcard $(ROOT_DIR)/../examlops-seanerbus/seanerbus),$(ROOT_DIR)/../../seanerbus)
 PID_DIR         := .run
 
 # ── Docker Compose  ───────────────────────────────────────────────────────────
