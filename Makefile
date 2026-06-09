@@ -58,7 +58,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help \
-        full-up \
+        full-up stop-all \
         stack-up stack-down stack-wipe stack-restart stack-logs stack-ps stack-shell \
         touch-env-dashboard \
         monitoring-up monitoring-down \
@@ -170,6 +170,18 @@ stack-up: _guard-uv ## Start core stack only: Postgres · MLflow · Prefect · R
 	  "Ray Serve API" "http://localhost:18001  (/docs · /health · /models)" \
 	  "Ray Dashboard" "http://localhost:18265"
 	@printf "\n$(DIM)Tip: 'make monitoring-up' to also start Prometheus/Grafana/Loki · 'make full-up' for everything$(RESET)\n\n"
+
+stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + SeanerBUS + Jupyter) — prevents auto-restart on reboot
+	@printf "$(BOLD)Stopping all ExaMLOps containers...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) \
+	  --profile monitoring --profile seanerbus --profile jupyter \
+	  down 2>/dev/null || true
+	@if [ -d "$(SEANERBUS_DIR)" ]; then \
+	  printf "$(DIM)Stopping SeanerBUS reqgen...$(RESET)\n"; \
+	  cd $(SEANERBUS_DIR) && docker compose down 2>/dev/null || true; \
+	fi
+	@printf "$(GREEN)All containers stopped and removed.$(RESET)\n"
+	@printf "$(DIM)Volumes preserved. Containers will NOT restart on reboot.$(RESET)\n"
 
 stack-down: ## Stop containers — data volumes preserved
 	@cd $(COMPOSE_DIR) && $(DC) down

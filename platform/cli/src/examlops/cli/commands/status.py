@@ -9,53 +9,61 @@ _EXAMPLES = (
     "  exa --json status"
 )
 
+_SERVICE_ORDER = ["control_plane", "mlflow", "prefect", "ray_serve", "dashboard"]
+_SERVICE_LABELS = {
+    "control_plane": "Control Plane",
+    "mlflow":        "MLflow",
+    "prefect":       "Prefect",
+    "ray_serve":     "Ray Serve",
+    "dashboard":     "Dashboard",
+}
+
 
 def status():
     """Platform snapshot: service health, pending approvals, production models."""
     cfg = load_config()
 
-    cp_ok, cp_pending = False, 0
     try:
-        h = _client.get(f"{cfg.control_plane_url}/health")
-        cp_ok = h.get("status") == "ok"
-        cp_pending = h.get("pending_approvals", 0)
+        data = _client.get(f"{cfg.control_plane_url}/status")
     except _client.ClientError:
-        pass
-
-    ray_models: list[str] = []
-    ray_reachable = False
-    try:
-        ms = _client.get(f"{cfg.ray_serve_url}/models")
-        ray_models = [m.get("name", m) if isinstance(m, dict) else m for m in ms]
-        ray_reachable = True
-    except _client.ClientError:
-        pass
-
-    pending: list[dict] = []
-    try:
-        pending = _client.get(f"{cfg.control_plane_url}/approvals?status=pending")
-    except _client.ClientError:
-        pass
-
-    if _output.json_mode:
-        _output.print_json({
-            "control_plane": {"ok": cp_ok, "pending_approvals": cp_pending},
-            "ray_serve": {"models": ray_models},
-            "pending_approvals": pending,
-        })
+        if _output.json_mode:
+            _output.print_json({"error": "control_plane_unreachable"})
+        else:
+            _output.print_table(
+                "Service Health",
+                ["Service", "Status"],
+                [["Control Plane", "✗ unreachable"]],
+            )
         return
 
-    _output.print_table(
-        "Service Health",
-        ["Service", "Status"],
-        [
-            ["Control Plane", "✓ ok" if cp_ok else "✗ unreachable"],
-            ["Ray Serve", f"✓ {len(ray_models)} model(s)" if ray_reachable else "✗ unreachable"],
-        ],
-    )
-    if cp_pending:
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+
+    services = data.get("services", {})
+    rows = []
+    for key in _SERVICE_ORDER:
+        svc = services.get(key, {})
+        ok = svc.get("ok", False)
+        label = _SERVICE_LABELS.get(key, key)
+        if key == "ray_serve" and ok:
+            models = svc.get("models", [])
+            cell = f"✓ {len(models)} model(s)"
+        else:
+            cell = "✓ ok" if ok else "✗ unreachable"
+        rows.append([label, cell])
+
+    _output.print_table("Service Health", ["Service", "Status"], rows)
+
+    pending_count = data.get("pending_approvals", 0)
+    if pending_count:
+        pending = []
+        try:
+            pending = _client.get(f"{cfg.control_plane_url}/approvals?status=pending")
+        except _client.ClientError:
+            pass
         _output.print_table(
-            f"Pending Approvals ({cp_pending})",
+            f"Pending Approvals ({pending_count})",
             ["Model", "Commit", "Message"],
             [[p["model_id"], (p.get("commit_sha") or "")[:8], p.get("commit_msg") or ""] for p in pending],
         )

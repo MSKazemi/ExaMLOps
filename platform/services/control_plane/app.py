@@ -12,6 +12,7 @@ like POST /retrain. State is stored in a local SQLite database.
 
 Endpoints (served on CONTROL_PLANE_PORT, default 8002):
     GET  /health                   liveness + reachable Prefect URL + pending count
+    GET  /status                   aggregate health of all ExaMLOps services
     GET  /models                   list of model_name → datasets known to the registry
     POST /retrain                  body: {model_name, dataset_name, [backend_name], [is_dummy], [parameters]}
     GET  /retrain/{flow_run_id}    poll Prefect for the run state
@@ -85,6 +86,9 @@ MODELZOO_WATCH_BRANCH = os.getenv("MODELZOO_WATCH_BRANCH", "main")
 GITLAB_URL = os.getenv("GITLAB_URL", "https://gitlab.com")
 GITLAB_TOKEN = os.getenv("GITLAB_TOKEN", "")
 GITLAB_PROJECT_ID = os.getenv("GITLAB_PROJECT_ID", "")
+MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
+RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
 
 # Runtime-mutable ModelZoo config (survives process lifetime, resets on restart)
 _modelzoo_config: dict[str, Any] = {
@@ -618,6 +622,59 @@ def health() -> dict[str, Any]:
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "auth_configured": bool(CONTROL_PLANE_TOKEN),
         "models": _load_registry(),
+        "pending_approvals": pending_count,
+    }
+
+
+@app.get("/status")
+def platform_status() -> dict[str, Any]:
+    """Aggregate health snapshot of all ExaMLOps services."""
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    def _ping(url: str) -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=5.0) as r:  # noqa: S310
+                return r.status < 400
+        except Exception:
+            return False
+
+    def _ping_json(url: str) -> tuple[bool, Any]:
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=5.0) as r:  # noqa: S310
+                return r.status < 400, json.loads(r.read().decode())
+        except Exception:
+            return False, None
+
+    pending_count = 0
+    conn = None
+    try:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+        ).fetchone()
+        pending_count = row[0] if row else 0
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+    ray_ok, ray_data = _ping_json(f"{RAY_SERVE_URL}/models")
+    ray_models: list[str] = (
+        [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])]
+        if ray_ok else []
+    )
+
+    return {
+        "services": {
+            "control_plane": {"ok": True},
+            "mlflow":        {"ok": _ping(f"{MLFLOW_URL}/health")},
+            "prefect":       {"ok": _ping(f"{PREFECT_API_URL}/health")},
+            "ray_serve":     {"ok": ray_ok, "models": ray_models},
+            "dashboard":     {"ok": _ping(f"{DASHBOARD_URL}/api/health")},
+        },
         "pending_approvals": pending_count,
     }
 

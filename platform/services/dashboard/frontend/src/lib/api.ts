@@ -50,7 +50,7 @@ export const useHealth = () =>
   useQuery<HealthResponse>({
     queryKey: ['health'],
     queryFn: () => apiFetch<HealthResponse>('/api/health'),
-    refetchInterval: 30_000,
+    refetchInterval: 10_000,
   })
 
 export const useModels = () =>
