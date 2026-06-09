@@ -14,7 +14,12 @@ const SERVICE_LABELS: Record<string, string> = {
   minio:         'MinIO',
   control_plane: 'Control Plane',
   postgres:      'PostgreSQL',
+  loki:          'Loki',
+  seanerbus:     'SeanerBUS Bridge',
   seanerbus_sim: 'SeanerBUS Sim',
+  jupyterhub:    'JupyterHub',
+  dashboard:     'Dashboard',
+  slurm:         'Slurm Adapter',
 }
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
