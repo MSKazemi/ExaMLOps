@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     minio_console_url: str = "http://localhost:19001"
     control_plane_url: str = "http://localhost:18002"
     jupyterhub_url: str = "http://localhost:18888"
+    loki_url: str = "http://localhost:13100"
+    seanerbus_bridge_status_url: str = "http://localhost:8003"
 
     # ── Browser-facing URLs ──
     public_mlflow_url: str = "http://localhost:15000"
@@ -26,6 +28,11 @@ class Settings(BaseSettings):
     public_ray_serve_url: str = "http://localhost:18001"
     public_minio_console_url: str = "http://localhost:19001"
     public_control_plane_url: str = "http://localhost:18002"
+    public_jupyterhub_url: str = "http://localhost:18888"
+    public_loki_url: str = "http://localhost:13100"
+    public_seanerbus_bridge_url: str = "http://localhost:18003"
+    public_dashboard_url: str = "http://localhost:18099"
+    slurm_mode: str = "mock"
 
     # ── Database ──
     database_url: str = "postgresql+asyncpg://mlops:mlops@localhost/mlflow"

@@ -51,10 +51,11 @@ async def test_health_degraded_when_service_down(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "degraded"
-    # postgres uses a DB ping (not httpx), so only check HTTP services
+    # Synthetic services are not HTTP-pinged: postgres (DB), dashboard (self), slurm (mock), seanerbus_sim (proxied).
+    _SYNTHETIC = {"postgres", "dashboard", "slurm", "seanerbus_sim"}
     for key, svc in body["services"].items():
-        if key != "postgres":
-            assert svc["status"] == "down"
+        if key not in _SYNTHETIC:
+            assert svc["status"] == "down", f"{key} expected down, got {svc['status']}"
 
 
 async def test_health_no_auth_required(client):
@@ -88,4 +89,6 @@ async def test_health_contains_all_services(client):
     assert set(body["services"].keys()) == {
         "mlflow", "prefect", "ray_serve", "prometheus",
         "grafana", "minio", "control_plane", "postgres",
+        "loki", "seanerbus", "jupyterhub",
+        "dashboard", "slurm", "seanerbus_sim",
     }

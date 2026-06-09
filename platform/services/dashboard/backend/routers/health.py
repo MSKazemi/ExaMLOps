@@ -17,13 +17,16 @@ _probe_in_progress: set[str] = set()
 
 # (internal_url, health_path, default_public_url)
 _SERVICES = {
-    "mlflow":         (settings.mlflow_url,         "/health",            settings.public_mlflow_url),
-    "prefect":        (settings.prefect_url,         "/api/health",        settings.public_prefect_url),
-    "ray_serve":      (settings.ray_serve_url,       "/health",            settings.public_ray_dashboard_url),
-    "prometheus":     (settings.prometheus_url,      "/-/healthy",         settings.public_prometheus_url),
-    "grafana":        (settings.grafana_url,         "/api/health",        settings.public_grafana_url),
-    "minio":          (settings.minio_url,           "/minio/health/live", settings.public_minio_console_url),
-    "control_plane":  (settings.control_plane_url,   "/health",            settings.public_control_plane_url),
+    "mlflow":         (settings.mlflow_url,                   "/health",            settings.public_mlflow_url),
+    "prefect":        (settings.prefect_url,                   "/api/health",        settings.public_prefect_url),
+    "ray_serve":      (settings.ray_serve_url,                 "/health",            settings.public_ray_dashboard_url),
+    "prometheus":     (settings.prometheus_url,                "/-/healthy",         settings.public_prometheus_url),
+    "grafana":        (settings.grafana_url,                   "/api/health",        settings.public_grafana_url),
+    "minio":          (settings.minio_url,                     "/minio/health/live", settings.public_minio_console_url),
+    "control_plane":  (settings.control_plane_url,             "/health",            settings.public_control_plane_url),
+    "loki":           (settings.loki_url,                      "/ready",             settings.public_loki_url),
+    "seanerbus":      (settings.seanerbus_bridge_status_url,   "/health",            settings.public_seanerbus_bridge_url),
+    "jupyterhub":     (settings.jupyterhub_url,                "/hub/api/",          settings.public_jupyterhub_url),
 }
 
 
@@ -73,6 +76,17 @@ async def _do_health_check(request_host: str) -> dict:
     db_result = await _ping_db()
     services = dict(zip(_SERVICES.keys(), http_results))
     services["postgres"] = db_result
+
+    # Dashboard is self — always ok if we're responding.
+    services["dashboard"] = {"status": "ok", "url": _rewrite_host(settings.public_dashboard_url, request_host)}
+
+    # Slurm adapter is inline (no HTTP endpoint); report ok in mock mode, down in real mode.
+    slurm_status = "ok" if settings.slurm_mode == "mock" else "down"
+    services["slurm"] = {"status": slurm_status, "url": ""}
+
+    # SeanerBUS Sim is an external Cap'n Proto bus — proxy its reachability from bridge health.
+    services["seanerbus_sim"] = {"status": services["seanerbus"]["status"], "url": ""}
+
     overall = "ok" if all(s["status"] == "ok" for s in services.values()) else "degraded"
     return {"status": overall, "checked_at": now, "services": services}
 
