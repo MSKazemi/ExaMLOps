@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { RefreshCw, Zap, Activity, RotateCcw, Server, Settings, Copy, Check } from 'lucide-react'
+import { RefreshCw, Zap, Activity, RotateCcw, Server, Settings, Copy, Check, ScrollText } from 'lucide-react'
+import { LogPanel } from '@/components/LogPanel'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useSeanerbusConfig, useSeanerbusStatus, useSeanerbusModelUuids, useSeanerbusGrafanaPanels } from '@/lib/api'
@@ -172,6 +173,7 @@ export default function SeanerBus() {
   const { data: modelUuids, isFetching: uuidsFetching } = useSeanerbusModelUuids()
   const { data: grafanaPanels, isFetching: panelsFetching } = useSeanerbusGrafanaPanels()
   const loading = statusFetching || configFetching || uuidsFetching || panelsFetching
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
   const online  = status?.reachable ?? false
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['seanerbus'] })
@@ -467,6 +469,17 @@ export default function SeanerBus() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* ── Bridge Logs ── */}
+      <div className="space-y-2">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+          <ScrollText className="w-3.5 h-3.5" />
+          Bridge Logs
+        </h2>
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border-sm)' }}>
+          <LogPanel containerName="seanerbus-bridge" token={token} />
+        </div>
       </div>
     </div>
   )

@@ -97,7 +97,7 @@ const nodeTypes = { status: StatusNode, groupLabel: GroupLabel }
 // Node ids match the keys of the /health services map so live status colours them.
 
 const NODE_DEFS: { id: string; label: string; x: number; y: number }[] = [
-  { id: 'seanerbus_sim', label: 'SeanerBUS Sim',    x: 0,    y: 60  },
+  { id: 'seanerbus_sim', label: 'SeanerBUS',         x: 0,    y: 60  },
   { id: 'seanerbus',     label: 'SeanerBUS Bridge', x: 0,    y: 200 },
   { id: 'jupyterhub',    label: 'JupyterHub',       x: 0,    y: 440 },
   { id: 'control_plane', label: 'Control Plane',    x: 285,  y: 110 },
