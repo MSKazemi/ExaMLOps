@@ -388,6 +388,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.jupyterhub
+      network: host
     image: examlops-jupyterhub
     container_name: examlops-jupyterhub
     profiles: [jupyter]

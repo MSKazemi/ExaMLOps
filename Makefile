@@ -309,7 +309,7 @@ dashboard-check: ## Run dashboard backend + frontend tests
 
 jupyter-up: ## Build images + start JupyterHub multi-user notebook server (port 18888)
 	@printf "$(BOLD)Building JupyterLab user image...$(RESET)\n"
-	@docker build -t examlops-jupyterlab -f $(COMPOSE_DIR)/Dockerfile.jupyterlab $(COMPOSE_DIR)
+	@docker build --network=host -t examlops-jupyterlab -f $(COMPOSE_DIR)/Dockerfile.jupyterlab $(COMPOSE_DIR)
 	@printf "$(BOLD)Starting JupyterHub...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) --profile jupyter up -d --build jupyterhub
 	@printf "\n$(GREEN)JupyterHub is up:$(RESET)\n"
