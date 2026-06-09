@@ -26,10 +26,14 @@ DISPLAY_NAMES: dict[str, str] = {
     "grafana": "Grafana",
     "loki": "Loki",
     "promtail": "Promtail",
-    "seanerbus-sim": "SeanerBUS Simulator",
+    "seanerbus-sim": "SeanerBUS",
     "seanerbus-bridge": "SeanerBUS Bridge",
     "dashboard": "Dashboard",
 }
+
+
+# One-shot init containers — run once then exit; not useful to expose in the UI.
+_INIT_CONTAINERS: set[str] = {"minio-init"}
 
 
 def _require_docker():
@@ -96,7 +100,12 @@ async def list_containers(_user=Depends(_viewer_dep)):
         all=True,
         filters={"label": f"com.docker.compose.project={project}"},
     )
-    return {"containers": [_container_info(c) for c in containers]}
+    return {
+        "containers": [
+            _container_info(c) for c in containers
+            if c.labels.get("com.docker.compose.service") not in _INIT_CONTAINERS
+        ]
+    }
 
 
 @router.post("/containers/{service}/start")

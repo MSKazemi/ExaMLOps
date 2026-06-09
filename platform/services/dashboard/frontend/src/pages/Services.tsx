@@ -27,7 +27,7 @@ const DESCRIPTIONS: Record<string, string> = {
   postgres: "MLflow metadata database",
   loki: "Log aggregation",
   promtail: "Log shipper",
-  "seanerbus-sim": "SeanerBUS mock bus + job generator",
+  "seanerbus-sim": "SeanerBUS bus + job generator",
   "seanerbus-bridge": "SeanerBUS integration bridge",
   dashboard: "ExaMLOps dashboard (this service)",
 }

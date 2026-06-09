@@ -16,7 +16,7 @@ const SERVICE_LABELS: Record<string, string> = {
   postgres:      'PostgreSQL',
   loki:          'Loki',
   seanerbus:     'SeanerBUS Bridge',
-  seanerbus_sim: 'SeanerBUS Sim',
+  seanerbus_sim: 'SeanerBUS',
   jupyterhub:    'JupyterHub',
   dashboard:     'Dashboard',
   slurm:         'Slurm Adapter',
