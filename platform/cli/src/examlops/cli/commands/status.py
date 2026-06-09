@@ -23,9 +23,11 @@ def status():
         pass
 
     ray_models: list[str] = []
+    ray_reachable = False
     try:
         ms = _client.get(f"{cfg.ray_serve_url}/models")
         ray_models = [m.get("name", m) if isinstance(m, dict) else m for m in ms]
+        ray_reachable = True
     except _client.ClientError:
         pass
 
@@ -48,7 +50,7 @@ def status():
         ["Service", "Status"],
         [
             ["Control Plane", "✓ ok" if cp_ok else "✗ unreachable"],
-            ["Ray Serve", f"✓ {len(ray_models)} model(s)" if ray_models else "✗ unreachable"],
+            ["Ray Serve", f"✓ {len(ray_models)} model(s)" if ray_reachable else "✗ unreachable"],
         ],
     )
     if cp_pending:
