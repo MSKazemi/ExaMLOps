@@ -628,7 +628,7 @@ def slurm_submit_task(
     job_dir = Path(adapter.working_dir) / job_id_placeholder
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
     venv_python = str(_REPO_ROOT / ".venv" / "bin" / "python")
     train_script = str(_REPO_ROOT / "pipelines" / "slurm_train_script.py")
 
@@ -790,7 +790,7 @@ def log_mlflow_task(
     inference_params = config_cls.get_inference_params()
     registered_model_name = inference_params["model_id"]
 
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000"))
     mlflow.set_experiment(f"{model_name.lower()}_{dataset_name.lower()}")
 
     registration = {"version": None, "run_id": None, "status": "Staging"}

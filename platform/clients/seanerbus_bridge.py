@@ -19,8 +19,8 @@ Env vars (defaults shown):
     SEANERBUS_INFERENCE_UUID        required for reqres / both
     SEANERBUS_RETRAIN_UUID          required for reqres / both
     SEANERBUS_VECTOR_UUID           required for vector req/res; omit to disable
-    RAY_SERVE_URL=http://localhost:8001
-    CONTROL_PLANE_URL=http://localhost:8002
+    RAY_SERVE_URL=http://localhost:18001
+    CONTROL_PLANE_URL=http://localhost:18002
     CONTROL_PLANE_TOKEN=
     SEANERBUS_DEFAULT_MODEL=JPCP
     SEANERBUS_DEFAULT_ALIAS=Production
@@ -92,8 +92,8 @@ SEANERBUS_HOST = os.getenv("SEANERBUS_HOST", "localhost")
 SEANERBUS_PORT = int(os.getenv("SEANERBUS_PORT", "5398"))
 SEANERBUS_MODE = os.getenv("SEANERBUS_MODE", "both").lower()
 
-RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:8001").rstrip("/")
-CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:8002").rstrip("/")
+RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001").rstrip("/")
+CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:18002").rstrip("/")
 CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
 
 DEFAULT_MODEL = os.getenv("SEANERBUS_DEFAULT_MODEL", "JPCP")

@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model",       required=True, help="Model class name (e.g. JPCP)")
     p.add_argument("--dataset",     required=True, help="Dataset class name (e.g. FDataDataset)")
     p.add_argument("--output",      required=True, help="Path to save trained estimator (.pkl)")
-    p.add_argument("--mlflow-uri",  default="http://localhost:5000", dest="mlflow_uri")
+    p.add_argument("--mlflow-uri",  default="http://localhost:15000", dest="mlflow_uri")
     p.add_argument("--dummy",       action="store_true", help="Use dummy data (no Zenodo download)")
     return p.parse_args()
 
