@@ -426,7 +426,7 @@ services:
       - default
       - seanerbus-net     # shared with seanerbus repo — allows direct container-to-container connection
     environment:
-      SEANERBUS_HOST: "${SEANERBUS_HOST:-seanerbus-seanerbus-reqgen-1}"
+      SEANERBUS_HOST: "${SEANERBUS_HOST:-seanerbus-reqgen}"
       SEANERBUS_PORT: "${SEANERBUS_PORT:-5398}"
       SEANERBUS_MODE: "reqres"
       SEANERBUS_RETRAIN_UUID: "${SEANERBUS_RETRAIN_UUID:-}"

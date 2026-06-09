@@ -238,8 +238,10 @@ monitoring-up: ## Start Prometheus (9090) · Alertmanager (9093) · Tempo (3200)
 # Default: bridge connects to host.docker.internal:5398 in reqres mode.
 # Override host:  SEANERBUS_HOST=<ip> make seanerbus-up
 
-seanerbus-up: ## Start SeanerBUS bridge container (--profile seanerbus)
+seanerbus-up: ## Start ExaMLOps SeanerBUS bridge container (NOT the SeanerBUS system itself)
 	@printf "$(BOLD)Starting SeanerBUS bridge...$(RESET)\n"
+	@printf "$(DIM)Note: this starts the bridge inside ExaMLOps, not the SeanerBUS system.$(RESET)\n"
+	@printf "$(DIM)      To start SeanerBUS first: cd $(SEANERBUS_DIR)/.. && docker compose up -d$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus up -d seanerbus-bridge
 	@printf "$(GREEN)SeanerBUS bridge is up:$(RESET)\n"
 	@printf "  %-30s %s\n" \
@@ -247,10 +249,10 @@ seanerbus-up: ## Start SeanerBUS bridge container (--profile seanerbus)
 	  "Logs" "make seanerbus-bridge-logs"
 	@printf "\n"
 
-seanerbus-down: ## Stop SeanerBUS bridge container
+seanerbus-down: ## Stop ExaMLOps SeanerBUS bridge container (does NOT stop the SeanerBUS system)
 	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus stop seanerbus-bridge
 	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus rm -f seanerbus-bridge
-	@printf "$(DIM)SeanerBUS bridge stopped.$(RESET)\n"
+	@printf "$(DIM)SeanerBUS bridge stopped. SeanerBUS system is unaffected.$(RESET)\n"
 
 seanerbus-bridge-logs: ## Tail SeanerBUS bridge logs
 	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus logs -f seanerbus-bridge
