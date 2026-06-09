@@ -7,7 +7,6 @@ enabled: true
 seanerbus_uuid: dea9b95f-58c6-4007-887f-ec96afce2341
 
 model:
-  embedding_type: NONE
   hyperparameters:
     n_jobs: -1
 

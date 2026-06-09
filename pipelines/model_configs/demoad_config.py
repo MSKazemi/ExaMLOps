@@ -39,6 +39,13 @@ class DemoADConfiguration(SeanergysModelConfiguration):
     SUPPORTED_DATASETS: ClassVar[list] = [FDataDataset]
 
     @classmethod
+    def get_transforms(cls, model: DemoAD, dataset_cls: type) -> dict:
+        return {
+            "transform": model.embedding_parsing,
+            "target_transform": _scalar_target_transform,
+        }
+
+    @classmethod
     def get_dummy_params(cls, dataset):
         return cls._build_params(dataset, is_dummy=True, split="train")
 
