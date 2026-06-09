@@ -180,6 +180,9 @@ services:
       GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITLAB_PROJECT_ID: ${GITLAB_PROJECT_ID:-}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RAY_SERVE_URL: http://ray-serving:8001
+      DASHBOARD_URL: http://dashboard:8099
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: control-plane

@@ -39,9 +39,9 @@ export function Pipelines() {
   const { data: me } = useMe()
   const isAdmin = me?.role === 'admin'
 
-  const { data: deployments = [], isLoading: depsLoading, refetch: refetchDeps } =
+  const { data: deployments = [], isLoading: depsLoading, isError: depsError, refetch: refetchDeps } =
     usePipelineDeployments()
-  const { data: runs = [], isLoading: runsLoading, refetch: refetchRuns } =
+  const { data: runs = [], isLoading: runsLoading, isError: runsError, refetch: refetchRuns } =
     usePipelineRuns(30)
   const { mutate: triggerRun, isPending: triggering } = useTriggerRun()
 
@@ -88,6 +88,14 @@ export function Pipelines() {
         </h2>
         {depsLoading ? (
           <p className="text-sm" style={{ color: 'var(--text-2)' }}>Loading…</p>
+        ) : depsError ? (
+          <div className="rounded-xl p-6 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
+            <AlertCircle size={20} className="mx-auto mb-2" style={{ color: 'var(--error-text, #ef4444)' }} />
+            <p className="text-sm font-medium" style={{ color: 'var(--error-text, #ef4444)' }}>Prefect unreachable</p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-2)' }}>
+              Check that the Prefect orchestrator container is running.
+            </p>
+          </div>
         ) : deployments.length === 0 ? (
           <div className="rounded-xl p-6 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
             <AlertCircle size={20} className="mx-auto mb-2" style={{ color: 'var(--text-2)' }} />
@@ -173,6 +181,8 @@ export function Pipelines() {
         </h2>
         {runsLoading ? (
           <p className="text-sm" style={{ color: 'var(--text-2)' }}>Loading…</p>
+        ) : runsError ? (
+          <p className="text-sm" style={{ color: 'var(--error-text, #ef4444)' }}>Could not load runs — Prefect unreachable.</p>
         ) : runs.length === 0 ? (
           <p className="text-sm" style={{ color: 'var(--text-2)' }}>No runs yet.</p>
         ) : (

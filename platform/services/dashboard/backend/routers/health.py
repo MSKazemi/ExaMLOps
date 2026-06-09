@@ -8,6 +8,10 @@ from settings import settings
 
 router = APIRouter()
 
+_CACHE_TTL = 8.0  # seconds
+_cache: dict = {}
+_cache_lock = asyncio.Lock()
+
 # (internal_url, health_path, default_public_url)
 _SERVICES = {
     "mlflow":         (settings.mlflow_url,         "/health",            settings.public_mlflow_url),
@@ -55,11 +59,8 @@ async def _ping_db() -> dict:
         return {"status": "down", "url": "postgresql://"}
 
 
-@router.get("/health")
-async def get_health(request: Request) -> dict:
+async def _do_health_check(request_host: str) -> dict:
     now = datetime.now(UTC).isoformat()
-    request_host = request.headers.get("host", "localhost")
-
     async with httpx.AsyncClient() as client:
         http_results = await asyncio.gather(
             *[
@@ -72,3 +73,20 @@ async def get_health(request: Request) -> dict:
     services["postgres"] = db_result
     overall = "ok" if all(s["status"] == "ok" for s in services.values()) else "degraded"
     return {"status": overall, "checked_at": now, "services": services}
+
+
+@router.get("/health")
+async def get_health(request: Request) -> dict:
+    import time  # noqa: PLC0415
+
+    request_host = request.headers.get("host", "localhost")
+    cache_key = request_host
+
+    async with _cache_lock:
+        entry = _cache.get(cache_key)
+        if entry and (time.monotonic() - entry["ts"]) < _CACHE_TTL:
+            return entry["data"]
+
+        data = await _do_health_check(request_host)
+        _cache[cache_key] = {"data": data, "ts": time.monotonic()}
+        return data
