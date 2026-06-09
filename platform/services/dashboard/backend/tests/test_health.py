@@ -1,6 +1,18 @@
+import pytest
 from unittest.mock import AsyncMock, patch
 
 HEADERS = {"Authorization": "Bearer test-token"}
+
+
+@pytest.fixture(autouse=True)
+def clear_health_cache():
+    """Reset module-level health cache between tests to prevent state bleed."""
+    import routers.health as h
+    h._cache.clear()
+    h._probe_in_progress.clear()
+    yield
+    h._cache.clear()
+    h._probe_in_progress.clear()
 
 
 async def test_health_returns_ok_when_all_up(client):

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 
@@ -8,9 +9,11 @@ from settings import settings
 
 router = APIRouter()
 
-_CACHE_TTL = 8.0  # seconds
+_CACHE_TTL = 30.0   # seconds — lower probe frequency on NFS-backed shared cluster
+_PROBE_TIMEOUT = 8.0  # seconds — NFS services can spike; 3s was too tight
 _cache: dict = {}
 _cache_lock = asyncio.Lock()
+_probe_in_progress: set[str] = set()
 
 # (internal_url, health_path, default_public_url)
 _SERVICES = {
@@ -31,7 +34,6 @@ def _rewrite_host(public_url: str, request_host: str) -> str:
     to point at 1.2.3.4:<service-port> rather than localhost:<service-port>.
     """
     parsed = urlparse(public_url)
-    # Strip any port from the request host header, keep only the hostname
     req_hostname = request_host.split(":")[0]
     if req_hostname in ("localhost", "127.0.0.1", ""):
         return public_url
@@ -41,7 +43,7 @@ def _rewrite_host(public_url: str, request_host: str) -> str:
 
 async def _ping(base: str, path: str, public_url: str, client: httpx.AsyncClient) -> dict:
     try:
-        r = await client.get(f"{base}{path}", timeout=3.0)
+        r = await client.get(f"{base}{path}", timeout=_PROBE_TIMEOUT)
         return {"status": "ok" if r.status_code < 400 else "degraded", "url": public_url}
     except Exception:
         return {"status": "down", "url": public_url}
@@ -77,16 +79,35 @@ async def _do_health_check(request_host: str) -> dict:
 
 @router.get("/health")
 async def get_health(request: Request) -> dict:
-    import time  # noqa: PLC0415
-
     request_host = request.headers.get("host", "localhost")
     cache_key = request_host
 
+    # Fast path: serve cache without acquiring the probe lock.
+    entry = _cache.get(cache_key)
+    if entry and (time.monotonic() - entry["ts"]) < _CACHE_TTL:
+        return entry["data"]
+
+    # Slow path: only one probe per cache_key at a time.
+    # Concurrent requests while a probe is in flight get stale data instead of
+    # queueing — this prevents a slow NFS service from blocking all callers.
     async with _cache_lock:
+        # Re-check: another coroutine may have refreshed while we waited for the lock.
         entry = _cache.get(cache_key)
         if entry and (time.monotonic() - entry["ts"]) < _CACHE_TTL:
             return entry["data"]
 
+        if cache_key in _probe_in_progress:
+            # Probe already running — return stale data rather than piling up.
+            return entry["data"] if entry else {"status": "starting", "services": {}}
+
+        _probe_in_progress.add(cache_key)
+
+    # Run probe outside the lock so the lock isn't held for up to _PROBE_TIMEOUT seconds.
+    try:
         data = await _do_health_check(request_host)
-        _cache[cache_key] = {"data": data, "ts": time.monotonic()}
+        async with _cache_lock:
+            _cache[cache_key] = {"data": data, "ts": time.monotonic()}
         return data
+    finally:
+        async with _cache_lock:
+            _probe_in_progress.discard(cache_key)
