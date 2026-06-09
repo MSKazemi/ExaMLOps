@@ -334,7 +334,8 @@ def promote(
         _output.error(str(e))
         return
 
-    metrics = run_data.get("run", {}).get("data", {}).get("metrics", {})
+    metrics_list = run_data.get("run", {}).get("data", {}).get("metrics", [])
+    metrics = {m["key"]: m["value"] for m in metrics_list} if isinstance(metrics_list, list) else metrics_list
     metric_val = metrics.get(metric)
     if metric_val is None:
         _output.error(f"Metric '{metric}' not found in run {run_id}. Available: {list(metrics.keys())}")

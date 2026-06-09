@@ -6,6 +6,10 @@
 #   /nfs/share01/examlops-seanerbus/seanerbus/  (the seanerbus repo)
 
 services:
+  control-plane:
+    extra_hosts:
+      - "gitlab.seanergys.fz-juelich.de:134.94.199.214"
+
   seanerbus-bridge:
     build:
       dockerfile: examlops/platform/infra/docker-compose/Dockerfile.bridge
