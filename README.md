@@ -137,9 +137,9 @@ exa status                  # show services, approvals, and production state
 | Prometheus | http://localhost:19090 |
 | Grafana | http://localhost:13000 |
 
-### Remote Server n1 (137.204.56.169)
+### Remote Server lxp-cpu01 (23.109.46.77)
 
-Same ports as local — e.g. http://137.204.56.169:18099 for the Dashboard.
+Same ports as local — e.g. http://23.109.46.77:18099 for the Dashboard. Accessible via `ssh lxp` with all ports forwarded to localhost.
 
 ## Adding a New Model
 
@@ -206,7 +206,7 @@ Activate root env: `source .venv/bin/activate`
 ## CI/CD
 
 - `.github/workflows/ci.yml` — three parallel jobs (`modelzoo`, `infra`, `examlops`) on PRs and main
-- `.github/workflows/deploy.yml` — deploys to server `n1` on merge to main
+- `.github/workflows/deploy.yml` — retired (commented out); `.gitlab-ci.yml` deploys to `lxp-cpu01` via `deploy:lxp`
 - `.gitlab-ci.yml` — GitLab mirror of the GitHub workflow
 
 Run all CI checks locally: `make ci`
