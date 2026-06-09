@@ -9,14 +9,20 @@ WORKDIR /app
 # Install Python dependencies
 RUN pip install --no-cache-dir pycapnp httpx prometheus_client pyyaml
 
+# Directory names vary by deploy environment:
+#   local dev:  SEANERBUS_DIR=seanerbus          AI_PRODUCTIONS_DIR=ai-productions
+#   lxp-cpu01:  SEANERBUS_DIR=examlops-seanerbus/seanerbus  AI_PRODUCTIONS_DIR=examlops
+ARG SEANERBUS_DIR=seanerbus
+ARG AI_PRODUCTIONS_DIR=ai-productions
+
 # Copy and install the seanerbus Python bindings
 # (build context is the parent seanergys/ directory so both repos are accessible)
-COPY seanerbus/bindings/python /app/seanerbus-pkg
+COPY ${SEANERBUS_DIR}/bindings/python /app/seanerbus-pkg
 RUN pip install --no-cache-dir /app/seanerbus-pkg
 
 # Copy bridge client code from ai-productions
-COPY ai-productions/platform/clients/ /app/clients/
-COPY ai-productions/pipelines/models /app/pipelines/models
+COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
+COPY ${AI_PRODUCTIONS_DIR}/pipelines/models /app/pipelines/models
 
 WORKDIR /app
 
