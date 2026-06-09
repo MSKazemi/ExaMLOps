@@ -9,6 +9,7 @@ services:
   seanerbus-bridge:
     build:
       dockerfile: examlops/platform/infra/docker-compose/Dockerfile.bridge
+      network: host
       args:
         AI_PRODUCTIONS_DIR: examlops
         SEANERBUS_DIR: examlops-seanerbus/seanerbus
