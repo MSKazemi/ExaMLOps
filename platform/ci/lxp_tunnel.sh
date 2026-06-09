@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Open SSH tunnels for all ExaMLOps services on lxp-cpu01.
 # Usage: bash platform/ci/lxp_tunnel.sh [user@host]
-#   default host: mseyedkazemi@23.109.46.77
+#   default host: u1002@23.109.46.77
 set -euo pipefail
 
-TARGET="${1:-mseyedkazemi@23.109.46.77}"
+TARGET="${1:-u1002@23.109.46.77}"
 
 echo "Opening ExaMLOps tunnels to $TARGET ..."
 echo "Press Ctrl-C to close all tunnels."
