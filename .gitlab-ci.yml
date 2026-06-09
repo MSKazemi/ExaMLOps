@@ -4,16 +4,6 @@
 # Pipeline: sanity → test (parallel DAG) → deploy → post-deploy
 #
 # Required CI/CD variables (Settings → CI/CD → Variables):
-#   N1_SSH_KEY          masked, protected — ED25519 private key for n1
-#   N1_HOST_KEY         masked            — known_hosts entry for n1
-#   N1_USER                               — SSH username on n1
-#   N1_HOST                               — 137.204.56.169
-#   N1_DEPLOY_PATH                        — absolute repo path on n1
-#   N1_DEPLOY_REPO                        — GitLab SSH URL of this repo
-#                                           (n1 must have a read-only deploy key)
-#   CONTROL_PLANE_URL                     — http://137.204.56.169:18002
-#   CONTROL_PLANE_TOKEN masked, protected — bearer token for /retrain + /api/changes
-#
 #   LXP_SSH_KEY         masked, protected — ED25519 private key for lxp-cpu01
 #   LXP_HOST_KEY        masked            — known_hosts entry for lxp-cpu01
 #   LXP_USER                              — SSH username on lxp-cpu01
@@ -23,13 +13,6 @@
 #                                           (lxp-cpu01 must have a read-only deploy key)
 #   LXP_CONTROL_PLANE_URL                 — http://lxp-cpu01:18002
 #   LXP_CONTROL_PLANE_TOKEN masked, protected — bearer token for /retrain + /api/changes
-#
-# One-time n1 setup:
-#   1. Generate an ED25519 key pair; add the public key to n1 ~/.ssh/authorized_keys
-#      and store the private key in N1_SSH_KEY; grab the host key with
-#      `ssh-keyscan 137.204.56.169` and store one line in N1_HOST_KEY.
-#   2. Add a read-only GitLab deploy key (Settings → Repository → Deploy keys)
-#      so n1 can `git clone / git pull` from the GitLab repo.
 #
 # One-time lxp-cpu01 setup:
 #   Run platform/ci/setup_lxp.sh on lxp-cpu01 as the deploy user, then
@@ -149,7 +132,7 @@ test:infra:compose:
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
     # Dummy values satisfy the :? required-variable guards during config validation.
-    # Real secrets live in the deployment .env file on n1 and are never stored here.
+    # Real secrets live in the deployment .env file on lxp-cpu01 and are never stored here.
     DASHBOARD_VIEWER_PASSWORD: "ci-dummy"
     DASHBOARD_ADMIN_PASSWORD: "ci-dummy"
     DASHBOARD_JWT_SECRET: "ci-dummy-jwt-secret-32-chars-min!"
@@ -268,50 +251,8 @@ test:integration:
     - .venv/bin/pytest tests/integration/ -v --tb=short
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STAGE: DEPLOY — SSH to n1 and docker compose up (main branch only)
+# STAGE: DEPLOY — SSH to lxp-cpu01 and docker compose up (main branch only)
 # ═══════════════════════════════════════════════════════════════════════════
-
-deploy:n1:
-  stage: deploy
-  image: ubuntu:22.04
-  needs:
-    - job: test:modelzoo
-      optional: true
-    - job: test:infra:compose
-      optional: true
-    - job: test:infra:slurm-lint
-      optional: true
-    - job: test:infra:alert-rules
-      optional: true
-    - job: test:examlops
-      optional: true
-    - job: test:integration
-      optional: true
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
-  environment:
-    name: production
-    url: http://$N1_HOST:18099
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq openssh-client
-    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - printf '%s\n' "$N1_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
-    - chmod 600 ~/.ssh/id_ed25519
-    - printf '%s\n' "$N1_HOST_KEY" >> ~/.ssh/known_hosts
-    - chmod 600 ~/.ssh/known_hosts
-  script:
-    - |
-      ssh -i ~/.ssh/id_ed25519 "$N1_USER@$N1_HOST" "
-        set -e
-        if [ ! -d \"$N1_DEPLOY_PATH/.git\" ]; then
-          mkdir -p \"$N1_DEPLOY_PATH\"
-          GIT_TERMINAL_PROMPT=0 git clone \"$N1_DEPLOY_REPO\" \"$N1_DEPLOY_PATH\"
-        fi
-        cd \"$N1_DEPLOY_PATH\"
-        GIT_TERMINAL_PROMPT=0 git pull origin main
-        docker compose -f platform/infra/docker-compose/docker-compose.yml up --build -d
-      "
 
 deploy:lxp:
   stage: deploy
@@ -352,91 +293,11 @@ deploy:lxp:
         fi
         cd \"$LXP_DEPLOY_PATH\"
         GIT_TERMINAL_PROMPT=0 git pull origin main
-        docker compose -f platform/infra/docker-compose/docker-compose.yml up --build -d
+        docker compose -f platform/infra/docker-compose/docker-compose.yml -f platform/infra/docker-compose/docker-compose.lxp.yml up --build -d
       "
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STAGE: POST-DEPLOY — both jobs run in parallel after deploy:n1 (main only)
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Notify Control Plane of model file changes detected in this push.
-# Uses GitLab SHA variables (CI_COMMIT_BEFORE_SHA / CI_COMMIT_SHA) in place
-# of GitHub's event.before / sha. Fails silently (|| true) if unreachable.
-
-post-deploy:notify-model-changes:
-  stage: post-deploy
-  image: python:3.12-slim
-  needs: [deploy:n1]
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq git
-    - pip install --quiet httpx
-  script:
-    - |
-      python platform/ci/notify_model_changes.py \
-        --before "$CI_COMMIT_BEFORE_SHA" \
-        --after  "$CI_COMMIT_SHA" \
-        --commit-msg "$CI_COMMIT_MESSAGE" || true
-
-# Trigger Prefect retraining for all registered models after a successful deploy.
-# Exits 1 if any model trigger fails so the post-deploy stage reflects the error.
-
-post-deploy:retrain-push-models:
-  stage: post-deploy
-  image: python:3.12-slim
-  needs: [deploy:n1]
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
-  variables:
-    MODELS: "JPCP MACK MCBound"
-    RETRAIN_DATASET: "FDataDataset"
-    RETRAIN_DUMMY: "false"
-  script:
-    - pip install --quiet httpx
-    - |
-      python - <<'PYEOF'
-      import httpx, os, sys, json
-
-      url   = os.environ.get("CONTROL_PLANE_URL", "").rstrip("/")
-      token = os.environ.get("CONTROL_PLANE_TOKEN", "")
-      models   = [m for m in os.environ.get("MODELS", "").split() if m]
-      dataset  = os.environ.get("RETRAIN_DATASET", "FDataDataset")
-      is_dummy = os.environ.get("RETRAIN_DUMMY", "false").lower() == "true"
-
-      if not url:
-          print("CONTROL_PLANE_URL not set — skipping retrain push", flush=True)
-          sys.exit(0)
-      if not token:
-          print("CONTROL_PLANE_TOKEN not set — skipping retrain push", flush=True)
-          sys.exit(0)
-
-      headers = {"Authorization": f"Bearer {token}"}
-      results = []
-      for model in models:
-          try:
-              r = httpx.post(
-                  f"{url}/retrain",
-                  json={"model_name": model, "dataset_name": dataset, "is_dummy": is_dummy},
-                  headers=headers,
-                  timeout=15.0,
-              )
-              r.raise_for_status()
-              results.append({"model": model, "status": "triggered", "data": r.json()})
-          except Exception as exc:
-              results.append({"model": model, "status": "failed", "error": str(exc)})
-
-      for entry in results:
-          print(json.dumps(entry), flush=True)
-
-      if any(e["status"] == "failed" for e in results):
-          sys.exit(1)
-      PYEOF
-
-# ═══════════════════════════════════════════════════════════════════════════
-# STAGE: POST-DEPLOY (lxp) — parallel after deploy:lxp (main only)
+# STAGE: POST-DEPLOY — both jobs run in parallel after deploy:lxp (main only)
 # ═══════════════════════════════════════════════════════════════════════════
 
 post-deploy:lxp:notify-model-changes:
