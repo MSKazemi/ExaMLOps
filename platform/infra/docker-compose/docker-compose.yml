@@ -194,6 +194,8 @@ services:
     depends_on:
       orchestrator:
         condition: service_healthy
+    volumes:
+      - control_plane_data:/data
     ports:
       - "18002:8002"
     restart: unless-stopped
@@ -463,6 +465,7 @@ volumes:
   alertmanager_data:
   tempo_data:
   jupyter_hub_data:
+  control_plane_data:
 
 networks:
   seanerbus-net:
