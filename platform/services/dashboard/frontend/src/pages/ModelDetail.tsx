@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft, ExternalLink, AlertTriangle, Tag,
   Cpu, BarChart3, Edit3, X, RotateCcw, Upload, Trash2, Send,
-  ChevronDown,
+  ChevronDown, GitBranch, Clock, Layers,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useQuery } from '@tanstack/react-query'
@@ -629,14 +629,105 @@ export function ModelDetail() {
           </div>
           {data.technical.promotion.metric && (
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Promotion gate</p>
-              <p className="text-xs">
+              <p className="text-xs text-muted-foreground mb-1">Promotion gate (Production)</p>
+              <p className="text-xs font-mono">
                 {data.technical.promotion.metric} {data.technical.promotion.direction === 'lower_is_better' ? '≤' : '≥'} {data.technical.promotion.threshold}
               </p>
             </div>
           )}
+          {data.technical.hyperparameters && Object.keys(data.technical.hyperparameters).length > 0 && (
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Hyperparameters</p>
+              <pre className="text-xs font-mono p-2 rounded-lg overflow-auto"
+                style={{ background: 'var(--surface-deep)', border: '1px solid var(--border-sm)' }}>
+                {JSON.stringify(data.technical.hyperparameters, null, 2)}
+              </pre>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Lifecycle Gates */}
+      {data.lifecycle_gates && data.lifecycle_gates.length > 0 && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <div className="px-4 py-3 flex items-center gap-2"
+            style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border-sm)' }}>
+            <Layers className="w-4 h-4" style={{ color: 'var(--accent-text)' }} />
+            <span className="text-sm font-semibold">Lifecycle Gates</span>
+            <span className="ml-auto text-xs text-muted-foreground">promotion thresholds per stage</span>
+          </div>
+          <div className="p-4 flex flex-col sm:flex-row gap-3" style={{ background: 'var(--surface-0)' }}>
+            {data.lifecycle_gates.map((gate: { name: string; metric: string; threshold: number; direction: string }, idx: number) => {
+              const stageColors: Record<string, { bg: string; border: string; text: string }> = {
+                Staging:    { bg: 'oklch(0.64 0.20 265 / 10%)', border: 'oklch(0.64 0.20 265 / 28%)', text: 'oklch(0.50 0.20 265)' },
+                Canary:     { bg: 'oklch(0.80 0.18 80 / 10%)',  border: 'oklch(0.80 0.18 80 / 28%)',  text: 'oklch(0.55 0.18 80)'  },
+                Production: { bg: 'oklch(0.72 0.18 155 / 10%)', border: 'oklch(0.72 0.18 155 / 28%)', text: 'oklch(0.48 0.18 155)' },
+              }
+              const c = stageColors[gate.name] ?? { bg: 'var(--surface-2)', border: 'var(--border-md)', text: 'var(--subtle-text)' }
+              const op = gate.direction === 'lower_is_better' ? '≤' : '≥'
+              const stageVersion = (data.stages as Record<string, { version: string } | null>)[gate.name.toLowerCase()]
+              return (
+                <div key={idx} className="flex-1 rounded-lg p-3 space-y-1.5"
+                  style={{ background: c.bg, border: `1px solid ${c.border}` }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold" style={{ color: c.text }}>{gate.name}</span>
+                    {stageVersion && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                        style={{ background: c.border, color: c.text }}>
+                        v{stageVersion.version}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs font-mono" style={{ color: 'var(--foreground)' }}>
+                    {gate.metric} {op} <strong>{gate.threshold}</strong>
+                  </p>
+                  <p className="text-[10px]" style={{ color: 'var(--muted-foreground)' }}>
+                    {gate.direction === 'lower_is_better' ? 'lower is better' : 'higher is better'}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Retraining Schedule */}
+      {data.retraining?.schedule && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <div className="px-4 py-3 flex items-center gap-2"
+            style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border-sm)' }}>
+            <Clock className="w-4 h-4" style={{ color: 'var(--accent-text)' }} />
+            <span className="text-sm font-semibold">Retraining Schedule</span>
+          </div>
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" style={{ background: 'var(--surface-0)' }}>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Cron schedule</p>
+              <code className="text-xs font-mono px-2 py-1 rounded"
+                style={{ background: 'var(--surface-deep)', border: '1px solid var(--border-sm)', color: 'var(--accent-text)' }}>
+                {data.retraining.schedule}
+              </code>
+            </div>
+            {data.retraining.deployment_name && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Prefect deployment</p>
+                <p className="text-xs font-mono">{data.retraining.deployment_name}</p>
+              </div>
+            )}
+            {data.retraining.work_pool && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Work pool</p>
+                <p className="text-xs font-mono">{data.retraining.work_pool}</p>
+              </div>
+            )}
+            {data.retraining.concurrency_limit != null && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Concurrency limit</p>
+                <p className="text-xs font-mono">{data.retraining.concurrency_limit}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Links */}
       {Object.keys(data.links).length > 0 && (

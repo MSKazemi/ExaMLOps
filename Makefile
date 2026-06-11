@@ -494,8 +494,13 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
 agent-test:  ## Run the management-agent unit tests
-	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx
+	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
+
+agent-server: install ## Start the ExaMLOps agent web chat UI (port 18004)
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	printf "$(BOLD)ExaMLOps Agent Chat$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
+	$(PYTHON) platform/services/agent/agent_server.py
 
 # =============================================================================
 ##@ Convenience

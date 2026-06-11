@@ -21,6 +21,7 @@ app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_setting
 
 _GENERATOR = "pipelines/pipeline_generator.py"
 _DEPLOY = "pipelines/deploy.py"
+_SCRIPT = "tools/scaffold_model.py"
 
 _EXAMPLES_LIST = "Examples:\n\n  exa pipeline list"
 _EXAMPLES_RUN = (
@@ -312,7 +313,7 @@ def promote(
             f"?name={urllib.parse.quote(model)}"
         )
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to fetch model {model} from MLflow: {e}", hint="Is MLflow running? exa status")
         return
 
     aliases = {a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])}
@@ -374,6 +375,79 @@ def promote(
     _output.ok(f"Promoted {model} v{version} → {to_alias}  ({status_str})")
 
 
+_EXAMPLES_ADD_MODEL = (
+    "Examples:\n\n"
+    "  # Register an existing modelzoo model into the pipeline (creates YAML + config)\n"
+    "  exa pipeline add-model JPCP\n\n"
+    "  # Specify task and type when they can't be auto-detected\n"
+    "  exa pipeline add-model DemoAD --task anomaly_detection --type classification\n\n"
+    "  # Overwrite existing YAML/config if you want to regenerate them\n"
+    "  exa pipeline add-model JPCP --force"
+)
+
+_TASK_CHOICES = ["performance_prediction", "power_consumption_prediction", "anomaly_detection"]
+_TYPE_CHOICES = ["regression", "classification"]
+
+
+@app.command("add-model", epilog=_EXAMPLES_ADD_MODEL)
+def add_model(
+    name: str = typer.Argument(..., help="PascalCase model name matching an existing modelzoo class"),
+    task: str = typer.Option("performance_prediction", "--task", "-t",
+                             help=f"Task type [{' | '.join(_TASK_CHOICES)}]"),
+    task_type: str = typer.Option("regression", "--type", "-T",
+                                  help=f"ML type [{' | '.join(_TYPE_CHOICES)}]"),
+    promotion_metric: str = typer.Option("accuracy", "--metric", help="Promotion metric"),
+    promotion_threshold: float = typer.Option(0.7, "--threshold", help="Production promotion threshold"),
+    promotion_direction: str = typer.Option("higher_is_better", "--direction",
+                                            help="[higher_is_better | lower_is_better]"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing YAML/config files"),
+):
+    """Register an existing modelzoo model into the training pipeline.
+
+    Unlike [bold]exa scaffold[/bold], this command does NOT create a new model class.
+    It only generates the pipeline YAML and config shim for a model class that
+    already lives in modelzoo/seanergys_modelzoo/models/tasks/.
+
+    Use this when you have written a model class by hand or imported one from
+    the modelzoo and want to wire it into ExaMLOps training and inference.
+    """
+    import glob as _glob
+
+    # Verify the model class exists in modelzoo before generating pipeline files.
+    import os as _os
+    modelzoo_tasks = _os.path.join("modelzoo", "seanergys_modelzoo", "models", "tasks")
+    found_files = _glob.glob(_os.path.join(modelzoo_tasks, "**", f"{name.lower()}_model.py"), recursive=True)
+    if not found_files:
+        _output.error(
+            f"Model class not found: expected a file matching "
+            f"modelzoo/seanergys_modelzoo/models/tasks/**/{name.lower()}_model.py\n"
+            f"  → Use [bold]exa scaffold {name}[/bold] to create a new model from scratch."
+        )
+        raise typer.Exit(1)
+
+    _output.ok(f"Found model class: {found_files[0]}")
+
+    cmd = [
+        sys.executable, _SCRIPT,
+        "--name", name,
+        "--task", task,
+        "--task-type", task_type,
+        "--promotion-metric", promotion_metric,
+        "--promotion-threshold", str(promotion_threshold),
+        "--promotion-direction", promotion_direction,
+        "--skip-model-class",
+    ]
+    if force:
+        cmd.append("--force")
+
+    try:
+        subprocess.run(cmd, check=True)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("tools/scaffold_model.py not found — run exa pipeline add-model from the repo root")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"add-model exited with {e.returncode}")
+
+
 _EXAMPLES_PROMOTE_DELETE = (
     "Examples:\n\n"
     "  exa pipeline promote-delete JPCP\n\n"
@@ -384,23 +458,36 @@ _EXAMPLES_PROMOTE_DELETE = (
 def promote_delete(
     model: str | None = typer.Argument(None, help="Model name (omit with --all)"),
     all_rules: bool = typer.Option(False, "--all", help="Delete ALL promotion rules"),
-):
+) -> None:
     """Delete saved metric-gated promotion rules."""
     from examlops.platform_db import get_db as _get_db, init_db as _init_db
     _init_db()
     if all_rules:
         with _get_db() as conn:
             count = conn.execute("SELECT COUNT(*) FROM promotion_rules").fetchone()[0]
+        if count == 0:
+            _output.ok("No promotion rules to delete")
+            return
+        if not _output.confirm(f"Delete all {count} promotion rule(s)? This cannot be undone."):
+            _output.info("Cancelled.")
+            return
+        with _get_db() as conn:
             conn.execute("DELETE FROM promotion_rules")
-        _output.ok(f"Deleted all {count} promotion rule(s)")
+        _output.ok(f"Deleted {count} promotion rule(s)")
         return
     if not model:
-        _output.error("Provide a model name or --all")
+        _output.error(
+            "Provide a model name or --all",
+            hint="Examples: exa pipeline promote-delete JPCP  or  exa pipeline promote-delete --all",
+        )
         raise typer.Exit(1)
     with _get_db() as conn:
         row = conn.execute("SELECT 1 FROM promotion_rules WHERE model=?", (model,)).fetchone()
         if not row:
-            _output.error(f"No promotion rule found for {model}")
+            _output.error(
+                f"No promotion rule found for {model}",
+                hint="See saved rules: exa pipeline promote --list",
+            )
             raise typer.Exit(1)
         conn.execute("DELETE FROM promotion_rules WHERE model=?", (model,))
     _output.ok(f"Deleted promotion rule for {model}")

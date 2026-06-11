@@ -41,7 +41,7 @@ def list_models():
     try:
         data = _client.get(url)
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to list models: {e}", hint="Is MLflow running? Try: exa status")
         return
     models = data.get("registered_models", [])
     rows = []
@@ -62,7 +62,7 @@ def info(model: str = typer.Argument(..., help="Registered model name (e.g. jpcp
     try:
         data = _client.get(url)
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to fetch model {model!r}: {e}", hint="Check model name with: exa models list")
         return
     rm = data.get("registered_model", {})
     if _output.json_mode:

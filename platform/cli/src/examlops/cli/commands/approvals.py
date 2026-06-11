@@ -23,24 +23,38 @@ _EXAMPLES_APPROVE = (
 _EXAMPLES_REJECT = (
     "Examples:\n\n"
     "  exa approvals reject JPCP\n\n"
-    '  exa approvals reject JPCP --reason "needs data review"'
+    '  exa approvals reject JPCP --reason "needs data review"\n\n'
+    "  exa --yes approvals reject JPCP --reason automated"
+)
+_EXAMPLES_DELETE = (
+    "Examples:\n\n"
+    "  exa approvals delete <uuid>\n\n"
+    "  exa --yes approvals delete <uuid>"
 )
 
 
 @app.command("list", epilog=_EXAMPLES_LIST)
-def list_approvals(all: bool = typer.Option(False, "--all", help="Show all statuses, not just pending")):
+def list_approvals(
+    all: bool = typer.Option(False, "--all", help="Show all statuses, not just pending"),
+) -> None:
     """List model change approvals."""
     cfg = load_config()
     url = f"{cfg.control_plane_url}/approvals"
     if not all:
         url += "?status=pending"
     try:
-        rows_raw = _client.get(url)
+        rows_raw = _client.get(url, token=cfg.control_plane_token)
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to list approvals: {e}", hint="Is the control plane running? exa status")
         return
-    rows = [[r["model_id"], (r["commit_sha"] or "")[:8], r["commit_msg"] or "",
-             r["status"], r["requested_at"]] for r in rows_raw]
+    if not rows_raw:
+        _output.ok("No approvals found")
+        return
+    rows = [
+        [r["model_id"], (r.get("commit_sha") or "")[:8], (r.get("commit_msg") or "")[:50],
+         r["status"], (r.get("requested_at") or "")[:16]]
+        for r in rows_raw
+    ]
     _output.print_table(
         "Pending Approvals" if not all else "All Approvals",
         ["Model", "Commit", "Message", "Status", "Requested"],
@@ -49,14 +63,20 @@ def list_approvals(all: bool = typer.Option(False, "--all", help="Show all statu
 
 
 @app.command(epilog=_EXAMPLES_APPROVE)
-def approve(model: str = typer.Argument(..., help="Model ID to approve (e.g. JPCP)")):
+def approve(
+    model: str = typer.Argument(..., help="Model ID to approve (e.g. JPCP)"),
+) -> None:
     """Approve a pending model change — fires Prefect training immediately."""
     cfg = load_config()
-    try:
-        result = _client.post(f"{cfg.control_plane_url}/approve/{model}", {}, token=cfg.control_plane_token)
-    except _client.ClientError as e:
-        _output.error(str(e))
-        return
+    with _output.spinner(f"Approving {model} and scheduling training…"):
+        try:
+            result = _client.post(
+                f"{cfg.control_plane_url}/approve/{model}", {},
+                token=cfg.control_plane_token,
+            )
+        except _client.ClientError as e:
+            _output.error(f"Failed to approve {model}: {e}")
+            return
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     try:
         init_db()
@@ -64,17 +84,23 @@ def approve(model: str = typer.Argument(..., help="Model ID to approve (e.g. JPC
                           {"flow_run_id": result.get("flow_run_id")})
     except Exception:
         pass
-    _output.ok(f"Approved {model} — flow_run_id: {result.get('flow_run_id')}")
-    if _output.json_mode:
-        _output.print_json(result)
+    _output.ok(f"Approved {model}")
+    _output.print_record({
+        "flow_run_id": result.get("flow_run_id", "—"),
+        "status":      result.get("status", "scheduled"),
+    })
+    _output.hint("Monitor progress: exa status")
 
 
 @app.command(epilog=_EXAMPLES_REJECT)
 def reject(
     model: str = typer.Argument(..., help="Model ID to reject"),
     reason: str | None = typer.Option(None, "--reason", "-r", help="Rejection reason"),
-):
+) -> None:
     """Reject a pending model change — no training will run."""
+    if not _output.confirm(f"Reject pending approval for [bold]{model}[/bold]? This cannot be undone."):
+        _output.info("Cancelled.")
+        return
     cfg = load_config()
     try:
         result = _client.post(
@@ -83,7 +109,7 @@ def reject(
             token=cfg.control_plane_token,
         )
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to reject {model}: {e}")
         return
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     try:
@@ -96,16 +122,14 @@ def reject(
         _output.print_json(result)
 
 
-_EXAMPLES_DELETE = (
-    "Examples:\n\n"
-    "  exa approvals delete <uuid>"
-)
-
 @app.command("delete", epilog=_EXAMPLES_DELETE)
 def delete(
     approval_id: str = typer.Argument(..., help="Approval UUID to delete"),
-):
-    """Delete a pending approval by its UUID."""
+) -> None:
+    """Delete a pending approval by its UUID (retract a stale or duplicate entry)."""
+    if not _output.confirm(f"Delete approval [bold]{approval_id[:8]}…[/bold]?"):
+        _output.info("Cancelled.")
+        return
     cfg = load_config()
     try:
         result = _client.delete(
@@ -113,8 +137,8 @@ def delete(
             token=cfg.control_plane_token,
         )
     except _client.ClientError as e:
-        _output.error(str(e))
+        _output.error(f"Failed to delete approval: {e}")
         return
-    _output.ok(f"Deleted approval {approval_id}")
+    _output.ok(f"Deleted approval {approval_id[:8]}…")
     if _output.json_mode:
         _output.print_json(result)

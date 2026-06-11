@@ -123,7 +123,7 @@ class TestRetrainValidation:
             headers=self._auth(),
         )
         assert r.status_code == 400
-        assert "not declared as supported" in r.json()["detail"]
+        assert "not supported by" in r.json()["detail"]
 
     def test_happy_path_creates_flow_run(self, client):
         r = client.post(

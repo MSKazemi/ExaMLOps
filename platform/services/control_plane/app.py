@@ -1169,10 +1169,20 @@ def get_model_meta_endpoint(name: str) -> dict[str, Any]:
     except LookupError as exc:
         raise HTTPException(404, f"Unknown model {name!r}") from exc
     return {
-        "name": m.name, "task_type": m.task_type, "estimator_class": m.estimator_class,
-        "supported_datasets": m.supported_datasets, "input_schema": m.input_schema,
-        "output_schema": m.output_schema, "promotion": m.promotion,
-        "path_in_repo": m.path_in_repo, "bundled_images": m.bundled_images,
+        "name": m.name,
+        "task_type": m.task_type,
+        "estimator_class": m.estimator_class,
+        "supported_datasets": m.supported_datasets,
+        "input_schema": m.input_schema,
+        "output_schema": m.output_schema,
+        "promotion": m.promotion,
+        "path_in_repo": m.path_in_repo,
+        "bundled_images": m.bundled_images,
+        # Extended fields for dashboard display
+        "seanerbus_uuid": m.seanerbus_uuid,
+        "hyperparameters": m.hyperparameters,
+        "prefect": m.prefect,
+        "enabled": m.enabled,
     }
 
 
