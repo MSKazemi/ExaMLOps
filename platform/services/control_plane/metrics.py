@@ -18,6 +18,12 @@ approval_age_oldest: Gauge = Gauge(
     "examlops_approval_age_oldest_seconds",
     "Age in seconds of the oldest pending approval; 0 when none pending",
 )
+# Improvement 4: Prefect gateway retry counter
+prefect_retries: Counter = Counter(
+    "examlops_prefect_retries_total",
+    "Number of retried Prefect HTTP calls (transient errors / 5xx)",
+    ["method"],
+)
 
 
 def record_created(model_id: str, pending_count: int) -> None:
@@ -33,6 +39,10 @@ def record_approved(model_id: str, pending_count: int) -> None:
 def record_rejected(model_id: str, pending_count: int) -> None:
     approval_events.labels(model_id=model_id, action="rejected").inc()
     approvals_pending.set(pending_count)
+
+
+def record_prefect_retry(method: str) -> None:
+    prefect_retries.labels(method=method).inc()
 
 
 def update_age(oldest_pending_ts: str | None) -> None:

@@ -422,8 +422,16 @@ test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.h
 check: lint typecheck test dashboard-check ## Run all quality checks: lint · typecheck · test · dashboard
 	@printf "\n$(GREEN)$(BOLD)All checks passed.$(RESET)\n\n"
 
-ci: ci-modelzoo ci-infra ci-examlops ## Run all three CI job groups locally (mirrors GitHub Actions)
+ci: ci-modelzoo ci-infra ci-examlops ## Run all three CI job groups locally (mirrors GitLab CI)
 	@printf "\n$(GREEN)$(BOLD)All CI job groups passed locally.$(RESET)\n\n"
+
+smoke-check: ## Run post-deploy health probes against the local stack
+	@printf "$(BOLD)Smoke check$(RESET)  (local stack)\n"
+	@EXAMLOPS_DEPLOY_PATH=$(CURDIR) bash platform/ci/smoke_check.sh
+
+selfheal: ## Run the container self-healer once against the local stack
+	@printf "$(BOLD)Self-heal$(RESET)  (local stack)\n"
+	@EXAMLOPS_DEPLOY_PATH=$(CURDIR) bash platform/ci/self_heal.sh
 
 ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + smoke
 	@printf "$(BOLD)CI · modelzoo (poetry)$(RESET)\n"
@@ -486,7 +494,7 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
 agent-test:  ## Run the management-agent unit tests
-	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-ollama respx
+	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx
 	.venv/bin/pytest platform/services/agent/tests -v
 
 # =============================================================================

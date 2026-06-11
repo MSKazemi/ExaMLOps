@@ -6,6 +6,11 @@ from pathlib import Path
 # exa_agent/config.py → parents: [0]=exa_agent [1]=agent [2]=services [3]=platform [4]=repo
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
+# Claude API backend (preferred)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+
+# Ollama backend (fallback when ANTHROPIC_API_KEY is unset)
 AGENT_MODEL = os.getenv("AGENT_MODEL", "llama3.1:8b")
 AGENT_OLLAMA_URL = os.getenv("AGENT_OLLAMA_URL", "http://localhost:11436")
 
