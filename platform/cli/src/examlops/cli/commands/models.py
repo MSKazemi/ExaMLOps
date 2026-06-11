@@ -109,7 +109,9 @@ def diff(
             _output.error(str(e))
             raise
         d = run_data["run"]["data"]
-        return run_id, d.get("metrics", {}), d.get("params", {})
+        metrics = {m["key"]: m["value"] for m in d.get("metrics", [])}
+        params = {p["key"]: p["value"] for p in d.get("params", [])}
+        return run_id, metrics, params
 
     try:
         _, metrics1, params1 = _get_run(v1)
@@ -229,8 +231,8 @@ def lineage(
 
     run = run_data.get("run", {}).get("data", {})
     tags = {t["key"]: t["value"] for t in run.get("tags", [])}
-    params = run.get("params", {})
-    metrics = run.get("metrics", {})
+    params = {p["key"]: p["value"] for p in run.get("params", [])}
+    metrics = {m["key"]: m["value"] for m in run.get("metrics", [])}
 
     prefect_run = tags.get("prefect_flow_run_id", "unknown")
     dataset_version = tags.get("dataset_version", "unknown")
