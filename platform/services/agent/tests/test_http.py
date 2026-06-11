@@ -1,5 +1,8 @@
 import httpx
+import pytest
 import respx
+from unittest.mock import patch
+
 from exa_agent.tools import _http
 
 
@@ -68,3 +71,38 @@ def test_dashboard_client_no_password():
     data, err = client.request("dashboard", "GET", "/api/containers")
     assert data is None
     assert "DASHBOARD_ADMIN_PASSWORD is not set" in err
+
+
+# ── Feature 6: HTTP retry ─────────────────────────────────────────────────────
+
+
+@respx.mock
+def test_request_json_retries_network_error_and_succeeds():
+    """RequestError on first attempt → retry → success on second."""
+    route = respx.get("http://svc/retry")
+    route.mock(side_effect=[httpx.ConnectError("flap"), httpx.Response(200, json={"ok": 1})])
+    with patch.object(_http, "_REQUEST_RETRY_DELAY", 0):
+        data, err = _http.request_json("svc", "GET", "http://svc/retry", retries=1)
+    assert err is None
+    assert data == {"ok": 1}
+
+
+@respx.mock
+def test_request_json_no_retry_on_http_error():
+    """5xx HTTP response must NOT be retried — it's a definitive server response."""
+    route = respx.get("http://svc/x5xx").mock(return_value=httpx.Response(503, text="overload"))
+    data, err = _http.request_json("svc", "GET", "http://svc/x5xx", retries=2)
+    assert data is None
+    assert "svc returned 503" in err
+    assert route.call_count == 1  # called exactly once, no retry
+
+
+@respx.mock
+def test_request_json_exhausts_retries():
+    """All attempts fail → error returned after retries+1 total attempts."""
+    route = respx.get("http://svc/flap").mock(side_effect=httpx.ConnectError("refused"))
+    with patch.object(_http, "_REQUEST_RETRY_DELAY", 0):
+        data, err = _http.request_json("svc", "GET", "http://svc/flap", retries=2)
+    assert data is None
+    assert "cannot reach svc" in err
+    assert route.call_count == 3  # 1 initial + 2 retries

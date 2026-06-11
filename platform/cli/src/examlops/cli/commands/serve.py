@@ -153,3 +153,82 @@ def benchmark(requests: int = typer.Option(200, "--requests", "-n", help="Number
         _output.error("dummy_client.py not found — run exa serve benchmark from the repo root")
     except subprocess.CalledProcessError as e:
         _output.error(f"dummy_client.py exited with code {e.returncode}")
+
+
+_EXAMPLES_SERVE_MODELS = (
+    "Examples:\n\n"
+    "  exa serve models\n\n"
+    "  exa serve models --detail"
+)
+
+@app.command("models", epilog=_EXAMPLES_SERVE_MODELS)
+def models_cmd(
+    detail: bool = typer.Option(False, "--detail", "-d", help="Show full model detail"),
+):
+    """List models currently hot-loaded in Ray Serve."""
+    cfg = load_config()
+    try:
+        data = _client.get(f"{cfg.ray_serve_url}/models")
+    except _client.ClientError as e:
+        _output.error(str(e))
+        return
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("models", list(data.values()) if data else [])
+    else:
+        items = []
+    if not items:
+        _output.ok("No models loaded in Ray Serve")
+        return
+    if detail:
+        for item in items:
+            _output.print_record(item if isinstance(item, dict) else {"name": item})
+    else:
+        rows = []
+        for item in items:
+            if isinstance(item, dict):
+                rows.append([item.get("name", "—"), item.get("alias", "—"),
+                             item.get("version", "—"), item.get("status", "—")])
+            else:
+                rows.append([str(item), "—", "—", "—"])
+        _output.print_table("Ray Serve — Loaded Models",
+                            ["Name", "Alias", "Version", "Status"], rows)
+
+
+_EXAMPLES_TRAFFIC_LIST = (
+    "Examples:\n\n"
+    "  exa serve traffic-list\n\n"
+    "  exa --json serve traffic-list"
+)
+
+@app.command("traffic-list", epilog=_EXAMPLES_TRAFFIC_LIST)
+def traffic_list():
+    """Show traffic split configuration for all models."""
+    import json as _json
+    from examlops.platform_db import get_db as _get_db, init_db as _init_db
+    _init_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT model, rules, updated_at, updated_by FROM traffic_rules ORDER BY model"
+        ).fetchall()
+    if not rows:
+        _output.ok("No traffic rules configured — all models use 100% Production (default)")
+        return
+    data = [
+        {"model": r["model"], "rules": _json.loads(r["rules"]),
+         "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
+        for r in rows
+    ]
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    table_rows = []
+    for item in data:
+        rules_str = "  ".join(f"{alias}:{pct}%" for alias, pct in item["rules"].items())
+        table_rows.append([item["model"], rules_str,
+                          (item["updated_at"] or "—")[:19], item["updated_by"] or "—"])
+    _output.print_table("Traffic Rules", ["Model", "Split", "Updated At", "Updated By"], table_rows)

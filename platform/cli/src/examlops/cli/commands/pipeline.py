@@ -372,3 +372,35 @@ def promote(
         set_promotion_rule(model, metric, operator, threshold, from_alias, to_alias)
 
     _output.ok(f"Promoted {model} v{version} → {to_alias}  ({status_str})")
+
+
+_EXAMPLES_PROMOTE_DELETE = (
+    "Examples:\n\n"
+    "  exa pipeline promote-delete JPCP\n\n"
+    "  exa pipeline promote-delete --all"
+)
+
+@app.command("promote-delete", epilog=_EXAMPLES_PROMOTE_DELETE)
+def promote_delete(
+    model: str | None = typer.Argument(None, help="Model name (omit with --all)"),
+    all_rules: bool = typer.Option(False, "--all", help="Delete ALL promotion rules"),
+):
+    """Delete saved metric-gated promotion rules."""
+    from examlops.platform_db import get_db as _get_db, init_db as _init_db
+    _init_db()
+    if all_rules:
+        with _get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM promotion_rules").fetchone()[0]
+            conn.execute("DELETE FROM promotion_rules")
+        _output.ok(f"Deleted all {count} promotion rule(s)")
+        return
+    if not model:
+        _output.error("Provide a model name or --all")
+        raise typer.Exit(1)
+    with _get_db() as conn:
+        row = conn.execute("SELECT 1 FROM promotion_rules WHERE model=?", (model,)).fetchone()
+        if not row:
+            _output.error(f"No promotion rule found for {model}")
+            raise typer.Exit(1)
+        conn.execute("DELETE FROM promotion_rules WHERE model=?", (model,))
+    _output.ok(f"Deleted promotion rule for {model}")

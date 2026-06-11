@@ -534,6 +534,126 @@ def validate_model_serving(model_name: str, alias: str = "Staging", max_latency_
     )
 
 
+# ── Feature 8: Quick platform summary ────────────────────────────────────────
+
+
+@tool
+def get_platform_summary() -> str:
+    """Return a concise platform health snapshot in one call.
+
+    Combines service reachability, registered model count, and pending approval
+    count. Use this before deciding what to investigate in depth.
+    """
+    # Service health
+    health_checks = {
+        "control_plane": f"{config.CONTROL_PLANE_URL}/health",
+        "ray_serve": f"{config.RAY_SERVE_URL}/health",
+        "mlflow": f"{config.MLFLOW_URL}/health",
+    }
+    statuses: dict[str, str] = {}
+    for svc, url in health_checks.items():
+        _, err = _http.request_json(svc, "GET", url)
+        statuses[svc] = "UP" if not err else "DOWN"
+
+    # Registered model count
+    models_data, err = _http.request_json(
+        "mlflow", "GET",
+        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/list",
+    )
+    model_count: int | str = len(models_data.get("registered_models", [])) if not err else "?"
+
+    # Pending approvals
+    approvals_data, err = _http.request_json(
+        "control_plane", "GET",
+        f"{config.CONTROL_PLANE_URL}/approvals",
+    )
+    if not err and isinstance(approvals_data, list):
+        pending_count: int | str = sum(1 for a in approvals_data if a.get("status") == "pending")
+    else:
+        pending_count = "?"
+
+    health_str = "\n".join(f"  {k}: {v}" for k, v in statuses.items())
+    return (
+        f"Platform Quick-Status:\n"
+        f"  Registered models: {model_count}\n"
+        f"  Pending approvals: {pending_count}\n"
+        f"  Services:\n{health_str}"
+    )
+
+
+# ── Feature 9: Comprehensive platform diagnostic ──────────────────────────────
+
+
+@tool
+def diagnose_platform() -> str:
+    """Run a full platform diagnostic and return prioritised findings.
+
+    Checks service reachability, prediction drift (CRITICAL/WARNING),
+    recent audit-log failures, and pending approval backlog. Returns a
+    bullet-point list sorted by severity — use it as a first step when
+    investigating issues or before writing a status report.
+    """
+    findings: list[str] = []
+
+    # Service reachability
+    for svc, url in {
+        "control_plane": f"{config.CONTROL_PLANE_URL}/health",
+        "ray_serve": f"{config.RAY_SERVE_URL}/health",
+        "mlflow": f"{config.MLFLOW_URL}/health",
+    }.items():
+        _, err = _http.request_json(svc, "GET", url)
+        if err:
+            findings.append(f"CRITICAL: {svc} unreachable")
+
+    # Drift anomalies
+    if _DB_OK:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT model, prediction FROM drift_snapshots ORDER BY ts DESC LIMIT 500"
+            ).fetchall()
+        if rows:
+            grouped: dict[str, list[float]] = defaultdict(list)
+            for r in rows:
+                grouped[r["model"]].append(r["prediction"])
+            for model, preds in grouped.items():
+                n = len(preds)
+                mean = sum(preds) / n
+                std = math.sqrt(sum((p - mean) ** 2 for p in preds) / n)
+                baseline = get_drift_baseline(model)
+                if baseline and baseline["std"] > 0:
+                    z = abs(mean - baseline["mean"]) / baseline["std"]
+                    if z >= 3.0:
+                        findings.append(f"CRITICAL: {model} prediction drift z={z:.2f} (≥3σ)")
+                    elif z >= 2.0:
+                        findings.append(f"WARNING: {model} prediction drift z={z:.2f} (≥2σ)")
+
+    # Recent audit failures (last 24 h)
+    if _DB_OK:
+        since = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        with get_db() as conn:
+            err_rows = conn.execute(
+                "SELECT action, target FROM audit_events "
+                "WHERE ts >= ? AND (action LIKE '%fail%' OR action LIKE '%error%') LIMIT 5",
+                (since,),
+            ).fetchall()
+        for r in err_rows:
+            findings.append(f"WARNING: recent failure — {r['action']} on {r['target']}")
+
+    # Pending approval queue
+    ap_data, ap_err = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/approvals"
+    )
+    if not ap_err and isinstance(ap_data, list):
+        pending = [a for a in ap_data if a.get("status") == "pending"]
+        if len(pending) > 3:
+            findings.append(f"INFO: {len(pending)} models pending operator approval")
+
+    if not findings:
+        findings.append("OK: No issues detected")
+
+    return "## Platform Diagnostic\n" + "\n".join(f"- {f}" for f in findings)
+
+
 TOOLS = [
     compare_model_versions,
     get_model_lineage,
@@ -544,4 +664,6 @@ TOOLS = [
     promote_model,
     trigger_auto_retrain,
     validate_model_serving,
+    get_platform_summary,   # Feature 8
+    diagnose_platform,      # Feature 9
 ]

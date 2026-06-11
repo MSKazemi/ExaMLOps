@@ -93,3 +93,36 @@ def logs(
 def status():
     """Show running containers and their ports."""
     _dc(["ps"])
+
+
+# ── Monitoring stack (same compose file, --profile monitoring) ──────────────
+
+_MONITORING_SERVICES = ["prometheus", "grafana", "loki", "promtail", "alertmanager", "tempo"]
+
+
+def _dc_monitoring(args: list[str]) -> None:
+    cmd = _BASE_CMD + ["--profile", "monitoring"] + args
+    try:
+        subprocess.run(cmd, check=True)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("docker not found — is Docker installed?")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"docker compose exited with {e.returncode}")
+
+
+@app.command("monitoring-up")
+def monitoring_up():
+    """Start monitoring stack: Prometheus, Grafana, Loki, Promtail, Alertmanager, Tempo."""
+    _dc_monitoring(["up", "-d"] + _MONITORING_SERVICES)
+
+
+@app.command("monitoring-down")
+def monitoring_down():
+    """Stop monitoring stack."""
+    _dc_monitoring(["stop"] + _MONITORING_SERVICES)
+
+
+@app.command("monitoring-status")
+def monitoring_status():
+    """Show monitoring stack container status."""
+    _dc_monitoring(["ps"])

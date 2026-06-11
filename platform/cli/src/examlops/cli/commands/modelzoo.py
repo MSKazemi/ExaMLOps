@@ -132,3 +132,41 @@ def show_config():
         _output.error(str(e))
         return
     _output.print_record(data)
+
+
+_EXAMPLES_CONFIG_SET = (
+    "Examples:\n\n"
+    "  exa modelzoo config-set auto_retrain true\n\n"
+    "  exa modelzoo config-set poll_interval_seconds 120"
+)
+
+@app.command("config-set", epilog=_EXAMPLES_CONFIG_SET)
+def set_config(
+    key: str = typer.Argument(..., help="Config key: auto_retrain | poll_interval_seconds"),
+    value: str = typer.Argument(..., help="New value"),
+):
+    """Update ModelZoo integration config on the Control Plane."""
+    cfg = load_config()
+    payload: dict = {}
+    if key == "auto_retrain":
+        payload["auto_retrain"] = value.lower() in ("true", "1", "yes")
+    elif key == "poll_interval_seconds":
+        try:
+            payload["poll_interval_seconds"] = int(value)
+        except ValueError:
+            _output.error(f"poll_interval_seconds must be an integer, got: {value!r}")
+            raise typer.Exit(1)
+    else:
+        _output.error(f"Unknown config key {key!r}. Supported: auto_retrain, poll_interval_seconds")
+        raise typer.Exit(1)
+    url = f"{cfg.control_plane_url}/modelzoo/config"
+    try:
+        data = _client.put(url, payload, token=cfg.control_plane_token)
+    except _client.ClientError as e:
+        _output.error(str(e))
+        return
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    _output.ok(f"Updated {key}={value}")
+    _output.print_record(data)

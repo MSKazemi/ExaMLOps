@@ -51,7 +51,7 @@ export function Pipelines() {
     const modelName = modelFromDeployment(dep)
     setTriggeredModel(modelName)
     triggerRun(
-      { model_name: modelName, dummy: true },
+      { model_name: modelName, dummy: false },
       { onSettled: () => setTriggeredModel(null) },
     )
   }

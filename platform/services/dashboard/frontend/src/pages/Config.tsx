@@ -7,7 +7,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  useConfig, useConfigKeys, useMe, useUpdateConfig, useHealth, useReloadRay, exportEnv, importEnv,
+  apiFetch, useConfig, useConfigKeys, useMe, useUpdateConfig, useHealth, useReloadRay, exportEnv, importEnv,
 } from '@/lib/api'
 import type { ConfigKeyMeta } from '@/lib/api'
 import { getToken, isAdmin } from '@/lib/auth'
@@ -1068,6 +1068,11 @@ export function Config() {
     setSecrets(prev => ({ ...prev, [k]: { typed: '', cleared: true } }))
 
   const [mzAutoRetrain, setMzAutoRetrain] = useState(false)
+  useEffect(() => {
+    apiFetch<{ auto_retrain: boolean }>('/api/proxy/control_plane/modelzoo/config')
+      .then(data => setMzAutoRetrain(data.auto_retrain))
+      .catch(() => {})
+  }, [])
   const [mzSaving, setMzSaving] = useState(false)
 
   const [exporting, setExporting] = useState(false)

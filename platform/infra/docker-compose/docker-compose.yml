@@ -364,6 +364,7 @@ services:
       PUBLIC_JUPYTERHUB_URL: http://${PUBLIC_HOST:-localhost}:18888
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099
       SLURM_MODE: ${EXAMLOPS_SLURM_MODE:-mock}
+      PLATFORM_DB: /repo/platform.db
     ports:
       - "18099:8099"
     depends_on:

@@ -12,10 +12,13 @@ from routers import (
     config,
     containers,
     docs,
+    drift_data,
     health,
     models,
     modelzoo,
     pipelines,
+    platform_audit,
+    platform_data,
     proxy,
     scaffold,
     seanerbus,
@@ -62,6 +65,9 @@ app.include_router(containers.router, prefix="/api")
 app.include_router(approvals.router, prefix="/api")
 app.include_router(pipelines.router, prefix="/api")
 app.include_router(scaffold.router, prefix="/api")
+app.include_router(platform_audit.router, prefix="/api")
+app.include_router(drift_data.router, prefix="/api")
+app.include_router(platform_data.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
 _dist = Path(__file__).parent.parent / "frontend" / "dist"
