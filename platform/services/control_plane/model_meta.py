@@ -28,6 +28,11 @@ class ModelMeta:
     promotion: dict[str, Any]
     path_in_repo: str  # relative to repo root, ends with /
     bundled_images: list[str] = field(default_factory=list)
+    # Extended metadata — populated from YAML for dashboard display
+    seanerbus_uuid: str | None = None
+    hyperparameters: dict[str, Any] = field(default_factory=dict)
+    prefect: dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
 
 
 def _scan_yamls() -> dict[str, dict[str, Any]]:
@@ -121,6 +126,9 @@ def get_model_meta(model_name: str) -> ModelMeta:
         if img_dir.is_dir():
             images = sorted(p.name for p in img_dir.iterdir() if p.is_file())
 
+    model_section = cfg.get("model", {}) or {}
+    prefect_section = cfg.get("prefect", {}) or {}
+
     return ModelMeta(
         name=model_name,
         task_type=task_type,
@@ -131,6 +139,10 @@ def get_model_meta(model_name: str) -> ModelMeta:
         promotion=promotion,
         path_in_repo=rel,
         bundled_images=images,
+        seanerbus_uuid=cfg.get("seanerbus_uuid"),
+        hyperparameters=model_section.get("hyperparameters", {}),
+        prefect=prefect_section,
+        enabled=bool(cfg.get("enabled", True)),
     )
 
 

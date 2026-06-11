@@ -18,6 +18,7 @@ src/examlops/cli/commands/__init__.py
 src/examlops/cli/commands/approvals.py
 src/examlops/cli/commands/audit.py
 src/examlops/cli/commands/config_cmd.py
+src/examlops/cli/commands/doctor.py
 src/examlops/cli/commands/drift.py
 src/examlops/cli/commands/models.py
 src/examlops/cli/commands/modelzoo.py

@@ -367,6 +367,28 @@ async def get_model_detail(
             "original_name": row.original_name,
         })
 
+    # Lifecycle gates: all three stages with their thresholds for the dashboard gauge
+    lifecycle_raw: list[dict] = (meta.get("promotion") or {}).get("lifecycle") or []
+    lifecycle_gates = [
+        {
+            "name": gate.get("name"),
+            "metric": gate.get("metric"),
+            "threshold": gate.get("threshold"),
+            "direction": gate.get("direction", "higher_is_better"),
+        }
+        for gate in lifecycle_raw
+        if gate.get("name")
+    ]
+
+    # Retraining schedule from Prefect config
+    prefect_cfg: dict = meta.get("prefect") or {}
+    retraining = {
+        "schedule": prefect_cfg.get("schedule"),
+        "deployment_name": prefect_cfg.get("deployment_name"),
+        "work_pool": prefect_cfg.get("work_pool"),
+        "concurrency_limit": prefect_cfg.get("concurrency_limit"),
+    }
+
     return {
         "name": name,
         "task_type": meta["task_type"],
@@ -393,7 +415,11 @@ async def get_model_detail(
             "input_schema": meta["input_schema"],
             "output_schema": meta["output_schema"],
             "promotion": meta["promotion"],
+            "hyperparameters": meta.get("hyperparameters") or {},
         },
+        "lifecycle_gates": lifecycle_gates,
+        "retraining": retraining,
+        "seanerbus_uuid": meta.get("seanerbus_uuid"),
         "stages": stages,
         "links": links,
         "images": images,

@@ -37,35 +37,45 @@ _EXAMPLES_BENCHMARK = (
 
 
 @app.command(epilog=_EXAMPLES_RELOAD)
-def reload(model: str | None = typer.Option(None, "--model", "-m", help="Reload one model (default: all)")):
+def reload(model: str | None = typer.Option(None, "--model", "-m", help="Reload one model (default: all)")) -> None:
     """Hot-reload Production models from MLflow into Ray Serve."""
     cfg = load_config()
     url = f"{cfg.ray_serve_url}/reload/{model}" if model else f"{cfg.ray_serve_url}/reload"
-    try:
-        result = _client.post(url, {})
-    except _client.ClientError as e:
-        _output.error(str(e))
-        return
+    target = model or "all models"
+    with _output.spinner(f"Reloading {target} from MLflow into Ray Serve…"):
+        try:
+            result = _client.post(url, {})
+        except _client.ClientError as e:
+            _output.error(
+                f"Failed to reload {target}: {e}",
+                hint="Is Ray Serve running? Try: exa stack status",
+            )
+            return
     count = result.get("count", "?")
-    _output.ok(f"Reloaded {count} model(s)")
+    _output.ok(f"Reloaded {count} model(s) into Ray Serve")
     if _output.json_mode:
         _output.print_json(result)
 
 
 @app.command(epilog=_EXAMPLES_CHECK)
-def check():
+def check() -> None:
     """Smoke test Ray Serve: health check + one prediction per model."""
     cfg = load_config()
-    try:
-        health = _client.get(f"{cfg.ray_serve_url}/health")
-    except _client.ClientError as e:
-        _output.error(str(e))
-        return
+    with _output.spinner("Checking Ray Serve health…"):
+        try:
+            health = _client.get(f"{cfg.ray_serve_url}/health")
+        except _client.ClientError as e:
+            _output.error(
+                f"Ray Serve unreachable: {e}",
+                hint="Start it with: exa stack up --service ray-serving",
+            )
+            return
+    _output.ok("Ray Serve is healthy")
     _output.print_record(health)
 
 
 @app.command("infer-check", epilog=_EXAMPLES_INFER_CHECK)
-def infer_check():
+def infer_check() -> None:
     """Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job."""
     cfg = load_config()
     body = {
@@ -76,11 +86,16 @@ def infer_check():
         "num_nodes": 4,
         "user_id": "smoke",
     }
-    try:
-        result = _client.post(f"{cfg.ray_serve_url}/infer-pipeline/infer", body)
-    except _client.ClientError as e:
-        _output.error(str(e))
-        return
+    with _output.spinner("Running inference smoke test…"):
+        try:
+            result = _client.post(f"{cfg.ray_serve_url}/infer-pipeline/infer", body)
+        except _client.ClientError as e:
+            _output.error(
+                f"Inference smoke test failed: {e}",
+                hint="Check: exa serve check  then  exa serve reload",
+            )
+            return
+    _output.ok("Inference smoke test passed")
     _output.print_record(result)
 
 
@@ -127,8 +142,13 @@ def traffic(
 
     total = sum(rules.values())
     if total != 100:
-        _output.error(f"Weights must sum to 100, got {total}")
+        _output.error(f"Traffic weights must sum to 100 — got {total}. Adjust the values and retry.")
         raise typer.Exit(1)
+
+    split_str = "  ".join(f"{alias}: {pct}%" for alias, pct in rules.items())
+    if not _output.confirm(f"Apply traffic split for [bold]{model}[/bold]? ({split_str})"):
+        _output.info("Cancelled.")
+        return
 
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
     set_traffic_rules(model, rules, actor)

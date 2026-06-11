@@ -107,6 +107,10 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing files")
     parser.add_argument(
+        "--skip-model-class", action="store_true",
+        help="Only generate YAML + config shim — skip model class and test files (for existing models)",
+    )
+    parser.add_argument(
         "--repo-root", default=None,
         help="Override repo root for file writing (used by dashboard container)",
     )
@@ -233,30 +237,45 @@ def main() -> int:
     )
 
     if args.stdout_json:
-        print(json.dumps({
-            str(model_file.relative_to(write_root)): model_content,
-            str(init_file.relative_to(write_root)): init_content,
+        out: dict[str, str] = {
             str(config_file.relative_to(write_root)): config_content,
-            str(test_file.relative_to(write_root)): test_content,
             str(yaml_file.relative_to(write_root)): yaml_content,
-        }))
+        }
+        if not args.skip_model_class:
+            out[str(model_file.relative_to(write_root))] = model_content
+            out[str(init_file.relative_to(write_root))] = init_content
+            out[str(test_file.relative_to(write_root))] = test_content
+        print(json.dumps(out))
         return 0
 
-    print(f"\nScaffolding {name} ({args.task} / {args.task_type})")
-    _write(model_file, model_content, force=args.force, write_root=write_root)
-    _write(init_file, init_content, force=args.force, write_root=write_root)
+    if args.skip_model_class:
+        print(f"\nRegistering {name} ({args.task} / {args.task_type}) — pipeline files only")
+    else:
+        print(f"\nScaffolding {name} ({args.task} / {args.task_type})")
+        _write(model_file, model_content, force=args.force, write_root=write_root)
+        _write(init_file, init_content, force=args.force, write_root=write_root)
+
     _write(config_file, config_content, force=args.force, write_root=write_root)
-    _write(test_file, test_content, force=args.force, write_root=write_root)
+    if not args.skip_model_class:
+        _write(test_file, test_content, force=args.force, write_root=write_root)
     _write(yaml_file, yaml_content, force=args.force, write_root=write_root)
 
-    print(
-        f"\n{name} scaffolded. Next steps:\n"
-        f"  1. Edit {model_file.relative_to(write_root)} — implement train_step / predict_step.\n"
-        f"  2. Edit {yaml_file.relative_to(write_root)} — tune lifecycle thresholds.\n"
-        f"  3. Run: exa pipeline validate   # confirm {name} YAML is valid\n"
-        f"  4. Run: exa pipeline run --model {name} --dataset FDataDataset --dummy\n"
-        f"  5. Run: pytest tests/unit/test_{name_lower}.py -v\n"
-    )
+    if args.skip_model_class:
+        print(
+            f"\n{name} registered in pipeline. Next steps:\n"
+            f"  1. Edit {yaml_file.relative_to(write_root)} — tune lifecycle thresholds & dataset config.\n"
+            f"  2. Run: exa pipeline validate   # confirm {name} YAML is valid\n"
+            f"  3. Run: exa pipeline run --model {name} --dataset FDataDataset --dummy\n"
+        )
+    else:
+        print(
+            f"\n{name} scaffolded. Next steps:\n"
+            f"  1. Edit {model_file.relative_to(write_root)} — implement train_step / predict_step.\n"
+            f"  2. Edit {yaml_file.relative_to(write_root)} — tune lifecycle thresholds.\n"
+            f"  3. Run: exa pipeline validate   # confirm {name} YAML is valid\n"
+            f"  4. Run: exa pipeline run --model {name} --dataset FDataDataset --dummy\n"
+            f"  5. Run: pytest tests/unit/test_{name_lower}.py -v\n"
+        )
     return 0
 
 

@@ -1,52 +1,236 @@
 # Prometheus alerting rules for ExaMLOps.
-# All expressions reference metrics the platform already emits
-# (serving: serving/ray_serving/app.py; control plane: platform/services/control_plane/metrics.py).
+# All expressions reference metrics emitted by:
+#   serving/ray_serving/app.py         (ray_examlops_*)
+#   platform/services/control_plane/   (examlops_*)
+#   seanerbus-bridge                   (seanerbus_*)
 groups:
+
+  # ── Ray Serve / Online Inference ──────────────────────────────────────────────
   - name: examlops-serving
     rules:
+
       - alert: RayServeHighErrorRate
         expr: |
-          sum(rate(examlops_predict_requests_total{status="error"}[5m]))
-            / clamp_min(sum(rate(examlops_predict_requests_total[5m])), 1) > 0.05
+          sum(rate(ray_examlops_predict_requests_total{status="error"}[5m]))
+          / clamp_min(sum(rate(ray_examlops_predict_requests_total[5m])), 0.001)
+          > 0.05
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Ray Serve prediction error rate above 5%"
-          description: "5m error ratio is {{ $value | humanizePercentage }}."
-      - alert: RayServeHighLatencyP99
+          summary: "Ray Serve error rate > 5%"
+          description: "Prediction error rate is {{ $value | humanizePercentage }} over the last 5 min."
+
+      - alert: RayServeHighErrorRateCritical
         expr: |
-          histogram_quantile(0.99, sum by (le) (rate(examlops_predict_latency_seconds_bucket[5m]))) > 1.0
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Ray Serve p99 prediction latency above 1s"
-          description: "p99 latency is {{ $value }}s over the last 5m."
-      - alert: RayServeNoModelsLoaded
-        expr: max(examlops_models_loaded) == 0
+          sum(rate(ray_examlops_predict_requests_total{status="error"}[5m]))
+          / clamp_min(sum(rate(ray_examlops_predict_requests_total[5m])), 0.001)
+          > 0.20
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "No models loaded in the Ray Serve hot set"
-      - alert: RayServeReloadFailures
-        expr: increase(examlops_reload_total{status="error"}[15m]) > 0
+          summary: "Ray Serve error rate > 20% (CRITICAL)"
+          description: "Prediction error rate is {{ $value | humanizePercentage }} — immediate action required."
+
+      - alert: RayServeHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(ray_examlops_predict_latency_seconds_bucket[5m]))
+          ) > 1.0
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Ray Serve model reload failures detected"
+          summary: "Ray Serve p99 latency > 1 s"
+          description: "p99 prediction latency is {{ $value | humanizeDuration }} over the last 10 min."
+
+      - alert: RayServeHighLatencyP99Critical
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(ray_examlops_predict_latency_seconds_bucket[5m]))
+          ) > 3.0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ray Serve p99 latency > 3 s (CRITICAL)"
+          description: "p99 prediction latency is {{ $value | humanizeDuration }}."
+
+      - alert: RayServeNoModelsLoaded
+        expr: sum(ray_examlops_models_loaded) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No models loaded in Ray Serve"
+          description: "ray_examlops_models_loaded = 0 for 5 min — inference is impossible."
+
+      - alert: RayServeReloadFailures
+        expr: increase(ray_examlops_reload_total{status!="success"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ray Serve model reload failed ({{ $labels.model_name }})"
+          description: "{{ $value }} failed reload(s) for model {{ $labels.model_name }} in 15 min."
+
+      - alert: SLOErrorBudgetFastBurn
+        expr: |
+          sum(rate(ray_examlops_predict_requests_total{status="error"}[1h]))
+          / (0.005 / (30 * 24 * 3600))
+          > 14.4
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLO error budget burn rate > 14.4× (1 h window)"
+          description: "Error budget burn rate is {{ $value | humanize }}×. At this rate the 30-day 0.5% budget expires in < 2 hours."
+
+      - alert: SLOErrorBudgetSlowBurn
+        expr: |
+          sum(rate(ray_examlops_predict_requests_total{status="error"}[6h]))
+          / (0.005 / (30 * 24 * 3600))
+          > 3
+        for: 60m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLO error budget burn rate > 3× (6 h window)"
+          description: "Error budget burn rate is {{ $value | humanize }}× over the last 6 hours."
+
+  # ── SeanerBUS Bridge ──────────────────────────────────────────────────────────
+  - name: examlops-seanerbus
+    rules:
+
+      - alert: SeanerBUSBridgeDown
+        expr: seanerbus_bridge_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SeanerBUS bridge is offline"
+          description: "seanerbus_bridge_up = 0 for 2 min — inference requests from the bus are failing."
+
+      - alert: SeanerBUSHighErrorRate
+        expr: |
+          sum(rate(seanerbus_inference_errors_total[5m]))
+          / clamp_min(sum(rate(seanerbus_inferences_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SeanerBUS inference error rate > 5%"
+          description: "Bridge inference error rate is {{ $value | humanizePercentage }} over the last 5 min."
+
+      - alert: SeanerBUSHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SeanerBUS p99 latency > 500 ms"
+          description: "SeanerBUS p99 inference latency is {{ $value | humanizeDuration }}."
+
+  # ── Control Plane ─────────────────────────────────────────────────────────────
   - name: examlops-control-plane
     rules:
+
+      - alert: ControlPlaneDown
+        expr: up{job="control_plane"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control plane is down"
+          description: "control_plane scrape target has been unreachable for 2 min — retrains and approvals are blocked."
+
       - alert: ApprovalsStale
         expr: examlops_approval_age_oldest_seconds > 86400
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: "Oldest pending model approval is older than 24h"
+          summary: "Oldest pending approval > 24 h"
+          description: "An approval request has been waiting {{ $value | humanizeDuration }}."
+
+      - alert: ApprovalsStaleUrgent
+        expr: examlops_approval_age_oldest_seconds > 259200
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Oldest pending approval > 72 h (CRITICAL)"
+          description: "An approval has been waiting {{ $value | humanizeDuration }} and will be auto-expired."
+
+      - alert: PendingApprovalQueueLarge
+        expr: examlops_approvals_pending > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Approval queue > 10 pending"
+          description: "{{ $value }} approvals are pending — operator review may be backlogged."
+
+      - alert: HighRetrainErrorRate
+        expr: |
+          sum(rate(examlops_retrain_requests_total{outcome="error"}[15m]))
+          / clamp_min(sum(rate(examlops_retrain_requests_total[15m])), 0.001)
+          > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Retrain error rate > 20%"
+          description: "{{ $value | humanizePercentage }} of retrain requests are failing in the last 15 min."
+
+      - alert: PrefectCircuitBreakerOpen
+        expr: increase(examlops_prefect_circuit_breaker_opens_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prefect circuit breaker OPENED"
+          description: "The Prefect gateway circuit breaker has opened — control plane is fast-failing retrain requests."
+
+      - alert: PrefectRetryRateHigh
+        expr: rate(examlops_prefect_retries_total[10m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prefect retry rate > 0.1/s"
+          description: "Control plane is retrying Prefect calls at {{ $value | humanize }}/s — Prefect may be degraded."
+
+      - alert: RetrainDurationP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by(le) (rate(examlops_retrain_duration_seconds_bucket[30m]))
+          ) > 300
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Retrain dispatch p99 > 5 min"
+          description: "Scheduling a retrain is taking {{ $value | humanizeDuration }} at p99."
+
+      - alert: ManyApprovalsAutoExpired
+        expr: increase(examlops_approvals_expired_total[1h]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} approvals auto-expired in 1 h"
+          description: "High auto-expiry volume — operators may not be reviewing approvals or APPROVAL_EXPIRY_HOURS is too short."
+
+  # ── Platform-wide infrastructure ──────────────────────────────────────────────
   - name: examlops-platform
     rules:
+
       - alert: TargetDown
         expr: up == 0
         for: 5m
@@ -54,3 +238,40 @@ groups:
           severity: critical
         annotations:
           summary: "Prometheus target {{ $labels.job }} is down"
+          description: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) unreachable for 5 min."
+
+      - alert: RayServeTargetDown
+        expr: up{job="ray_serve"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ray Serve metrics endpoint down"
+          description: "Cannot scrape Ray Serve at {{ $labels.instance }} — inference metrics are dark."
+
+      - alert: LokiDown
+        expr: up{job="loki"} == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is down — logs not being stored"
+          description: "Loki has been unreachable for 3 min."
+
+      - alert: TempoDown
+        expr: up{job="tempo"} == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tempo is down — traces not being stored"
+          description: "Tempo has been unreachable for 3 min."
+
+      - alert: AlertmanagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alertmanager is down — notifications silenced"
+          description: "Alertmanager has been unreachable for 3 min."

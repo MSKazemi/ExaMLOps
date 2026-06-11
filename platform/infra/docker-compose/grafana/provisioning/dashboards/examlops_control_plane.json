@@ -1,0 +1,453 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+  ],
+  "annotations": {
+    "list": [
+      {
+        "datasource": {"type": "loki", "uid": "loki"},
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "name": "Circuit Breaker Opens",
+        "target": {
+          "expr": "{project=\"examlops\",compose_service=\"control-plane\"} |~ \"circuit breaker OPEN\"",
+          "maxLines": 50,
+          "refId": "cb"
+        },
+        "type": "logs"
+      }
+    ]
+  },
+  "description": "ExaMLOps Control Plane — retrain pipeline health, circuit breaker, rate limiting, approval gate, Prefect gateway",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {"title": "Overview",         "url": "/d/examlops-overview",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Inference Metrics","url": "/d/examlops-online-metrics",  "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Approvals",        "url": "/d/examlops-approvals",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Logs",             "url": "/d/examlops-logs",            "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Control Plane Health",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Control Plane Up",
+      "gridPos": {"h": 3, "w": 3, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"control_plane\"}", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Circuit Breaker State",
+      "gridPos": {"h": 3, "w": 3, "x": 3, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_prefect_circuit_breaker_opens_total[5m]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Closed (OK)", "color": "green", "index": 0}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Retrain Success Rate (24 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 6, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "clamp_max(sum(increase(examlops_retrain_requests_total{outcome=\"success\"}[24h])) / clamp_min(sum(increase(examlops_retrain_requests_total[24h])), 1) * 100, 100)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 80}, {"color": "green", "value": 95}]}
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Total Retrains (24 h)",
+      "gridPos": {"h": 3, "w": 3, "x": 10, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_retrain_requests_total[24h]) or vector(0)", "legendFormat": "{{model_name}}", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Retrain Errors (24 h)",
+      "gridPos": {"h": 3, "w": 3, "x": 13, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_retrain_requests_total{outcome=\"error\"}[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Deduped Retrains (24 h)",
+      "gridPos": {"h": 3, "w": 3, "x": 16, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_retrain_requests_total{outcome=\"dedup\"}[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "yellow", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Prefect Retries (1 h)",
+      "gridPos": {"h": 3, "w": 2, "x": 19, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_prefect_retries_total[1h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Pending Approvals",
+      "gridPos": {"h": 3, "w": 3, "x": 21, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "examlops_approvals_pending", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Retrain Pipeline",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Retrain Request Rate by Outcome",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"success\"}[5m])", "legendFormat": "success – {{model_name}}", "refId": "A"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"error\"}[5m])",   "legendFormat": "error – {{model_name}}",   "refId": "B"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"dedup\"}[5m])",   "legendFormat": "dedup – {{model_name}}",   "refId": "C"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 10},
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Retrain Duration Percentiles",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by(le, model_name) (rate(examlops_retrain_duration_seconds_bucket[10m])))",
+          "legendFormat": "p50 {{model_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by(le, model_name) (rate(examlops_retrain_duration_seconds_bucket[10m])))",
+          "legendFormat": "p95 {{model_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le, model_name) (rate(examlops_retrain_duration_seconds_bucket[10m])))",
+          "legendFormat": "p99 {{model_name}}",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 5},
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Prefect Gateway & Circuit Breaker",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Prefect Retry Rate (by method)",
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "rate(examlops_prefect_retries_total[5m])",
+          "legendFormat": "{{method}} retries/s",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 15},
+          "unit": "reqps",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.05}]}
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Circuit Breaker Opens (cumulative)",
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "examlops_prefect_circuit_breaker_opens_total",
+          "legendFormat": "CB opens (total)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "single"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "fixed", "fixedColor": "orange"},
+          "custom": {"lineWidth": 2, "fillOpacity": 20},
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Approval Gate",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 17,
+      "type": "gauge",
+      "title": "Pending Approvals",
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "examlops_approvals_pending", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "min": 0, "max": 20,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "gauge",
+      "title": "Oldest Pending Approval Age",
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "examlops_approval_age_oldest_seconds / 3600", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "h", "min": 0, "max": 48,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 8}]}
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Approval Events Rate (by model)",
+      "gridPos": {"h": 6, "w": 16, "x": 8, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(examlops_approval_events_total{action=\"created\"}[5m])",  "legendFormat": "created – {{model_id}}",  "refId": "A"},
+        {"expr": "rate(examlops_approval_events_total{action=\"approved\"}[5m])", "legendFormat": "approved – {{model_id}}", "refId": "B"},
+        {"expr": "rate(examlops_approval_events_total{action=\"rejected\"}[5m])", "legendFormat": "rejected – {{model_id}}", "refId": "C"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 8},
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Approval Age (oldest pending, minutes)",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 28},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "examlops_approval_age_oldest_seconds / 60",
+          "legendFormat": "oldest pending",
+          "refId": "A"
+        }
+      ],
+      "options": {"tooltip": {"mode": "single"}, "legend": {"displayMode": "list", "placement": "bottom"}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"lineWidth": 2, "fillOpacity": 15},
+          "unit": "m",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 120}]}
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Approvals Expired (auto-cleanup)",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 28},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "increase(examlops_approvals_expired_total[1h]) or vector(0)",
+          "legendFormat": "expired/h",
+          "refId": "A"
+        }
+      ],
+      "options": {"tooltip": {"mode": "single"}, "legend": {"displayMode": "list", "placement": "bottom"}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "fixed", "fixedColor": "yellow"},
+          "custom": {"lineWidth": 1, "fillOpacity": 20},
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Control Plane Logs",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 34},
+      "collapsed": true,
+      "panels": [
+        {
+          "id": 31,
+          "type": "logs",
+          "title": "Control Plane Logs",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 35},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {
+              "expr": "{project=\"examlops\",compose_service=\"control-plane\"}",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": false
+          }
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["examlops", "control-plane", "mlops"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "title": "ExaMLOps — Control Plane",
+  "uid": "examlops-control-plane",
+  "version": 1
+}
