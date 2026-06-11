@@ -71,5 +71,8 @@ class Settings(BaseSettings):
     # ── Scaffold (model generation) ──
     repo_root: str | None = None
 
+    # Shared platform SQLite database (written by CLI and SeanerBUS bridge)
+    platform_db: str = "/repo/platform.db"
+
 
 settings = Settings()

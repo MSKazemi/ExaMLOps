@@ -418,6 +418,48 @@ def input_status(
     _output.print_table("Input Drift Status", cols, table_rows)
 
 
+_EXAMPLES_SNAPSHOTS = (
+    "Examples:\n\n"
+    "  exa drift snapshots JPCP\n\n"
+    "  exa drift snapshots JPCP --last 50\n\n"
+    "  exa --json drift snapshots JPCP --raw"
+)
+
+@app.command("snapshots", epilog=_EXAMPLES_SNAPSHOTS)
+def snapshots(
+    model: str = typer.Argument(..., help="Model name"),
+    last: int = typer.Option(100, "--last", "-n", help="Number of recent snapshots"),
+    raw: bool = typer.Option(False, "--raw", help="Show all columns including job_id"),
+):
+    """Show raw prediction drift snapshots for a model."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, ts, model, alias, prediction, job_id FROM drift_snapshots "
+            "WHERE model=? ORDER BY ts DESC, rowid DESC LIMIT ?",
+            (model, max(1, last)),
+        ).fetchall()
+    if not rows:
+        _output.ok(f"No snapshots found for {model}")
+        return
+    data = [
+        {"id": r["id"], "ts": r["ts"], "model": r["model"], "alias": r["alias"],
+         "prediction": r["prediction"], "job_id": r["job_id"]}
+        for r in rows
+    ]
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    if raw:
+        cols = ["ID", "Time", "Model", "Alias", "Prediction", "Job ID"]
+        table_rows = [[str(r["id"]), r["ts"][:19], r["model"], r["alias"],
+                       f"{r['prediction']:.4f}", r["job_id"] or "—"] for r in data]
+    else:
+        cols = ["Time", "Alias", "Prediction"]
+        table_rows = [[r["ts"][:19], r["alias"], f"{r['prediction']:.4f}"] for r in data]
+    _output.print_table(f"Drift Snapshots — {model} (last {len(data)})", cols, table_rows)
+
+
 @input_app.command("baseline", epilog=_EXAMPLES_INPUT_BASELINE)
 def input_baseline(
     model: str = typer.Argument(..., help="Model name to set input baseline for"),
@@ -460,3 +502,16 @@ def input_baseline(
         f"Input baseline set for {model}: norm_μ={norm_mean:.3f}  emb_μ={mean_mean:.4f}  "
         f"emb_σ={std_mean:.4f}  n={len(snap_rows)}"
     )
+
+
+_EXAMPLES_INPUT_RESET = "Examples:\n\n  exa drift input reset JPCP"
+
+@input_app.command("reset", epilog=_EXAMPLES_INPUT_RESET)
+def input_reset(
+    model: str = typer.Argument(..., help="Model name to clear input snapshots for"),
+):
+    """Clear all input embedding snapshots for a model (keeps baseline)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
+    _output.ok(f"Cleared input snapshots for {model}")

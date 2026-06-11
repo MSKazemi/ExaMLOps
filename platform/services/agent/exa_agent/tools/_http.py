@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from exa_agent import config
+
+# Feature 6: delay between retries — override in tests by patching this symbol
+_REQUEST_RETRY_DELAY = 0.1
 
 
 def _format_error(service: str, url: str, exc: Exception) -> str:
@@ -12,21 +17,34 @@ def _format_error(service: str, url: str, exc: Exception) -> str:
     return f"Error: cannot reach {service} at {url} — {exc}"
 
 
-def request_json(service: str, method: str, url: str, **kwargs):
-    """Return (data, None) on success or (None, error_string) on failure."""
-    try:
-        with httpx.Client(timeout=config.HTTP_TIMEOUT) as client:
-            resp = client.request(method, url, **kwargs)
-            resp.raise_for_status()
-            if not resp.content:
-                return {}, None
-            try:
-                return resp.json(), None
-            except ValueError:
-                # Non-JSON 2xx body (e.g. a health endpoint returning "OK")
-                return resp.text, None
-    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-        return None, _format_error(service, url, exc)
+def request_json(service: str, method: str, url: str, *, retries: int = 2, **kwargs):
+    """Return (data, None) on success or (None, error_string) on failure.
+
+    Retries up to `retries` times on transient network errors (RequestError)
+    with exponential back-off. HTTP errors (4xx/5xx) are returned immediately
+    without retrying since they represent a definitive server response.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(timeout=config.HTTP_TIMEOUT) as client:
+                resp = client.request(method, url, **kwargs)
+                resp.raise_for_status()
+                if not resp.content:
+                    return {}, None
+                try:
+                    return resp.json(), None
+                except ValueError:
+                    # Non-JSON 2xx body (e.g. a health endpoint returning "OK")
+                    return resp.text, None
+        except httpx.HTTPStatusError as exc:
+            # Definitive server response — don't retry
+            return None, _format_error(service, url, exc)
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(_REQUEST_RETRY_DELAY * (2 ** attempt))
+    return None, _format_error(service, url, last_exc)
 
 
 class DashboardClient:

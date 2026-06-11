@@ -1,57 +1,47 @@
 """
 ExaMLOps Control Plane — retraining trigger API.
 
-Phase 4: a thin FastAPI service in front of Prefect that lets clients (and
-the synthetic dataplane simulator) request a retraining run for a registered
-model without holding Prefect API credentials themselves.
+Reliability improvements batch 1 (2026-06-12 round 1):
+  1.  Registry TTL cache (60 s) — eliminates per-request YAML disk reads
+  2.  SQLite WAL mode + indices — better concurrency and faster hot queries
+  3.  Prefect gateway retry (3 attempts, exponential backoff) — tolerates blips
+  4.  Concurrent /status pings — worst-case 5 s instead of 25 s
+  5.  Retrain deduplication — 409 on concurrent same-model/dataset requests
+  6.  Write-endpoint rate limiting — token bucket, 429 with Retry-After
+  7.  Poller health tracking — last-ok timestamp in /health
+  8.  lifespan context manager + graceful shutdown — replaces deprecated on_event
+  9.  Startup validation — db/registry/token checks exposed in /health
+  10. Poller uses threading.Event.wait() for clean stop on shutdown
 
-Phase 11: approval gate — GitLab CI (or any webhook) can POST /api/changes to
-notify of model changes; a human then approves or rejects via POST /approve/{model_id}
-or POST /reject/{model_id}. Approved changes trigger a Prefect flow run exactly
-like POST /retrain. State is stored in a local SQLite database.
+Production-grade improvements batch 2 (2026-06-12 round 2):
+  11. Structured JSON logging — LOG_FORMAT=json for Loki ingestion
+  12. Prefect circuit breaker — fast-fails after N consecutive errors, half-open recovery
+  13. Retrain Prometheus metrics — counter + histogram for retrain requests
+  14. Request-ID middleware — X-Request-ID propagated through all logs and responses
+  15. Liveness / readiness split — GET /ready (instant) vs GET /health (detailed)
+  16. Approval expiry — APPROVAL_EXPIRY_HOURS background cleanup, rejects stale entries
+  17. Idempotency keys — X-Idempotency-Key deduplicates client retries on /retrain
+  18. Security-headers middleware — X-Content-Type-Options, X-Frame-Options, Cache-Control
+  19. Config hot-reload — POST /admin/reload invalidates cache + re-runs startup checks
+  20. DB NFS retry — sqlite3.OperationalError retried 3× for NFS-hosted DB resilience
 
-Reliability improvements (2026-06-12):
-  1. Registry TTL cache (60 s) — eliminates per-request YAML disk reads
-  2. SQLite WAL mode + indices — better concurrency and faster hot queries
-  3. Prefect gateway retry (3 attempts, exponential backoff) — tolerates blips
-  4. Concurrent /status pings — worst-case 5 s instead of 25 s
-  5. Retrain deduplication — 409 on concurrent same-model/dataset requests
-  6. Write-endpoint rate limiting — token bucket, 429 with Retry-After
-  7. Poller health tracking — last-ok timestamp in /health
-  8. lifespan context manager + graceful shutdown — replaces deprecated on_event
-  9. Startup validation — db/registry/token checks exposed in /health
- 10. Poller uses threading.Event.wait() for clean stop on shutdown
-
-Endpoints (served on CONTROL_PLANE_PORT, default 8002):
-    GET  /health                   liveness + startup checks + poller status
-    GET  /status                   aggregate health of all ExaMLOps services
-    GET  /models                   list of model_name → datasets known to the registry
-    POST /retrain                  body: {model_name, dataset_name, [backend_name], [is_dummy], [parameters]}
-    GET  /retrain/{flow_run_id}    poll Prefect for the run state
-    POST /api/changes              notify of model changes (requires token); creates pending approvals
-    GET  /approvals                list approvals, optional ?status=pending filter
-    POST /approve/{model_id}       approve the most recent pending change (requires token)
-    POST /reject/{model_id}        reject the most recent pending change (requires token)
-
-Auth:
-    POST /retrain, POST /api/changes, POST /approve/*, POST /reject/* require
-    `Authorization: Bearer <CONTROL_PLANE_TOKEN>`.
-    The token is shared with the dataplane / clients via env. When the env
-    var is unset the service refuses to start — accidental "no auth" mode
-    is the wrong default for an EU-project deployment.
-
-Env vars:
-    CONTROL_PLANE_PORT         default: 8002
-    CONTROL_PLANE_TOKEN        REQUIRED — bearer token for POST /retrain
-    PREFECT_API_URL            default: http://localhost:4200/api
-    PREFECT_DEPLOYMENT_NAME    default: examlops_scheduled_training/nightly
-                               (deployment that wraps training_flow)
-    CONTROL_PLANE_DB           default: /data/approvals.db — SQLite file for approval state
-    RETRAIN_RATE_LIMIT_PER_MIN default: 20 — max write requests per minute across all callers
+Env vars (all existing + new):
+    CONTROL_PLANE_PORT                default: 8002
+    CONTROL_PLANE_TOKEN               REQUIRED — bearer token for write endpoints
+    PREFECT_API_URL                   default: http://localhost:4200/api
+    PREFECT_DEPLOYMENT_NAME           default: examlops_scheduled_training/nightly
+    CONTROL_PLANE_DB                  default: /data/approvals.db
+    RETRAIN_RATE_LIMIT_PER_MIN        default: 20
+    LOG_FORMAT                        default: text  (set to "json" in production)
+    APPROVAL_EXPIRY_HOURS             default: 72  (0 = disabled)
+    PREFECT_CB_FAIL_MAX               default: 5   circuit breaker open threshold
+    PREFECT_CB_RESET_TIMEOUT          default: 30  seconds before half-open retry
+    IDEMPOTENCY_TTL_SECONDS           default: 300 (5 min) idempotency cache TTL
 """
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import hmac as _hmac
 import json
@@ -63,9 +53,9 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, TypeVar
 
 import metrics as _metrics
 import uvicorn
@@ -73,12 +63,63 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [control-plane] %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+T = TypeVar("T")
+
+# ─── Improvement 11: Structured JSON logging ─────────────────────────────────
+
+_LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
+
+
+class _JsonFormatter(logging.Formatter):
+    """Emit each log record as a single-line JSON object for Loki ingestion."""
+
+    _SKIP = frozenset((
+        "args", "created", "exc_info", "exc_text", "filename", "funcName",
+        "levelno", "lineno", "message", "module", "msecs", "msg", "name",
+        "pathname", "process", "processName", "relativeCreated",
+        "stack_info", "thread", "threadName",
+    ))
+
+    def format(self, record: logging.LogRecord) -> str:
+        d: dict[str, Any] = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            d["exc"] = self.formatException(record.exc_info)
+        req_id = _request_id_var.get("")
+        if req_id:
+            d["request_id"] = req_id
+        for k, v in record.__dict__.items():
+            if k not in self._SKIP and not k.startswith("_"):
+                try:
+                    json.dumps(v)
+                    d[k] = v
+                except (TypeError, ValueError):
+                    d[k] = str(v)
+        return json.dumps(d, separators=(",", ":"))
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    if _LOG_FORMAT == "json":
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [control-plane] %(levelname)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+_configure_logging()
 logger = logging.getLogger("control_plane")
 
 try:
@@ -106,10 +147,15 @@ GITLAB_PROJECT_ID = os.getenv("GITLAB_PROJECT_ID", "")
 MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
 RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
-# Improvement 7: configurable write-endpoint rate limit
 RETRAIN_RATE_LIMIT_PER_MIN = int(os.getenv("RETRAIN_RATE_LIMIT_PER_MIN", "20"))
+# Improvement 16
+APPROVAL_EXPIRY_HOURS = int(os.getenv("APPROVAL_EXPIRY_HOURS", "72"))
+# Improvement 12
+PREFECT_CB_FAIL_MAX = int(os.getenv("PREFECT_CB_FAIL_MAX", "5"))
+PREFECT_CB_RESET_TIMEOUT = float(os.getenv("PREFECT_CB_RESET_TIMEOUT", "30.0"))
+# Improvement 17
+IDEMPOTENCY_TTL_SECONDS = float(os.getenv("IDEMPOTENCY_TTL_SECONDS", "300"))
 
-# Runtime-mutable ModelZoo config (survives process lifetime, resets on restart)
 _modelzoo_config: dict[str, Any] = {
     "auto_retrain": MODELZOO_AUTO_RETRAIN,
     "poll_interval_seconds": MODELZOO_POLL_SECONDS,
@@ -117,14 +163,17 @@ _modelzoo_config: dict[str, Any] = {
 }
 
 
-# ─── Improvement 7: Token-bucket rate limiter ─────────────────────────────────
+# ─── Improvement 14: Request-ID context var ──────────────────────────────────
+
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+
+# ─── Rate limiter (improvement 6) ────────────────────────────────────────────
 
 class _TokenBucket:
-    """Thread-safe token bucket for rate limiting write endpoints."""
-
     def __init__(self, capacity: int, refill_rate: float) -> None:
         self._capacity = float(capacity)
-        self._refill_rate = refill_rate  # tokens / second
+        self._refill_rate = refill_rate
         self._tokens = float(capacity)
         self._last_refill = time.monotonic()
         self._lock = threading.Lock()
@@ -132,8 +181,7 @@ class _TokenBucket:
     def consume(self, n: float = 1.0) -> bool:
         with self._lock:
             now = time.monotonic()
-            elapsed = now - self._last_refill
-            self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+            self._tokens = min(self._capacity, self._tokens + (now - self._last_refill) * self._refill_rate)
             self._last_refill = now
             if self._tokens >= n:
                 self._tokens -= n
@@ -147,6 +195,105 @@ _rate_limiter = _TokenBucket(
 )
 
 
+# ─── Improvement 12: Prefect circuit breaker ─────────────────────────────────
+
+class _CircuitBreaker:
+    """Three-state circuit breaker: CLOSED → OPEN → HALF-OPEN → CLOSED.
+
+    Opens after PREFECT_CB_FAIL_MAX consecutive upstream failures.
+    After PREFECT_CB_RESET_TIMEOUT seconds in OPEN state, allows one trial (HALF-OPEN).
+    A successful trial closes the breaker; failure re-opens it immediately.
+    """
+
+    _CLOSED = "closed"
+    _OPEN = "open"
+    _HALF_OPEN = "half-open"
+
+    def __init__(self, fail_max: int = 5, reset_timeout: float = 30.0) -> None:
+        self._fail_max = fail_max
+        self._reset_timeout = reset_timeout
+        self._failures = 0
+        self._state = self._CLOSED
+        self._opened_at = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    def call(self, fn: Callable[[], T]) -> T:
+        """Execute fn, tracking failures. Raises 503 when circuit is open."""
+        with self._lock:
+            if self._state == self._OPEN:
+                if time.monotonic() - self._opened_at >= self._reset_timeout:
+                    self._state = self._HALF_OPEN
+                    logger.info("Prefect circuit breaker HALF-OPEN — probing")
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Prefect circuit breaker open — upstream unavailable, retry later",
+                    )
+
+        try:
+            result = fn()
+            with self._lock:
+                if self._state == self._HALF_OPEN:
+                    logger.info("Prefect circuit breaker CLOSED — upstream recovered")
+                self._state = self._CLOSED
+                self._failures = 0
+            return result
+        except HTTPException as exc:
+            if exc.status_code >= 500:
+                self._on_failure()
+            raise
+        except Exception:
+            self._on_failure()
+            raise
+
+    def _on_failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._fail_max or self._state == self._HALF_OPEN:
+                self._state = self._OPEN
+                self._opened_at = time.monotonic()
+                logger.error(
+                    "Prefect circuit breaker OPENED after %d consecutive failures", self._failures
+                )
+                _metrics.record_circuit_breaker_open()
+
+
+_prefect_breaker = _CircuitBreaker(
+    fail_max=PREFECT_CB_FAIL_MAX,
+    reset_timeout=PREFECT_CB_RESET_TIMEOUT,
+)
+
+
+# ─── Improvement 17: Idempotency cache ───────────────────────────────────────
+
+_idempotency_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_IDEMPOTENCY_LOCK = threading.Lock()
+
+
+def _check_idempotency(key: str) -> dict[str, Any] | None:
+    with _IDEMPOTENCY_LOCK:
+        entry = _idempotency_cache.get(key)
+        if entry and time.monotonic() < entry[0]:
+            return entry[1]
+        if entry:
+            del _idempotency_cache[key]
+    return None
+
+
+def _store_idempotency(key: str, response: dict[str, Any]) -> None:
+    with _IDEMPOTENCY_LOCK:
+        now = time.monotonic()
+        expired = [k for k, v in _idempotency_cache.items() if now >= v[0]]
+        for k in expired:
+            del _idempotency_cache[k]
+        _idempotency_cache[key] = (now + IDEMPOTENCY_TTL_SECONDS, response)
+
+
 # ─── Improvement 1: Registry TTL cache ───────────────────────────────────────
 
 @dataclass
@@ -157,19 +304,15 @@ class _RegistryCache:
 
 _registry_cache: _RegistryCache | None = None
 _REGISTRY_LOCK = threading.Lock()
-_REGISTRY_TTL = 60.0  # seconds
+_REGISTRY_TTL = 60.0
 
 
 def _get_registry() -> dict[str, list[str]]:
-    """Return the YAML model registry, re-reading from disk at most every 60 s."""
     global _registry_cache
     with _REGISTRY_LOCK:
         now = time.monotonic()
         if _registry_cache is None or now >= _registry_cache.expires_at:
-            _registry_cache = _RegistryCache(
-                data=_load_registry(),
-                expires_at=now + _REGISTRY_TTL,
-            )
+            _registry_cache = _RegistryCache(data=_load_registry(), expires_at=now + _REGISTRY_TTL)
         return _registry_cache.data
 
 
@@ -222,7 +365,6 @@ CREATE TABLE IF NOT EXISTS model_freshness (
 )
 """
 
-# Improvement 2 & 3: Indices added to schema creation
 _CREATE_INDICES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pa_model_status ON pending_approvals(model_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_me_sha ON modelzoo_events(commit_sha)",
@@ -230,11 +372,10 @@ _CREATE_INDICES_SQL = [
 
 
 def _get_db() -> sqlite3.Connection:
-    """Open (or create) the approvals SQLite DB and ensure the schema + indices exist.
+    """Open the SQLite DB.
 
-    Improvement 2: WAL mode enabled on every new connection — once set on a DB file it
-    persists, but re-asserting is harmless and ensures any freshly-created file is
-    immediately in WAL mode without waiting for a restart.
+    Improvement 2: WAL mode for better concurrency.
+    Improvement 20: Retries on OperationalError for NFS-hosted DB resilience.
     """
     db_path = CONTROL_PLANE_DB
     db_dir = os.path.dirname(db_path)
@@ -243,36 +384,39 @@ def _get_db() -> sqlite3.Connection:
             os.makedirs(db_dir, exist_ok=True)
         except OSError:
             db_path = "./approvals.db"
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    # Improvement 2: WAL journal mode for better concurrent read/write performance
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(_CREATE_TABLE_SQL)
-    conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
-    conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
-    # Improvement 3: indices for hot query columns
-    for idx_sql in _CREATE_INDICES_SQL:
-        conn.execute(idx_sql)
-    conn.commit()
-    return conn
+
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate([0.0, 0.1, 0.3], start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(_CREATE_TABLE_SQL)
+            conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
+            conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
+            for idx_sql in _CREATE_INDICES_SQL:
+                conn.execute(idx_sql)
+            conn.commit()
+            return conn
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if attempt < 3:
+                logger.warning("SQLite open failed (attempt %d/3): %s — retrying", attempt, exc)
+
+    raise sqlite3.OperationalError(f"DB unavailable after 3 attempts: {last_exc}") from last_exc
 
 
-# ─── Improvement 9: Startup validation ───────────────────────────────────────
+# ─── Improvement 9 + 19: Startup validation ──────────────────────────────────
 
 _startup_checks: dict[str, str] = {}
 
 
 def _run_startup_checks() -> None:
-    """Validate DB write-access, YAML registry, and auth token at startup.
-
-    Results stored in _startup_checks and surfaced via /health.
-    Failures are logged at ERROR but do not abort startup — the health
-    endpoint must remain reachable for diagnostics.
-    """
     global _startup_checks
     checks: dict[str, str] = {}
 
-    # Check 1: DB writable
     try:
         conn = _get_db()
         conn.execute("SELECT COUNT(*) FROM pending_approvals")
@@ -282,48 +426,62 @@ def _run_startup_checks() -> None:
         logger.error("Startup check FAILED — db: %s", exc)
         checks["db"] = f"fail: {exc}"
 
-    # Check 2: registry YAML dir exists and has ≥ 1 enabled model
     try:
         reg = _load_registry()
-        if reg:
-            checks["registry"] = "ok"
-        else:
-            checks["registry"] = "warn: no enabled models found"
+        checks["registry"] = "ok" if reg else "warn: no enabled models"
+        if not reg:
             logger.warning("Startup check WARN — registry: no enabled models found")
     except Exception as exc:
         logger.error("Startup check FAILED — registry: %s", exc)
         checks["registry"] = f"fail: {exc}"
 
-    # Check 3: auth token configured
     checks["token"] = "ok" if CONTROL_PLANE_TOKEN else "missing"
     if not CONTROL_PLANE_TOKEN:
-        logger.error(
-            "Startup check FAILED — token: CONTROL_PLANE_TOKEN is not set; "
-            "POST /retrain will return 503 until it is configured."
-        )
+        logger.error("Startup check FAILED — CONTROL_PLANE_TOKEN unset; POST /retrain returns 503")
 
     _startup_checks = checks
-    all_ok = all(v == "ok" for v in checks.values())
-    if all_ok:
-        logger.info("Startup checks passed: %s", checks)
-    else:
-        logger.warning("Startup checks completed with issues: %s", checks)
+    ok = all(v == "ok" for v in checks.values())
+    (logger.info if ok else logger.warning)("Startup checks: %s", checks)
 
 
-# ─── Improvement 8 & 10: Poller state ────────────────────────────────────────
+# ─── Improvement 7 + 8: Poller state ─────────────────────────────────────────
 
 _poller_last_ok_ts: float = 0.0
 _stop_event = threading.Event()
 
 
 def _is_poller_stale() -> bool:
-    """Return True if the poller hasn't completed a cycle in 3× its configured interval."""
-    if MODELZOO_POLL_SECONDS <= 0:
+    if MODELZOO_POLL_SECONDS <= 0 or _poller_last_ok_ts == 0.0:
         return False
-    if _poller_last_ok_ts == 0.0:
-        return False  # hasn't had a chance to run yet
     interval = _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
     return (time.time() - _poller_last_ok_ts) > 3 * interval
+
+
+# ─── Improvement 16: Approval expiry ─────────────────────────────────────────
+
+def _expire_old_approvals() -> int:
+    """Mark pending approvals older than APPROVAL_EXPIRY_HOURS as 'expired'."""
+    if APPROVAL_EXPIRY_HOURS <= 0:
+        return 0
+    cutoff = (datetime.utcnow() - timedelta(hours=APPROVAL_EXPIRY_HOURS)).isoformat()
+    now = datetime.utcnow().isoformat()
+    expired = 0
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            cursor = conn.execute(
+                "UPDATE pending_approvals SET status='expired', resolved_at=? "
+                "WHERE status='pending' AND requested_at < ?",
+                (now, cutoff),
+            )
+            expired = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+    if expired:
+        logger.info("Expired %d stale pending approval(s) (>%dh old)", expired, APPROVAL_EXPIRY_HOURS)
+        _metrics.record_approvals_expired(expired)
+    return expired
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -356,18 +514,9 @@ class RejectRequest(BaseModel):
 class RetrainRequest(BaseModel):
     model_name: str = Field(..., description="Registered model name (e.g. 'JPCP')")
     dataset_name: str = Field(..., description="Dataset class name (e.g. 'PM100Dataset')")
-    backend_name: str | None = Field(
-        default=None,
-        description="Phase 1 storage backend ('zenodo' / 'minio' / 'dataplane'). None = legacy.",
-    )
-    is_dummy: bool = Field(
-        default=False,
-        description="Run with dummy data — recommended for drift-trigger retrains until validated.",
-    )
-    parameters: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extra Prefect flow parameters merged into the run request.",
-    )
+    backend_name: str | None = Field(default=None)
+    is_dummy: bool = Field(default=False)
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrainResponse(BaseModel):
@@ -389,55 +538,82 @@ class ModelEntry(BaseModel):
     datasets: list[str]
 
 
-# ─── Improvement 8: lifespan context manager ─────────────────────────────────
+# ─── Improvement 8 + 19: Lifespan ────────────────────────────────────────────
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
-    """Startup: prime caches, validate, start poller. Shutdown: stop poller cleanly."""
     _run_startup_checks()
-    _get_registry()  # prime TTL cache
+    _expire_old_approvals()
+    _get_registry()
     _stop_event.clear()
     _start_poller()
     yield
     _stop_event.set()
-    logger.info("Control plane shutting down — poller stop signal sent")
+    logger.info("Control plane shutting down")
 
 
-# ─── App + auth ──────────────────────────────────────────────────────────────
+# ─── Improvement 14: Request-ID middleware ────────────────────────────────────
+
+class _RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+        _request_id_var.set(req_id)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+
+
+# ─── Improvement 18: Security headers middleware ──────────────────────────────
+
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        response.headers.update({
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "X-XSS-Protection": "1; mode=block",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        })
+        return response
+
+
+# ─── App ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="ExaMLOps Control Plane",
-    version="0.12.0",
-    description="Authoritative entry point for client-driven retraining requests and approval gates.",
+    version="0.13.0",
+    description="Authoritative entry point for client-driven retraining and approval gates.",
     lifespan=lifespan,
 )
+app.add_middleware(_SecurityHeadersMiddleware)
+app.add_middleware(_RequestIDMiddleware)
+
+
+# ─── Auth & rate limiting ─────────────────────────────────────────────────────
 
 
 def _require_token(authorization: str | None = Header(default=None)) -> None:
-    """Bearer-token auth dependency for write endpoints."""
     if not CONTROL_PLANE_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Control plane not configured (CONTROL_PLANE_TOKEN env var unset).",
-        )
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "Control plane not configured (CONTROL_PLANE_TOKEN unset)")
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     if authorization.removeprefix("Bearer ").strip() != CONTROL_PLANE_TOKEN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bearer token")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid bearer token")
 
 
 def _check_rate_limit() -> None:
-    """Improvement 7: token-bucket rate limiter for write endpoints."""
     if not _rate_limiter.consume():
         raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded — too many requests",
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Rate limit exceeded",
             headers={"Retry-After": "60"},
         )
 
 
-# ─── ModelZoo webhook auth helpers ───────────────────────────────────────────
+# ─── ModelZoo webhook auth ────────────────────────────────────────────────────
 
 
 def _verify_gitlab_token(x_gitlab_token: str | None) -> None:
@@ -459,10 +635,7 @@ def _verify_github_signature(raw_body: bytes, x_hub_signature_256: str | None) -
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid X-Hub-Signature-256")
 
 
-def _record_push_event(
-    commit_sha: str, branch: str, pushed_by: str, raw_payload: str
-) -> dict[str, Any]:
-    """Insert event row, update all model_freshness rows to stale. Returns result dict."""
+def _record_push_event(commit_sha: str, branch: str, pushed_by: str, raw_payload: str) -> dict[str, Any]:
     now = datetime.utcnow().isoformat()
     registry = _get_registry()
     event_id: int = 0
@@ -478,14 +651,9 @@ def _record_push_event(
             event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             for model_id in registry:
                 conn.execute(
-                    """
-                    INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since)
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(model_id) DO UPDATE SET
-                        latest_modelzoo_commit = excluded.latest_modelzoo_commit,
-                        is_stale = 1,
-                        stale_since = excluded.stale_since
-                    """,
+                    "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since) "
+                    "VALUES (?, ?, 1, ?) ON CONFLICT(model_id) DO UPDATE SET "
+                    "latest_modelzoo_commit=excluded.latest_modelzoo_commit, is_stale=1, stale_since=excluded.stale_since",
                     (model_id, commit_sha, now),
                 )
             conn.commit()
@@ -502,15 +670,10 @@ def _record_push_event(
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Auto-retrain failed for %s: %s", model_id, exc)
 
-    return {
-        "event_id": event_id,
-        "models_marked_stale": len(registry),
-        "retrain_triggered": retrain_triggered,
-    }
+    return {"event_id": event_id, "models_marked_stale": len(registry), "retrain_triggered": retrain_triggered}
 
 
 def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> None:
-    """Trigger Prefect retrain and record retrain_triggered_at."""
     gateway = _get_gateway()
     deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
     flow_run_id = gateway.create_flow_run(
@@ -522,15 +685,9 @@ def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> No
         conn = _get_db()
         try:
             conn.execute(
-                """
-                INSERT INTO model_freshness (model_id, latest_modelzoo_commit, last_retrain_commit,
-                    is_stale, retrain_triggered_at)
-                VALUES (?, ?, ?, 0, ?)
-                ON CONFLICT(model_id) DO UPDATE SET
-                    last_retrain_commit = excluded.latest_modelzoo_commit,
-                    is_stale = 0,
-                    retrain_triggered_at = excluded.retrain_triggered_at
-                """,
+                "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, last_retrain_commit, is_stale, retrain_triggered_at) "
+                "VALUES (?, ?, ?, 0, ?) ON CONFLICT(model_id) DO UPDATE SET "
+                "last_retrain_commit=excluded.latest_modelzoo_commit, is_stale=0, retrain_triggered_at=excluded.retrain_triggered_at",
                 (model_id, commit_sha, commit_sha, now),
             )
             conn.commit()
@@ -540,13 +697,7 @@ def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> No
 
 
 def _run_poll_cycle() -> dict[str, Any]:
-    """Check GitLab for the latest commit on MODELZOO_WATCH_BRANCH.
-
-    Returns {"new": True, "commit_sha": sha} if a new commit was found,
-    or {} if already up-to-date or credentials are missing.
-    """
     if not GITLAB_TOKEN or not GITLAB_PROJECT_ID:
-        logger.debug("ModelZoo poller: GITLAB_TOKEN or GITLAB_PROJECT_ID not set, skipping")
         return {}
 
     import urllib.parse as _uparse  # noqa: PLC0415
@@ -578,28 +729,21 @@ def _run_poll_cycle() -> dict[str, Any]:
     with _DB_LOCK:
         conn = _get_db()
         try:
-            # Re-check inside lock to prevent concurrent webhook + poll inserting duplicates
             existing = conn.execute(
                 "SELECT id FROM modelzoo_events WHERE commit_sha = ?", (latest_sha,)
             ).fetchone()
             if existing:
                 return {}
             conn.execute(
-                "INSERT INTO modelzoo_events (commit_sha, branch, pushed_by, timestamp, source) "
-                "VALUES (?, ?, ?, ?, 'poll')",
+                "INSERT INTO modelzoo_events (commit_sha, branch, pushed_by, timestamp, source) VALUES (?, ?, ?, ?, 'poll')",
                 (latest_sha, MODELZOO_WATCH_BRANCH, pushed_by, committed_at),
             )
             event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             for model_id in registry:
                 conn.execute(
-                    """
-                    INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since)
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(model_id) DO UPDATE SET
-                        latest_modelzoo_commit = excluded.latest_modelzoo_commit,
-                        is_stale = 1,
-                        stale_since = excluded.stale_since
-                    """,
+                    "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since) "
+                    "VALUES (?, ?, 1, ?) ON CONFLICT(model_id) DO UPDATE SET "
+                    "latest_modelzoo_commit=excluded.latest_modelzoo_commit, is_stale=1, stale_since=excluded.stale_since",
                     (model_id, latest_sha, now),
                 )
             conn.commit()
@@ -620,44 +764,33 @@ def _run_poll_cycle() -> dict[str, Any]:
 
 
 def _start_poller() -> None:
-    """Start the background ModelZoo polling thread.
-
-    Improvement 10: uses _stop_event.wait() so shutdown can interrupt a sleep
-    immediately rather than waiting for the full interval to expire.
-    """
     if MODELZOO_POLL_SECONDS <= 0:
         logger.info("ModelZoo poller disabled (MODELZOO_POLL_SECONDS=0)")
         return
 
     def _loop() -> None:
         global _poller_last_ok_ts
-        interval = _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
-        logger.info("ModelZoo poller started (interval=%ds)", interval)
-        while not _stop_event.wait(timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)):
+        logger.info("ModelZoo poller started (interval=%ds)",
+                    _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS))
+        while not _stop_event.wait(
+            timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
+        ):
             try:
                 _run_poll_cycle()
-                # Improvement 8: record successful cycle time (even if no new commit found)
+                _expire_old_approvals()
                 _poller_last_ok_ts = time.time()
             except Exception as exc:
-                logger.warning("ModelZoo poll cycle error: %s", exc)
+                logger.warning("Poll cycle error: %s", exc)
         logger.info("ModelZoo poller stopped")
 
-    t = threading.Thread(target=_loop, daemon=True, name="modelzoo-poller")
-    t.start()
+    threading.Thread(target=_loop, daemon=True, name="modelzoo-poller").start()
 
 
-# ─── Registry helpers ────────────────────────────────────────────────────────
+# ─── Registry helpers ─────────────────────────────────────────────────────────
 
 
 def _load_registry() -> dict[str, list[str]]:
-    """Return ``{model_name: [dataset_class_name, ...]}`` from YAML model files.
-
-    Reads pipelines/models/*.yaml directly — avoids importing pipeline_generator
-    which transitively requires torch via the modelzoo configurator.
-
-    Use _get_registry() in request handlers — it wraps this with a 60 s TTL cache.
-    """
-    import yaml  # pyyaml is a declared dep of examlops-pipelines
+    import yaml  # noqa: PLC0415
 
     result: dict[str, list[str]] = {}
     try:
@@ -678,8 +811,7 @@ def _load_registry() -> dict[str, list[str]]:
                 name = cfg.get("name")
                 if not name:
                     continue
-                datasets = [d["name"] for d in cfg.get("datasets", []) if d.get("name")]
-                result[name] = datasets
+                result[name] = [d["name"] for d in cfg.get("datasets", []) if d.get("name")]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Skipping %s: %s", fname, exc)
     except Exception as exc:  # noqa: BLE001
@@ -687,59 +819,43 @@ def _load_registry() -> dict[str, list[str]]:
     return result
 
 
-# ─── Prefect client wrapper ──────────────────────────────────────────────────
+# ─── Prefect client (improvement 3 retry + improvement 12 circuit breaker) ───
 
 
 class PrefectGateway:
-    """Tiny urllib-based Prefect REST client.
+    """urllib-based Prefect REST client with retry + circuit breaker."""
 
-    Improvement 4: _get() and _post() retry up to 3 times with exponential
-    backoff (0.5 s / 1.0 s / 2.0 s) on connection errors and HTTP 5xx responses.
-    A prefect_retries_total counter tracks how often retries fire.
-    """
+    _RETRY_DELAYS = (0.5, 1.0, 2.0)
 
     def __init__(self, api_url: str = PREFECT_API_URL) -> None:
         self.api_url = api_url.rstrip("/")
 
     def find_deployment_id(self, deployment_name: str) -> str:
-        """Resolve a ``flow_name/deployment_name`` slug to a deployment UUID."""
         import urllib.parse  # noqa: PLC0415
 
         if "/" not in deployment_name:
-            raise HTTPException(
-                status_code=400,
-                detail=f"deployment must be 'flow_name/deployment_name', got {deployment_name!r}",
-            )
+            raise HTTPException(400, f"deployment must be 'flow/name', got {deployment_name!r}")
         flow_name, dep_name = deployment_name.split("/", 1)
         url = (
             f"{self.api_url}/deployments/name/"
             f"{urllib.parse.quote(flow_name)}/{urllib.parse.quote(dep_name)}"
         )
-        payload = self._get(url)
+        payload = _prefect_breaker.call(lambda: self._get(url))
         dep_id = payload.get("id")
         if not dep_id:
-            raise HTTPException(
-                status_code=502, detail=f"Prefect did not return an id for {deployment_name!r}"
-            )
+            raise HTTPException(502, f"Prefect returned no id for {deployment_name!r}")
         return dep_id
 
     def create_flow_run(self, deployment_id: str, parameters: dict[str, Any]) -> str:
-        """Schedule an immediate run for *deployment_id* with *parameters*."""
         url = f"{self.api_url}/deployments/{deployment_id}/create_flow_run"
-        payload = self._post(url, body={"parameters": parameters})
+        payload = _prefect_breaker.call(lambda: self._post(url, {"parameters": parameters}))
         run_id = payload.get("id")
         if not run_id:
-            raise HTTPException(
-                status_code=502, detail="Prefect create_flow_run returned no id"
-            )
+            raise HTTPException(502, "Prefect create_flow_run returned no id")
         return run_id
 
     def get_flow_run(self, flow_run_id: str) -> dict[str, Any]:
-        return self._get(f"{self.api_url}/flow_runs/{flow_run_id}")
-
-    # ── HTTP helpers with retry ───────────────────────────────────────────────
-
-    _RETRY_DELAYS = (0.5, 1.0, 2.0)
+        return _prefect_breaker.call(lambda: self._get(f"{self.api_url}/flow_runs/{flow_run_id}"))
 
     def _get(self, url: str) -> dict[str, Any]:
         import urllib.error  # noqa: PLC0415
@@ -753,18 +869,16 @@ class PrefectGateway:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    raise HTTPException(
-                        status_code=exc.code, detail=f"Prefect GET {url} -> HTTP {exc.code}"
-                    ) from exc
+                    raise HTTPException(exc.code, f"Prefect GET {url} -> HTTP {exc.code}") from exc
                 last_exc = exc
                 _metrics.record_prefect_retry("GET")
-                logger.warning("Prefect GET %s -> %d (attempt %d), retrying in %.1fs", url, exc.code, attempt, delay)
+                logger.warning("Prefect GET %s -> %d (attempt %d), retry in %.1fs", url, exc.code, attempt, delay)
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 _metrics.record_prefect_retry("GET")
-                logger.warning("Prefect GET %s error (attempt %d): %s, retrying in %.1fs", url, attempt, exc, delay)
+                logger.warning("Prefect GET %s error (attempt %d): %s, retry in %.1fs", url, attempt, exc, delay)
             time.sleep(delay)
-        raise HTTPException(status_code=502, detail=f"Prefect unreachable after retries: {last_exc}") from last_exc
+        raise HTTPException(502, f"Prefect unreachable after retries: {last_exc}") from last_exc
 
     def _post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
         import urllib.error  # noqa: PLC0415
@@ -774,8 +888,7 @@ class PrefectGateway:
         last_exc: Exception | None = None
         for attempt, delay in enumerate(self._RETRY_DELAYS, start=1):
             req = urllib.request.Request(
-                url,
-                data=data,
+                url, data=data,
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
@@ -784,18 +897,16 @@ class PrefectGateway:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    raise HTTPException(
-                        status_code=exc.code, detail=f"Prefect POST {url} -> HTTP {exc.code}"
-                    ) from exc
+                    raise HTTPException(exc.code, f"Prefect POST {url} -> HTTP {exc.code}") from exc
                 last_exc = exc
                 _metrics.record_prefect_retry("POST")
-                logger.warning("Prefect POST %s -> %d (attempt %d), retrying in %.1fs", url, exc.code, attempt, delay)
+                logger.warning("Prefect POST %s -> %d (attempt %d), retry in %.1fs", url, exc.code, attempt, delay)
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 _metrics.record_prefect_retry("POST")
-                logger.warning("Prefect POST %s error (attempt %d): %s, retrying in %.1fs", url, attempt, exc, delay)
+                logger.warning("Prefect POST %s error (attempt %d): %s, retry in %.1fs", url, attempt, exc, delay)
             time.sleep(delay)
-        raise HTTPException(status_code=502, detail=f"Prefect unreachable after retries: {last_exc}") from last_exc
+        raise HTTPException(502, f"Prefect unreachable after retries: {last_exc}") from last_exc
 
 
 _gateway: PrefectGateway | None = None
@@ -808,7 +919,7 @@ def _get_gateway() -> PrefectGateway:
     return _gateway
 
 
-# ─── Improvement 6: Retrain deduplication ────────────────────────────────────
+# ─── Retrain dedup (improvement 5) ───────────────────────────────────────────
 
 _inflight_retrains: set[str] = set()
 _RETRAIN_LOCK = threading.Lock()
@@ -821,56 +932,49 @@ def _retrain_key(model_name: str, dataset_name: str) -> str:
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
+@app.get("/ready", include_in_schema=False)
+def ready() -> dict[str, str]:
+    """Improvement 15: fast liveness probe — always 200 if the process is alive."""
+    return {"status": "alive"}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     pending_count = 0
     conn = None
     try:
         conn = _get_db()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
-        ).fetchone()
-        if row:
-            pending_count = row[0]
+        row = conn.execute("SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'").fetchone()
+        pending_count = row[0] if row else 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query pending approvals count: %s", exc)
     finally:
         if conn:
             conn.close()
 
-    # Improvement 8: poller health info
     poller_enabled = MODELZOO_POLL_SECONDS > 0
     poller_info: dict[str, Any] = {"enabled": poller_enabled}
     if poller_enabled:
-        last_ago = int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
-        poller_info["last_ok_seconds_ago"] = last_ago
+        poller_info["last_ok_seconds_ago"] = int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
         poller_info["stale"] = _is_poller_stale()
 
-    # Overall status degrades if startup checks failed
-    all_checks_ok = all(v == "ok" for v in _startup_checks.values())
-    overall_status = "ok" if all_checks_ok else "degraded"
-
+    all_ok = all(v == "ok" for v in _startup_checks.values())
     return {
-        "status": overall_status,
+        "status": "ok" if all_ok else "degraded",
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "auth_configured": bool(CONTROL_PLANE_TOKEN),
         "models": _get_registry(),
         "pending_approvals": pending_count,
-        # Improvement 9: startup validation results
         "startup_checks": _startup_checks,
-        # Improvement 8: poller health
         "poller": poller_info,
+        "circuit_breaker": {"state": _prefect_breaker.state},
     }
 
 
 @app.get("/status")
 def platform_status() -> dict[str, Any]:
-    """Aggregate health snapshot of all ExaMLOps services.
-
-    Improvement 5: all downstream pings run concurrently via ThreadPoolExecutor,
-    capping worst-case latency at max(timeout) instead of sum(timeout).
-    """
+    """Improvement 4: all pings concurrent via ThreadPoolExecutor."""
     import urllib.request  # noqa: PLC0415
 
     def _ping(url: str) -> bool:
@@ -892,9 +996,7 @@ def platform_status() -> dict[str, Any]:
     conn = None
     try:
         conn = _get_db()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'").fetchone()
         pending_count = row[0] if row else 0
     except Exception:  # noqa: BLE001
         pass
@@ -902,30 +1004,26 @@ def platform_status() -> dict[str, Any]:
         if conn:
             conn.close()
 
-    # Improvement 5: fan out all pings concurrently
     with ThreadPoolExecutor(max_workers=5) as pool:
         f_mlflow = pool.submit(_ping, f"{MLFLOW_URL}/health")
         f_prefect = pool.submit(_ping, f"{PREFECT_API_URL}/health")
         f_ray = pool.submit(_ping_json, f"{RAY_SERVE_URL}/models")
         f_dashboard = pool.submit(_ping, f"{DASHBOARD_URL}/api/health")
-
         mlflow_ok = f_mlflow.result()
         prefect_ok = f_prefect.result()
         ray_ok, ray_data = f_ray.result()
         dashboard_ok = f_dashboard.result()
 
     ray_models: list[str] = (
-        [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])]
-        if ray_ok else []
+        [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])] if ray_ok else []
     )
-
     return {
         "services": {
             "control_plane": {"ok": True},
-            "mlflow":        {"ok": mlflow_ok},
-            "prefect":       {"ok": prefect_ok},
-            "ray_serve":     {"ok": ray_ok, "models": ray_models},
-            "dashboard":     {"ok": dashboard_ok},
+            "mlflow": {"ok": mlflow_ok},
+            "prefect": {"ok": prefect_ok},
+            "ray_serve": {"ok": ray_ok, "models": ray_models},
+            "dashboard": {"ok": dashboard_ok},
         },
         "pending_approvals": pending_count,
     }
@@ -933,11 +1031,7 @@ def platform_status() -> dict[str, Any]:
 
 @app.get("/models", response_model=list[ModelEntry])
 def list_models() -> list[ModelEntry]:
-    """Models the control plane can trigger retrains for."""
-    return [
-        ModelEntry(model_name=name, datasets=datasets)
-        for name, datasets in _get_registry().items()
-    ]
+    return [ModelEntry(model_name=n, datasets=d) for n, d in _get_registry().items()]
 
 
 @app.post(
@@ -945,42 +1039,34 @@ def list_models() -> list[ModelEntry]:
     response_model=RetrainResponse,
     dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
 )
-def trigger_retrain(req: RetrainRequest) -> RetrainResponse:
-    """Schedule a Prefect flow run for ``training_flow`` with the given args.
+def trigger_retrain(
+    req: RetrainRequest,
+    x_idempotency_key: str | None = Header(default=None),
+) -> RetrainResponse:
+    """Improvements 5 (dedup), 13 (metrics), 17 (idempotency), 12 (circuit breaker)."""
+    # Improvement 17: idempotency
+    if x_idempotency_key:
+        cached = _check_idempotency(x_idempotency_key)
+        if cached:
+            logger.info("Returning cached response for idempotency key %s", x_idempotency_key)
+            return RetrainResponse(**cached)
 
-    Validates that ``model_name`` and ``dataset_name`` are known to the
-    auto-discovery registry before talking to Prefect, so a stale client can't
-    spawn ghost runs.
-
-    Improvement 6: returns 409 if a retrain for the same model+dataset is already
-    in-flight, preventing duplicate Prefect job creation from concurrent requests.
-    """
     registry = _get_registry()
     if req.model_name not in registry:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unknown model {req.model_name!r}. "
-                f"Known models: {sorted(registry)}"
-            ),
-        )
+        raise HTTPException(400, f"Unknown model {req.model_name!r}. Known: {sorted(registry)}")
     if req.dataset_name not in registry[req.model_name]:
         raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Dataset {req.dataset_name!r} not declared as supported by {req.model_name}. "
-                f"Supported: {registry[req.model_name]}"
-            ),
+            400,
+            f"Dataset {req.dataset_name!r} not supported by {req.model_name}. "
+            f"Supported: {registry[req.model_name]}",
         )
 
-    # Improvement 6: deduplication guard
+    # Improvement 5: deduplication
     key = _retrain_key(req.model_name, req.dataset_name)
     with _RETRAIN_LOCK:
         if key in _inflight_retrains:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Retrain already in-flight for {req.model_name}:{req.dataset_name}",
-            )
+            _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
+            raise HTTPException(409, f"Retrain already in-flight for {key}")
         _inflight_retrains.add(key)
 
     parameters: dict[str, Any] = {
@@ -991,29 +1077,41 @@ def trigger_retrain(req: RetrainRequest) -> RetrainResponse:
         **req.parameters,
     }
 
-    gateway = _get_gateway()
+    # Improvement 13: retrain metrics
+    start_ts = time.monotonic()
     try:
+        gateway = _get_gateway()
         deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
         flow_run_id = gateway.create_flow_run(deployment_id, parameters)
+    except Exception:
+        _metrics.record_retrain(req.model_name, req.dataset_name, "error")
+        raise
     finally:
         with _RETRAIN_LOCK:
             _inflight_retrains.discard(key)
+        duration = time.monotonic() - start_ts
+        _metrics.observe_retrain_duration(req.model_name, req.dataset_name, duration)
 
+    _metrics.record_retrain(req.model_name, req.dataset_name, "success")
     logger.info(
-        "Scheduled retrain — model=%s dataset=%s flow_run_id=%s",
+        "Scheduled retrain model=%s dataset=%s flow_run_id=%s",
         req.model_name, req.dataset_name, flow_run_id,
     )
-    return RetrainResponse(
-        flow_run_id=flow_run_id,
-        deployment=PREFECT_DEPLOYMENT_NAME,
-        status_url=f"/retrain/{flow_run_id}",
-        parameters=parameters,
-    )
+
+    response_data = {
+        "flow_run_id": flow_run_id,
+        "deployment": PREFECT_DEPLOYMENT_NAME,
+        "status_url": f"/retrain/{flow_run_id}",
+        "parameters": parameters,
+    }
+    if x_idempotency_key:
+        _store_idempotency(x_idempotency_key, response_data)
+
+    return RetrainResponse(**response_data)
 
 
 @app.get("/retrain/{flow_run_id}", response_model=FlowRunStatus)
 def retrain_status(flow_run_id: str) -> FlowRunStatus:
-    """Poll Prefect for the run state. Read-only — no auth required."""
     payload = _get_gateway().get_flow_run(flow_run_id)
     state = payload.get("state") or {}
     state_type = state.get("type")
@@ -1025,15 +1123,11 @@ def retrain_status(flow_run_id: str) -> FlowRunStatus:
     )
 
 
-# ─── ModelZoo webhook receivers ───────────────────────────────────────────────
-
-
 @app.post("/webhooks/modelzoo/gitlab")
 async def webhook_gitlab(
     request: Request,
     x_gitlab_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Receive a GitLab push webhook for the ModelZoo repository."""
     _verify_gitlab_token(x_gitlab_token)
     payload = await request.json()
     ref = payload.get("ref", "")
@@ -1049,10 +1143,8 @@ async def webhook_gitlab(
 
 @app.post("/webhooks/modelzoo/github")
 async def webhook_github(request: Request) -> dict[str, Any]:
-    """Receive a GitHub push webhook for the ModelZoo repository."""
     raw_body = await request.body()
-    sig = request.headers.get("x-hub-signature-256")
-    _verify_github_signature(raw_body, sig)
+    _verify_github_signature(raw_body, request.headers.get("x-hub-signature-256"))
     payload = json.loads(raw_body)
     ref = payload.get("ref", "")
     if not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
@@ -1061,63 +1153,46 @@ async def webhook_github(request: Request) -> dict[str, Any]:
     commit_sha = head.get("id", payload.get("after", ""))
     if not commit_sha:
         return {"skipped": True, "reason": "no commit SHA in payload"}
-    pushed_by = (payload.get("pusher") or {}).get("name", "unknown")
-    return _record_push_event(commit_sha, MODELZOO_WATCH_BRANCH, pushed_by, raw_body.decode())
+    return _record_push_event(
+        commit_sha, MODELZOO_WATCH_BRANCH,
+        (payload.get("pusher") or {}).get("name", "unknown"),
+        raw_body.decode(),
+    )
 
 
 @app.get("/models/{name}/meta")
 def get_model_meta_endpoint(name: str) -> dict[str, Any]:
-    """Fetch metadata for a registered model (schema, task type, promotion logic)."""
     if _model_meta_mod is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model metadata service not available",
-        )
+        raise HTTPException(503, "Model metadata service not available")
     try:
         m = _model_meta_mod.get_model_meta(name)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=f"Unknown model {name!r}") from exc
+        raise HTTPException(404, f"Unknown model {name!r}") from exc
     return {
-        "name": m.name,
-        "task_type": m.task_type,
-        "estimator_class": m.estimator_class,
-        "supported_datasets": m.supported_datasets,
-        "input_schema": m.input_schema,
-        "output_schema": m.output_schema,
-        "promotion": m.promotion,
-        "path_in_repo": m.path_in_repo,
-        "bundled_images": m.bundled_images,
+        "name": m.name, "task_type": m.task_type, "estimator_class": m.estimator_class,
+        "supported_datasets": m.supported_datasets, "input_schema": m.input_schema,
+        "output_schema": m.output_schema, "promotion": m.promotion,
+        "path_in_repo": m.path_in_repo, "bundled_images": m.bundled_images,
     }
 
 
 @app.get("/models/{name}/readme")
 def get_model_readme(name: str) -> dict[str, str]:
-    """Fetch the README.md content for a model."""
     if _model_meta_mod is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model metadata service not available",
-        )
+        raise HTTPException(503, "Model metadata service not available")
     text, sha = _model_meta_mod.read_readme(name)
     return {"text": text, "sha": sha}
 
 
 @app.get("/models/{name}/images/{filename}")
 def get_model_bundled_image(name: str, filename: str) -> Response:
-    """Fetch a bundled image (PNG, JPG, SVG, etc.) for a model."""
     if _model_meta_mod is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model metadata service not available",
-        )
+        raise HTTPException(503, "Model metadata service not available")
     found = _model_meta_mod.read_image(name, filename)
     if found is None:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(404, "Image not found")
     data, content_type = found
     return Response(content=data, media_type=content_type)
-
-
-# ─── Approval gate endpoints ─────────────────────────────────────────────────
 
 
 @app.post(
@@ -1125,11 +1200,6 @@ def get_model_bundled_image(name: str, filename: str) -> Response:
     dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
 )
 def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
-    """Receive a change notification (e.g. from GitLab CI) and create pending approval rows.
-
-    One row is created per model_id. If a pending row for that model_id already
-    exists it is skipped — no duplicate pending entries.
-    """
     created: list[str] = []
     created_model_ids: list[str] = []
     now = datetime.utcnow().isoformat()
@@ -1144,37 +1214,17 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
                     (model_id,),
                 ).fetchone()
                 if existing:
-                    logger.info(
-                        "Skipping duplicate pending approval for model=%s (existing id=%s)",
-                        model_id,
-                        existing[0],
-                    )
+                    logger.info("Skipping duplicate pending approval model=%s (id=%s)", model_id, existing[0])
                     continue
                 row_id = str(uuid.uuid4())
                 conn.execute(
-                    """
-                    INSERT INTO pending_approvals
-                        (id, model_id, commit_sha, commit_msg, changed_files,
-                         status, requested_at)
-                    VALUES (?, ?, ?, ?, ?, 'pending', ?)
-                    """,
-                    (
-                        row_id,
-                        model_id,
-                        notification.commit_sha,
-                        notification.commit_msg,
-                        changed_files_json,
-                        now,
-                    ),
+                    "INSERT INTO pending_approvals (id, model_id, commit_sha, commit_msg, changed_files, status, requested_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                    (row_id, model_id, notification.commit_sha, notification.commit_msg, changed_files_json, now),
                 )
                 created.append(row_id)
                 created_model_ids.append(model_id)
-                logger.info(
-                    "Created pending approval id=%s model=%s commit=%s",
-                    row_id,
-                    model_id,
-                    notification.commit_sha,
-                )
+                logger.info("Created pending approval id=%s model=%s commit=%s", row_id, model_id, notification.commit_sha)
             conn.commit()
             pending_count: int = conn.execute(
                 "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
@@ -1184,55 +1234,38 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
 
     for mid in created_model_ids:
         _metrics.record_created(mid, pending_count)
-
     return {"created": created}
 
 
 @app.get("/approvals", response_model=list[ApprovalEntry])
 def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
-    """List approval entries. Pass ``?status=pending`` to filter by status."""
     conn = _get_db()
     try:
-        if status:
-            rows = conn.execute(
-                "SELECT id, model_id, commit_sha, commit_msg, changed_files, "
-                "status, prefect_run_id, reject_reason, requested_at, resolved_at "
-                "FROM pending_approvals WHERE status = ? ORDER BY requested_at DESC",
-                (status,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, model_id, commit_sha, commit_msg, changed_files, "
-                "status, prefect_run_id, reject_reason, requested_at, resolved_at "
-                "FROM pending_approvals ORDER BY requested_at DESC"
-            ).fetchall()
+        sql = (
+            "SELECT id, model_id, commit_sha, commit_msg, changed_files, "
+            "status, prefect_run_id, reject_reason, requested_at, resolved_at "
+            "FROM pending_approvals"
+        )
+        rows = (
+            conn.execute(sql + " WHERE status = ? ORDER BY requested_at DESC", (status,)).fetchall()
+            if status else
+            conn.execute(sql + " ORDER BY requested_at DESC").fetchall()
+        )
     finally:
         conn.close()
 
     entries: list[ApprovalEntry] = []
     for row in rows:
-        (
-            row_id, model_id, commit_sha, commit_msg, changed_files_raw,
-            row_status, prefect_run_id, reject_reason, requested_at, resolved_at,
-        ) = row
+        row_id, model_id, commit_sha, commit_msg, changed_files_raw, row_status, prefect_run_id, reject_reason, requested_at, resolved_at = row
         try:
             changed_files = json.loads(changed_files_raw) if changed_files_raw else []
         except (TypeError, ValueError):
             changed_files = []
-        entries.append(
-            ApprovalEntry(
-                id=row_id,
-                model_id=model_id,
-                commit_sha=commit_sha,
-                commit_msg=commit_msg,
-                changed_files=changed_files,
-                status=row_status,
-                prefect_run_id=prefect_run_id,
-                reject_reason=reject_reason,
-                requested_at=requested_at,
-                resolved_at=resolved_at,
-            )
-        )
+        entries.append(ApprovalEntry(
+            id=row_id, model_id=model_id, commit_sha=commit_sha, commit_msg=commit_msg,
+            changed_files=changed_files, status=row_status, prefect_run_id=prefect_run_id,
+            reject_reason=reject_reason, requested_at=requested_at, resolved_at=resolved_at,
+        ))
     return entries
 
 
@@ -1241,14 +1274,14 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
     dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
 )
 def approve_model(model_id: str) -> dict[str, Any]:
-    """Approve the most recent pending change for *model_id* and trigger a Prefect flow run."""
-    # Step 1: read pending row — short DB op, lock released immediately after
+    # Improvement 16: reject expired entries before approving
+    _expire_old_approvals()
+
     with _DB_LOCK:
         conn = _get_db()
         try:
             row = conn.execute(
-                "SELECT id FROM pending_approvals "
-                "WHERE model_id = ? AND status = 'pending' "
+                "SELECT id FROM pending_approvals WHERE model_id = ? AND status = 'pending' "
                 "ORDER BY requested_at DESC LIMIT 1",
                 (model_id,),
             ).fetchone()
@@ -1256,48 +1289,31 @@ def approve_model(model_id: str) -> dict[str, Any]:
             conn.close()
 
     if not row:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No pending approval found for model {model_id!r}",
-        )
+        raise HTTPException(404, f"No pending approval found for model {model_id!r}")
     row_id: str = row[0]
 
-    # Determine dataset: use first supported dataset from registry
     registry = _get_registry()
     datasets = registry.get(model_id, [])
     if not datasets:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Model {model_id!r} has no registered datasets — "
-                "cannot determine which dataset to retrain on."
-            ),
-        )
+        raise HTTPException(400, f"Model {model_id!r} has no registered datasets")
     dataset_name = datasets[0]
 
     parameters: dict[str, Any] = {
-        "model_name": model_id,
-        "dataset_cls_name": dataset_name,
-        "is_dummy": False,
-        "backend_name": None,
+        "model_name": model_id, "dataset_cls_name": dataset_name,
+        "is_dummy": False, "backend_name": None,
     }
 
-    # Step 2: call Prefect WITHOUT holding the lock (blocking network I/O, up to ~10 s w/ retries)
     gateway = _get_gateway()
     deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
     flow_run_id: str = gateway.create_flow_run(deployment_id, parameters)
 
-    # Step 3: update DB row — short DB op, lock released immediately after
     pending_count = 0
     with _DB_LOCK:
         conn = _get_db()
         try:
-            now = datetime.utcnow().isoformat()
             conn.execute(
-                "UPDATE pending_approvals "
-                "SET status = 'approved', prefect_run_id = ?, resolved_at = ? "
-                "WHERE id = ?",
-                (flow_run_id, now, row_id),
+                "UPDATE pending_approvals SET status = 'approved', prefect_run_id = ?, resolved_at = ? WHERE id = ?",
+                (flow_run_id, datetime.utcnow().isoformat(), row_id),
             )
             conn.commit()
             pending_count = conn.execute(
@@ -1305,16 +1321,10 @@ def approve_model(model_id: str) -> dict[str, Any]:
             ).fetchone()[0]
         finally:
             conn.close()
-    _metrics.record_approved(model_id, pending_count)
 
-    logger.info(
-        "Approved model=%s approval_id=%s flow_run_id=%s", model_id, row_id, flow_run_id
-    )
-    return {
-        "flow_run_id": flow_run_id,
-        "status_url": f"/retrain/{flow_run_id}",
-        "model_id": model_id,
-    }
+    _metrics.record_approved(model_id, pending_count)
+    logger.info("Approved model=%s approval_id=%s flow_run_id=%s", model_id, row_id, flow_run_id)
+    return {"flow_run_id": flow_run_id, "status_url": f"/retrain/{flow_run_id}", "model_id": model_id}
 
 
 @app.post(
@@ -1322,29 +1332,21 @@ def approve_model(model_id: str) -> dict[str, Any]:
     dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
 )
 def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[str, Any]:
-    """Reject the most recent pending change for *model_id*."""
     pending_count = 0
     with _DB_LOCK:
         conn = _get_db()
         try:
             row = conn.execute(
-                "SELECT id FROM pending_approvals "
-                "WHERE model_id = ? AND status = 'pending' "
+                "SELECT id FROM pending_approvals WHERE model_id = ? AND status = 'pending' "
                 "ORDER BY requested_at DESC LIMIT 1",
                 (model_id,),
             ).fetchone()
             if not row:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No pending approval found for model {model_id!r}",
-                )
+                raise HTTPException(404, f"No pending approval found for model {model_id!r}")
             row_id = row[0]
-            now = datetime.utcnow().isoformat()
             conn.execute(
-                "UPDATE pending_approvals "
-                "SET status = 'rejected', reject_reason = ?, resolved_at = ? "
-                "WHERE id = ?",
-                (body.reason, now, row_id),
+                "UPDATE pending_approvals SET status = 'rejected', reject_reason = ?, resolved_at = ? WHERE id = ?",
+                (body.reason, datetime.utcnow().isoformat(), row_id),
             )
             conn.commit()
             pending_count = conn.execute(
@@ -1354,15 +1356,12 @@ def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[s
             conn.close()
 
     _metrics.record_rejected(model_id, pending_count)
-    logger.info(
-        "Rejected model=%s approval_id=%s reason=%s", model_id, row_id, body.reason
-    )
+    logger.info("Rejected model=%s approval_id=%s reason=%s", model_id, row_id, body.reason)
     return {"model_id": model_id, "status": "rejected"}
 
 
 @app.get("/metrics", include_in_schema=False)
 def metrics_endpoint() -> Response:
-    """Prometheus text-format metrics — scraped by Prometheus, no auth required."""
     try:
         with _DB_LOCK:
             conn = _get_db()
@@ -1374,17 +1373,13 @@ def metrics_endpoint() -> Response:
                 conn.close()
         _metrics.update_age(row[0])
     except Exception as exc:
-        logger.error("metrics_endpoint: DB read failed, age gauge set to 0: %s", exc)
+        logger.error("metrics_endpoint DB read failed: %s", exc)
         _metrics.update_age(None)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-# ─── ModelZoo integration endpoints ──────────────────────────────────────────
-
-
 @app.get("/modelzoo/status")
 def modelzoo_status() -> dict[str, Any]:
-    """Return the freshness status of all registered models relative to the ModelZoo."""
     conn = _get_db()
     try:
         freshness_rows = conn.execute(
@@ -1392,8 +1387,7 @@ def modelzoo_status() -> dict[str, Any]:
             "is_stale, stale_since, retrain_triggered_at FROM model_freshness"
         ).fetchall()
         last_event = conn.execute(
-            "SELECT commit_sha, timestamp, source FROM modelzoo_events "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT commit_sha, timestamp, source FROM modelzoo_events ORDER BY id DESC LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
@@ -1405,31 +1399,22 @@ def modelzoo_status() -> dict[str, Any]:
         row = freshness_map.get(model_id)
         if row:
             models.append({
-                "model_id": model_id,
-                "status": "stale" if row[3] else "current",
-                "latest_modelzoo_commit": row[1],
-                "last_retrain_commit": row[2],
-                "stale_since": row[4],
-                "retrain_triggered_at": row[5],
+                "model_id": model_id, "status": "stale" if row[3] else "current",
+                "latest_modelzoo_commit": row[1], "last_retrain_commit": row[2],
+                "stale_since": row[4], "retrain_triggered_at": row[5],
             })
         else:
             models.append({
-                "model_id": model_id,
-                "status": "unknown",
-                "latest_modelzoo_commit": None,
-                "last_retrain_commit": None,
-                "stale_since": None,
-                "retrain_triggered_at": None,
+                "model_id": model_id, "status": "unknown",
+                "latest_modelzoo_commit": None, "last_retrain_commit": None,
+                "stale_since": None, "retrain_triggered_at": None,
             })
 
-    last_event_dict = None
-    if last_event:
-        last_event_dict = {
-            "commit_sha": last_event[0],
-            "timestamp": last_event[1],
-            "source": last_event[2],
-        }
-    return {"models": models, "last_event": last_event_dict}
+    return {
+        "models": models,
+        "last_event": {"commit_sha": last_event[0], "timestamp": last_event[1], "source": last_event[2]}
+        if last_event else None,
+    }
 
 
 @app.get("/modelzoo/events")
@@ -1443,24 +1428,16 @@ def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
         ).fetchall()
     finally:
         conn.close()
-    return [
-        {"id": r[0], "commit_sha": r[1], "branch": r[2],
-         "pushed_by": r[3], "timestamp": r[4], "source": r[5]}
-        for r in rows
-    ]
+    return [{"id": r[0], "commit_sha": r[1], "branch": r[2], "pushed_by": r[3], "timestamp": r[4], "source": r[5]}
+            for r in rows]
 
 
 @app.post("/modelzoo/sync", dependencies=[Depends(_require_token)])
 def modelzoo_sync() -> dict[str, Any]:
-    """Manually trigger one poll cycle. Returns result of the check."""
     result = _run_poll_cycle()
     if not result:
         return {"new_commit": False}
-    return {
-        "new_commit": True,
-        "commit_sha": result.get("commit_sha"),
-        "models_marked_stale": len(_get_registry()),
-    }
+    return {"new_commit": True, "commit_sha": result.get("commit_sha"), "models_marked_stale": len(_get_registry())}
 
 
 @app.get("/modelzoo/config")
@@ -1482,6 +1459,26 @@ def update_modelzoo_config(body: ModelzooConfigUpdate) -> dict[str, Any]:
         if body.poll_interval_seconds is not None:
             _modelzoo_config["poll_interval_seconds"] = max(0, body.poll_interval_seconds)
         return dict(_modelzoo_config)
+
+
+# ─── Improvement 19: Config hot-reload ───────────────────────────────────────
+
+
+@app.post("/admin/reload", dependencies=[Depends(_require_token)])
+def admin_reload() -> dict[str, Any]:
+    """Invalidate the registry cache and re-run startup checks without restarting.
+
+    Use after adding/removing model YAML files or fixing the DB/token configuration.
+    """
+    _invalidate_registry_cache()
+    new_registry = _get_registry()
+    _run_startup_checks()
+    logger.info("Admin reload: registry=%d models, checks=%s", len(new_registry), _startup_checks)
+    return {
+        "registry_reloaded": True,
+        "models": sorted(new_registry.keys()),
+        "startup_checks": _startup_checks,
+    }
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────

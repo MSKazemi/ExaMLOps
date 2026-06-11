@@ -8,8 +8,9 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { useQuery } from '@tanstack/react-query'
 import {
-  useModelDetail, useUpdateDescription, useRevertDescription,
+  apiFetch, useModelDetail, useUpdateDescription, useRevertDescription,
   useUploadImage, useDeleteImage, usePredict,
   useModelVersions, useSetAlias, useDeleteAlias, type ModelVersion,
 } from '@/lib/api'
@@ -18,6 +19,14 @@ import { isAdmin } from '@/lib/auth'
 import MDEditor from '@uiw/react-md-editor'
 import '@uiw/react-md-editor/markdown-editor.css'
 
+interface CostRow {
+  version: number
+  run_id: string | null
+  job_id: string | null
+  gpu_hours: number | null
+  cost_usd: number | null
+  recorded_at: string
+}
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   stable:       { bg: 'oklch(0.72 0.18 155 / 12%)', border: 'oklch(0.72 0.18 155 / 30%)', text: 'var(--success-text)' },
@@ -258,6 +267,51 @@ function VersionsTab({ modelName, admin }: { modelName: string; admin: boolean }
   )
 }
 
+function CostHistory({ modelName }: { modelName: string }) {
+  const { data: costs = [], isLoading } = useQuery<CostRow[]>({
+    queryKey: ['model-costs', modelName],
+    queryFn: () => apiFetch(`/api/models/${modelName}/costs`),
+    enabled: !!modelName,
+  })
+
+  if (isLoading) return null
+  if (costs.length === 0) return null  // Don't show if no data
+
+  const totalGpu = costs.reduce((s, r) => s + (r.gpu_hours ?? 0), 0)
+  const totalCost = costs.reduce((s, r) => s + (r.cost_usd ?? 0), 0)
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+      <div className="px-4 py-3 flex items-center justify-between" style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
+        <p className="text-sm font-semibold">HPC Cost History</p>
+        <div className="flex gap-4 text-xs text-muted-foreground">
+          <span>GPU-hours: <strong>{totalGpu.toFixed(2)}</strong></span>
+          <span>Total: <strong>${totalCost.toFixed(2)}</strong></span>
+        </div>
+      </div>
+      <table className="w-full text-sm" style={{ background: 'var(--surface-0)' }}>
+        <thead style={{ background: 'var(--surface-1)' }}>
+          <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+            {['Version','Run','Job','GPU-Hours','Cost','Recorded'].map(h => <th key={h} className="px-4 py-2">{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {costs.map((r, i) => (
+            <tr key={i} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
+              <td className="px-4 py-2 font-mono text-xs">v{r.version}</td>
+              <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{(r.run_id ?? '—').slice(0,8)}</td>
+              <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{r.job_id ?? '—'}</td>
+              <td className="px-4 py-2 font-mono text-xs">{r.gpu_hours != null ? r.gpu_hours.toFixed(2) : '—'}</td>
+              <td className="px-4 py-2 font-mono text-xs">{r.cost_usd != null ? `$${r.cost_usd.toFixed(2)}` : '—'}</td>
+              <td className="px-4 py-2 text-xs text-muted-foreground">{(r.recorded_at ?? '').slice(0,10)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function ModelDetail() {
   const { name } = useParams<{ name: string }>()
   const { data, isLoading, error } = useModelDetail(name ?? '')
@@ -277,6 +331,21 @@ export function ModelDetail() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [predictStage, setPredictStage] = useState('Production')
   const [predictJson, setPredictJson] = useState('{}')
+  useEffect(() => {
+    if (data?.technical?.input_schema && predictJson === '{}') {
+      const example: Record<string, unknown> = {}
+      for (const [key, type] of Object.entries(data.technical.input_schema as Record<string, string>)) {
+        if (type === 'float' || type === 'number') example[key] = 0.0
+        else if (type === 'int' || type === 'integer') example[key] = 0
+        else if (type === 'bool' || type === 'boolean') example[key] = false
+        else if (type.startsWith('list') || type.includes('[]')) example[key] = []
+        else example[key] = ''
+      }
+      if (Object.keys(example).length > 0) {
+        setPredictJson(JSON.stringify(example, null, 2))
+      }
+    }
+  }, [data])
   const [predictResult, setPredictResult] = useState<unknown>(null)
   const [predictError, setPredictError] = useState<string | null>(null)
   const [showTry, setShowTry] = useState(false)
@@ -645,6 +714,8 @@ export function ModelDetail() {
           </div>
         )}
       </div>
+
+      <CostHistory modelName={name ?? ''} />
       </>}
     </div>
   )

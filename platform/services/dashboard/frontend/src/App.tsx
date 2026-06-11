@@ -15,6 +15,7 @@ import SeanerBus from './pages/SeanerBus'
 import { Approvals } from '@/pages/Approvals'
 import { Pipelines } from '@/pages/Pipelines'
 import { Jupyter } from '@/pages/Jupyter'
+import { Drift } from '@/pages/Drift'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
@@ -48,6 +49,7 @@ export default function App() {
                   <Route path="/approvals" element={<Approvals />} />
                   <Route path="/pipelines" element={<Pipelines />} />
                   <Route path="/jupyter" element={<Jupyter />} />
+                  <Route path="/drift" element={<Drift />} />
                 </Routes>
               </div>
             </Layout>

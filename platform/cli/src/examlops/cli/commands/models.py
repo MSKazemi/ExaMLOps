@@ -435,3 +435,41 @@ def cost(
         ["Version", "Run ID", "Job ID", "GPU Hours", "Cost (USD)", "Recorded"],
         rows,
     )
+
+
+_EXAMPLES_COST_LIST = (
+    "Examples:\n\n"
+    "  exa models cost-list\n\n"
+    "  exa --json models cost-list"
+)
+
+@app.command("cost-list", epilog=_EXAMPLES_COST_LIST)
+def cost_list():
+    """Show HPC cost summary across all models."""
+    from examlops.platform_db import get_db as _gdb, init_db as _init
+    _init()
+    with _gdb() as conn:
+        rows = conn.execute(
+            "SELECT model_name, COUNT(*) as n_runs, "
+            "SUM(gpu_hours) as total_gpu_hours, SUM(cost_usd) as total_cost_usd "
+            "FROM model_costs GROUP BY model_name ORDER BY model_name"
+        ).fetchall()
+    if not rows:
+        _output.ok("No cost data recorded. Run: exa models cost <MODEL> --record")
+        return
+    data = [
+        {"model_name": r["model_name"], "n_runs": r["n_runs"],
+         "total_gpu_hours": r["total_gpu_hours"], "total_cost_usd": r["total_cost_usd"]}
+        for r in rows
+    ]
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    table_rows = [
+        [r["model_name"], str(r["n_runs"]),
+         f"{r['total_gpu_hours']:.2f}" if r["total_gpu_hours"] else "—",
+         f"${r['total_cost_usd']:.2f}" if r["total_cost_usd"] else "—"]
+        for r in data
+    ]
+    _output.print_table("Model Cost Summary",
+                        ["Model", "Runs", "Total GPU-Hours", "Total Cost (USD)"], table_rows)

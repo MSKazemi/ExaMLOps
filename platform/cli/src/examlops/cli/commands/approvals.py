@@ -94,3 +94,27 @@ def reject(
     _output.ok(f"Rejected {model}" + (f" — reason: {reason}" if reason else ""))
     if _output.json_mode:
         _output.print_json(result)
+
+
+_EXAMPLES_DELETE = (
+    "Examples:\n\n"
+    "  exa approvals delete <uuid>"
+)
+
+@app.command("delete", epilog=_EXAMPLES_DELETE)
+def delete(
+    approval_id: str = typer.Argument(..., help="Approval UUID to delete"),
+):
+    """Delete a pending approval by its UUID."""
+    cfg = load_config()
+    try:
+        result = _client.delete(
+            f"{cfg.control_plane_url}/approvals/{approval_id}",
+            token=cfg.control_plane_token,
+        )
+    except _client.ClientError as e:
+        _output.error(str(e))
+        return
+    _output.ok(f"Deleted approval {approval_id}")
+    if _output.json_mode:
+        _output.print_json(result)

@@ -553,3 +553,29 @@ async def delete_image(
     await db.delete(row)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{name}/costs")
+async def get_model_costs(name: str, _=Depends(require_role("viewer"))) -> list[dict]:
+    """HPC cost history for a model from platform.db."""
+    import os as _os
+    import sqlite3 as _sql
+    db_path = _os.getenv("PLATFORM_DB", "/repo/platform.db")
+    try:
+        conn = _sql.connect(db_path)
+        conn.row_factory = _sql.Row
+        rows = conn.execute(
+            "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
+            "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
+            (name.upper(),),
+        ).fetchall()
+        if not rows:
+            rows = conn.execute(
+                "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
+                "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
+                (name.lower(),),
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
