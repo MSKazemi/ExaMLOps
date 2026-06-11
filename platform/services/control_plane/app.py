@@ -10,8 +10,20 @@ notify of model changes; a human then approves or rejects via POST /approve/{mod
 or POST /reject/{model_id}. Approved changes trigger a Prefect flow run exactly
 like POST /retrain. State is stored in a local SQLite database.
 
+Reliability improvements (2026-06-12):
+  1. Registry TTL cache (60 s) — eliminates per-request YAML disk reads
+  2. SQLite WAL mode + indices — better concurrency and faster hot queries
+  3. Prefect gateway retry (3 attempts, exponential backoff) — tolerates blips
+  4. Concurrent /status pings — worst-case 5 s instead of 25 s
+  5. Retrain deduplication — 409 on concurrent same-model/dataset requests
+  6. Write-endpoint rate limiting — token bucket, 429 with Retry-After
+  7. Poller health tracking — last-ok timestamp in /health
+  8. lifespan context manager + graceful shutdown — replaces deprecated on_event
+  9. Startup validation — db/registry/token checks exposed in /health
+ 10. Poller uses threading.Event.wait() for clean stop on shutdown
+
 Endpoints (served on CONTROL_PLANE_PORT, default 8002):
-    GET  /health                   liveness + reachable Prefect URL + pending count
+    GET  /health                   liveness + startup checks + poller status
     GET  /status                   aggregate health of all ExaMLOps services
     GET  /models                   list of model_name → datasets known to the registry
     POST /retrain                  body: {model_name, dataset_name, [backend_name], [is_dummy], [parameters]}
@@ -35,6 +47,7 @@ Env vars:
     PREFECT_DEPLOYMENT_NAME    default: examlops_scheduled_training/nightly
                                (deployment that wraps training_flow)
     CONTROL_PLANE_DB           default: /data/approvals.db — SQLite file for approval state
+    RETRAIN_RATE_LIMIT_PER_MIN default: 20 — max write requests per minute across all callers
 """
 
 from __future__ import annotations
@@ -46,7 +59,11 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -89,6 +106,8 @@ GITLAB_PROJECT_ID = os.getenv("GITLAB_PROJECT_ID", "")
 MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
 RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
+# Improvement 7: configurable write-endpoint rate limit
+RETRAIN_RATE_LIMIT_PER_MIN = int(os.getenv("RETRAIN_RATE_LIMIT_PER_MIN", "20"))
 
 # Runtime-mutable ModelZoo config (survives process lifetime, resets on restart)
 _modelzoo_config: dict[str, Any] = {
@@ -96,6 +115,68 @@ _modelzoo_config: dict[str, Any] = {
     "poll_interval_seconds": MODELZOO_POLL_SECONDS,
     "watch_branch": MODELZOO_WATCH_BRANCH,
 }
+
+
+# ─── Improvement 7: Token-bucket rate limiter ─────────────────────────────────
+
+class _TokenBucket:
+    """Thread-safe token bucket for rate limiting write endpoints."""
+
+    def __init__(self, capacity: int, refill_rate: float) -> None:
+        self._capacity = float(capacity)
+        self._refill_rate = refill_rate  # tokens / second
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def consume(self, n: float = 1.0) -> bool:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_refill
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+            self._last_refill = now
+            if self._tokens >= n:
+                self._tokens -= n
+                return True
+            return False
+
+
+_rate_limiter = _TokenBucket(
+    capacity=RETRAIN_RATE_LIMIT_PER_MIN,
+    refill_rate=RETRAIN_RATE_LIMIT_PER_MIN / 60.0,
+)
+
+
+# ─── Improvement 1: Registry TTL cache ───────────────────────────────────────
+
+@dataclass
+class _RegistryCache:
+    data: dict[str, list[str]]
+    expires_at: float
+
+
+_registry_cache: _RegistryCache | None = None
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_TTL = 60.0  # seconds
+
+
+def _get_registry() -> dict[str, list[str]]:
+    """Return the YAML model registry, re-reading from disk at most every 60 s."""
+    global _registry_cache
+    with _REGISTRY_LOCK:
+        now = time.monotonic()
+        if _registry_cache is None or now >= _registry_cache.expires_at:
+            _registry_cache = _RegistryCache(
+                data=_load_registry(),
+                expires_at=now + _REGISTRY_TTL,
+            )
+        return _registry_cache.data
+
+
+def _invalidate_registry_cache() -> None:
+    global _registry_cache
+    with _REGISTRY_LOCK:
+        _registry_cache = None
 
 
 # ─── SQLite approval store ────────────────────────────────────────────────────
@@ -141,24 +222,108 @@ CREATE TABLE IF NOT EXISTS model_freshness (
 )
 """
 
+# Improvement 2 & 3: Indices added to schema creation
+_CREATE_INDICES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_pa_model_status ON pending_approvals(model_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_me_sha ON modelzoo_events(commit_sha)",
+]
+
 
 def _get_db() -> sqlite3.Connection:
-    """Open (or create) the approvals SQLite DB and ensure the table exists."""
+    """Open (or create) the approvals SQLite DB and ensure the schema + indices exist.
+
+    Improvement 2: WAL mode enabled on every new connection — once set on a DB file it
+    persists, but re-asserting is harmless and ensures any freshly-created file is
+    immediately in WAL mode without waiting for a restart.
+    """
     db_path = CONTROL_PLANE_DB
-    # Ensure parent directory exists when running locally with a path like ./approvals.db
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
         try:
             os.makedirs(db_dir, exist_ok=True)
         except OSError:
-            # Fall back to a local file if /data/ is not writable (e.g. unit tests)
             db_path = "./approvals.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
+    # Improvement 2: WAL journal mode for better concurrent read/write performance
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
     conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
+    # Improvement 3: indices for hot query columns
+    for idx_sql in _CREATE_INDICES_SQL:
+        conn.execute(idx_sql)
     conn.commit()
     return conn
+
+
+# ─── Improvement 9: Startup validation ───────────────────────────────────────
+
+_startup_checks: dict[str, str] = {}
+
+
+def _run_startup_checks() -> None:
+    """Validate DB write-access, YAML registry, and auth token at startup.
+
+    Results stored in _startup_checks and surfaced via /health.
+    Failures are logged at ERROR but do not abort startup — the health
+    endpoint must remain reachable for diagnostics.
+    """
+    global _startup_checks
+    checks: dict[str, str] = {}
+
+    # Check 1: DB writable
+    try:
+        conn = _get_db()
+        conn.execute("SELECT COUNT(*) FROM pending_approvals")
+        conn.close()
+        checks["db"] = "ok"
+    except Exception as exc:
+        logger.error("Startup check FAILED — db: %s", exc)
+        checks["db"] = f"fail: {exc}"
+
+    # Check 2: registry YAML dir exists and has ≥ 1 enabled model
+    try:
+        reg = _load_registry()
+        if reg:
+            checks["registry"] = "ok"
+        else:
+            checks["registry"] = "warn: no enabled models found"
+            logger.warning("Startup check WARN — registry: no enabled models found")
+    except Exception as exc:
+        logger.error("Startup check FAILED — registry: %s", exc)
+        checks["registry"] = f"fail: {exc}"
+
+    # Check 3: auth token configured
+    checks["token"] = "ok" if CONTROL_PLANE_TOKEN else "missing"
+    if not CONTROL_PLANE_TOKEN:
+        logger.error(
+            "Startup check FAILED — token: CONTROL_PLANE_TOKEN is not set; "
+            "POST /retrain will return 503 until it is configured."
+        )
+
+    _startup_checks = checks
+    all_ok = all(v == "ok" for v in checks.values())
+    if all_ok:
+        logger.info("Startup checks passed: %s", checks)
+    else:
+        logger.warning("Startup checks completed with issues: %s", checks)
+
+
+# ─── Improvement 8 & 10: Poller state ────────────────────────────────────────
+
+_poller_last_ok_ts: float = 0.0
+_stop_event = threading.Event()
+
+
+def _is_poller_stale() -> bool:
+    """Return True if the poller hasn't completed a cycle in 3× its configured interval."""
+    if MODELZOO_POLL_SECONDS <= 0:
+        return False
+    if _poller_last_ok_ts == 0.0:
+        return False  # hasn't had a chance to run yet
+    interval = _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
+    return (time.time() - _poller_last_ok_ts) > 3 * interval
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -224,24 +389,34 @@ class ModelEntry(BaseModel):
     datasets: list[str]
 
 
+# ─── Improvement 8: lifespan context manager ─────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    """Startup: prime caches, validate, start poller. Shutdown: stop poller cleanly."""
+    _run_startup_checks()
+    _get_registry()  # prime TTL cache
+    _stop_event.clear()
+    _start_poller()
+    yield
+    _stop_event.set()
+    logger.info("Control plane shutting down — poller stop signal sent")
+
+
 # ─── App + auth ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="ExaMLOps Control Plane",
-    version="0.11.0",
+    version="0.12.0",
     description="Authoritative entry point for client-driven retraining requests and approval gates.",
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-def _on_startup() -> None:
-    _start_poller()
 
 
 def _require_token(authorization: str | None = Header(default=None)) -> None:
     """Bearer-token auth dependency for write endpoints."""
     if not CONTROL_PLANE_TOKEN:
-        # Fail closed — never silently authenticate when no token was set.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Control plane not configured (CONTROL_PLANE_TOKEN env var unset).",
@@ -250,6 +425,16 @@ def _require_token(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     if authorization.removeprefix("Bearer ").strip() != CONTROL_PLANE_TOKEN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid bearer token")
+
+
+def _check_rate_limit() -> None:
+    """Improvement 7: token-bucket rate limiter for write endpoints."""
+    if not _rate_limiter.consume():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded — too many requests",
+            headers={"Retry-After": "60"},
+        )
 
 
 # ─── ModelZoo webhook auth helpers ───────────────────────────────────────────
@@ -279,7 +464,7 @@ def _record_push_event(
 ) -> dict[str, Any]:
     """Insert event row, update all model_freshness rows to stale. Returns result dict."""
     now = datetime.utcnow().isoformat()
-    registry = _load_registry()
+    registry = _get_registry()
     event_id: int = 0
 
     with _DB_LOCK:
@@ -387,14 +572,13 @@ def _run_poll_cycle() -> dict[str, Any]:
     pushed_by: str = commits[0].get("author_name", "unknown")
     committed_at: str = commits[0].get("committed_date", datetime.utcnow().isoformat())
 
-    # Record the event — check for duplicate SHA inside the lock to avoid TOCTOU race
     now = datetime.utcnow().isoformat()
-    registry = _load_registry()
+    registry = _get_registry()
     event_id: int = 0
     with _DB_LOCK:
         conn = _get_db()
         try:
-            # Re-check inside lock to prevent concurrent webhook and poll from inserting duplicates
+            # Re-check inside lock to prevent concurrent webhook + poll inserting duplicates
             existing = conn.execute(
                 "SELECT id FROM modelzoo_events WHERE commit_sha = ?", (latest_sha,)
             ).fetchone()
@@ -436,21 +620,27 @@ def _run_poll_cycle() -> dict[str, Any]:
 
 
 def _start_poller() -> None:
-    """Start the background ModelZoo polling thread. No-op if poll interval is 0."""
+    """Start the background ModelZoo polling thread.
+
+    Improvement 10: uses _stop_event.wait() so shutdown can interrupt a sleep
+    immediately rather than waiting for the full interval to expire.
+    """
     if MODELZOO_POLL_SECONDS <= 0:
         logger.info("ModelZoo poller disabled (MODELZOO_POLL_SECONDS=0)")
         return
 
-    import time  # noqa: PLC0415
-
     def _loop() -> None:
-        logger.info("ModelZoo poller started (interval=%ds)", MODELZOO_POLL_SECONDS)
-        while True:
-            time.sleep(_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS))
+        global _poller_last_ok_ts
+        interval = _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
+        logger.info("ModelZoo poller started (interval=%ds)", interval)
+        while not _stop_event.wait(timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)):
             try:
                 _run_poll_cycle()
+                # Improvement 8: record successful cycle time (even if no new commit found)
+                _poller_last_ok_ts = time.time()
             except Exception as exc:
                 logger.warning("ModelZoo poll cycle error: %s", exc)
+        logger.info("ModelZoo poller stopped")
 
     t = threading.Thread(target=_loop, daemon=True, name="modelzoo-poller")
     t.start()
@@ -464,6 +654,8 @@ def _load_registry() -> dict[str, list[str]]:
 
     Reads pipelines/models/*.yaml directly — avoids importing pipeline_generator
     which transitively requires torch via the modelzoo configurator.
+
+    Use _get_registry() in request handlers — it wraps this with a 60 s TTL cache.
     """
     import yaml  # pyyaml is a declared dep of examlops-pipelines
 
@@ -501,9 +693,9 @@ def _load_registry() -> dict[str, list[str]]:
 class PrefectGateway:
     """Tiny urllib-based Prefect REST client.
 
-    Avoids hard-pinning the prefect-client SDK in the control-plane image —
-    we only need three endpoints (find deployment, create flow run, read flow
-    run). Plain HTTP is plenty.
+    Improvement 4: _get() and _post() retry up to 3 times with exponential
+    backoff (0.5 s / 1.0 s / 2.0 s) on connection errors and HTTP 5xx responses.
+    A prefect_retries_total counter tracks how often retries fire.
     """
 
     def __init__(self, api_url: str = PREFECT_API_URL) -> None:
@@ -545,45 +737,65 @@ class PrefectGateway:
     def get_flow_run(self, flow_run_id: str) -> dict[str, Any]:
         return self._get(f"{self.api_url}/flow_runs/{flow_run_id}")
 
-    # ── HTTP helpers ──────────────────────────────────────────────────────────
+    # ── HTTP helpers with retry ───────────────────────────────────────────────
+
+    _RETRY_DELAYS = (0.5, 1.0, 2.0)
 
     def _get(self, url: str) -> dict[str, Any]:
-        import json  # noqa: PLC0415
         import urllib.error  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise HTTPException(
-                status_code=exc.code, detail=f"Prefect GET {url} -> HTTP {exc.code}"
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"Prefect unreachable: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate(self._RETRY_DELAYS, start=1):
+            try:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500:
+                    raise HTTPException(
+                        status_code=exc.code, detail=f"Prefect GET {url} -> HTTP {exc.code}"
+                    ) from exc
+                last_exc = exc
+                _metrics.record_prefect_retry("GET")
+                logger.warning("Prefect GET %s -> %d (attempt %d), retrying in %.1fs", url, exc.code, attempt, delay)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                _metrics.record_prefect_retry("GET")
+                logger.warning("Prefect GET %s error (attempt %d): %s, retrying in %.1fs", url, attempt, exc, delay)
+            time.sleep(delay)
+        raise HTTPException(status_code=502, detail=f"Prefect unreachable after retries: {last_exc}") from last_exc
 
     def _post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
-        import json  # noqa: PLC0415
         import urllib.error  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
         data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise HTTPException(
-                status_code=exc.code, detail=f"Prefect POST {url} -> HTTP {exc.code}"
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"Prefect unreachable: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate(self._RETRY_DELAYS, start=1):
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500:
+                    raise HTTPException(
+                        status_code=exc.code, detail=f"Prefect POST {url} -> HTTP {exc.code}"
+                    ) from exc
+                last_exc = exc
+                _metrics.record_prefect_retry("POST")
+                logger.warning("Prefect POST %s -> %d (attempt %d), retrying in %.1fs", url, exc.code, attempt, delay)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                _metrics.record_prefect_retry("POST")
+                logger.warning("Prefect POST %s error (attempt %d): %s, retrying in %.1fs", url, attempt, exc, delay)
+            time.sleep(delay)
+        raise HTTPException(status_code=502, detail=f"Prefect unreachable after retries: {last_exc}") from last_exc
 
 
 _gateway: PrefectGateway | None = None
@@ -594,6 +806,16 @@ def _get_gateway() -> PrefectGateway:
     if _gateway is None:
         _gateway = PrefectGateway()
     return _gateway
+
+
+# ─── Improvement 6: Retrain deduplication ────────────────────────────────────
+
+_inflight_retrains: set[str] = set()
+_RETRAIN_LOCK = threading.Lock()
+
+
+def _retrain_key(model_name: str, dataset_name: str) -> str:
+    return f"{model_name}:{dataset_name}"
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -616,20 +838,39 @@ def health() -> dict[str, Any]:
         if conn:
             conn.close()
 
+    # Improvement 8: poller health info
+    poller_enabled = MODELZOO_POLL_SECONDS > 0
+    poller_info: dict[str, Any] = {"enabled": poller_enabled}
+    if poller_enabled:
+        last_ago = int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
+        poller_info["last_ok_seconds_ago"] = last_ago
+        poller_info["stale"] = _is_poller_stale()
+
+    # Overall status degrades if startup checks failed
+    all_checks_ok = all(v == "ok" for v in _startup_checks.values())
+    overall_status = "ok" if all_checks_ok else "degraded"
+
     return {
-        "status": "ok",
+        "status": overall_status,
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "auth_configured": bool(CONTROL_PLANE_TOKEN),
-        "models": _load_registry(),
+        "models": _get_registry(),
         "pending_approvals": pending_count,
+        # Improvement 9: startup validation results
+        "startup_checks": _startup_checks,
+        # Improvement 8: poller health
+        "poller": poller_info,
     }
 
 
 @app.get("/status")
 def platform_status() -> dict[str, Any]:
-    """Aggregate health snapshot of all ExaMLOps services."""
-    import urllib.error  # noqa: PLC0415
+    """Aggregate health snapshot of all ExaMLOps services.
+
+    Improvement 5: all downstream pings run concurrently via ThreadPoolExecutor,
+    capping worst-case latency at max(timeout) instead of sum(timeout).
+    """
     import urllib.request  # noqa: PLC0415
 
     def _ping(url: str) -> bool:
@@ -661,7 +902,18 @@ def platform_status() -> dict[str, Any]:
         if conn:
             conn.close()
 
-    ray_ok, ray_data = _ping_json(f"{RAY_SERVE_URL}/models")
+    # Improvement 5: fan out all pings concurrently
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_mlflow = pool.submit(_ping, f"{MLFLOW_URL}/health")
+        f_prefect = pool.submit(_ping, f"{PREFECT_API_URL}/health")
+        f_ray = pool.submit(_ping_json, f"{RAY_SERVE_URL}/models")
+        f_dashboard = pool.submit(_ping, f"{DASHBOARD_URL}/api/health")
+
+        mlflow_ok = f_mlflow.result()
+        prefect_ok = f_prefect.result()
+        ray_ok, ray_data = f_ray.result()
+        dashboard_ok = f_dashboard.result()
+
     ray_models: list[str] = (
         [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])]
         if ray_ok else []
@@ -670,10 +922,10 @@ def platform_status() -> dict[str, Any]:
     return {
         "services": {
             "control_plane": {"ok": True},
-            "mlflow":        {"ok": _ping(f"{MLFLOW_URL}/health")},
-            "prefect":       {"ok": _ping(f"{PREFECT_API_URL}/health")},
+            "mlflow":        {"ok": mlflow_ok},
+            "prefect":       {"ok": prefect_ok},
             "ray_serve":     {"ok": ray_ok, "models": ray_models},
-            "dashboard":     {"ok": _ping(f"{DASHBOARD_URL}/api/health")},
+            "dashboard":     {"ok": dashboard_ok},
         },
         "pending_approvals": pending_count,
     }
@@ -684,19 +936,26 @@ def list_models() -> list[ModelEntry]:
     """Models the control plane can trigger retrains for."""
     return [
         ModelEntry(model_name=name, datasets=datasets)
-        for name, datasets in _load_registry().items()
+        for name, datasets in _get_registry().items()
     ]
 
 
-@app.post("/retrain", response_model=RetrainResponse, dependencies=[Depends(_require_token)])
+@app.post(
+    "/retrain",
+    response_model=RetrainResponse,
+    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+)
 def trigger_retrain(req: RetrainRequest) -> RetrainResponse:
     """Schedule a Prefect flow run for ``training_flow`` with the given args.
 
     Validates that ``model_name`` and ``dataset_name`` are known to the
     auto-discovery registry before talking to Prefect, so a stale client can't
     spawn ghost runs.
+
+    Improvement 6: returns 409 if a retrain for the same model+dataset is already
+    in-flight, preventing duplicate Prefect job creation from concurrent requests.
     """
-    registry = _load_registry()
+    registry = _get_registry()
     if req.model_name not in registry:
         raise HTTPException(
             status_code=400,
@@ -714,6 +973,16 @@ def trigger_retrain(req: RetrainRequest) -> RetrainResponse:
             ),
         )
 
+    # Improvement 6: deduplication guard
+    key = _retrain_key(req.model_name, req.dataset_name)
+    with _RETRAIN_LOCK:
+        if key in _inflight_retrains:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Retrain already in-flight for {req.model_name}:{req.dataset_name}",
+            )
+        _inflight_retrains.add(key)
+
     parameters: dict[str, Any] = {
         "model_name": req.model_name,
         "dataset_cls_name": req.dataset_name,
@@ -723,8 +992,12 @@ def trigger_retrain(req: RetrainRequest) -> RetrainResponse:
     }
 
     gateway = _get_gateway()
-    deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
-    flow_run_id = gateway.create_flow_run(deployment_id, parameters)
+    try:
+        deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
+        flow_run_id = gateway.create_flow_run(deployment_id, parameters)
+    finally:
+        with _RETRAIN_LOCK:
+            _inflight_retrains.discard(key)
 
     logger.info(
         "Scheduled retrain — model=%s dataset=%s flow_run_id=%s",
@@ -752,7 +1025,7 @@ def retrain_status(flow_run_id: str) -> FlowRunStatus:
     )
 
 
-# ─── Phase 11 — ModelZoo webhook receivers ───────────────────────────────────
+# ─── ModelZoo webhook receivers ───────────────────────────────────────────────
 
 
 @app.post("/webhooks/modelzoo/gitlab")
@@ -844,10 +1117,13 @@ def get_model_bundled_image(name: str, filename: str) -> Response:
     return Response(content=data, media_type=content_type)
 
 
-# ─── Phase 11 — approval gate endpoints ─────────────────────────────────────
+# ─── Approval gate endpoints ─────────────────────────────────────────────────
 
 
-@app.post("/api/changes", dependencies=[Depends(_require_token)])
+@app.post(
+    "/api/changes",
+    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+)
 def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
     """Receive a change notification (e.g. from GitLab CI) and create pending approval rows.
 
@@ -960,7 +1236,10 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
     return entries
 
 
-@app.post("/approve/{model_id}", dependencies=[Depends(_require_token)])
+@app.post(
+    "/approve/{model_id}",
+    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+)
 def approve_model(model_id: str) -> dict[str, Any]:
     """Approve the most recent pending change for *model_id* and trigger a Prefect flow run."""
     # Step 1: read pending row — short DB op, lock released immediately after
@@ -984,7 +1263,7 @@ def approve_model(model_id: str) -> dict[str, Any]:
     row_id: str = row[0]
 
     # Determine dataset: use first supported dataset from registry
-    registry = _load_registry()
+    registry = _get_registry()
     datasets = registry.get(model_id, [])
     if not datasets:
         raise HTTPException(
@@ -1003,7 +1282,7 @@ def approve_model(model_id: str) -> dict[str, Any]:
         "backend_name": None,
     }
 
-    # Step 2: call Prefect WITHOUT holding the lock (blocking network I/O, up to 10 s)
+    # Step 2: call Prefect WITHOUT holding the lock (blocking network I/O, up to ~10 s w/ retries)
     gateway = _get_gateway()
     deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
     flow_run_id: str = gateway.create_flow_run(deployment_id, parameters)
@@ -1038,7 +1317,10 @@ def approve_model(model_id: str) -> dict[str, Any]:
     }
 
 
-@app.post("/reject/{model_id}", dependencies=[Depends(_require_token)])
+@app.post(
+    "/reject/{model_id}",
+    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+)
 def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[str, Any]:
     """Reject the most recent pending change for *model_id*."""
     pending_count = 0
@@ -1051,7 +1333,6 @@ def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[s
                 "ORDER BY requested_at DESC LIMIT 1",
                 (model_id,),
             ).fetchone()
-            # Lock is released even when HTTPException propagates (Python `with` guarantee).
             if not row:
                 raise HTTPException(
                     status_code=404,
@@ -1091,7 +1372,6 @@ def metrics_endpoint() -> Response:
                 ).fetchone()
             finally:
                 conn.close()
-        # MIN() always returns one row; row[0] is None when the table is empty.
         _metrics.update_age(row[0])
     except Exception as exc:
         logger.error("metrics_endpoint: DB read failed, age gauge set to 0: %s", exc)
@@ -1099,7 +1379,7 @@ def metrics_endpoint() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-# ─── Phase 12 — ModelZoo integration endpoints ───────────────────────────────
+# ─── ModelZoo integration endpoints ──────────────────────────────────────────
 
 
 @app.get("/modelzoo/status")
@@ -1119,7 +1399,7 @@ def modelzoo_status() -> dict[str, Any]:
         conn.close()
 
     freshness_map = {row[0]: row for row in freshness_rows}
-    registry = _load_registry()
+    registry = _get_registry()
     models = []
     for model_id in registry:
         row = freshness_map.get(model_id)
@@ -1179,7 +1459,7 @@ def modelzoo_sync() -> dict[str, Any]:
     return {
         "new_commit": True,
         "commit_sha": result.get("commit_sha"),
-        "models_marked_stale": len(_load_registry()),
+        "models_marked_stale": len(_get_registry()),
     }
 
 
@@ -1208,12 +1488,13 @@ def update_modelzoo_config(body: ModelzooConfigUpdate) -> dict[str, Any]:
 
 
 def main() -> None:
-    if not CONTROL_PLANE_TOKEN:
-        logger.warning(
-            "CONTROL_PLANE_TOKEN is empty — POST /retrain will fail with 503 "
-            "until you set it. Read-only endpoints will still work."
-        )
-    uvicorn.run(app, host="0.0.0.0", port=CONTROL_PLANE_PORT, log_level="info")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=CONTROL_PLANE_PORT,
+        log_level="info",
+        timeout_graceful_shutdown=10,
+    )
 
 
 if __name__ == "__main__":

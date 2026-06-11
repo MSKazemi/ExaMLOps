@@ -4,13 +4,13 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from exa_agent import config
 from exa_agent.confirm import _is_affirmative
 from exa_agent.graph import build_graph
-from exa_agent.llm import check_ollama
+from exa_agent.llm import check_backend
 
 _COMMANDS = {
     "/help": "Show this help",
@@ -18,32 +18,61 @@ _COMMANDS = {
     "/new": "Start a fresh conversation thread",
     "/resume <id>": "Resume a saved thread",
     "/threads": "List saved thread ids",
-    "/model <name>": "Switch the Ollama model",
-    "/report": "Generate a platform status report",
+    "/model <name>": "Switch the LLM model (rebuilds graph immediately)",
+    "/report": "Generate a comprehensive platform status report",
     "/exit": "Quit",
 }
+
+_REPORT_PROMPT = (
+    "Generate a comprehensive platform status report. Include: "
+    "(1) executive summary of overall health, "
+    "(2) production models with current metrics, drift scores, and any anomalies, "
+    "(3) pending approval queue with recommendations, "
+    "(4) recent training runs and outcomes, "
+    "(5) top 3 issues requiring operator attention with suggested actions. "
+    "Format as a structured Markdown report."
+)
 
 
 @dataclass
 class CliState:
     thread_id: str = field(default_factory=lambda: f"cli-{uuid.uuid4().hex[:8]}")
-    model: str = config.AGENT_MODEL
+    model: str = field(
+        default_factory=lambda: config.ANTHROPIC_MODEL if config.ANTHROPIC_API_KEY else config.AGENT_MODEL
+    )
 
 
 def format_interrupt(payload: dict) -> str:
     return f"[confirm] {payload.get('action')}: {payload.get('summary', '')}"
 
 
-def handle_slash(text: str, state: CliState, graph=None) -> bool:
-    """Handle a slash-command. Returns True if the input was a command."""
+def _extract_text(content) -> str:
+    """Extract visible text from message content, filtering out thinking blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text"
+            else (block if isinstance(block, str) else "")
+            for block in content
+        )
+    return ""
+
+
+def handle_slash(text: str, state: CliState, graph=None) -> tuple[bool, object]:
+    """Handle a slash-command. Returns (was_command, graph).
+
+    The graph may be replaced (e.g. on /model switch); callers must update
+    their local reference from the returned value.
+    """
     if not text.startswith("/"):
-        return False
+        return False, graph
     parts = text.split(maxsplit=1)
     cmd, arg = parts[0], (parts[1] if len(parts) > 1 else "")
 
     if cmd == "/help":
         for name, desc in _COMMANDS.items():
-            print(f"  {name:<16} {desc}")
+            print(f"  {name:<22} {desc}")
     elif cmd == "/tools":
         from exa_agent.tools import TOOLS
 
@@ -68,54 +97,96 @@ def handle_slash(text: str, state: CliState, graph=None) -> bool:
     elif cmd == "/model":
         if arg:
             state.model = arg.strip()
-            print(f"Model set to {state.model} (restart turn to apply)")
+            graph = build_graph(model=state.model)
+            print(f"Model switched to {state.model}")
         else:
-            print("Usage: /model <name>")
+            print(f"Current model: {state.model}  (usage: /model <name>)")
+    elif cmd == "/report":
+        if graph is not None:
+            run_turn(graph, state, _REPORT_PROMPT)
     elif cmd in ("/exit", "/quit"):
         raise SystemExit(0)
     else:
         print(f"Unknown command: {cmd}")
-    return True
-
-
-def _print_new_messages(messages: list, already: int) -> int:
-    for msg in messages[already:]:
-        if isinstance(msg, ToolMessage):
-            print(f"  [tool: {msg.name}]")
-        elif isinstance(msg, AIMessage) and msg.content:
-            print(f"\n{msg.content}\n")
-    return len(messages)
+    return True, graph
 
 
 def run_turn(graph, state: CliState, user_input: str) -> None:
     cfg = {"configurable": {"thread_id": state.thread_id}}
-    # Baseline: messages already in this thread's history so we only print
-    # messages produced by THIS turn (graph.invoke returns full accumulated history).
-    try:
-        printed = len(graph.get_state(cfg).values.get("messages", []))
-    except Exception:
-        printed = 0
     inp: object = {"messages": [HumanMessage(content=user_input)]}
+
     while True:
-        result = graph.invoke(inp, cfg)
-        if "__interrupt__" in result:
-            payload = result["__interrupt__"][0].value
-            print(format_interrupt(payload))
-            answer = input("Proceed? [y/N] ").strip()
-            inp = Command(resume=answer if _is_affirmative(answer) else "no")
-            continue
-        printed = _print_new_messages(result.get("messages", []), printed)
+        in_ai_block = False
+
+        try:
+            for item in graph.stream(inp, cfg, stream_mode="messages"):
+                if not isinstance(item, tuple) or len(item) != 2:
+                    continue
+                msg, _meta = item
+                if isinstance(msg, AIMessageChunk):
+                    text = _extract_text(msg.content)
+                    if text:
+                        if not in_ai_block:
+                            print()
+                            in_ai_block = True
+                        print(text, end="", flush=True)
+                elif isinstance(msg, ToolMessage):
+                    if in_ai_block:
+                        print("\n")
+                        in_ai_block = False
+                    print(f"  [tool: {msg.name}]")
+        except KeyboardInterrupt:
+            if in_ai_block:
+                print()
+            print("[interrupted]")
+            return
+        except Exception as exc:
+            if in_ai_block:
+                print("\n")
+                in_ai_block = False
+            print(f"[error] {exc}")
+            return
+
+        if in_ai_block:
+            print("\n")
+
+        # Check for a pending interrupt (write-protection confirmation gate)
+        try:
+            tasks = graph.get_state(cfg).tasks or []
+            intr = next(
+                (i for t in tasks for i in getattr(t, "interrupts", [])),
+                None,
+            )
+            if intr is not None:
+                print(format_interrupt(intr.value))
+                answer = input("Proceed? [y/N] ").strip()
+                inp = Command(resume=answer if _is_affirmative(answer) else "no")
+                continue
+        except Exception:
+            pass
         break
 
 
 def main() -> None:
-    if not check_ollama():
-        print(f"Error: Ollama is not reachable at {config.AGENT_OLLAMA_URL}. Start it (ollama-tunnel start).")
+    info = check_backend()
+    if not info["ok"]:
+        print(
+            f"Error: Ollama not reachable at {config.AGENT_OLLAMA_URL}. "
+            "Start it (ollama-tunnel start) or set ANTHROPIC_API_KEY."
+        )
         sys.exit(1)
-    state = CliState()
+
+    state = CliState(model=info["model"])
     graph = build_graph(model=state.model)
-    print(f"ExaMLOps Agent  (model: {state.model}  ·  ollama: {config.AGENT_OLLAMA_URL})")
+
+    if info["type"] == "claude":
+        backend_label = f"claude · {state.model}"
+    else:
+        backend_label = f"ollama · {state.model}  ·  {config.AGENT_OLLAMA_URL}"
+
+    print(f"ExaMLOps Agent  ({backend_label})")
     print("Type a question, or /help for commands.\n")
+
     while True:
         try:
             text = input("ExaMLOps Agent > ").strip()
@@ -125,7 +196,8 @@ def main() -> None:
         if not text:
             continue
         try:
-            if handle_slash(text, state, graph):
+            is_cmd, graph = handle_slash(text, state, graph)
+            if is_cmd:
                 continue
         except SystemExit:
             print("Goodbye.")
