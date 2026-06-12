@@ -115,6 +115,10 @@ test:modelzoo:
   stage: test
   image: python:3.12-slim
   interruptible: true
+  # modelzoo/ is a read-only upstream mirror (its own repo owns formatting/tests),
+  # so its CI result must not block the ai-production deploy — matches the
+  # `optional: true` intent in deploy:lxp's needs. Surfaces problems without gating.
+  allow_failure: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
     - changes:
