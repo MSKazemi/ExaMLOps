@@ -110,17 +110,25 @@ sanity:check-structure:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── ModelZoo: unit + smoke + integration (Poetry) ────────────────────────────
+#
+# Always clones the real upstream modelzoo repo (main branch) so tests never
+# run against a stale on-disk copy.  Triggered three ways:
+#   1. Normal push that touches modelzoo/**/* or .gitlab-ci.yml
+#   2. Pipeline trigger — fired by the control plane when modelzoo pushes to main
+#   3. Scheduled pipeline — catches any drift not covered by webhooks
+#
+# allow_failure: modelzoo owns its own quality gate; a failure here surfaces
+# the problem without blocking the ai-production deploy.
 
 test:modelzoo:
   stage: test
   image: python:3.12-slim
   interruptible: true
-  # modelzoo/ is a read-only upstream mirror (its own repo owns formatting/tests),
-  # so its CI result must not block the ai-production deploy — matches the
-  # `optional: true` intent in deploy:lxp's needs. Surfaces problems without gating.
   allow_failure: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"
+      when: on_success
     - changes:
         - modelzoo/**/*
         - .gitlab-ci.yml
@@ -130,12 +138,17 @@ test:modelzoo:
     - <<: *poetry_cache
       policy: pull-push
   before_script:
+    - apt-get update -qq && apt-get install -y -qq git
     - pip install --quiet --upgrade pip
     - pip install --quiet poetry
-    - cd modelzoo
+    - git clone --depth=1
+        "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/software/modelzoo.git"
+        modelzoo_fresh
+    - cd modelzoo_fresh
     - poetry config virtualenvs.create false
     - poetry install --no-interaction --with dev,ci
   script:
+    - mkdir -p ../reports
     - ruff check seanergys_modelzoo ci tests
     - ruff format --check seanergys_modelzoo ci tests
     - mypy seanergys_modelzoo ci tests --ignore-missing-imports --explicit-package-bases || true

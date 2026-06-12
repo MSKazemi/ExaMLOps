@@ -278,3 +278,90 @@ def test_modelzoo_config_update(client):
     data = resp.json()
     assert data["auto_retrain"] is True
     assert data["poll_interval_seconds"] == 120
+
+
+# ── CI pipeline trigger tests ─────────────────────────────────────────────────
+
+
+def _mock_pipeline_trigger_response(pipeline_id: int = 999):
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _json.dumps(
+        {"id": pipeline_id, "web_url": f"https://gitlab.example.com/pipelines/{pipeline_id}"}
+    ).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_trigger_ci_pipeline_skipped_without_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "trigger_test.db"))
+    monkeypatch.delenv("AI_PROD_GITLAB_PROJECT_ID", raising=False)
+    monkeypatch.delenv("AI_PROD_PIPELINE_TRIGGER_TOKEN", raising=False)
+    import importlib
+
+    import app as cp_app
+
+    importlib.reload(cp_app)
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        result = cp_app._trigger_ci_pipeline("deadbeef" * 5)
+
+    assert result is False
+    mock_urlopen.assert_not_called()
+
+
+def test_trigger_ci_pipeline_calls_gitlab_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "trigger_test2.db"))
+    monkeypatch.setenv("AI_PROD_GITLAB_PROJECT_ID", "88")
+    monkeypatch.setenv("AI_PROD_PIPELINE_TRIGGER_TOKEN", "ci-tok")
+    monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.com")
+    import importlib
+
+    import app as cp_app
+
+    importlib.reload(cp_app)
+
+    sha = "cafecafe" * 5
+    with patch("urllib.request.urlopen", return_value=_mock_pipeline_trigger_response()) as mock_ul:
+        result = cp_app._trigger_ci_pipeline(sha)
+
+    assert result is True
+    called_url = mock_ul.call_args[0][0].full_url
+    assert "projects/88/trigger/pipeline" in called_url
+
+
+def test_webhook_response_includes_ci_pipeline_triggered(client):
+    r = client.post(
+        "/webhooks/modelzoo/gitlab",
+        json=_GITLAB_PUSH,
+        headers={"X-Gitlab-Token": "webhook-secret"},
+    )
+    assert r.status_code == 200
+    assert "ci_pipeline_triggered" in r.json()
+
+
+def test_poll_cycle_triggers_ci_pipeline_on_new_commit(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "poll_trigger.db"))
+    monkeypatch.setenv("GITLAB_TOKEN", "tok")
+    monkeypatch.setenv("GITLAB_PROJECT_ID", "42")
+    monkeypatch.setenv("AI_PROD_GITLAB_PROJECT_ID", "88")
+    monkeypatch.setenv("AI_PROD_PIPELINE_TRIGGER_TOKEN", "ci-tok")
+    monkeypatch.setenv("GITLAB_URL", "https://gitlab.example.com")
+    import importlib
+
+    import app as cp_app
+
+    importlib.reload(cp_app)
+
+    new_sha = "feedface" * 5
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[
+            _mock_gitlab_commits(new_sha),       # poll: fetch latest commit
+            _mock_pipeline_trigger_response(),   # trigger: fire CI pipeline
+        ],
+    ):
+        result = cp_app._run_poll_cycle()
+
+    assert result.get("new") is True
+    assert result["commit_sha"] == new_sha
