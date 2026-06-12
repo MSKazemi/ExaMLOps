@@ -38,7 +38,10 @@ def test_pipeline_deploy_model():
 
 def test_pipeline_deploy_with_registry_and_env():
     with patch("subprocess.run") as mock_run:
-        result = runner.invoke(app, ["pipeline", "deploy", "--registry", "pipelines/model_registry.yaml", "--env", "prod"])
+        result = runner.invoke(
+            app,
+            ["pipeline", "deploy", "--registry", "pipelines/model_registry.yaml", "--env", "prod"],
+        )
     assert result.exit_code == 0
     cmd = mock_run.call_args[0][0]
     assert "--registry" in cmd and "--env" in cmd and "prod" in cmd

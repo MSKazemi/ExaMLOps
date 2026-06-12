@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-05-01
 
 """
+
 from alembic import op
 
 revision = "c3d6457b6d8a"
@@ -101,7 +102,9 @@ def upgrade() -> None:
                 CONSTRAINT uq_model_doc_images_model_object UNIQUE (model_name, object_key)
             )
         """)
-        op.execute("CREATE INDEX IF NOT EXISTS ix_model_doc_images_model ON model_doc_images(model_name)")
+        op.execute(
+            "CREATE INDEX IF NOT EXISTS ix_model_doc_images_model ON model_doc_images(model_name)"
+        )
     else:
         op.execute("""
             CREATE TABLE IF NOT EXISTS model_doc_images (
@@ -116,7 +119,9 @@ def upgrade() -> None:
                 CONSTRAINT uq_model_doc_images_model_object UNIQUE (model_name, object_key)
             )
         """)
-        op.execute("CREATE INDEX IF NOT EXISTS ix_model_doc_images_model ON model_doc_images(model_name)")
+        op.execute(
+            "CREATE INDEX IF NOT EXISTS ix_model_doc_images_model ON model_doc_images(model_name)"
+        )
 
 
 def downgrade() -> None:

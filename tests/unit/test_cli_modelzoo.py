@@ -1,4 +1,5 @@
 """Tests for exa modelzoo command group."""
+
 from __future__ import annotations
 
 import json
@@ -32,12 +33,22 @@ def _mock_get(url: str, token: str = ""):
                     "retrain_triggered_at": None,
                 },
             ],
-            "last_event": {"commit_sha": "abc12345", "timestamp": "2026-05-21T10:00:00", "source": "webhook"},
+            "last_event": {
+                "commit_sha": "abc12345",
+                "timestamp": "2026-05-21T10:00:00",
+                "source": "webhook",
+            },
         }
     if "/modelzoo/events" in url:
         return [
-            {"id": 1, "commit_sha": "abc12345", "branch": "main",
-             "pushed_by": "alice", "timestamp": "2026-05-21T10:00:00", "source": "webhook"},
+            {
+                "id": 1,
+                "commit_sha": "abc12345",
+                "branch": "main",
+                "pushed_by": "alice",
+                "timestamp": "2026-05-21T10:00:00",
+                "source": "webhook",
+            },
         ]
     if "/modelzoo/config" in url:
         return {"auto_retrain": False, "poll_interval_seconds": 300, "watch_branch": "main"}

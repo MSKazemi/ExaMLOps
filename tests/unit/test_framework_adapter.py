@@ -46,11 +46,22 @@ class TestRegistry:
     def test_register_adapter_extends_the_registry(self):
         class FakeAdapter:
             flavour = "fake"
-            def fit(self, m, loader): return {}
-            def predict(self, m, x): return None
-            def save(self, m, p): return p
-            def load(self, m, p): return None
-            def log_mlflow(self, m, n): pass
+
+            def fit(self, m, loader):
+                return {}
+
+            def predict(self, m, x):
+                return None
+
+            def save(self, m, p):
+                return p
+
+            def load(self, m, p):
+                return None
+
+            def log_mlflow(self, m, n):
+                pass
+
         try:
             fa.register_adapter("fake", FakeAdapter)
             assert isinstance(fa.get_adapter("fake"), FakeAdapter)
@@ -145,13 +156,24 @@ class TestLLMAgentSkeleton:
         )
 
         class StubAgent(SeanergysLLMAgent):
-            def build_model(self): pass
-            def train(self, *a, **k): return {}
-            def predict(self, *a, **k): return None
-            def evaluate(self, *a, **k): return []
-            def save(self, *a, **k): return True
+            def build_model(self):
+                pass
+
+            def train(self, *a, **k):
+                return {}
+
+            def predict(self, *a, **k):
+                return None
+
+            def evaluate(self, *a, **k):
+                return []
+
+            def save(self, *a, **k):
+                return True
+
             @classmethod
-            def load(cls, *a, **k): return None  # not exercised here
+            def load(cls, *a, **k):
+                return None  # not exercised here
 
         agent = StubAgent(
             metadata=SeanergysModelMetadata(name="stub-agent"),

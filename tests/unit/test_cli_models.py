@@ -13,10 +13,14 @@ runner = CliRunner()
 
 FAKE_MODELS_RESP = {
     "registered_models": [
-        {"name": "jpcp", "aliases": [{"alias": "Production", "version": "3"}],
-         "latest_versions": [{"version": "3", "current_stage": "None"}]},
+        {
+            "name": "jpcp",
+            "aliases": [{"alias": "Production", "version": "3"}],
+            "latest_versions": [{"version": "3", "current_stage": "None"}],
+        },
     ]
 }
+
 
 def test_models_list():
     with patch("examlops.cli.commands.models._client.get", return_value=FAKE_MODELS_RESP):
@@ -24,10 +28,12 @@ def test_models_list():
     assert result.exit_code == 0
     assert "jpcp" in result.output
 
+
 def test_models_list_json():
     with patch("examlops.cli.commands.models._client.get", return_value=FAKE_MODELS_RESP):
         result = runner.invoke(app, ["--json", "models", "list"])
     assert "jpcp" in result.output
+
 
 def test_models_info():
     fake_info = {"registered_model": {"name": "jpcp", "aliases": [], "latest_versions": []}}

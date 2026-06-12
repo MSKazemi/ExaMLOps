@@ -1,4 +1,5 @@
 """Shadow deployment — reads shadow_config and shadow_results from platform.db."""
+
 from __future__ import annotations
 
 import os

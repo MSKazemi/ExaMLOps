@@ -1,4 +1,5 @@
 """Tests for YAMLBackedConfig — the YAML-driven drop-in for SeanergysModelConfiguration."""
+
 from __future__ import annotations
 
 import sys
@@ -76,6 +77,7 @@ def test_model_class_is_correct():
 
 def test_get_train_components_signature_accepts_backend():
     import inspect
+
     backed = _make_backed("jpcp")
     sig = inspect.signature(backed.get_train_components)
     assert "backend_name" in sig.parameters
@@ -86,6 +88,7 @@ def test_parse_filter_value_utc_timestamp():
     import pandas as pd
 
     from pipelines.pipeline_generator import _parse_filter_value
+
     ts = _parse_filter_value("2020-05-01T00:00:00+00:00")
     assert isinstance(ts, pd.Timestamp)
     assert ts.tz is not None  # timezone-aware
@@ -94,6 +97,7 @@ def test_parse_filter_value_utc_timestamp():
 def test_parse_filter_value_plain_date():
     """Plain date strings (no T) must stay as str — FData parquet stores date columns as string."""
     from pipelines.pipeline_generator import _parse_filter_value
+
     result = _parse_filter_value("2023-12-01")
     assert isinstance(result, str)
     assert result == "2023-12-01"
@@ -101,6 +105,7 @@ def test_parse_filter_value_plain_date():
 
 def test_parse_filter_value_non_date_passthrough():
     from pipelines.pipeline_generator import _parse_filter_value
+
     assert _parse_filter_value(">=") == ">="
     assert _parse_filter_value(42) == 42
 

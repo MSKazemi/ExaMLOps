@@ -25,11 +25,12 @@ from seanergys_modelzoo.models.tasks.power_consumption_prediction.demoad.demoad_
 
 # Regression target — scalar reduction from raw output features.
 
+
 def _scalar_target_transform(f):
     """Map raw target tuple to a single scalar (override for your model)."""
     import numpy as np
-    return float(np.mean(f) if hasattr(f, "__iter__") else f)
 
+    return float(np.mean(f) if hasattr(f, "__iter__") else f)
 
 
 class DemoADConfiguration(SeanergysModelConfiguration):
@@ -95,9 +96,24 @@ class DemoADConfiguration(SeanergysModelConfiguration):
         return {
             "model_id": "demoad",
             "lifecycle": [
-                {"name": "Staging",    "metric": "accuracy", "threshold": 0.7, "direction": "higher_is_better"},
-                {"name": "Canary",     "metric": "accuracy", "threshold": 0.7, "direction": "higher_is_better"},
-                {"name": "Production", "metric": "accuracy", "threshold": 0.7, "direction": "higher_is_better"},
+                {
+                    "name": "Staging",
+                    "metric": "accuracy",
+                    "threshold": 0.7,
+                    "direction": "higher_is_better",
+                },
+                {
+                    "name": "Canary",
+                    "metric": "accuracy",
+                    "threshold": 0.7,
+                    "direction": "higher_is_better",
+                },
+                {
+                    "name": "Production",
+                    "metric": "accuracy",
+                    "threshold": 0.7,
+                    "direction": "higher_is_better",
+                },
             ],
             # Legacy single-stage gate (kept in sync with the Production rule).
             "promotion_metric": "accuracy",
@@ -113,9 +129,7 @@ class DemoADConfiguration(SeanergysModelConfiguration):
         if dataset_cls is FDataDataset:
             return cls._fdata_params(is_dummy, split)
         supported = [d.__name__ for d in cls.SUPPORTED_DATASETS]
-        raise ValueError(
-            f"Unsupported dataset: {dataset_cls.__name__}. Supported: {supported}"
-        )
+        raise ValueError(f"Unsupported dataset: {dataset_cls.__name__}. Supported: {supported}")
 
     @classmethod
     def _fdata_params(cls, is_dummy: bool, split: str):

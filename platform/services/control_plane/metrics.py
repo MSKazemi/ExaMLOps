@@ -80,7 +80,9 @@ def record_retrain(model_name: str, dataset_name: str, outcome: str) -> None:
 
 
 def observe_retrain_duration(model_name: str, dataset_name: str, duration_seconds: float) -> None:
-    retrain_duration.labels(model_name=model_name, dataset_name=dataset_name).observe(duration_seconds)
+    retrain_duration.labels(model_name=model_name, dataset_name=dataset_name).observe(
+        duration_seconds
+    )
 
 
 def record_approvals_expired(count: int) -> None:

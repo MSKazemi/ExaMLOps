@@ -19,18 +19,15 @@ def _improvement_direction(metric: str) -> str:
             return "lower"
     return "higher"
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
 
-_EXAMPLES_LIST = (
-    "Examples:\n\n"
-    "  exa models list\n\n"
-    "  exa --json models list"
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
-_EXAMPLES_INFO = (
-    "Examples:\n\n"
-    "  exa models info jpcp\n\n"
-    "  exa --json models info jpcp"
-)
+
+_EXAMPLES_LIST = "Examples:\n\n  exa models list\n\n  exa --json models list"
+_EXAMPLES_INFO = "Examples:\n\n  exa models info jpcp\n\n  exa --json models info jpcp"
 
 
 @app.command("list", epilog=_EXAMPLES_LIST)
@@ -57,29 +54,29 @@ def list_models():
 def info(model: str = typer.Argument(..., help="Registered model name (e.g. jpcp)")):
     """Show detail for one model: all versions, aliases, metrics."""
     cfg = load_config()
-    url = (f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
-           f"?name={urllib.parse.quote(model)}")
+    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get?name={urllib.parse.quote(model)}"
     try:
         data = _client.get(url)
     except _client.ClientError as e:
-        _output.error(f"Failed to fetch model {model!r}: {e}", hint="Check model name with: exa models list")
+        _output.error(
+            f"Failed to fetch model {model!r}: {e}", hint="Check model name with: exa models list"
+        )
         return
     rm = data.get("registered_model", {})
     if _output.json_mode:
         _output.print_json(rm)
         return
-    _output.print_record({
-        "name":     rm.get("name"),
-        "aliases":  ", ".join(f"{a['alias']}=v{a['version']}" for a in rm.get("aliases", [])) or "none",
-        "versions": ", ".join(v["version"] for v in rm.get("latest_versions", [])) or "none",
-    })
+    _output.print_record(
+        {
+            "name": rm.get("name"),
+            "aliases": ", ".join(f"{a['alias']}=v{a['version']}" for a in rm.get("aliases", []))
+            or "none",
+            "versions": ", ".join(v["version"] for v in rm.get("latest_versions", [])) or "none",
+        }
+    )
 
 
-_EXAMPLES_DIFF = (
-    "Examples:\n\n"
-    "  exa models diff jpcp 17 18\n\n"
-    "  exa --json models diff jpcp 17 18"
-)
+_EXAMPLES_DIFF = "Examples:\n\n  exa models diff jpcp 17 18\n\n  exa --json models diff jpcp 17 18"
 
 
 @app.command(epilog=_EXAMPLES_DIFF)
@@ -123,24 +120,21 @@ def diff(
     all_params = sorted(set(params1) | set(params2))
 
     if _output.json_mode:
-        _output.print_json({
-            "model": model,
-            "v1": v1,
-            "v2": v2,
-            "metrics": {
-                k: {"v1": metrics1.get(k), "v2": metrics2.get(k)}
-                for k in all_metrics
-            },
-            "params": {
-                k: {"v1": params1.get(k), "v2": params2.get(k)}
-                for k in all_params
-            },
-        })
+        _output.print_json(
+            {
+                "model": model,
+                "v1": v1,
+                "v2": v2,
+                "metrics": {k: {"v1": metrics1.get(k), "v2": metrics2.get(k)} for k in all_metrics},
+                "params": {k: {"v1": params1.get(k), "v2": params2.get(k)} for k in all_params},
+            }
+        )
         return
 
     from rich.table import Table
 
     from examlops.cli._output import console
+
     table = Table(title=f"{model}  v{v1} → v{v2}", show_header=True, header_style="bold cyan")
     table.add_column("Name")
     table.add_column(f"v{v1}")
@@ -200,8 +194,7 @@ def lineage(
             _output.error(str(e))
             return
         aliases = {
-            a["alias"]: a["version"]
-            for a in rm_data.get("registered_model", {}).get("aliases", [])
+            a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])
         }
         version = aliases.get("Production") or next(iter(aliases.values()), None)
         if not version:
@@ -222,9 +215,7 @@ def lineage(
     created_ms = mv.get("creation_timestamp", 0)
 
     try:
-        run_data = _client.get(
-            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
-        )
+        run_data = _client.get(f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}")
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -239,20 +230,23 @@ def lineage(
     training_rows = tags.get("training_rows", "unknown")
 
     if _output.json_mode:
-        _output.print_json({
-            "model": model,
-            "model_version": version,
-            "run_id": run_id,
-            "created_ms": created_ms,
-            "prefect_flow_run_id": prefect_run,
-            "dataset_version": dataset_version,
-            "training_rows": training_rows,
-            "params": params,
-            "metrics": metrics,
-        })
+        _output.print_json(
+            {
+                "model": model,
+                "model_version": version,
+                "run_id": run_id,
+                "created_ms": created_ms,
+                "prefect_flow_run_id": prefect_run,
+                "dataset_version": dataset_version,
+                "training_rows": training_rows,
+                "params": params,
+                "metrics": metrics,
+            }
+        )
         return
 
     from examlops.cli._output import console
+
     console.print(f"\n[bold cyan]Lineage — {model} v{version}[/bold cyan]")
     console.print(f"  [bold]Pipeline run[/bold]    {prefect_run}")
     console.print(f"  [bold]Dataset version[/bold] {dataset_version}  (rows: {training_rows})")
@@ -260,8 +254,7 @@ def lineage(
     console.print(f"  [bold]Model version[/bold]   {model} v{version}  (created_ms: {created_ms})")
     if metrics:
         metric_str = "  ".join(
-            f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
-            for k, v in metrics.items()
+            f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items()
         )
         console.print(f"  [bold]Metrics[/bold]         {metric_str}")
 
@@ -295,7 +288,14 @@ def _real_sacct(job_id: str) -> float | None:
     """Query sacct for a given job ID; return gpu_hours or None on failure."""
     try:
         out = subprocess.check_output(
-            ["sacct", "-j", job_id, "--format=JobID,Elapsed,AllocTRES", "--noheader", "--parsable2"],
+            [
+                "sacct",
+                "-j",
+                job_id,
+                "--format=JobID,Elapsed,AllocTRES",
+                "--noheader",
+                "--parsable2",
+            ],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=15,
@@ -308,8 +308,8 @@ def _real_sacct(job_id: str) -> float | None:
         parts = line.split("|")
         if len(parts) < 3:
             continue
-        elapsed_str = parts[1].strip()   # e.g. "02:30:00" or "1-02:30:00"
-        alloc_tres = parts[2].strip()    # e.g. "cpu=16,mem=64G,gres/gpu=2"
+        elapsed_str = parts[1].strip()  # e.g. "02:30:00" or "1-02:30:00"
+        alloc_tres = parts[2].strip()  # e.g. "cpu=16,mem=64G,gres/gpu=2"
 
         gpu_match = re.search(r"gres/gpu=(\d+)", alloc_tres)
         if gpu_match is None:
@@ -349,7 +349,9 @@ def _tag_mlflow_version(
 @app.command(epilog=_EXAMPLES_COST)
 def cost(
     model: str = typer.Argument(..., help="Registered model name (e.g. JPCP)"),
-    record: bool = typer.Option(False, "--record", help="Fetch latest Slurm data, record to DB and tag MLflow"),
+    record: bool = typer.Option(
+        False, "--record", help="Fetch latest Slurm data, record to DB and tag MLflow"
+    ),
 ):
     """Show HPC cost history for a model.  Use --record to ingest new data."""
     from examlops.platform_db import get_model_costs, init_db, record_model_cost
@@ -419,7 +421,9 @@ def cost(
     rows_data = get_model_costs(model)
     if not rows_data:
         if not record:
-            _output.console.print(f"[yellow]No cost data for {model}. Run with --record to ingest.[/yellow]")
+            _output.console.print(
+                f"[yellow]No cost data for {model}. Run with --record to ingest.[/yellow]"
+            )
         return
 
     rows = []
@@ -437,17 +441,15 @@ def cost(
     )
 
 
-_EXAMPLES_COST_LIST = (
-    "Examples:\n\n"
-    "  exa models cost-list\n\n"
-    "  exa --json models cost-list"
-)
+_EXAMPLES_COST_LIST = "Examples:\n\n  exa models cost-list\n\n  exa --json models cost-list"
+
 
 @app.command("cost-list", epilog=_EXAMPLES_COST_LIST)
 def cost_list():
     """Show HPC cost summary across all models."""
     from examlops.platform_db import get_db as _gdb
     from examlops.platform_db import init_db as _init
+
     _init()
     with _gdb() as conn:
         rows = conn.execute(
@@ -459,18 +461,26 @@ def cost_list():
         _output.ok("No cost data recorded. Run: exa models cost <MODEL> --record")
         return
     data = [
-        {"model_name": r["model_name"], "n_runs": r["n_runs"],
-         "total_gpu_hours": r["total_gpu_hours"], "total_cost_usd": r["total_cost_usd"]}
+        {
+            "model_name": r["model_name"],
+            "n_runs": r["n_runs"],
+            "total_gpu_hours": r["total_gpu_hours"],
+            "total_cost_usd": r["total_cost_usd"],
+        }
         for r in rows
     ]
     if _output.json_mode:
         _output.print_json(data)
         return
     table_rows = [
-        [r["model_name"], str(r["n_runs"]),
-         f"{r['total_gpu_hours']:.2f}" if r["total_gpu_hours"] else "—",
-         f"${r['total_cost_usd']:.2f}" if r["total_cost_usd"] else "—"]
+        [
+            r["model_name"],
+            str(r["n_runs"]),
+            f"{r['total_gpu_hours']:.2f}" if r["total_gpu_hours"] else "—",
+            f"${r['total_cost_usd']:.2f}" if r["total_cost_usd"] else "—",
+        ]
         for r in data
     ]
-    _output.print_table("Model Cost Summary",
-                        ["Model", "Runs", "Total GPU-Hours", "Total Cost (USD)"], table_rows)
+    _output.print_table(
+        "Model Cost Summary", ["Model", "Runs", "Total GPU-Hours", "Total Cost (USD)"], table_rows
+    )

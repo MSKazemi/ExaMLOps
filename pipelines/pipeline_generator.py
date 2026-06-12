@@ -83,6 +83,7 @@ MODEL_REGISTRY: dict[
 
 # ── Auto-discovery ─────────────────────────────────────────────────────────────
 
+
 def discover_models() -> dict[str, type[SeanergysModel]]:
     """
     Scan modelzoo/seanergys_modelzoo/models/tasks/**/*.py and return every
@@ -138,6 +139,7 @@ def auto_register_all() -> None:
 
 # ── Registration ───────────────────────────────────────────────────────────────
 
+
 def register_model(
     model_cls: type[SeanergysModel],
     config_cls: type[SeanergysModelConfiguration],
@@ -154,6 +156,7 @@ def register_model(
 
 
 # ── Pipeline step task builder ─────────────────────────────────────────────────
+
 
 def _build_model_tasks(
     model_cls: type[SeanergysModel],
@@ -193,11 +196,13 @@ def _build_model_tasks(
                 history = model.train_step(loader)
                 print(f"[pipeline] Training done — keys: {list(history.keys())}")
                 return model, history
+
             return _train
 
         tasks["train_step"] = _make_train(config_cls, retries)
 
     if "evaluate_step" in step_attrs:
+
         def _make_evaluate(cfg_cls: Any) -> Any:
             @task(name=f"{model_cls.__name__}_evaluate", cache_policy=NO_CACHE)
             def _evaluate(
@@ -221,6 +226,7 @@ def _build_model_tasks(
                 metrics = {"rmse": rmse, "mape": mape, "mse": mse}
                 print(f"[pipeline] Eval — RMSE: {rmse:.4f}  MAPE: {mape:.2f}%  MSE: {mse:.4f}")
                 return metrics
+
             return _evaluate
 
         tasks["evaluate_step"] = _make_evaluate(config_cls)
@@ -249,6 +255,7 @@ def make_prefect_tasks_from_model(model_cls: type[SeanergysModel]) -> dict[str, 
             @task(name=sname, retries=sr)
             def _prefect_task(model_instance: Any, *args: Any, **kwargs: Any) -> Any:
                 return getattr(model_instance, mname)(*args, **kwargs)
+
             return _prefect_task
 
         discovered[attr_name] = _make_task(attr_name, step_name, step_retries)
@@ -385,8 +392,7 @@ class YAMLBackedConfig:
         self.__name__ = f"YAMLBackedConfig[{yaml_cfg.name}]"
         self.MODEL_CLASS = shim.MODEL_CLASS
         self.SUPPORTED_DATASETS = [
-            _resolve_dataset_cls_by_name(ds.name)
-            for ds in yaml_cfg.datasets
+            _resolve_dataset_cls_by_name(ds.name) for ds in yaml_cfg.datasets
         ]
 
     def get_inference_params(self) -> dict:
@@ -584,7 +590,9 @@ def data_extraction_task(
     model_init, _, train_loader = config_cls.get_train_components(
         ds_cls, split="train", is_dummy=is_dummy, backend_name=backend_name
     )
-    print(f"[data_extraction] {model_name} × {dataset_cls_name}  dummy={is_dummy}  backend={backend_name or 'legacy'}")
+    print(
+        f"[data_extraction] {model_name} × {dataset_cls_name}  dummy={is_dummy}  backend={backend_name or 'legacy'}"
+    )
     return model_init, train_loader
 
 
@@ -622,6 +630,7 @@ def slurm_submit_task(
 
     # Real Slurm — generate a bash script and submit via sbatch
     from adapter import RealSlurmAdapter  # noqa: PLC0415
+
     adapter = RealSlurmAdapter()
 
     job_id_placeholder = uuid.uuid4().hex[:12]
@@ -648,13 +657,17 @@ def slurm_submit_task(
     )
     bash_script.chmod(0o755)
 
-    resources = {k: v for k, v in {
-        "partition": os.getenv("EXAMLOPS_SLURM_PARTITION"),
-        "time":      os.getenv("EXAMLOPS_SLURM_TIME", "2:00:00"),
-        "nodes":     os.getenv("EXAMLOPS_SLURM_NODES", "1"),
-        "mem":       os.getenv("EXAMLOPS_SLURM_MEM", "16G"),
-        "cpus_per_task": os.getenv("EXAMLOPS_SLURM_CPUS", "4"),
-    }.items() if v is not None}
+    resources = {
+        k: v
+        for k, v in {
+            "partition": os.getenv("EXAMLOPS_SLURM_PARTITION"),
+            "time": os.getenv("EXAMLOPS_SLURM_TIME", "2:00:00"),
+            "nodes": os.getenv("EXAMLOPS_SLURM_NODES", "1"),
+            "mem": os.getenv("EXAMLOPS_SLURM_MEM", "16G"),
+            "cpus_per_task": os.getenv("EXAMLOPS_SLURM_CPUS", "4"),
+        }.items()
+        if v is not None
+    }
 
     job_id = adapter.submit_job(script_path=str(bash_script), resources=resources)
     print(f"[slurm_submit] sbatch job_id={job_id}  script={bash_script}")
@@ -679,6 +692,7 @@ def slurm_wait_task(
 
     # Real Slurm
     from adapter import RealSlurmAdapter  # noqa: PLC0415
+
     adapter = RealSlurmAdapter()
     adapter.wait_until_complete(job_id)
     status = adapter.get_job_status(job_id)
@@ -753,8 +767,7 @@ def evaluate_task(
     y_pred = model.estimator.predict(X_val)
 
     is_classification = (
-        hasattr(model, "task_type")
-        and model.task_type == SeanergysModelTask.CLASSIFICATION
+        hasattr(model, "task_type") and model.task_type == SeanergysModelTask.CLASSIFICATION
     )
 
     if is_classification:
@@ -777,6 +790,7 @@ def evaluate_task(
 
 
 # ── Infrastructure tasks (model-agnostic) ──────────────────────────────────────
+
 
 @task(name="log_mlflow", cache_policy=NO_CACHE)
 def log_mlflow_task(
@@ -864,9 +878,7 @@ def _notify_ray_serve(model_id: str) -> None:
         import urllib.error
         import urllib.request
 
-        req = urllib.request.Request(
-            f"{url.rstrip('/')}/reload/{model_id}", method="POST"
-        )
+        req = urllib.request.Request(f"{url.rstrip('/')}/reload/{model_id}", method="POST")
         urllib.request.urlopen(req, timeout=2.0).close()  # noqa: S310
         print(f"[pipeline] Notified Ray Serve at {url} for model={model_id}")
     except Exception as exc:  # noqa: BLE001
@@ -919,12 +931,14 @@ def promote_task(
 
     rules = inf.get("lifecycle")
     if not rules:
-        rules = [{
-            "name": "Production",
-            "metric": inf["promotion_metric"],
-            "threshold": inf["promotion_threshold"],
-            "direction": inf.get("promotion_direction", "lower_is_better"),
-        }]
+        rules = [
+            {
+                "name": "Production",
+                "metric": inf["promotion_metric"],
+                "threshold": inf["promotion_threshold"],
+                "direction": inf.get("promotion_direction", "lower_is_better"),
+            }
+        ]
 
     client = mlflow.MlflowClient()
     set_aliases: list[str] = []
@@ -944,7 +958,9 @@ def promote_task(
         if metric_val is None:
             print(f"[pipeline] {stage}: metric '{rule['metric']}' missing — skipping rule.")
             continue
-        if not _evaluate_stage_rule(metric_val, rule["threshold"], rule.get("direction", "lower_is_better")):
+        if not _evaluate_stage_rule(
+            metric_val, rule["threshold"], rule.get("direction", "lower_is_better")
+        ):
             op = ">" if rule.get("direction") == "lower_is_better" else "<"
             print(
                 f"[pipeline] {stage}: stays at threshold "
@@ -984,6 +1000,7 @@ def promote_task(
 
 # ── Generic Prefect Flow ───────────────────────────────────────────────────────
 
+
 @flow(name="training_flow")
 def training_flow(
     model_name: str,
@@ -1010,17 +1027,21 @@ def training_flow(
 
     After promotion, run  exa serve reload  to update Ray Serve.
     """
-    print(f"\n{'='*60}")
-    print(f"  training_flow | {model_name} × {dataset_cls_name}  backend={backend_name or 'legacy'}")
-    print(f"{'='*60}\n")
+    print(f"\n{'=' * 60}")
+    print(
+        f"  training_flow | {model_name} × {dataset_cls_name}  backend={backend_name or 'legacy'}"
+    )
+    print(f"{'=' * 60}\n")
 
-    model_init, loader    = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
+    model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
     job_id, artifact_hint = slurm_submit_task(model_init, loader, model_name, dataset_cls_name)
-    state, artifact_path  = slurm_wait_task(job_id, artifact_hint)
-    model                 = result_fetch_task(state, artifact_path, model_name, dataset_cls_name, is_dummy, backend_name)
-    metrics               = evaluate_task(model, model_name, dataset_cls_name, is_dummy, backend_name)
-    registration          = log_mlflow_task(model, metrics, model_name, dataset_cls_name)
-    status                = promote_task(model_name, registration, metrics)
+    state, artifact_path = slurm_wait_task(job_id, artifact_hint)
+    model = result_fetch_task(
+        state, artifact_path, model_name, dataset_cls_name, is_dummy, backend_name
+    )
+    metrics = evaluate_task(model, model_name, dataset_cls_name, is_dummy, backend_name)
+    registration = log_mlflow_task(model, metrics, model_name, dataset_cls_name)
+    status = promote_task(model_name, registration, metrics)
 
     return {
         "model": model_name,
@@ -1034,6 +1055,7 @@ def training_flow(
 
 
 # ── Run all registered models ──────────────────────────────────────────────────
+
 
 def run_all_flows(is_dummy: bool = False, backend_name: str | None = None) -> list[dict]:
     """
@@ -1054,6 +1076,7 @@ def run_all_flows(is_dummy: bool = False, backend_name: str | None = None) -> li
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _resolve_dataset_cls(config_cls: Any, dataset_cls_name: str) -> Any:
     for ds in config_cls.SUPPORTED_DATASETS:
@@ -1091,8 +1114,7 @@ if __name__ == "__main__":
         "--env",
         default=None,
         metavar="ENV",
-        help="Environment overlay name: dev | staging | prod  "
-             "(loads pipelines/envs/<ENV>.yaml)",
+        help="Environment overlay name: dev | staging | prod  (loads pipelines/envs/<ENV>.yaml)",
     )
     parser.add_argument(
         "--export-registry",
@@ -1104,7 +1126,12 @@ if __name__ == "__main__":
     # ── Export mode ────────────────────────────────────────────────────────────
     if args.export_registry:
         from pathlib import Path as _Path  # noqa: PLC0415
-        out = _Path(args.registry) if args.registry else _REPO_ROOT / "pipelines" / "model_registry.yaml"
+
+        out = (
+            _Path(args.registry)
+            if args.registry
+            else _REPO_ROOT / "pipelines" / "model_registry.yaml"
+        )
         export_registry(MODEL_REGISTRY, out)
         sys.exit(0)
 
@@ -1128,6 +1155,8 @@ if __name__ == "__main__":
     elif args.model:
         _model_cls, config_cls, _extra = MODEL_REGISTRY[args.model]
         for ds_cls in config_cls.SUPPORTED_DATASETS:
-            training_flow(args.model, ds_cls.__name__, is_dummy=args.dummy, backend_name=args.backend)
+            training_flow(
+                args.model, ds_cls.__name__, is_dummy=args.dummy, backend_name=args.backend
+            )
     else:
         run_all_flows(is_dummy=args.dummy, backend_name=args.backend)

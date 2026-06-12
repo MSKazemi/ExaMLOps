@@ -1,4 +1,5 @@
 """Tests for GET /api/seanerbus/grafana-panels endpoint."""
+
 from tests.conftest import VIEWER_PW
 
 

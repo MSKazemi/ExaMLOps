@@ -21,11 +21,7 @@ _EXAMPLES_PUSH = (
     "  exa features push JPCP features.parquet\n\n"
     "  exa features push JPCP my_feats.csv --name engineered"
 )
-_EXAMPLES_LIST = (
-    "Examples:\n\n"
-    "  exa features list\n\n"
-    "  exa features list JPCP"
-)
+_EXAMPLES_LIST = "Examples:\n\n  exa features list\n\n  exa features list JPCP"
 _EXAMPLES_PULL = (
     "Examples:\n\n"
     "  exa features pull JPCP\n\n"
@@ -35,6 +31,7 @@ _EXAMPLES_PULL = (
 
 def _db_path() -> str:
     from examlops.platform_db import _db_path as _p
+
     return _p()
 
 
@@ -149,7 +146,9 @@ def features_list(
 def features_pull(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
     name: str = typer.Option("default", "--name", "-n", help="Feature set name"),
-    version: int | None = typer.Option(None, "--version", "-v", help="Specific version (default: latest)"),
+    version: int | None = typer.Option(
+        None, "--version", "-v", help="Specific version (default: latest)"
+    ),
     output: str | None = typer.Option(None, "--output", "-o", help="Copy file to this path"),
 ) -> None:
     """Pull a feature file from the store."""
@@ -188,12 +187,16 @@ def features_pull(
             _output.print_table(
                 f"Feature: {model}/{name}",
                 ["Model", "Name", "Version", "Size", "Path", "Stored At"],
-                [[
-                    record["model"],
-                    record["name"],
-                    str(record["version"]),
-                    str(record["size_bytes"]) + " B" if record["size_bytes"] is not None else "-",
-                    record["local_path"] or "-",
-                    record["ts"],
-                ]],
+                [
+                    [
+                        record["model"],
+                        record["name"],
+                        str(record["version"]),
+                        str(record["size_bytes"]) + " B"
+                        if record["size_bytes"] is not None
+                        else "-",
+                        record["local_path"] or "-",
+                        record["ts"],
+                    ]
+                ],
             )

@@ -20,6 +20,7 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -41,34 +42,59 @@ def _patched_get(url, **kwargs):
 
 
 def test_promote_passes_threshold():
-    with patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get), \
-         patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}):
-        result = runner.invoke(app, [
-            "pipeline", "promote", "jpcp",
-            "--if-rmse-lt", "5.0",
-        ])
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "pipeline",
+                "promote",
+                "jpcp",
+                "--if-rmse-lt",
+                "5.0",
+            ],
+        )
     assert result.exit_code == 0, result.output
     assert "promoted" in result.output.lower()
 
 
 def test_promote_fails_threshold():
-    with patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get), \
-         patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}):
-        result = runner.invoke(app, [
-            "pipeline", "promote", "jpcp",
-            "--if-rmse-lt", "4.0",  # 4.5 is NOT < 4.0
-        ])
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "pipeline",
+                "promote",
+                "jpcp",
+                "--if-rmse-lt",
+                "4.0",  # 4.5 is NOT < 4.0
+            ],
+        )
     assert result.exit_code == 0, result.output
     assert "not promoted" in result.output.lower()
 
 
 def test_promote_dry_run_does_not_call_post():
-    with patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get), \
-         patch("examlops.cli.commands.pipeline._client.post") as mock_post:
-        result = runner.invoke(app, [
-            "pipeline", "promote", "jpcp",
-            "--if-rmse-lt", "5.0", "--dry-run",
-        ])
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post") as mock_post,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "pipeline",
+                "promote",
+                "jpcp",
+                "--if-rmse-lt",
+                "5.0",
+                "--dry-run",
+            ],
+        )
     assert result.exit_code == 0, result.output
     assert "dry" in result.output.lower()
     mock_post.assert_not_called()
@@ -76,6 +102,7 @@ def test_promote_dry_run_does_not_call_post():
 
 def test_promote_list_shows_saved_rules():
     from examlops.platform_db import set_promotion_rule
+
     set_promotion_rule("JPCP", "rmse", "lt", 5.0)
     result = runner.invoke(app, ["pipeline", "promote", "--list"])
     assert result.exit_code == 0, result.output

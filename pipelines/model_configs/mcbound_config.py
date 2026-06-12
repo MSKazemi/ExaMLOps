@@ -2,6 +2,7 @@
 
 All declarative config lives in pipelines/models/mcbound.yaml.
 """
+
 from __future__ import annotations
 
 import sys

@@ -1,4 +1,5 @@
 """Unit tests for ModelSchemaRegistry."""
+
 from __future__ import annotations
 
 import os

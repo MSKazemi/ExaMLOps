@@ -11,19 +11,32 @@ from examlops.cli.main import app
 
 runner = CliRunner()
 
+
 def test_retrain():
-    fake = {"flow_run_id": "run-abc", "deployment": "nightly", "status_url": "/retrain/run-abc", "parameters": {}}
+    fake = {
+        "flow_run_id": "run-abc",
+        "deployment": "nightly",
+        "status_url": "/retrain/run-abc",
+        "parameters": {},
+    }
     with patch("examlops.cli.commands.retrain._client.post", return_value=fake):
         result = runner.invoke(app, ["retrain", "JPCP", "--dataset", "PM100Dataset"])
     assert result.exit_code == 0
     assert "run-abc" in result.output
 
+
 def test_retrain_dummy():
-    fake = {"flow_run_id": "run-xyz", "deployment": "nightly", "status_url": "/retrain/run-xyz", "parameters": {}}
+    fake = {
+        "flow_run_id": "run-xyz",
+        "deployment": "nightly",
+        "status_url": "/retrain/run-xyz",
+        "parameters": {},
+    }
     with patch("examlops.cli.commands.retrain._client.post", return_value=fake) as mock_post:
         runner.invoke(app, ["retrain", "JPCP", "--dummy"])
     body = mock_post.call_args[0][1]
     assert body["is_dummy"] is True
+
 
 def test_predict():
     fake = {"prediction": 42.0, "model_name": "JPCP", "model_version": "3"}

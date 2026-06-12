@@ -1,4 +1,5 @@
 """Tests for ModelZoo integration: DB, webhooks, poller, API."""
+
 from __future__ import annotations
 
 import os
@@ -18,6 +19,7 @@ def client(tmp_path, monkeypatch):
     import importlib
 
     import app as cp_app
+
     importlib.reload(cp_app)
     return TestClient(cp_app.app)
 
@@ -27,11 +29,12 @@ def test_modelzoo_tables_created(tmp_path, monkeypatch):
     import importlib
 
     import app as cp_app
+
     importlib.reload(cp_app)
     conn = cp_app._get_db()
-    tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
     conn.close()
     assert "modelzoo_events" in tables
     assert "model_freshness" in tables
@@ -149,9 +152,9 @@ from unittest.mock import MagicMock, patch
 def _mock_gitlab_commits(sha: str):
     """Return a mock urllib response that looks like GitLab's commits endpoint."""
     mock_resp = MagicMock()
-    mock_resp.read.return_value = _json.dumps([
-        {"id": sha, "author_name": "ci-bot", "committed_date": "2026-05-21T10:00:00.000Z"}
-    ]).encode()
+    mock_resp.read.return_value = _json.dumps(
+        [{"id": sha, "author_name": "ci-bot", "committed_date": "2026-05-21T10:00:00.000Z"}]
+    ).encode()
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = MagicMock(return_value=False)
     return mock_resp
@@ -164,6 +167,7 @@ def test_run_poll_cycle_inserts_new_event(tmp_path, monkeypatch):
     import importlib
 
     import app as cp_app
+
     importlib.reload(cp_app)
 
     new_sha = "deadbeef" * 5
@@ -190,6 +194,7 @@ def test_run_poll_cycle_skips_known_sha(tmp_path, monkeypatch):
     import importlib
 
     import app as cp_app
+
     importlib.reload(cp_app)
 
     known_sha = "cafebabe" * 5
@@ -197,7 +202,8 @@ def test_run_poll_cycle_skips_known_sha(tmp_path, monkeypatch):
     conn = cp_app._get_db()
     conn.execute(
         "INSERT INTO modelzoo_events (commit_sha, branch, pushed_by, timestamp, source) "
-        "VALUES (?, 'main', 'ci', '2026-05-21T09:00:00', 'poll')", (known_sha,)
+        "VALUES (?, 'main', 'ci', '2026-05-21T09:00:00', 'poll')",
+        (known_sha,),
     )
     conn.commit()
     conn.close()
@@ -238,8 +244,10 @@ def test_modelzoo_sync_no_credentials(client, monkeypatch):
     import importlib
 
     import app as cp_app
+
     importlib.reload(cp_app)
     from fastapi.testclient import TestClient
+
     c = TestClient(cp_app.app)
     resp = c.post("/modelzoo/sync", headers=_auth(c))
     assert resp.status_code == 200

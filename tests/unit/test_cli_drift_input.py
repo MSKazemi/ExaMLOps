@@ -78,6 +78,7 @@ def test_input_status_critical_after_drift():
     runner.invoke(app, ["drift", "input", "baseline", "JPCP"])
     # clear old and write very different snapshots
     import sqlite3
+
     db_path = os.environ["PLATFORM_DB"]
     conn = sqlite3.connect(db_path)
     conn.execute("DELETE FROM input_snapshots WHERE model='JPCP'")
@@ -97,6 +98,7 @@ def test_input_status_json():
     result = runner.invoke(app, ["--json", "drift", "input", "status"])
     assert result.exit_code == 0, result.output
     import json
+
     data = json.loads(result.output)
     assert isinstance(data, list)
     assert data[0]["model"] == "JPCP"

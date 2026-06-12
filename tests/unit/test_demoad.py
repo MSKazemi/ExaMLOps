@@ -21,8 +21,7 @@ def test_demoad_is_registered():
     from pipelines.pipeline_generator import MODEL_REGISTRY
 
     assert "DemoAD" in MODEL_REGISTRY, (
-        "DemoAD should auto-register via its config; "
-        f"registry has: {list(MODEL_REGISTRY.keys())}"
+        f"DemoAD should auto-register via its config; registry has: {list(MODEL_REGISTRY.keys())}"
     )
 
 

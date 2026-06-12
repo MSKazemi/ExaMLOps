@@ -2,6 +2,7 @@
 
 All declarative config lives in pipelines/models/mack.yaml.
 """
+
 from __future__ import annotations
 
 import sys

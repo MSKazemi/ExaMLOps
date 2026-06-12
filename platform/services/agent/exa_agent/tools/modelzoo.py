@@ -10,7 +10,9 @@ from exa_agent.tools import _http
 @tool
 def modelzoo_status() -> str:
     """Show per-model ModelZoo freshness (fresh/stale) from the control plane."""
-    data, err = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/status")
+    data, err = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/status"
+    )
     if err:
         return err
     return f"ModelZoo status: {data}"
@@ -24,7 +26,10 @@ def modelzoo_events(limit: int = 20) -> str:
         limit: Max events to return.
     """
     data, err = _http.request_json(
-        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/events", params={"limit": limit}
+        "control_plane",
+        "GET",
+        f"{config.CONTROL_PLANE_URL}/modelzoo/events",
+        params={"limit": limit},
     )
     if err:
         return err
@@ -34,7 +39,9 @@ def modelzoo_events(limit: int = 20) -> str:
 @tool
 def modelzoo_get_config() -> str:
     """Show ModelZoo integration runtime config (auto_retrain, poll interval, watch branch)."""
-    data, err = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/config")
+    data, err = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/config"
+    )
     if err:
         return err
     return f"ModelZoo config: {data}"
@@ -44,7 +51,9 @@ def modelzoo_get_config() -> str:
 @confirmed_write(lambda: "Run a manual ModelZoo poll cycle against GitLab")
 def modelzoo_sync() -> str:
     """Trigger a manual ModelZoo poll cycle against GitLab."""
-    data, err = _http.request_json("control_plane", "POST", f"{config.CONTROL_PLANE_URL}/modelzoo/sync")
+    data, err = _http.request_json(
+        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/modelzoo/sync"
+    )
     if err:
         return err
     return f"Sync result: {data}"

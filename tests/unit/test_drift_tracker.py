@@ -4,6 +4,7 @@ Imports DriftTracker by stubbing out the heavy C-extension dependencies
 (capnp, seanerbus, prometheus_client) before importing the bridge module,
 following the same pattern used in test_seanerbus_bridge.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +15,7 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── stub heavy dependencies so bridge imports succeed without seanerbus ─────
+
 
 def _ensure_stubs():
     """Install minimal stubs for all bridge dependencies that are not present."""
@@ -48,8 +50,14 @@ def _ensure_stubs():
 
     if "seanerbus_msgs" not in sys.modules:
         msgs = types.ModuleType("seanerbus_msgs")
-        for cls_name in ("HpcJobV1", "HpcInferenceResV1", "RetrainReqV1", "RetrainResV1",
-                         "VectorReqV1", "VectorResV1"):
+        for cls_name in (
+            "HpcJobV1",
+            "HpcInferenceResV1",
+            "RetrainReqV1",
+            "RetrainResV1",
+            "VectorReqV1",
+            "VectorResV1",
+        ):
             setattr(msgs, cls_name, MagicMock())
         sys.modules["seanerbus_msgs"] = msgs
 
@@ -78,6 +86,7 @@ DriftTracker = bridge.DriftTracker
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+
 def _make_tracker(window: int = 5, threshold: float = 0.5, cooldown: int = 300) -> DriftTracker:
     return DriftTracker(window=window, threshold=threshold, cooldown=cooldown)
 
@@ -94,6 +103,7 @@ def _mock_async_client(status_code: int = 200):
 
 
 # ── tests ────────────────────────────────────────────────────────────────────
+
 
 async def test_no_trigger_below_window():
     """record() with fewer than `window` entries must NOT schedule a retrain task."""
@@ -166,9 +176,7 @@ async def test_cooldown_prevents_double_trigger():
             tracker.record("JPCP", False)
         await asyncio.sleep(0)
 
-    assert mock_client.post.call_count == 1, (
-        "Cooldown should have blocked the second retrain call"
-    )
+    assert mock_client.post.call_count == 1, "Cooldown should have blocked the second retrain call"
 
 
 async def test_cooldown_expired_allows_retrigger():
@@ -192,9 +200,7 @@ async def test_cooldown_expired_allows_retrigger():
             tracker.record("JPCP", False)
         await asyncio.sleep(0)
 
-    assert mock_client.post.call_count == 2, (
-        "Expired cooldown should allow the second retrain call"
-    )
+    assert mock_client.post.call_count == 2, "Expired cooldown should allow the second retrain call"
 
 
 async def test_window_is_rolling():
@@ -255,6 +261,4 @@ async def test_multiple_models_independent():
 
     payloads = [call.kwargs.get("json") or call.args[1] for call in mock_client.post.call_args_list]
     model_names = {p["model_name"] for p in payloads}
-    assert model_names == {"JPCP", "MACK"}, (
-        f"Expected retrain for both models, got: {model_names}"
-    )
+    assert model_names == {"JPCP", "MACK"}, f"Expected retrain for both models, got: {model_names}"

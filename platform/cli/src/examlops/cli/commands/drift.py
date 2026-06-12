@@ -20,7 +20,11 @@ from examlops.platform_db import (
     write_audit_event,
 )
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 _SNAPSHOT_WINDOW = 100
 _BASELINE_WINDOW = 500
@@ -28,10 +32,7 @@ _WARN_Z = 2.0
 _CRIT_Z = 3.0
 
 _EXAMPLES_STATUS = (
-    "Examples:\n\n"
-    "  exa drift status\n\n"
-    "  exa drift status JPCP\n\n"
-    "  exa --json drift status"
+    "Examples:\n\n  exa drift status\n\n  exa drift status JPCP\n\n  exa --json drift status"
 )
 _EXAMPLES_BASELINE = "Examples:\n\n  exa drift baseline JPCP"
 _EXAMPLES_RESET = "Examples:\n\n  exa drift reset JPCP"
@@ -51,9 +52,7 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
         if model_filter:
             models_list = [model_filter]
         else:
-            models_rows = conn.execute(
-                "SELECT DISTINCT model FROM drift_snapshots"
-            ).fetchall()
+            models_rows = conn.execute("SELECT DISTINCT model FROM drift_snapshots").fetchall()
             models_list = [r["model"] for r in models_rows]
 
     results = []
@@ -83,15 +82,17 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
                 status = "WARNING"
             else:
                 status = "OK"
-        results.append({
-            "model": model,
-            "live_mean": round(live["mean"], 3),
-            "live_std": round(live["std"], 3),
-            "baseline_mean": round(baseline["mean"], 3) if baseline else None,
-            "z_score": round(z, 2),
-            "status": status,
-            "n_snapshots": len(preds),
-        })
+        results.append(
+            {
+                "model": model,
+                "live_mean": round(live["mean"], 3),
+                "live_std": round(live["std"], 3),
+                "baseline_mean": round(baseline["mean"], 3) if baseline else None,
+                "z_score": round(z, 2),
+                "status": status,
+                "n_snapshots": len(preds),
+            }
+        )
     return results
 
 
@@ -137,9 +138,7 @@ def baseline(
         ).fetchall()
     preds = [r["prediction"] for r in rows]
     if len(preds) < 10:
-        _output.error(
-            f"Need at least 10 snapshots, have {len(preds)}. Run the bridge first."
-        )
+        _output.error(f"Need at least 10 snapshots, have {len(preds)}. Run the bridge first.")
         return
     stats = _compute_stats(preds)
     set_drift_baseline(model, stats)
@@ -166,7 +165,9 @@ def reset(
 # auto-retrain sub-group
 # ---------------------------------------------------------------------------
 
-auto_retrain_app = typer.Typer(no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
+auto_retrain_app = typer.Typer(
+    no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
+)
 app.add_typer(auto_retrain_app, name="auto-retrain")
 
 _EXAMPLES_AR_ENABLE = (
@@ -192,11 +193,20 @@ def auto_retrain_enable(
 ):
     """Enable drift-triggered auto-retrain for a model."""
     init_db()
-    set_drift_auto_retrain(model, enabled=True, min_z_score=min_z, dataset_name=dataset, cooldown_s=cooldown)
+    set_drift_auto_retrain(
+        model, enabled=True, min_z_score=min_z, dataset_name=dataset, cooldown_s=cooldown
+    )
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "drift_auto_retrain_enabled", model,
-                      {"min_z": min_z, "dataset": dataset, "cooldown_s": cooldown})
-    _output.ok(f"Auto-retrain enabled for {model} (z≥{min_z}, dataset={dataset}, cooldown={cooldown}s)")
+    write_audit_event(
+        "cli",
+        actor,
+        "drift_auto_retrain_enabled",
+        model,
+        {"min_z": min_z, "dataset": dataset, "cooldown_s": cooldown},
+    )
+    _output.ok(
+        f"Auto-retrain enabled for {model} (z≥{min_z}, dataset={dataset}, cooldown={cooldown}s)"
+    )
 
 
 @auto_retrain_app.command("disable", epilog=_EXAMPLES_AR_DISABLE)
@@ -209,8 +219,13 @@ def auto_retrain_disable(
     if cfg is None:
         _output.error(f"No auto-retrain config found for {model}")
         return
-    set_drift_auto_retrain(model, enabled=False, min_z_score=cfg["min_z_score"],
-                           dataset_name=cfg["dataset_name"], cooldown_s=cfg["cooldown_s"])
+    set_drift_auto_retrain(
+        model,
+        enabled=False,
+        min_z_score=cfg["min_z_score"],
+        dataset_name=cfg["dataset_name"],
+        cooldown_s=cfg["cooldown_s"],
+    )
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "drift_auto_retrain_disabled", model, {})
     _output.ok(f"Auto-retrain disabled for {model}")
@@ -249,7 +264,9 @@ def auto_retrain_status():
 
 @app.command(epilog=_EXAMPLES_TRIGGER)
 def trigger(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be triggered without firing"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be triggered without firing"
+    ),
 ):
     """Check drift z-scores and fire POST /retrain for models above threshold."""
     import datetime
@@ -261,7 +278,9 @@ def trigger(
     configs = list_drift_auto_retrain()
     enabled_configs = {c["model"]: c for c in configs if c["enabled"]}
     if not enabled_configs:
-        _output.ok("No models with auto-retrain enabled — use: exa drift auto-retrain enable <MODEL>")
+        _output.ok(
+            "No models with auto-retrain enabled — use: exa drift auto-retrain enable <MODEL>"
+        )
         return
 
     drift_rows = _drift_rows(None)
@@ -283,7 +302,9 @@ def trigger(
             last = datetime.datetime.fromisoformat(ar["last_triggered"])
             elapsed = (datetime.datetime.utcnow() - last).total_seconds()
             if elapsed < ar["cooldown_s"]:
-                skipped.append({"model": model, "reason": f"cooldown {elapsed:.0f}/{ar['cooldown_s']}s"})
+                skipped.append(
+                    {"model": model, "reason": f"cooldown {elapsed:.0f}/{ar['cooldown_s']}s"}
+                )
                 continue
         if dry_run:
             triggered.append({"model": model, "z": z, "action": "would retrain"})
@@ -292,8 +313,13 @@ def trigger(
         try:
             result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
             record_drift_trigger(model)
-            write_audit_event("cli", actor, "drift_auto_retrain_triggered", model,
-                              {"z_score": z, "flow_run_id": result.get("flow_run_id")})
+            write_audit_event(
+                "cli",
+                actor,
+                "drift_auto_retrain_triggered",
+                model,
+                {"z_score": z, "flow_run_id": result.get("flow_run_id")},
+            )
             triggered.append({"model": model, "z": z, "flow_run_id": result.get("flow_run_id")})
         except ClientError as e:
             _output.error(f"Failed to trigger retrain for {model}: {e}")
@@ -319,7 +345,9 @@ def trigger(
 # input drift sub-group (embedding distribution monitoring)
 # ---------------------------------------------------------------------------
 
-input_app = typer.Typer(no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
+input_app = typer.Typer(
+    no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
+)
 app.add_typer(input_app, name="input")
 
 _INPUT_WINDOW = 200
@@ -378,15 +406,17 @@ def _input_drift_rows(model_filter: str | None) -> list[dict]:
                 status = "WARNING"
             else:
                 status = "OK"
-        results.append({
-            "model": model,
-            "live_norm_mean": round(live["norm_mean"], 3),
-            "live_emb_mean": round(live["mean_mean"], 4),
-            "live_emb_std": round(live["std_mean"], 4),
-            "max_z": round(max_z, 2),
-            "status": status,
-            "n_snapshots": len(snap_rows),
-        })
+        results.append(
+            {
+                "model": model,
+                "live_norm_mean": round(live["norm_mean"], 3),
+                "live_emb_mean": round(live["mean_mean"], 4),
+                "live_emb_std": round(live["std_mean"], 4),
+                "max_z": round(max_z, 2),
+                "status": status,
+                "n_snapshots": len(snap_rows),
+            }
+        )
     return results
 
 
@@ -425,6 +455,7 @@ _EXAMPLES_SNAPSHOTS = (
     "  exa --json drift snapshots JPCP --raw"
 )
 
+
 @app.command("snapshots", epilog=_EXAMPLES_SNAPSHOTS)
 def snapshots(
     model: str = typer.Argument(..., help="Model name"),
@@ -443,8 +474,14 @@ def snapshots(
         _output.ok(f"No snapshots found for {model}")
         return
     data = [
-        {"id": r["id"], "ts": r["ts"], "model": r["model"], "alias": r["alias"],
-         "prediction": r["prediction"], "job_id": r["job_id"]}
+        {
+            "id": r["id"],
+            "ts": r["ts"],
+            "model": r["model"],
+            "alias": r["alias"],
+            "prediction": r["prediction"],
+            "job_id": r["job_id"],
+        }
         for r in rows
     ]
     if _output.json_mode:
@@ -452,8 +489,17 @@ def snapshots(
         return
     if raw:
         cols = ["ID", "Time", "Model", "Alias", "Prediction", "Job ID"]
-        table_rows = [[str(r["id"]), r["ts"][:19], r["model"], r["alias"],
-                       f"{r['prediction']:.4f}", r["job_id"] or "—"] for r in data]
+        table_rows = [
+            [
+                str(r["id"]),
+                r["ts"][:19],
+                r["model"],
+                r["alias"],
+                f"{r['prediction']:.4f}",
+                r["job_id"] or "—",
+            ]
+            for r in data
+        ]
     else:
         cols = ["Time", "Alias", "Prediction"]
         table_rows = [[r["ts"][:19], r["alias"], f"{r['prediction']:.4f}"] for r in data]
@@ -473,7 +519,9 @@ def input_baseline(
             (model,),
         ).fetchall()
     if len(snap_rows) < 10:
-        _output.error(f"Need at least 10 input snapshots, have {len(snap_rows)}. Run the bridge first.")
+        _output.error(
+            f"Need at least 10 input snapshots, have {len(snap_rows)}. Run the bridge first."
+        )
         return
 
     def _stats(values: list[float]) -> tuple[float, float]:
@@ -490,9 +538,12 @@ def input_baseline(
     std_mean, std_std = _stats(emb_stds)
 
     stats = {
-        "norm_mean": norm_mean, "norm_mean_std": norm_std,
-        "mean_mean": mean_mean, "mean_mean_std": mean_std,
-        "std_mean": std_mean, "std_mean_std": std_std,
+        "norm_mean": norm_mean,
+        "norm_mean_std": norm_std,
+        "mean_mean": mean_mean,
+        "mean_mean_std": mean_std,
+        "std_mean": std_mean,
+        "std_mean_std": std_std,
         "n": float(len(snap_rows)),
     }
     set_input_baseline(model, stats)
@@ -505,6 +556,7 @@ def input_baseline(
 
 
 _EXAMPLES_INPUT_RESET = "Examples:\n\n  exa drift input reset JPCP"
+
 
 @input_app.command("reset", epilog=_EXAMPLES_INPUT_RESET)
 def input_reset(

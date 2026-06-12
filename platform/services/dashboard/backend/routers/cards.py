@@ -1,7 +1,7 @@
 """Model card history router — reads model_cards from shared platform.db."""
+
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 
@@ -29,8 +29,7 @@ async def get_card_history(_=Depends(_viewer)) -> list[dict]:
     try:
         conn = _get_conn()
         rows = conn.execute(
-            "SELECT id, ts, model, output_path, actor "
-            "FROM model_cards ORDER BY ts DESC LIMIT 50"
+            "SELECT id, ts, model, output_path, actor FROM model_cards ORDER BY ts DESC LIMIT 50"
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]

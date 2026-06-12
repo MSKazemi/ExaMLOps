@@ -3,6 +3,7 @@
 Returns a typed Frontmatter, the markdown body, and a list of human-readable
 warnings. Never raises on malformed input — always falls back gracefully.
 """
+
 from __future__ import annotations
 
 import re
@@ -61,9 +62,7 @@ def parse_readme(text: str) -> tuple[Frontmatter, str, list[str]]:
     elif isinstance(status, str) and status in _VALID_STATUS:
         fm.status = status
     else:
-        warnings.append(
-            f"status must be one of {sorted(_VALID_STATUS)}, got {status!r}"
-        )
+        warnings.append(f"status must be one of {sorted(_VALID_STATUS)}, got {status!r}")
 
     lr = data.get("last_reviewed")
     if lr is None:
@@ -76,9 +75,7 @@ def parse_readme(text: str) -> tuple[Frontmatter, str, list[str]]:
         except ValueError:
             warnings.append(f"last_reviewed must be ISO YYYY-MM-DD, got {lr!r}")
     else:
-        warnings.append(
-            f"last_reviewed must be a date, got {type(lr).__name__}"
-        )
+        warnings.append(f"last_reviewed must be a date, got {type(lr).__name__}")
 
     return fm, body, warnings
 

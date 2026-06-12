@@ -1,4 +1,5 @@
 """Scaffold router — generates new model files from bundled templates."""
+
 from __future__ import annotations
 
 import json
@@ -33,13 +34,20 @@ class ScaffoldBody(BaseModel):
 
 def _build_cmd(body: ScaffoldBody, extra: list[str]) -> list[str]:
     cmd = [
-        sys.executable, str(_SCAFFOLD_SCRIPT),
-        "--name", body.name,
-        "--task", body.task,
-        "--task-type", body.task_type,
-        "--promotion-metric", body.promotion_metric,
-        "--promotion-threshold", str(body.promotion_threshold),
-        "--promotion-direction", body.promotion_direction,
+        sys.executable,
+        str(_SCAFFOLD_SCRIPT),
+        "--name",
+        body.name,
+        "--task",
+        body.task,
+        "--task-type",
+        body.task_type,
+        "--promotion-metric",
+        body.promotion_metric,
+        "--promotion-threshold",
+        str(body.promotion_threshold),
+        "--promotion-direction",
+        body.promotion_direction,
     ]
     if body.force:
         cmd.append("--force")
@@ -56,7 +64,9 @@ async def preview(body: ScaffoldBody, _=Depends(_admin)) -> dict:
         raise HTTPException(503, "Scaffold script not available — rebuild the dashboard image")
     result = subprocess.run(  # noqa: S603
         _build_cmd(body, ["--stdout-json"]),
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     if result.returncode != 0:
         raise HTTPException(422, result.stderr.strip() or "scaffold preview failed")
@@ -78,7 +88,9 @@ async def create(body: ScaffoldBody, _=Depends(_admin)) -> dict:
         )
     result = subprocess.run(  # noqa: S603
         _build_cmd(body, []),
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if result.returncode != 0:
         raise HTTPException(422, result.stderr.strip() or "scaffold failed")

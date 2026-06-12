@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -47,12 +46,14 @@ _MLFLOW_RM_RESPONSE = {
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
     os.environ["PLATFORM_DB"] = str(tmp_path / "test.db")
     init_db()
     # ensure cards table exists too
     from examlops.cli.commands.cards_cmd import _ensure_model_cards_table
+
     _ensure_model_cards_table()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -61,6 +62,7 @@ def isolated_db(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 1: card history JPCP -> empty
 # ---------------------------------------------------------------------------
+
 
 def test_card_history_empty():
     result = runner.invoke(app, ["models", "card", "history", "JPCP"])
@@ -72,6 +74,7 @@ def test_card_history_empty():
 # ---------------------------------------------------------------------------
 # Test 2: card JPCP with mocked control plane + MLflow -> prints markdown
 # ---------------------------------------------------------------------------
+
 
 def test_card_generates_markdown_stdout():
     with patch("examlops.cli._client.get") as mock_get:
@@ -94,10 +97,9 @@ def test_card_db_record_created():
         runner.invoke(app, ["models", "card", "generate", "JPCP"])
 
     from examlops.platform_db import get_db
+
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM model_cards WHERE model=?", ("JPCP",)
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM model_cards WHERE model=?", ("JPCP",)).fetchall()
     assert len(rows) == 1
     assert rows[0]["model"] == "JPCP"
     assert rows[0]["output_path"] is None
@@ -107,13 +109,16 @@ def test_card_db_record_created():
 # Test 3: card JPCP --output /tmp/testcard.md -> file written
 # ---------------------------------------------------------------------------
 
+
 def test_card_writes_file(tmp_path):
     out_file = tmp_path / "jpcp-card.md"
 
     with patch("examlops.cli._client.get") as mock_get:
         mock_get.side_effect = _side_effect_get
 
-        result = runner.invoke(app, ["models", "card", "generate", "JPCP", "--output", str(out_file)])
+        result = runner.invoke(
+            app, ["models", "card", "generate", "JPCP", "--output", str(out_file)]
+        )
 
     assert result.exit_code == 0, result.output
     assert out_file.exists(), "Output file was not created"
@@ -129,6 +134,7 @@ def test_card_writes_file(tmp_path):
 # Test 4: card history shows entry after card generation
 # ---------------------------------------------------------------------------
 
+
 def test_card_history_shows_entry(tmp_path):
     out_file = tmp_path / "jpcp-card.md"
 
@@ -142,6 +148,7 @@ def test_card_history_shows_entry(tmp_path):
     # The output path is stored in the DB; Rich may truncate the cell in terminal output.
     # Verify the DB record directly instead of relying on Rich table rendering.
     from examlops.platform_db import get_db
+
     with get_db() as conn:
         row = conn.execute(
             "SELECT output_path FROM model_cards WHERE model=? LIMIT 1", ("JPCP",)
@@ -154,10 +161,14 @@ def test_card_history_shows_entry(tmp_path):
 # Test 5: card JPCP when control plane unreachable -> graceful error, exit 1
 # ---------------------------------------------------------------------------
 
+
 def test_card_control_plane_unreachable():
     from examlops.cli._client import ClientError
 
-    with patch("examlops.cli._client.get", side_effect=ClientError("Service unreachable at http://localhost:18002")):
+    with patch(
+        "examlops.cli._client.get",
+        side_effect=ClientError("Service unreachable at http://localhost:18002"),
+    ):
         result = runner.invoke(app, ["models", "card", "generate", "JPCP"])
 
     assert result.exit_code == 1, result.output
@@ -169,6 +180,7 @@ def test_card_control_plane_unreachable():
 # Test 6: card history (all models, no filter)
 # ---------------------------------------------------------------------------
 
+
 def test_card_history_all_models():
     with patch("examlops.cli._client.get") as mock_get:
         mock_get.side_effect = _side_effect_get
@@ -176,8 +188,13 @@ def test_card_history_all_models():
 
     with patch("examlops.cli._client.get") as mock_get:
         mock_get.side_effect = lambda url: (
-            {"task_type": "classification", "framework": "sklearn",
-             "enabled": True, "datasets": ["IrisDataset"], "lifecycle_gates": []}
+            {
+                "task_type": "classification",
+                "framework": "sklearn",
+                "enabled": True,
+                "datasets": ["IrisDataset"],
+                "lifecycle_gates": [],
+            }
             if "/models/" in url and "/meta" in url
             else _MLFLOW_RM_RESPONSE
         )
@@ -191,6 +208,7 @@ def test_card_history_all_models():
 # ---------------------------------------------------------------------------
 # Test 7: MLflow unreachable does NOT abort card generation
 # ---------------------------------------------------------------------------
+
 
 def test_card_mlflow_unreachable_still_generates():
     from examlops.cli._client import ClientError
@@ -210,6 +228,7 @@ def test_card_mlflow_unreachable_still_generates():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _side_effect_get(url: str):
     """Route mock GET calls based on URL pattern."""

@@ -14,14 +14,22 @@ runner = CliRunner()
 
 _V17_META = {"model_version": {"run_id": "run-v17", "version": "17"}}
 _V18_META = {"model_version": {"run_id": "run-v18", "version": "18"}}
-_RUN_V17 = {"run": {"data": {
-    "metrics": [{"key": "rmse", "value": 6.1}, {"key": "mae", "value": 4.0}],
-    "params": [{"key": "n_estimators", "value": "100"}],
-}}}
-_RUN_V18 = {"run": {"data": {
-    "metrics": [{"key": "rmse", "value": 4.9}, {"key": "mae", "value": 3.8}],
-    "params": [{"key": "n_estimators", "value": "200"}],
-}}}
+_RUN_V17 = {
+    "run": {
+        "data": {
+            "metrics": [{"key": "rmse", "value": 6.1}, {"key": "mae", "value": 4.0}],
+            "params": [{"key": "n_estimators", "value": "100"}],
+        }
+    }
+}
+_RUN_V18 = {
+    "run": {
+        "data": {
+            "metrics": [{"key": "rmse", "value": 4.9}, {"key": "mae", "value": 3.8}],
+            "params": [{"key": "n_estimators", "value": "200"}],
+        }
+    }
+}
 
 
 def _get_side_effect(url, **kwargs):
@@ -62,6 +70,7 @@ def test_diff_shows_param_comparison():
 
 def test_diff_client_error_exits_gracefully():
     from examlops.cli._client import ClientError
+
     with patch("examlops.cli.commands.models._client.get", side_effect=ClientError("HTTP 404")):
         result = runner.invoke(app, ["models", "diff", "jpcp", "17", "18"])
     assert result.exit_code != 0

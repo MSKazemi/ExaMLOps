@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -76,9 +75,7 @@ def test_batch_submit_records_job(tmp_path):
     from examlops.platform_db import get_db
 
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM batch_jobs WHERE model='JPCP'"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM batch_jobs WHERE model='JPCP'").fetchall()
     assert len(rows) == 1
     row = dict(rows[0])
     assert row["n_inputs"] == 3
@@ -138,9 +135,7 @@ def test_batch_submit_jsonl_format(tmp_path):
     from examlops.platform_db import get_db
 
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT n_inputs FROM batch_jobs WHERE model='JPCP'"
-        ).fetchone()
+        row = conn.execute("SELECT n_inputs FROM batch_jobs WHERE model='JPCP'").fetchone()
     assert row is not None
     assert row["n_inputs"] == 5
 
@@ -159,8 +154,13 @@ def test_batch_submit_writes_output_file(tmp_path):
         result = runner.invoke(
             app,
             [
-                "serve", "batch", "submit", "JPCP", str(input_file),
-                "--output", str(output_file),
+                "serve",
+                "batch",
+                "submit",
+                "JPCP",
+                str(input_file),
+                "--output",
+                str(output_file),
             ],
         )
 

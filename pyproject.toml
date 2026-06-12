@@ -54,7 +54,10 @@ dev = [
     "pytest-asyncio>=0.21",  # async test support
     "pytest-cov>=4.1",
     "httpx>=0.24",        # HTTP client for integration tests
-    "ruff>=0.4",
+    "ruff==0.15.6",     # pinned: ruff's formatter evolves between releases; an exact
+                        # pin keeps `ruff format --check` deterministic in CI (the
+                        # loose `>=0.4` let CI install a newer ruff than the code was
+                        # formatted with, breaking the pipeline on every release).
     "mypy>=1.8",
     "pandas-stubs>=2.0",
 ]

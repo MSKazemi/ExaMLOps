@@ -63,7 +63,9 @@ _SECTIONS: list[dict[str, Any]] = [
 
 def _safe_resolve(rel_path: str) -> Path:
     if _ROOT is None:
-        raise HTTPException(status_code=503, detail="Docs root not configured. Set EXAMLOPS_DOCS_ROOT.")
+        raise HTTPException(
+            status_code=503, detail="Docs root not configured. Set EXAMLOPS_DOCS_ROOT."
+        )
     root_str = str(_ROOT)
     resolved = (_ROOT / rel_path).resolve()
     if not (str(resolved) == root_str or str(resolved).startswith(root_str + "/")):

@@ -30,10 +30,13 @@ def list_models(model_name: str = "") -> str:
     for model in models:
         name = model.get("name", "?")
         aliases = {a["alias"]: a["version"] for a in model.get("aliases", []) if a.get("alias")}
-        versions = ", ".join(
-            f"v{v.get('version')} ({v.get('current_stage', 'None')})"
-            for v in model.get("latest_versions", [])
-        ) or "no versions"
+        versions = (
+            ", ".join(
+                f"v{v.get('version')} ({v.get('current_stage', 'None')})"
+                for v in model.get("latest_versions", [])
+            )
+            or "no versions"
+        )
         alias_str = ", ".join(f"{k}=v{v}" for k, v in aliases.items()) or "none"
         lines.append(f"- {name}: versions=[{versions}] aliases=[{alias_str}]")
     return "\n".join(lines)
@@ -46,10 +49,14 @@ def describe_model(name: str) -> str:
     Args:
         name: Model name (e.g. 'JPCP').
     """
-    meta, err = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/models/{name}/meta")
+    meta, err = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/models/{name}/meta"
+    )
     if err:
         return err
-    readme, _ = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/models/{name}/readme")
+    readme, _ = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/models/{name}/readme"
+    )
     summary = (readme or {}).get("summary") or (meta or {}).get("summary") or "(no summary)"
     datasets = ", ".join((meta or {}).get("datasets", [])) or "unknown"
     stages = ", ".join((meta or {}).get("stages", [])) or "unknown"

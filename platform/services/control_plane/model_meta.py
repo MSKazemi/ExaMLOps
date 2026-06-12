@@ -3,6 +3,7 @@
 Reads pipelines/models/*.yaml directly — avoids importing pipeline_generator
 which transitively requires torch via the modelzoo configurator.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -104,7 +105,9 @@ def get_model_meta(model_name: str) -> ModelMeta:
         "metric": prod_rule.get("metric") if prod_rule else cfg.get("promotion_metric"),
         "threshold": prod_rule.get("threshold") if prod_rule else cfg.get("promotion_threshold"),
         "direction": (
-            prod_rule.get("direction") if prod_rule else cfg.get("promotion_direction", "lower_is_better")
+            prod_rule.get("direction")
+            if prod_rule
+            else cfg.get("promotion_direction", "lower_is_better")
         ),
         "lifecycle": lifecycle,
     }

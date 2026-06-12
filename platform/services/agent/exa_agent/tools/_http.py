@@ -43,7 +43,7 @@ def request_json(service: str, method: str, url: str, *, retries: int = 2, **kwa
         except httpx.RequestError as exc:
             last_exc = exc
             if attempt < retries:
-                time.sleep(_REQUEST_RETRY_DELAY * (2 ** attempt))
+                time.sleep(_REQUEST_RETRY_DELAY * (2**attempt))
     return None, _format_error(service, url, last_exc)
 
 
@@ -70,7 +70,10 @@ class DashboardClient:
 
     def request(self, service: str, method: str, path: str, **kwargs):
         if not self._password:
-            return None, "Error: DASHBOARD_ADMIN_PASSWORD is not set — dashboard tools are disabled."
+            return (
+                None,
+                "Error: DASHBOARD_ADMIN_PASSWORD is not set — dashboard tools are disabled.",
+            )
         url = f"{self._base}{path}"
         try:
             with httpx.Client(timeout=config.HTTP_TIMEOUT) as client:

@@ -20,6 +20,7 @@ def test_defaults(tmp_path, monkeypatch):
     assert cfg.prefect_url == "http://localhost:14200"
     assert cfg.control_plane_token == ""
 
+
 def test_env_overrides_defaults():
     env = {"CONTROL_PLANE_URL": "http://n1:18002", "CONTROL_PLANE_TOKEN": "secret"}
     with patch.dict(os.environ, env):
@@ -27,8 +28,11 @@ def test_env_overrides_defaults():
     assert cfg.control_plane_url == "http://n1:18002"
     assert cfg.control_plane_token == "secret"
 
+
 def test_toml_overrides_defaults(tmp_path, monkeypatch):
-    toml_content = b'[urls]\ncontrol_plane = "http://remote:18002"\n[auth]\ncontrol_plane_token = "tok"\n'
+    toml_content = (
+        b'[urls]\ncontrol_plane = "http://remote:18002"\n[auth]\ncontrol_plane_token = "tok"\n'
+    )
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_bytes(toml_content)
     monkeypatch.setattr("examlops.cli._config.CONFIG_PATH", cfg_file)
@@ -36,6 +40,7 @@ def test_toml_overrides_defaults(tmp_path, monkeypatch):
         cfg = load_config()
     assert cfg.control_plane_url == "http://remote:18002"
     assert cfg.control_plane_token == "tok"
+
 
 def test_env_overrides_toml(tmp_path, monkeypatch):
     toml_content = b'[urls]\ncontrol_plane = "http://toml:18002"\n'

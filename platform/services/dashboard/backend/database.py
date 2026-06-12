@@ -28,17 +28,11 @@ async def _seed_secret_keys(session: AsyncSession) -> None:
     """Insert the in-scope secret keys with NULL values, idempotently."""
     from models import DashboardConfig  # local import to avoid circular
 
-    existing = set(
-        (await session.execute(select(DashboardConfig.key))).scalars().all()
-    )
+    existing = set((await session.execute(select(DashboardConfig.key))).scalars().all())
     for k in SEEDED_SECRET_KEYS:
         if k in existing:
             continue
-        session.add(
-            DashboardConfig(
-                key=k, value=None, secret_value=None, is_secret=True
-            )
-        )
+        session.add(DashboardConfig(key=k, value=None, secret_value=None, is_secret=True))
 
 
 async def init_db() -> None:

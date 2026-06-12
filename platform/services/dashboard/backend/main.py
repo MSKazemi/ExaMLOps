@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
     try:
         from settings import settings
         from storage import ImageStorage
+
         storage = ImageStorage(
             endpoint_url=settings.minio_url,
             access_key=settings.minio_access_key,
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
         await storage.ensure_bucket()
     except Exception as exc:
         import logging
+
         logging.getLogger("dashboard").warning("MinIO bucket setup failed (non-fatal): %s", exc)
     yield
     await engine.dispose()

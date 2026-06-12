@@ -29,9 +29,7 @@ _EXAMPLES_EXPLAIN = (
 )
 
 _EXAMPLES_HISTORY = (
-    "Examples:\n\n"
-    "  exa serve explain history JPCP\n\n"
-    "  exa --json serve explain history JPCP"
+    "Examples:\n\n  exa serve explain history JPCP\n\n  exa --json serve explain history JPCP"
 )
 
 
@@ -49,9 +47,7 @@ def explain(
     init_db()
 
     input_data = json.loads(input_json) if input_json else {}
-    input_hash = hashlib.md5(
-        (input_json or "{}").encode(), usedforsecurity=False
-    ).hexdigest()[:16]
+    input_hash = hashlib.md5((input_json or "{}").encode(), usedforsecurity=False).hexdigest()[:16]
 
     body = json.dumps({"alias": alias, "input": input_data}).encode()
     url = f"{cfg.ray_serve_url}/explain/{model}"
@@ -98,9 +94,7 @@ def explain(
         return
 
     # Sort by absolute importance and take top_n
-    sorted_features = sorted(
-        features, key=lambda f: abs(f.get("importance", 0.0)), reverse=True
-    )
+    sorted_features = sorted(features, key=lambda f: abs(f.get("importance", 0.0)), reverse=True)
     top_features = sorted_features[:top_n]
 
     if _output.json_mode:
@@ -112,9 +106,7 @@ def explain(
         return
 
     rows = [[f.get("name", "—"), f"{f.get('importance', 0.0):.6f}"] for f in top_features]
-    _output.print_table(
-        f"Feature Importance — {model} ({alias})", ["Feature", "Importance"], rows
-    )
+    _output.print_table(f"Feature Importance — {model} ({alias})", ["Feature", "Importance"], rows)
 
 
 @app.command("history", epilog=_EXAMPLES_HISTORY)

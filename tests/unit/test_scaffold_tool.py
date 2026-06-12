@@ -10,9 +10,19 @@ SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "scaffold_model.py"
 
 def _run(*extra_args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--name", "TestAD", "--task", "anomaly_detection",
-         "--task-type", "classification", *extra_args],
-        capture_output=True, text=True,
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--name",
+            "TestAD",
+            "--task",
+            "anomaly_detection",
+            "--task-type",
+            "classification",
+            *extra_args,
+        ],
+        capture_output=True,
+        text=True,
     )
 
 

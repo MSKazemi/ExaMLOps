@@ -29,6 +29,7 @@ try:
         set_traffic_rules,
         write_audit_event,
     )
+
     init_db()
     _DB_OK = True
 except Exception:
@@ -48,9 +49,11 @@ def compare_model_versions(model_name: str, v1: str, v2: str) -> str:
         v1: First version number.
         v2: Second version number.
     """
+
     def _get_run(version: str) -> tuple[dict, dict]:
         ver_data, err = _http.request_json(
-            "mlflow", "GET",
+            "mlflow",
+            "GET",
             f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
             f"?name={urllib.parse.quote(model_name)}&version={version}",
         )
@@ -58,7 +61,8 @@ def compare_model_versions(model_name: str, v1: str, v2: str) -> str:
             return {}, {}
         run_id = ver_data["model_version"]["run_id"]
         run_data, err = _http.request_json(
-            "mlflow", "GET",
+            "mlflow",
+            "GET",
             f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
         )
         if err:
@@ -94,19 +98,23 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
     """
     if not version:
         rm_data, err = _http.request_json(
-            "mlflow", "GET",
+            "mlflow",
+            "GET",
             f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/get"
             f"?name={urllib.parse.quote(model_name)}",
         )
         if err:
             return err
-        aliases = {a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])}
+        aliases = {
+            a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])
+        }
         version = aliases.get("Production") or next(iter(aliases.values()), "")
         if not version:
             return f"No versions found for {model_name}"
 
     ver_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
         f"?name={urllib.parse.quote(model_name)}&version={version}",
     )
@@ -115,7 +123,8 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
     run_id = ver_data["model_version"]["run_id"]
 
     run_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
     )
     if err:
@@ -208,13 +217,17 @@ def query_audit_log(last_days: int = 7, model: str = "", action: str = "") -> st
     return "\n".join(lines)
 
 
-def _set_traffic_summary(model_name: str, production: int = 100, canary: int = 0, staging: int = 0) -> str:
+def _set_traffic_summary(
+    model_name: str, production: int = 100, canary: int = 0, staging: int = 0
+) -> str:
     return f"Set traffic split for {model_name}: Production={production}% Canary={canary}% Staging={staging}%"
 
 
 @tool
 @confirmed_write(_set_traffic_summary)
-def set_traffic_split(model_name: str, production: int = 100, canary: int = 0, staging: int = 0) -> str:
+def set_traffic_split(
+    model_name: str, production: int = 100, canary: int = 0, staging: int = 0
+) -> str:
     """Set traffic split across model aliases (must sum to 100).
 
     Args:
@@ -238,7 +251,8 @@ def set_traffic_split(model_name: str, production: int = 100, canary: int = 0, s
     set_traffic_rules(model_name, rules, "agent")
     write_audit_event("agent", "agent", "traffic_changed", model_name, rules)
     data, err = _http.request_json(
-        "ray_serve", "POST",
+        "ray_serve",
+        "POST",
         f"{config.RAY_SERVE_URL}/traffic-rules/{model_name}",
         json=rules,
     )
@@ -293,19 +307,23 @@ def promote_model(
         return f"Invalid operator '{operator}'. Use: lt, gt, lte, gte"
 
     rm_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/get"
         f"?name={urllib.parse.quote(model_name)}",
     )
     if err:
         return err
-    aliases = {a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])}
+    aliases = {
+        a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])
+    }
     version = aliases.get(from_alias)
     if not version:
         return f"No version under alias '{from_alias}' for {model_name}"
 
     ver_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
         f"?name={urllib.parse.quote(model_name)}&version={version}",
     )
@@ -314,7 +332,8 @@ def promote_model(
     run_id = ver_data["model_version"]["run_id"]
 
     run_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
     )
     if err:
@@ -336,7 +355,8 @@ def promote_model(
         return f"Not promoted: {model_name} v{version}: {summary} (threshold not met)"
 
     _, err = _http.request_json(
-        "mlflow", "POST",
+        "mlflow",
+        "POST",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/alias",
         json={"name": model_name, "alias": to_alias, "version": version},
     )
@@ -344,8 +364,13 @@ def promote_model(
         return f"Promotion failed: {err}"
 
     if _DB_OK:
-        write_audit_event("agent", "agent", "alias_promoted", model_name,
-                          {"from": from_alias, "to": to_alias, "version": version, metric: metric_val})
+        write_audit_event(
+            "agent",
+            "agent",
+            "alias_promoted",
+            model_name,
+            {"from": from_alias, "to": to_alias, "version": version, metric: metric_val},
+        )
 
     return f"Promoted {model_name} v{version} → {to_alias}  ({summary})"
 
@@ -465,7 +490,8 @@ def trigger_auto_retrain(model_name: str = "") -> str:
                 skipped.append(f"{mdl}: cooldown {elapsed:.0f}/{ar['cooldown_s']}s")
                 continue
         data, err = _http.request_json(
-            "control_plane", "POST",
+            "control_plane",
+            "POST",
             f"{config.CONTROL_PLANE_URL}/retrain",
             json={"model_name": mdl, "dataset_name": ar["dataset_name"], "is_dummy": False},
             headers={"Authorization": f"Bearer {config.CONTROL_PLANE_TOKEN}"},
@@ -474,8 +500,13 @@ def trigger_auto_retrain(model_name: str = "") -> str:
             skipped.append(f"{mdl}: retrain POST failed — {err}")
         else:
             record_drift_trigger(mdl)
-            write_audit_event("agent", "agent", "drift_auto_retrain_triggered", mdl,
-                              {"z_score": z, "flow_run_id": data.get("flow_run_id")})
+            write_audit_event(
+                "agent",
+                "agent",
+                "drift_auto_retrain_triggered",
+                mdl,
+                {"z_score": z, "flow_run_id": data.get("flow_run_id")},
+            )
             triggered.append(f"{mdl}: z={z:.2f} → flow_run_id={data.get('flow_run_id')}")
 
     lines = []
@@ -487,7 +518,9 @@ def trigger_auto_retrain(model_name: str = "") -> str:
 
 
 @tool
-def validate_model_serving(model_name: str, alias: str = "Staging", max_latency_s: float = 2.0) -> str:
+def validate_model_serving(
+    model_name: str, alias: str = "Staging", max_latency_s: float = 2.0
+) -> str:
     """Smoke-test a model on Ray Serve: check it responds and meets latency SLA.
 
     Sends 3 dummy requests and reports average/max latency vs the threshold.
@@ -512,7 +545,8 @@ def validate_model_serving(model_name: str, alias: str = "Staging", max_latency_
     for _ in range(3):
         t0 = time.perf_counter()
         _, err = _http.request_json(
-            "ray_serve", "POST",
+            "ray_serve",
+            "POST",
             f"{config.RAY_SERVE_URL}/infer-pipeline/infer",
             json=dummy_body,
         )
@@ -557,14 +591,16 @@ def get_platform_summary() -> str:
 
     # Registered model count
     models_data, err = _http.request_json(
-        "mlflow", "GET",
+        "mlflow",
+        "GET",
         f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/search",
     )
     model_count: int | str = len(models_data.get("registered_models", [])) if not err else "?"
 
     # Pending approvals
     approvals_data, err = _http.request_json(
-        "control_plane", "GET",
+        "control_plane",
+        "GET",
         f"{config.CONTROL_PLANE_URL}/approvals",
     )
     if not err and isinstance(approvals_data, list):
@@ -663,6 +699,6 @@ TOOLS = [
     promote_model,
     trigger_auto_retrain,
     validate_model_serving,
-    get_platform_summary,   # Feature 8
-    diagnose_platform,      # Feature 9
+    get_platform_summary,  # Feature 8
+    diagnose_platform,  # Feature 9
 ]

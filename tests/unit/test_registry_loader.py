@@ -152,6 +152,7 @@ def test_load_with_env_adds_additive_entry(base_yaml, env_yaml):
 
 # ── export_registry tests ──────────────────────────────────────────────────
 
+
 class FakeConfig:
     SUPPORTED_DATASETS: list = []
     MODEL_CLASS: type  # set below after FakeModel is defined
@@ -160,7 +161,12 @@ class FakeConfig:
     def get_inference_params(cls) -> dict:
         return {
             "lifecycle": [
-                {"name": "Staging", "metric": "rmse", "threshold": 200.0, "direction": "lower_is_better"},
+                {
+                    "name": "Staging",
+                    "metric": "rmse",
+                    "threshold": 200.0,
+                    "direction": "lower_is_better",
+                },
             ]
         }
 
@@ -213,6 +219,7 @@ def test_export_registry_lifecycle_empty_when_not_defined(tmp_path):
 
 def test_export_round_trip(tmp_path):
     """export → reload should produce identical enabled entries."""
+
     # Build a minimal fake registry that matches the YAML fixture
     class FakeMACKConfig:
         SUPPORTED_DATASETS = []
@@ -246,19 +253,22 @@ def test_export_round_trip(tmp_path):
 
 # ── resolve_entries tests ──────────────────────────────────────────────────
 
+
 def test_resolve_entries_resolves_by_class_name():
-    entries = [ModelEntry(
-        name="FakeModel",
-        model_class_name="FakeModel",
-        config_class_name="FakeConfig",
-        datasets=[],
-        backend="zenodo",
-        dummy=False,
-        enabled=True,
-        lifecycle=[],
-        serve_aliases=["Production"],
-        prefect={},
-    )]
+    entries = [
+        ModelEntry(
+            name="FakeModel",
+            model_class_name="FakeModel",
+            config_class_name="FakeConfig",
+            datasets=[],
+            backend="zenodo",
+            dummy=False,
+            enabled=True,
+            lifecycle=[],
+            serve_aliases=["Production"],
+            prefect={},
+        )
+    ]
     resolved = resolve_entries(entries, FAKE_REGISTRY)
     assert len(resolved) == 1
     assert resolved[0].model_cls is FakeModel
@@ -266,34 +276,38 @@ def test_resolve_entries_resolves_by_class_name():
 
 
 def test_resolve_entries_resolves_without_config_class_name():
-    entries = [ModelEntry(
-        name="FakeModel",
-        model_class_name="FakeModel",
-        config_class_name=None,
-        datasets=[],
-        backend="zenodo",
-        dummy=False,
-        enabled=True,
-        lifecycle=[],
-        serve_aliases=["Production"],
-        prefect={},
-    )]
+    entries = [
+        ModelEntry(
+            name="FakeModel",
+            model_class_name="FakeModel",
+            config_class_name=None,
+            datasets=[],
+            backend="zenodo",
+            dummy=False,
+            enabled=True,
+            lifecycle=[],
+            serve_aliases=["Production"],
+            prefect={},
+        )
+    ]
     resolved = resolve_entries(entries, FAKE_REGISTRY)
     assert resolved[0].config_cls is FakeConfig
 
 
 def test_resolve_entries_raises_on_unknown_model():
-    entries = [ModelEntry(
-        name="Ghost",
-        model_class_name="GhostModel",
-        config_class_name=None,
-        datasets=[],
-        backend="zenodo",
-        dummy=False,
-        enabled=True,
-        lifecycle=[],
-        serve_aliases=["Production"],
-        prefect={},
-    )]
+    entries = [
+        ModelEntry(
+            name="Ghost",
+            model_class_name="GhostModel",
+            config_class_name=None,
+            datasets=[],
+            backend="zenodo",
+            dummy=False,
+            enabled=True,
+            lifecycle=[],
+            serve_aliases=["Production"],
+            prefect={},
+        )
+    ]
     with pytest.raises(ValueError, match="GhostModel"):
         resolve_entries(entries, FAKE_REGISTRY)

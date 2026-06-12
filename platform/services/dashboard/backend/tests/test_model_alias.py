@@ -1,4 +1,5 @@
 """Tests for alias PUT/DELETE and extended versions endpoint."""
+
 import httpx
 import pytest
 from control_plane_client import ControlPlaneClient
@@ -7,25 +8,47 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 from tests.fakes import make_control_plane_transport, make_mlflow_transport
 
 _JPCP_META = {
-    "name": "JPCP", "task_type": "regression",
+    "name": "JPCP",
+    "task_type": "regression",
     "estimator_class": "sklearn.ensemble.RandomForestRegressor",
     "supported_datasets": ["PM100Dataset"],
-    "input_schema": {}, "output_schema": {},
-    "promotion": {"metric": "rmse", "threshold": 50.0, "direction": "lower_is_better", "model_id": "jpcp"},
+    "input_schema": {},
+    "output_schema": {},
+    "promotion": {
+        "metric": "rmse",
+        "threshold": 50.0,
+        "direction": "lower_is_better",
+        "model_id": "jpcp",
+    },
     "path_in_repo": "modelzoo/.../jpcp/",
     "bundled_images": [],
 }
 
 _VERSIONS = [
-    {"version": "3", "run_id": "r3", "aliases": ["Staging"],
-     "tags": [{"key": "framework", "value": "sklearn"}],
-     "creation_timestamp": 1700000000000, "last_updated_timestamp": 1700000001000},
-    {"version": "2", "run_id": "r2", "aliases": ["Production"],
-     "tags": [{"key": "framework", "value": "sklearn"}],
-     "creation_timestamp": 1690000000000, "last_updated_timestamp": 1690000001000},
-    {"version": "1", "run_id": "r1", "aliases": ["Archived"],
-     "tags": [],
-     "creation_timestamp": 1680000000000, "last_updated_timestamp": 1680000001000},
+    {
+        "version": "3",
+        "run_id": "r3",
+        "aliases": ["Staging"],
+        "tags": [{"key": "framework", "value": "sklearn"}],
+        "creation_timestamp": 1700000000000,
+        "last_updated_timestamp": 1700000001000,
+    },
+    {
+        "version": "2",
+        "run_id": "r2",
+        "aliases": ["Production"],
+        "tags": [{"key": "framework", "value": "sklearn"}],
+        "creation_timestamp": 1690000000000,
+        "last_updated_timestamp": 1690000001000,
+    },
+    {
+        "version": "1",
+        "run_id": "r1",
+        "aliases": ["Archived"],
+        "tags": [],
+        "creation_timestamp": 1680000000000,
+        "last_updated_timestamp": 1680000001000,
+    },
 ]
 
 
@@ -49,9 +72,7 @@ def fake_deps(monkeypatch):
     )
     monkeypatch.setattr(
         "routers.models._mlflow_client",
-        lambda: httpx.AsyncClient(
-            base_url="http://mlflow", transport=mlflow_transport
-        ),
+        lambda: httpx.AsyncClient(base_url="http://mlflow", transport=mlflow_transport),
     )
 
 

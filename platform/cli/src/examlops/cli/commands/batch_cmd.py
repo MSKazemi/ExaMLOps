@@ -36,6 +36,7 @@ def _ensure_table() -> None:
     with get_db() as conn:
         conn.executescript(_CREATE_BATCH_JOBS)
 
+
 app = typer.Typer(
     help="Batch inference jobs",
     no_args_is_help=True,

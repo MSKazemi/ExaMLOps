@@ -26,14 +26,18 @@ def approve_model(model_id: str) -> str:
     Args:
         model_id: Model identifier (e.g. 'jpcp').
     """
-    data, err = _http.request_json("control_plane", "POST", f"{config.CONTROL_PLANE_URL}/approve/{model_id}")
+    data, err = _http.request_json(
+        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/approve/{model_id}"
+    )
     if err:
         return err
     return f"Approved {model_id}: {data}"
 
 
 @tool
-@confirmed_write(lambda model_id, reason="": f"Reject model change for {model_id} (reason: {reason or 'none'})")
+@confirmed_write(
+    lambda model_id, reason="": f"Reject model change for {model_id} (reason: {reason or 'none'})"
+)
 def reject_model(model_id: str, reason: str = "") -> str:
     """Reject the most recent pending change for a model without training.
 

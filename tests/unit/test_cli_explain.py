@@ -52,9 +52,7 @@ def test_explain_404_logs_unavailable():
 
     # DB should have a log entry with status=unavailable
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT status, error FROM explain_logs WHERE model='JPCP'"
-        ).fetchall()
+        rows = conn.execute("SELECT status, error FROM explain_logs WHERE model='JPCP'").fetchall()
     assert len(rows) == 1
     assert rows[0]["status"] == "unavailable"
     assert "404" in rows[0]["error"]
@@ -84,9 +82,7 @@ def test_explain_success_shows_table():
 
 def test_explain_success_top_n_respected():
     """--top-n limits the number of features shown."""
-    payload = {
-        "features": [{"name": f"feat_{i}", "importance": float(i) * 0.1} for i in range(20)]
-    }
+    payload = {"features": [{"name": f"feat_{i}", "importance": float(i) * 0.1} for i in range(20)]}
     mock_resp = MagicMock()
     mock_resp.read.return_value = json.dumps(payload).encode()
     mock_resp.__enter__ = lambda s: s

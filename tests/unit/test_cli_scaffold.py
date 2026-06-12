@@ -25,7 +25,9 @@ def test_scaffold_calls_script_with_name():
 
 def test_scaffold_passes_task_and_type():
     with patch("subprocess.run") as mock_run:
-        result = runner.invoke(app, ["scaffold", "MyModel", "--task", "anomaly_detection", "--type", "classification"])
+        result = runner.invoke(
+            app, ["scaffold", "MyModel", "--task", "anomaly_detection", "--type", "classification"]
+        )
     assert result.exit_code == 0
     cmd = mock_run.call_args[0][0]
     assert "--task" in cmd and "anomaly_detection" in cmd

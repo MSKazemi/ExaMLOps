@@ -53,9 +53,9 @@ _COMMANDS = {
     "/new": "Start a fresh conversation thread",
     "/resume <id>": "Resume a saved thread",
     "/threads": "List saved thread ids",
-    "/history [n]": "Show last n messages in current thread (default 10)",   # Feature 1
-    "/export [file]": "Export current thread to a Markdown file",             # Feature 2
-    "/grep <pattern>": "Search conversation history for text",                # Feature 3
+    "/history [n]": "Show last n messages in current thread (default 10)",  # Feature 1
+    "/export [file]": "Export current thread to a Markdown file",  # Feature 2
+    "/grep <pattern>": "Search conversation history for text",  # Feature 3
     "/watch <secs> <query>": "Repeat a query every N seconds (Ctrl+C stop)",  # Feature 4
     "/model <name>": "Switch the LLM model (rebuilds graph immediately)",
     "/report": "Generate a comprehensive platform status report",
@@ -77,7 +77,9 @@ _REPORT_PROMPT = (
 class CliState:
     thread_id: str = field(default_factory=lambda: f"cli-{uuid.uuid4().hex[:8]}")
     model: str = field(
-        default_factory=lambda: config.ANTHROPIC_MODEL if config.ANTHROPIC_API_KEY else config.AGENT_MODEL
+        default_factory=lambda: (
+            config.ANTHROPIC_MODEL if config.ANTHROPIC_API_KEY else config.AGENT_MODEL
+        )
     )
 
 
@@ -91,7 +93,8 @@ def _extract_text(content) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text"
+            block.get("text", "")
+            if isinstance(block, dict) and block.get("type") == "text"
             else (block if isinstance(block, str) else "")
             for block in content
         )
@@ -122,7 +125,11 @@ def _export_thread(messages: list, path: str, thread_id: str) -> None:
     for msg in messages:
         role = type(msg).__name__.replace("Message", "")
         name = getattr(msg, "name", None)
-        content = _extract_text(msg.content) if hasattr(msg, "content") else str(getattr(msg, "content", ""))
+        content = (
+            _extract_text(msg.content)
+            if hasattr(msg, "content")
+            else str(getattr(msg, "content", ""))
+        )
         header = f"**{role}**" + (f" `{name}`" if name else "")
         lines.append(f"{header}\n\n{content}\n\n---\n\n")
     Path(path).write_text("".join(lines))
@@ -146,6 +153,7 @@ def handle_slash(text: str, state: CliState, graph=None) -> tuple[bool, object]:
 
     elif cmd == "/tools":
         from exa_agent.tools import TOOLS
+
         for t in TOOLS:
             print(f"  {t.name}")
 
@@ -195,6 +203,7 @@ def handle_slash(text: str, state: CliState, graph=None) -> tuple[bool, object]:
             print("Usage: /grep <pattern>")
         elif graph is not None:
             import re
+
             pattern = arg.strip()
             try:
                 messages = graph.get_state(cfg).values.get("messages", [])

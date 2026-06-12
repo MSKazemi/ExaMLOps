@@ -42,10 +42,7 @@ _EXAMPLES_START = (
     "  exa serve ab start JPCP --variant-a Production --variant-b Canary --split 70\n\n"
     "  exa serve ab start JPCP --name exp-001 --split 80"
 )
-_EXAMPLES_STOP = (
-    "Examples:\n\n"
-    "  exa serve ab stop JPCP"
-)
+_EXAMPLES_STOP = "Examples:\n\n  exa serve ab stop JPCP"
 _EXAMPLES_STATUS = (
     "Examples:\n\n"
     "  exa serve ab status\n\n"
@@ -70,7 +67,9 @@ def ab_start(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
     variant_a: str = typer.Option("Production", "--variant-a", "-a", help="First variant alias"),
     variant_b: str = typer.Option("Canary", "--variant-b", "-b", help="Second variant alias"),
-    split: int = typer.Option(50, "--split", "-s", help="% of traffic routed to variant_a (rest goes to variant_b)"),
+    split: int = typer.Option(
+        50, "--split", "-s", help="% of traffic routed to variant_a (rest goes to variant_b)"
+    ),
     name: str | None = typer.Option(None, "--name", "-n", help="Optional experiment name"),
 ) -> None:
     """Start a new A/B test comparing two model variants."""
@@ -96,12 +95,13 @@ def ab_start(
 
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
     write_audit_event(
-        "cli", actor, "ab_test_started", model,
+        "cli",
+        actor,
+        "ab_test_started",
+        model,
         {"variant_a": variant_a, "variant_b": variant_b, "split_pct": split, "name": name},
     )
-    _output.ok(
-        f"A/B test started for {model}: {variant_a} vs {variant_b} ({split}/{100 - split}%)"
-    )
+    _output.ok(f"A/B test started for {model}: {variant_a} vs {variant_b} ({split}/{100 - split}%)")
 
 
 @app.command("stop", epilog=_EXAMPLES_STOP)

@@ -1,4 +1,5 @@
 """Batch inference job history router (viewer-readable)."""
+
 from __future__ import annotations
 
 import os

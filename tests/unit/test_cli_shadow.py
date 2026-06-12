@@ -19,6 +19,7 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     yield db
     os.environ.pop("PLATFORM_DB", None)
@@ -29,7 +30,11 @@ def test_shadow_status_empty():
     result = runner.invoke(app, ["serve", "shadow", "status"])
     assert result.exit_code == 0, result.output
     # should not crash; either prints empty message or empty table
-    assert "shadow" in result.output.lower() or "no shadow" in result.output.lower() or result.exit_code == 0
+    assert (
+        "shadow" in result.output.lower()
+        or "no shadow" in result.output.lower()
+        or result.exit_code == 0
+    )
 
 
 def test_shadow_enable_creates_config_row():

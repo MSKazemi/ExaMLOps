@@ -1,4 +1,5 @@
 """Tests for the FastAPI chat server."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -11,10 +12,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 # Build a minimal fake graph for testing
 def _fake_graph():
     state_mock = MagicMock()
-    state_mock.values = {"messages": [
-        HumanMessage(content="Hello"),
-        AIMessage(content="Hi there, how can I help?"),
-    ]}
+    state_mock.values = {
+        "messages": [
+            HumanMessage(content="Hello"),
+            AIMessage(content="Hi there, how can I help?"),
+        ]
+    }
     state_mock.tasks = []
     graph = MagicMock()
     graph.get_state.return_value = state_mock
@@ -25,15 +28,20 @@ def _fake_graph():
 @pytest.fixture()
 def client():
     from exa_agent import server as srv
+
     # Reset shared graph state so each test starts clean
     srv._graph = None
     srv._backend_info = {}
     with patch.object(srv, "_get_graph", return_value=_fake_graph()):
-        with patch("exa_agent.server.check_backend", return_value={"type": "claude", "model": "claude-opus-4-8", "ok": True}):
+        with patch(
+            "exa_agent.server.check_backend",
+            return_value={"type": "claude", "model": "claude-opus-4-8", "ok": True},
+        ):
             yield TestClient(srv.app)
 
 
 # ── HTML endpoint ──────────────────────────────────────────────────────────────
+
 
 def test_index_returns_html(client):
     resp = client.get("/")
@@ -51,6 +59,7 @@ def test_index_contains_websocket_js(client):
 
 # ── /api/info ──────────────────────────────────────────────────────────────────
 
+
 def test_api_info_returns_backend(client):
     resp = client.get("/api/info")
     assert resp.status_code == 200
@@ -62,6 +71,7 @@ def test_api_info_returns_backend(client):
 
 # ── /api/threads ───────────────────────────────────────────────────────────────
 
+
 def test_api_threads_empty(client):
     resp = client.get("/api/threads")
     assert resp.status_code == 200
@@ -70,6 +80,7 @@ def test_api_threads_empty(client):
 
 def test_api_threads_lists_saved(client):
     from exa_agent import server as srv
+
     fake = _fake_graph()
     t1 = MagicMock()
     t1.config = {"configurable": {"thread_id": "cli-aaa"}}
@@ -83,6 +94,7 @@ def test_api_threads_lists_saved(client):
 
 # ── /api/threads/{id}/history ─────────────────────────────────────────────────
 
+
 def test_thread_history_returns_messages(client):
     resp = client.get("/api/threads/cli-test/history")
     assert resp.status_code == 200
@@ -93,6 +105,7 @@ def test_thread_history_returns_messages(client):
 
 def test_thread_history_empty_on_error(client):
     from exa_agent import server as srv
+
     bad_graph = _fake_graph()
     bad_graph.get_state.side_effect = RuntimeError("no state")
     with patch.object(srv, "_get_graph", return_value=bad_graph):
@@ -102,6 +115,7 @@ def test_thread_history_empty_on_error(client):
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
+
 
 def test_websocket_receives_done_on_empty_stream(client):
     from exa_agent import server as srv

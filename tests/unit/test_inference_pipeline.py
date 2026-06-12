@@ -70,6 +70,7 @@ class TestResolve:
         import importlib
 
         import serving.inference_pipeline.app as m
+
         importlib.reload(m)
         payload = {"alias": "Production", "features": {}}
         model, _ = m.ModelRouter._resolve(payload)
@@ -80,6 +81,7 @@ class TestResolve:
         import importlib
 
         import serving.inference_pipeline.app as m
+
         importlib.reload(m)
         payload = {"model_name": "", "alias": "Production", "features": {}}
         model, _ = m.ModelRouter._resolve(payload)
@@ -90,6 +92,7 @@ class TestResolve:
         import importlib
 
         import serving.inference_pipeline.app as m
+
         importlib.reload(m)
         payload = {"model_name": "JPCP", "features": {}}
         _, alias = m.ModelRouter._resolve(payload)

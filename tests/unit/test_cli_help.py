@@ -13,6 +13,7 @@ runner = CliRunner(env={"COLUMNS": "200"})
 
 # ── scaffold ─────────────────────────────────────────────────────────────────
 
+
 def test_scaffold_help_shows_task_choices():
     r = runner.invoke(app, ["scaffold", "--help"])
     assert r.exit_code == 0
@@ -37,6 +38,7 @@ def test_scaffold_help_shows_examples():
 
 # ── retrain ──────────────────────────────────────────────────────────────────
 
+
 def test_retrain_help_shows_backend_choices():
     r = runner.invoke(app, ["retrain", "--help"])
     assert r.exit_code == 0
@@ -53,6 +55,7 @@ def test_retrain_help_shows_examples():
 
 
 # ── predict ───────────────────────────────────────────────────────────────────
+
 
 def test_predict_help_shows_alias_choices():
     r = runner.invoke(app, ["predict", "--help"])
@@ -80,6 +83,7 @@ def test_predict_help_examples_match_inference_pipeline_payload():
 
 # ── status ────────────────────────────────────────────────────────────────────
 
+
 def test_status_help_shows_examples():
     r = runner.invoke(app, ["status", "--help"])
     assert r.exit_code == 0
@@ -88,6 +92,7 @@ def test_status_help_shows_examples():
 
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
+
 
 def test_pipeline_run_help_shows_env_choices():
     r = runner.invoke(app, ["pipeline", "run", "--help"])
@@ -113,6 +118,7 @@ def test_pipeline_deploy_help_shows_examples():
 
 # ── stack ─────────────────────────────────────────────────────────────────────
 
+
 def test_stack_up_help_shows_service_choices():
     r = runner.invoke(app, ["stack", "up", "--help"])
     assert r.exit_code == 0
@@ -137,6 +143,7 @@ def test_stack_logs_help_shows_service_choices():
 
 # ── serve ─────────────────────────────────────────────────────────────────────
 
+
 def test_serve_reload_help_shows_examples():
     r = runner.invoke(app, ["serve", "reload", "--help"])
     assert r.exit_code == 0
@@ -151,6 +158,7 @@ def test_serve_check_help_shows_examples():
 
 
 # ── models ────────────────────────────────────────────────────────────────────
+
 
 def test_models_list_help_shows_examples():
     r = runner.invoke(app, ["models", "list", "--help"])
@@ -168,6 +176,7 @@ def test_models_info_help_shows_examples():
 
 # ── modelzoo ──────────────────────────────────────────────────────────────────
 
+
 def test_modelzoo_status_help_shows_examples():
     r = runner.invoke(app, ["modelzoo", "status", "--help"])
     assert r.exit_code == 0
@@ -182,6 +191,7 @@ def test_modelzoo_events_help_shows_examples():
 
 
 # ── approvals ─────────────────────────────────────────────────────────────────
+
 
 def test_approvals_list_help_shows_examples():
     r = runner.invoke(app, ["approvals", "list", "--help"])
@@ -204,6 +214,7 @@ def test_approvals_reject_help_shows_examples():
 
 # ── seanerbus ─────────────────────────────────────────────────────────────────
 
+
 def test_seanerbus_list_help_shows_examples():
     r = runner.invoke(app, ["seanerbus", "list", "--help"])
     assert r.exit_code == 0
@@ -218,6 +229,7 @@ def test_seanerbus_regen_uuid_help_shows_examples():
 
 
 # ── config ────────────────────────────────────────────────────────────────────
+
 
 def test_config_show_help_shows_examples():
     r = runner.invoke(app, ["config", "show", "--help"])

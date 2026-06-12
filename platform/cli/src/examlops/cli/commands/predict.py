@@ -10,12 +10,12 @@ from examlops.cli._enums import MLflowAlias
 
 _EXAMPLES = (
     "Examples:\n\n"
-    "  exa predict JPCP --features \"$(python3 -c "
+    '  exa predict JPCP --features "$(python3 -c '
     '\'import json; print(json.dumps({"embedding":[0.1]*384,"num_nodes": 4,"user_id": "smoke"}))\''
-    ")\"\n\n"
-    "  exa predict JPCP --features \"$(python3 -c "
+    ')"\n\n'
+    '  exa predict JPCP --features "$(python3 -c '
     '\'import json; print(json.dumps({"embedding":[0.1]*384,"num_nodes": 4,"user_id": "smoke"}))\''
-    ")\" --alias Canary\n\n"
+    ')" --alias Canary\n\n'
     "  # The inference pipeline requires a 384-dim embedding and num_nodes."
 )
 

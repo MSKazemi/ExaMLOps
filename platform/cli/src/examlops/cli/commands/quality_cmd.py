@@ -22,9 +22,7 @@ _EXAMPLES_CHECK = (
     "  exa --json pipeline quality check JPCP PM100Dataset"
 )
 _EXAMPLES_HISTORY = (
-    "Examples:\n\n"
-    "  exa pipeline quality history JPCP\n\n"
-    "  exa --json pipeline quality history JPCP"
+    "Examples:\n\n  exa pipeline quality history JPCP\n\n  exa --json pipeline quality history JPCP"
 )
 
 
@@ -72,29 +70,36 @@ def quality_check(
 
     # Check (a): directory exists
     dir_exists = data_dir.exists() and data_dir.is_dir()
-    checks.append((
-        "dir_exists",
-        dir_exists,
-        str(data_dir) if dir_exists else f"Directory not found: {data_dir}",
-    ))
+    checks.append(
+        (
+            "dir_exists",
+            dir_exists,
+            str(data_dir) if dir_exists else f"Directory not found: {data_dir}",
+        )
+    )
 
     # Checks (b) and (c): files present — only meaningful if dir exists
     if dir_exists:
         data_files = [
-            f for f in data_dir.iterdir()
-            if f.is_file() and f.suffix in {".parquet", ".json"}
+            f for f in data_dir.iterdir() if f.is_file() and f.suffix in {".parquet", ".json"}
         ]
         has_files = len(data_files) > 0
-        checks.append((
-            "data_files_present",
-            has_files,
-            f"{len(data_files)} file(s) found" if has_files else "No .parquet or .json files found",
-        ))
-        checks.append((
-            "file_count_gt_zero",
-            has_files,
-            f"file count = {len(data_files)}",
-        ))
+        checks.append(
+            (
+                "data_files_present",
+                has_files,
+                f"{len(data_files)} file(s) found"
+                if has_files
+                else "No .parquet or .json files found",
+            )
+        )
+        checks.append(
+            (
+                "file_count_gt_zero",
+                has_files,
+                f"file count = {len(data_files)}",
+            )
+        )
     else:
         checks.append(("data_files_present", False, "Skipped — directory missing"))
         checks.append(("file_count_gt_zero", False, "Skipped — directory missing"))
@@ -125,14 +130,14 @@ def quality_check(
         )
 
     write_audit_event(
-        "cli", actor, "quality_check",
-        model, {"dataset": dataset, "status": overall, "passed": passed, "failed": failed},
+        "cli",
+        actor,
+        "quality_check",
+        model,
+        {"dataset": dataset, "status": overall, "passed": passed, "failed": failed},
     )
 
-    rows = [
-        [d["check"], d["status"].upper(), d["detail"]]
-        for d in details
-    ]
+    rows = [[d["check"], d["status"].upper(), d["detail"]] for d in details]
     _output.print_table(
         f"Data Quality: {model} / {dataset}",
         ["Check", "Status", "Detail"],

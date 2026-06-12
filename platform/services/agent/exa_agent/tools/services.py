@@ -12,7 +12,11 @@ def list_services() -> str:
     data, err = _http.dashboard().request("dashboard", "GET", "/api/containers")
     if err:
         return err
-    return "\n".join(f"- {c.get('name')}: {c.get('status', '?')}" for c in data) if data else "No services."
+    return (
+        "\n".join(f"- {c.get('name')}: {c.get('status', '?')}" for c in data)
+        if data
+        else "No services."
+    )
 
 
 @tool

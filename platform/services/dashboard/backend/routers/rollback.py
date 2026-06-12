@@ -1,4 +1,5 @@
 """Rollback router — reads model_rollbacks from shared platform.db."""
+
 from __future__ import annotations
 
 import os
@@ -43,14 +44,14 @@ async def get_rollback_history(model: str, _=Depends(_viewer)) -> list[dict]:
         conn.close()
         return [
             {
-                "id":           r["id"],
-                "ts":           r["ts"],
-                "model":        r["model"],
+                "id": r["id"],
+                "ts": r["ts"],
+                "model": r["model"],
                 "from_version": r["from_version"],
-                "to_version":   r["to_version"],
-                "alias":        r["alias"],
-                "actor":        r["actor"],
-                "reason":       r["reason"],
+                "to_version": r["to_version"],
+                "alias": r["alias"],
+                "actor": r["actor"],
+                "reason": r["reason"],
             }
             for r in rows
         ]

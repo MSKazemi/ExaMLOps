@@ -64,8 +64,22 @@ def test_all_enums_are_str_subclass():
 
 def test_stack_service_covers_all_compose_services():
     values = {s.value for s in StackService}
-    for expected in ["postgres", "minio", "mlflow", "orchestrator", "ray-serving",
-                     "control-plane", "prometheus", "alertmanager", "tempo", "grafana",
-                     "loki", "promtail", "dashboard", "jupyterhub",
-                     "seanerbus-sim", "seanerbus-bridge"]:
+    for expected in [
+        "postgres",
+        "minio",
+        "mlflow",
+        "orchestrator",
+        "ray-serving",
+        "control-plane",
+        "prometheus",
+        "alertmanager",
+        "tempo",
+        "grafana",
+        "loki",
+        "promtail",
+        "dashboard",
+        "jupyterhub",
+        "seanerbus-sim",
+        "seanerbus-bridge",
+    ]:
         assert expected in values, f"StackService missing: {expected}"

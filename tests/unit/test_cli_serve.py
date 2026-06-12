@@ -11,18 +11,27 @@ from examlops.cli.main import app
 
 runner = CliRunner()
 
+
 def test_serve_reload_all():
-    with patch("examlops.cli.commands.serve._client.post", return_value={"reloaded": ["JPCP"], "count": 1}):
+    with patch(
+        "examlops.cli.commands.serve._client.post", return_value={"reloaded": ["JPCP"], "count": 1}
+    ):
         result = runner.invoke(app, ["serve", "reload"])
     assert result.exit_code == 0
 
+
 def test_serve_reload_one():
-    with patch("examlops.cli.commands.serve._client.post", return_value={"reloaded": ["JPCP"], "count": 1}) as mock:
+    with patch(
+        "examlops.cli.commands.serve._client.post", return_value={"reloaded": ["JPCP"], "count": 1}
+    ) as mock:
         runner.invoke(app, ["serve", "reload", "--model", "JPCP"])
     assert "/reload/JPCP" in mock.call_args[0][0]
 
+
 def test_serve_check():
-    with patch("examlops.cli.commands.serve._client.get", return_value={"status": "ok", "models": ["JPCP"]}):
+    with patch(
+        "examlops.cli.commands.serve._client.get", return_value={"status": "ok", "models": ["JPCP"]}
+    ):
         result = runner.invoke(app, ["serve", "check"])
     assert result.exit_code == 0
 

@@ -46,6 +46,7 @@ DEPLOY_REGISTRY = textwrap.dedent("""
 
 def test_build_deployment_params_returns_one_per_enabled_entry(tmp_path):
     from pipelines.deploy import build_deployment_params
+
     f = tmp_path / "reg.yaml"
     f.write_text(DEPLOY_REGISTRY)
     entries = [e for e in load_registry(f) if e.enabled]
@@ -55,6 +56,7 @@ def test_build_deployment_params_returns_one_per_enabled_entry(tmp_path):
 
 def test_build_deployment_params_reads_prefect_schedule(tmp_path):
     from pipelines.deploy import build_deployment_params
+
     f = tmp_path / "reg.yaml"
     f.write_text(DEPLOY_REGISTRY)
     entries = [e for e in load_registry(f) if e.enabled]
@@ -68,6 +70,7 @@ def test_build_deployment_params_reads_prefect_schedule(tmp_path):
 
 def test_build_deployment_params_null_schedule(tmp_path):
     from pipelines.deploy import build_deployment_params
+
     f = tmp_path / "reg.yaml"
     f.write_text(DEPLOY_REGISTRY)
     entries = [e for e in load_registry(f) if e.enabled]

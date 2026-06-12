@@ -45,9 +45,7 @@ def ns_list() -> None:
     _ensure_namespace_tables()
     with get_db() as conn:
         # Ensure the default namespace always exists
-        conn.execute(
-            "INSERT OR IGNORE INTO namespaces (name) VALUES ('default')"
-        )
+        conn.execute("INSERT OR IGNORE INTO namespaces (name) VALUES ('default')")
         rows = conn.execute(
             "SELECT name, description, created_at FROM namespaces ORDER BY name"
         ).fetchall()
@@ -95,14 +93,14 @@ def ns_list() -> None:
 @app.command("create")
 def ns_create(
     name: str = typer.Argument(..., help="Namespace name (unique identifier)"),
-    description: str | None = typer.Option(None, "--description", "-d", help="Optional description"),
+    description: str | None = typer.Option(
+        None, "--description", "-d", help="Optional description"
+    ),
 ) -> None:
     """Create a new namespace."""
     _ensure_namespace_tables()
     with get_db() as conn:
-        existing = conn.execute(
-            "SELECT name FROM namespaces WHERE name=?", (name,)
-        ).fetchone()
+        existing = conn.execute("SELECT name FROM namespaces WHERE name=?", (name,)).fetchone()
         if existing:
             _output.error(f"Namespace '{name}' already exists")
             raise typer.Exit(1)
@@ -142,8 +140,7 @@ def ns_info(
                 "created_at": ns_row["created_at"],
                 "created_by": ns_row["created_by"],
                 "models": [
-                    {"model": r["model"], "assigned_at": r["assigned_at"]}
-                    for r in model_rows
+                    {"model": r["model"], "assigned_at": r["assigned_at"]} for r in model_rows
                 ],
             }
         )
@@ -178,18 +175,21 @@ def ns_assign(
     """Assign a model to a namespace."""
     _ensure_namespace_tables()
     with get_db() as conn:
-        ns_row = conn.execute(
-            "SELECT name FROM namespaces WHERE name=?", (namespace,)
-        ).fetchone()
+        ns_row = conn.execute("SELECT name FROM namespaces WHERE name=?", (namespace,)).fetchone()
         if not ns_row:
-            _output.error(f"Namespace '{namespace}' not found. Create it first with: exa namespace create {namespace}")
+            _output.error(
+                f"Namespace '{namespace}' not found. Create it first with: exa namespace create {namespace}"
+            )
             raise typer.Exit(1)
         conn.execute(
             "INSERT OR REPLACE INTO namespace_models (model, namespace) VALUES (?,?)",
             (model, namespace),
         )
     write_audit_event(
-        "cli", _actor(), "namespace_model_assigned", model,
+        "cli",
+        _actor(),
+        "namespace_model_assigned",
+        model,
         {"namespace": namespace},
     )
     _output.ok(f"Model {model} assigned to namespace {namespace}")

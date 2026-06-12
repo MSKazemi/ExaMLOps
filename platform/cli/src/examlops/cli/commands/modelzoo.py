@@ -1,4 +1,5 @@
 """exa modelzoo — ModelZoo repository freshness and integration commands."""
+
 from __future__ import annotations
 
 import typer
@@ -6,20 +7,16 @@ import typer
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 _STATUS_LABEL = {"stale": "STALE", "current": "CURRENT", "unknown": "—"}
 
-_EXAMPLES_STATUS = (
-    "Examples:\n\n"
-    "  exa modelzoo status\n\n"
-    "  exa --json modelzoo status"
-)
-_EXAMPLES_EVENTS = (
-    "Examples:\n\n"
-    "  exa modelzoo events\n\n"
-    "  exa modelzoo events --limit 20"
-)
+_EXAMPLES_STATUS = "Examples:\n\n  exa modelzoo status\n\n  exa --json modelzoo status"
+_EXAMPLES_EVENTS = "Examples:\n\n  exa modelzoo events\n\n  exa modelzoo events --limit 20"
 _EXAMPLES_SYNC = "Examples:\n\n  exa modelzoo sync"
 _EXAMPLES_CONFIG = "Examples:\n\n  exa modelzoo config"
 
@@ -45,7 +42,9 @@ def status():
     rows = []
     for m in models:
         label = _STATUS_LABEL.get(m["status"], "—")
-        stale_since = str(m["stale_since"] or "—")[:19].replace("T", " ") if m["stale_since"] else "—"
+        stale_since = (
+            str(m["stale_since"] or "—")[:19].replace("T", " ") if m["stale_since"] else "—"
+        )
         commit = (m["latest_modelzoo_commit"] or "—")[:8]
         rows.append([m["model_id"], label, stale_since, commit])
 
@@ -139,6 +138,7 @@ _EXAMPLES_CONFIG_SET = (
     "  exa modelzoo config-set auto_retrain true\n\n"
     "  exa modelzoo config-set poll_interval_seconds 120"
 )
+
 
 @app.command("config-set", epilog=_EXAMPLES_CONFIG_SET)
 def set_config(

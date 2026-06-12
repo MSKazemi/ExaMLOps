@@ -21,6 +21,7 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -28,21 +29,39 @@ def isolated_db(tmp_path):
 
 def test_traffic_set_writes_to_db():
     with patch("examlops.cli.commands.serve._client.post", return_value={"ok": True}):
-        result = runner.invoke(app, [
-            "--yes", "serve", "traffic", "JPCP",
-            "--production", "90", "--canary", "10",
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "--yes",
+                "serve",
+                "traffic",
+                "JPCP",
+                "--production",
+                "90",
+                "--canary",
+                "10",
+            ],
+        )
     assert result.exit_code == 0, result.output
     from examlops.platform_db import get_traffic_rules
+
     rules = get_traffic_rules("JPCP")
     assert rules == {"Production": 90, "Canary": 10}
 
 
 def test_traffic_set_must_sum_to_100():
-    result = runner.invoke(app, [
-        "serve", "traffic", "JPCP",
-        "--production", "70", "--canary", "10",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "serve",
+            "traffic",
+            "JPCP",
+            "--production",
+            "70",
+            "--canary",
+            "10",
+        ],
+    )
     assert result.exit_code != 0 or "100" in result.output
 
 
@@ -54,6 +73,7 @@ def test_traffic_show_with_no_rules():
 
 def test_traffic_show_existing_rules():
     from examlops.platform_db import set_traffic_rules
+
     set_traffic_rules("JPCP", {"Production": 80, "Canary": 20}, "alice")
     result = runner.invoke(app, ["serve", "traffic", "JPCP"])
     assert result.exit_code == 0, result.output
@@ -63,6 +83,7 @@ def test_traffic_show_existing_rules():
 
 def test_traffic_json_mode():
     from examlops.platform_db import set_traffic_rules
+
     set_traffic_rules("JPCP", {"Production": 100}, "alice")
     result = runner.invoke(app, ["--json", "serve", "traffic", "JPCP"])
     assert result.exit_code == 0, result.output

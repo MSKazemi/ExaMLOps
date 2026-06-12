@@ -26,9 +26,7 @@ def test_settings_load_with_required_env(monkeypatch):
     monkeypatch.setenv("DASHBOARD_VIEWER_PASSWORD", "v")
     monkeypatch.setenv("DASHBOARD_ADMIN_PASSWORD", "a")
     monkeypatch.setenv("DASHBOARD_JWT_SECRET", "x" * 32)
-    monkeypatch.setenv(
-        "DASHBOARD_SECRET_KEY", "TVk4sP_ws6A6sRz38Kw1jJZX0d3Jcq3V0z0b6n6kE-c="
-    )
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "TVk4sP_ws6A6sRz38Kw1jJZX0d3Jcq3V0z0b6n6kE-c=")
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
     monkeypatch.chdir(Path("/tmp"))  # avoid picking up project .env
 
@@ -37,8 +35,7 @@ def test_settings_load_with_required_env(monkeypatch):
     assert mod.settings.dashboard_admin_password == "a"
     assert mod.settings.dashboard_jwt_secret == "x" * 32
     assert mod.settings.dashboard_jwt_ttl_hours == 12  # default
-    assert mod.settings.dashboard_secret_key == \
-        "TVk4sP_ws6A6sRz38Kw1jJZX0d3Jcq3V0z0b6n6kE-c="
+    assert mod.settings.dashboard_secret_key == "TVk4sP_ws6A6sRz38Kw1jJZX0d3Jcq3V0z0b6n6kE-c="
     # Legacy field removed:
     assert not hasattr(mod.settings, "dashboard_token")
 

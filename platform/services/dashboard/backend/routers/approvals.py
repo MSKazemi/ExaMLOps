@@ -1,4 +1,5 @@
 """Approvals router — proxies to Control Plane approval endpoints."""
+
 from __future__ import annotations
 
 import logging
@@ -44,7 +45,9 @@ async def list_approvals(
         try:
             resp = await client.get(url, params=params)
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Control Plane unavailable: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"Control Plane unavailable: {exc}"
+            ) from exc
 
     if not resp.is_success:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
@@ -70,7 +73,9 @@ async def approve_model(
         try:
             resp = await client.post(url, headers=headers)
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Control Plane unavailable: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"Control Plane unavailable: {exc}"
+            ) from exc
 
     if not resp.is_success:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
@@ -97,7 +102,9 @@ async def reject_model(
         try:
             resp = await client.post(url, headers=headers, json={"reason": body.reason})
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Control Plane unavailable: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"Control Plane unavailable: {exc}"
+            ) from exc
 
     if not resp.is_success:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)

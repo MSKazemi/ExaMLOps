@@ -10,15 +10,15 @@ import yaml
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 MODELS_DIR = Path("pipelines/models")
 
-_EXAMPLES_LIST = (
-    "Examples:\n\n"
-    "  exa seanerbus list\n\n"
-    "  exa --json seanerbus list"
-)
+_EXAMPLES_LIST = "Examples:\n\n  exa seanerbus list\n\n  exa --json seanerbus list"
 _EXAMPLES_INIT = "Examples:\n\n  exa seanerbus init-uuids"
 _EXAMPLES_REGEN = "Examples:\n\n  exa seanerbus regen-uuid JPCP"
 _EXAMPLES_STATUS = "Examples:\n\n  exa seanerbus status"
@@ -65,10 +65,12 @@ def list_uuids():
     rows = []
     for name, path, text in _iter_yamls():
         raw = yaml.safe_load(text) or {}
-        rows.append([
-            name,
-            raw.get("seanerbus_uuid") or "(not assigned)",
-        ])
+        rows.append(
+            [
+                name,
+                raw.get("seanerbus_uuid") or "(not assigned)",
+            ]
+        )
     _output.print_table("SeanerBUS UUIDs", ["Model", "UUID"], rows)
 
 

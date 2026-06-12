@@ -9,23 +9,25 @@ CONFIG_PATH = Path.home() / ".config" / "examlops" / "config.toml"
 
 _DEFAULTS = {
     "control_plane_url": "http://localhost:18002",
-    "ray_serve_url":     "http://localhost:18001",
-    "mlflow_url":        "http://localhost:15000",
-    "prefect_url":       "http://localhost:14200",
-    "dashboard_url":     "http://localhost:18099",
+    "ray_serve_url": "http://localhost:18001",
+    "mlflow_url": "http://localhost:15000",
+    "prefect_url": "http://localhost:14200",
+    "dashboard_url": "http://localhost:18099",
     "control_plane_token": "",
-    "dashboard_token":   "",
+    "dashboard_token": "",
 }
+
 
 @dataclass
 class Config:
-    control_plane_url:   str = "http://localhost:18002"
-    ray_serve_url:       str = "http://localhost:18001"
-    mlflow_url:          str = "http://localhost:15000"
-    prefect_url:         str = "http://localhost:14200"
-    dashboard_url:       str = "http://localhost:18099"
+    control_plane_url: str = "http://localhost:18002"
+    ray_serve_url: str = "http://localhost:18001"
+    mlflow_url: str = "http://localhost:15000"
+    prefect_url: str = "http://localhost:14200"
+    dashboard_url: str = "http://localhost:18099"
     control_plane_token: str = ""
-    dashboard_token:     str = ""
+    dashboard_token: str = ""
+
 
 def load_config() -> Config:
     data: dict = {}
@@ -39,14 +41,17 @@ def load_config() -> Config:
         return os.getenv(env_key) or data.get(toml_key) or default
 
     return Config(
-        control_plane_url   = _r("control_plane",       "CONTROL_PLANE_URL",   _DEFAULTS["control_plane_url"]),
-        ray_serve_url       = _r("ray_serve",           "RAY_SERVE_URL",       _DEFAULTS["ray_serve_url"]),
-        mlflow_url          = _r("mlflow",              "MLFLOW_TRACKING_URI", _DEFAULTS["mlflow_url"]),
-        prefect_url         = _r("prefect",             "PREFECT_API_URL",     _DEFAULTS["prefect_url"]),
-        dashboard_url       = _r("dashboard",           "DASHBOARD_URL",       _DEFAULTS["dashboard_url"]),
-        control_plane_token = _r("control_plane_token", "CONTROL_PLANE_TOKEN", _DEFAULTS["control_plane_token"]),
-        dashboard_token     = _r("dashboard_token",     "DASHBOARD_TOKEN",     _DEFAULTS["dashboard_token"]),
+        control_plane_url=_r("control_plane", "CONTROL_PLANE_URL", _DEFAULTS["control_plane_url"]),
+        ray_serve_url=_r("ray_serve", "RAY_SERVE_URL", _DEFAULTS["ray_serve_url"]),
+        mlflow_url=_r("mlflow", "MLFLOW_TRACKING_URI", _DEFAULTS["mlflow_url"]),
+        prefect_url=_r("prefect", "PREFECT_API_URL", _DEFAULTS["prefect_url"]),
+        dashboard_url=_r("dashboard", "DASHBOARD_URL", _DEFAULTS["dashboard_url"]),
+        control_plane_token=_r(
+            "control_plane_token", "CONTROL_PLANE_TOKEN", _DEFAULTS["control_plane_token"]
+        ),
+        dashboard_token=_r("dashboard_token", "DASHBOARD_TOKEN", _DEFAULTS["dashboard_token"]),
     )
+
 
 def write_config(updates: dict) -> None:
     """Merge updates into the config TOML file."""
@@ -69,6 +74,7 @@ def write_config(updates: dict) -> None:
 
     try:
         import tomli_w
+
         CONFIG_PATH.write_text(tomli_w.dumps(existing))
     except ImportError:
         lines = []

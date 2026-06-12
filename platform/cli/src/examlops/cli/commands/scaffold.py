@@ -22,12 +22,14 @@ def scaffold(
     name: str = typer.Argument(..., help="PascalCase model name, e.g. DemoAD"),
     task: TaskType = typer.Option(
         TaskType.performance_prediction,
-        "--task", "-t",
+        "--task",
+        "-t",
         help="Task type",
     ),
     task_type: TrainType = typer.Option(
         TrainType.regression,
-        "--type", "-T",
+        "--type",
+        "-T",
         help="ML task type",
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite existing files"),

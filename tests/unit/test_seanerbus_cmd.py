@@ -23,6 +23,7 @@ def test_seanerbus_list_shows_models(tmp_path, monkeypatch):
     (tmp_path / "jpcp.yaml").write_text(_make_yaml("JPCP", "aaaaaaaa-0000-0000-0000-000000000001"))
     (tmp_path / "mack.yaml").write_text(_make_yaml("MACK"))
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "list"])
     assert result.exit_code == 0
@@ -36,6 +37,7 @@ def test_init_uuids_assigns_missing_uuids(tmp_path, monkeypatch):
     (tmp_path / "jpcp.yaml").write_text(_make_yaml("JPCP"))
     (tmp_path / "mack.yaml").write_text(_make_yaml("MACK", "bbbbbbbb-0000-0000-0000-000000000002"))
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "init-uuids"])
     assert result.exit_code == 0
@@ -49,6 +51,7 @@ def test_init_uuids_is_idempotent(tmp_path, monkeypatch):
     existing = "cccccccc-0000-0000-0000-000000000003"
     (tmp_path / "jpcp.yaml").write_text(_make_yaml("JPCP", existing))
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "init-uuids"])
     assert result.exit_code == 0
@@ -60,6 +63,7 @@ def test_regen_uuid_replaces_uuid(tmp_path, monkeypatch):
     old = "dddddddd-0000-0000-0000-000000000004"
     (tmp_path / "jpcp.yaml").write_text(_make_yaml("JPCP", old))
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "regen-uuid", "JPCP"])
     assert result.exit_code == 0
@@ -71,6 +75,7 @@ def test_regen_uuid_replaces_uuid(tmp_path, monkeypatch):
 
 def test_regen_uuid_unknown_model_exits_nonzero(tmp_path, monkeypatch):
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "regen-uuid", "NOTAMODEL"])
     assert result.exit_code != 0
@@ -79,6 +84,7 @@ def test_regen_uuid_unknown_model_exits_nonzero(tmp_path, monkeypatch):
 def test_regen_uuid_on_model_without_uuid(tmp_path, monkeypatch):
     (tmp_path / "jpcp.yaml").write_text(_make_yaml("JPCP"))  # no UUID
     import examlops.cli.commands.seanerbus_cmd as cmd
+
     monkeypatch.setattr(cmd, "MODELS_DIR", tmp_path)
     result = runner.invoke(app, ["seanerbus", "regen-uuid", "JPCP"])
     assert result.exit_code == 0

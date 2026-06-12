@@ -1,4 +1,5 @@
 """Tests for the 20 control plane reliability improvements (2 rounds)."""
+
 from __future__ import annotations
 
 import importlib
@@ -24,6 +25,7 @@ def cp(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "test.db"))
     monkeypatch.setenv("MODELZOO_POLL_SECONDS", "0")  # disable poller in tests
     import app as cp_app
+
     importlib.reload(cp_app)
     return cp_app
 
@@ -79,9 +81,9 @@ def test_db_wal_mode_enabled(cp):
 def test_db_indices_exist(cp):
     """Required indices must be present after schema creation."""
     conn = cp._get_db()
-    indices = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index'"
-    ).fetchall()}
+    indices = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    }
     conn.close()
     assert "idx_pa_model_status" in indices
     assert "idx_me_sha" in indices
@@ -105,7 +107,11 @@ def test_status_runs_concurrently(cp, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert set(data["services"].keys()) == {
-        "control_plane", "mlflow", "prefect", "ray_serve", "dashboard"
+        "control_plane",
+        "mlflow",
+        "prefect",
+        "ray_serve",
+        "dashboard",
     }
 
 
@@ -244,6 +250,7 @@ def test_startup_checks_token_missing_when_no_token(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "notoken.db"))
     monkeypatch.setenv("MODELZOO_POLL_SECONDS", "0")
     import app as cp_app
+
     importlib.reload(cp_app)
     cp_app._run_startup_checks()
     client = TestClient(cp_app.app)
@@ -270,6 +277,7 @@ def test_overall_status_ok_when_all_checks_pass(cp):
 def test_record_prefect_retry_increments_counter(cp):
     """record_prefect_retry should increment the Prometheus counter without error."""
     import metrics as m
+
     before = m.prefect_retries.labels(method="GET")._value.get()
     m.record_prefect_retry("GET")
     after = m.prefect_retries.labels(method="GET")._value.get()
@@ -282,10 +290,16 @@ def test_record_prefect_retry_increments_counter(cp):
 def test_json_formatter_emits_valid_json(cp):
     """_JsonFormatter must produce parseable JSON for every record."""
     import logging
+
     formatter = cp._JsonFormatter()
     record = logging.LogRecord(
-        name="test", level=logging.INFO, pathname="", lineno=0,
-        msg="hello %s", args=("world",), exc_info=None,
+        name="test",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="hello %s",
+        args=("world",),
+        exc_info=None,
     )
     line = formatter.format(record)
     parsed = json.loads(line)
@@ -297,12 +311,18 @@ def test_json_formatter_emits_valid_json(cp):
 def test_json_formatter_includes_request_id(cp):
     """When a request_id is set in ContextVar, it should appear in JSON log."""
     import logging
+
     cp._request_id_var.set("abc123")
     try:
         formatter = cp._JsonFormatter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="msg", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="msg",
+            args=(),
+            exc_info=None,
         )
         line = formatter.format(record)
         parsed = json.loads(line)
@@ -328,6 +348,7 @@ def test_circuit_breaker_opens_after_fail_max(cp):
 def test_circuit_breaker_raises_503_when_open(cp):
     """A call while OPEN must raise HTTPException(503) without calling fn."""
     from fastapi import HTTPException
+
     cb = cp._CircuitBreaker(fail_max=1, reset_timeout=9999)
     try:
         cb.call(lambda: (_ for _ in ()).throw(Exception("fail")))
@@ -380,6 +401,7 @@ def test_health_includes_circuit_breaker_state(cp):
 def test_record_retrain_increments_counter(cp):
     """record_retrain must increment the retrain_requests counter."""
     import metrics as m
+
     before = m.retrain_requests.labels(
         model_name="JPCP", dataset_name="PM100Dataset", outcome="success"
     )._value.get()
@@ -393,12 +415,11 @@ def test_record_retrain_increments_counter(cp):
 def test_observe_retrain_duration_records(cp):
     """observe_retrain_duration must not raise and should update the histogram sum."""
     import metrics as m
+
     h = m.retrain_duration.labels(model_name="JPCP", dataset_name="PM100Dataset")
     before_sum = h._sum.get()
     m.observe_retrain_duration("JPCP", "PM100Dataset", 0.42)
-    after_sum = m.retrain_duration.labels(
-        model_name="JPCP", dataset_name="PM100Dataset"
-    )._sum.get()
+    after_sum = m.retrain_duration.labels(model_name="JPCP", dataset_name="PM100Dataset")._sum.get()
     assert after_sum > before_sum
 
 
@@ -444,6 +465,7 @@ def test_ready_independent_of_startup_checks(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "ready_test.db"))
     monkeypatch.setenv("MODELZOO_POLL_SECONDS", "0")
     import app as cp_app
+
     importlib.reload(cp_app)
     client = TestClient(cp_app.app)
     resp = client.get("/ready")
@@ -474,9 +496,7 @@ def test_expire_old_approvals_marks_stale_entries(cp, monkeypatch):
     assert expired_count >= 1
 
     conn = cp._get_db()
-    row = conn.execute(
-        "SELECT status FROM pending_approvals WHERE id='exp-1'"
-    ).fetchone()
+    row = conn.execute("SELECT status FROM pending_approvals WHERE id='exp-1'").fetchone()
     conn.close()
     assert row[0] == "expired"
 
@@ -485,6 +505,7 @@ def test_expire_old_approvals_skips_recent_entries(cp, monkeypatch):
     """_expire_old_approvals must NOT touch recently created pending entries."""
     monkeypatch.setattr(cp, "APPROVAL_EXPIRY_HOURS", 72)
     from datetime import datetime
+
     recent_ts = datetime.utcnow().isoformat()
 
     with cp._DB_LOCK:
@@ -502,9 +523,7 @@ def test_expire_old_approvals_skips_recent_entries(cp, monkeypatch):
     cp._expire_old_approvals()
 
     conn = cp._get_db()
-    row = conn.execute(
-        "SELECT status FROM pending_approvals WHERE id='rec-1'"
-    ).fetchone()
+    row = conn.execute("SELECT status FROM pending_approvals WHERE id='rec-1'").fetchone()
     conn.close()
     assert row[0] == "pending"
 
@@ -594,6 +613,7 @@ def test_admin_reload_requires_auth(cp):
 def test_db_retry_on_operational_error(cp, monkeypatch):
     """_get_db should retry up to 3 times on sqlite3.OperationalError."""
     import sqlite3
+
     call_count = {"n": 0}
     real_connect = __import__("sqlite3").connect
 

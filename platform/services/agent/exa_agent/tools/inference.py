@@ -8,7 +8,9 @@ from exa_agent.tools import _http
 
 
 @tool
-def predict(model_name: str, features: list[float], alias: str = "Production", version: str = "") -> str:
+def predict(
+    model_name: str, features: list[float], alias: str = "Production", version: str = ""
+) -> str:
     """Run inference on a model via Ray Serve.
 
     Args:
@@ -20,7 +22,9 @@ def predict(model_name: str, features: list[float], alias: str = "Production", v
     body: dict = {"features": features, "alias": alias}
     if version:
         body["version"] = version
-    data, err = _http.request_json("ray_serve", "POST", f"{config.RAY_SERVE_URL}/predict/{model_name}", json=body)
+    data, err = _http.request_json(
+        "ray_serve", "POST", f"{config.RAY_SERVE_URL}/predict/{model_name}", json=body
+    )
     if err:
         return err
     return (
@@ -58,7 +62,9 @@ def list_loaded_models() -> str:
 
 
 @tool
-@confirmed_write(lambda model_name="": f"Reload Ray Serve models from MLflow ({model_name or 'all'})")
+@confirmed_write(
+    lambda model_name="": f"Reload Ray Serve models from MLflow ({model_name or 'all'})"
+)
 def reload_models(model_name: str = "") -> str:
     """Hot-reload Production models in Ray Serve from MLflow. Empty model_name reloads all.
 

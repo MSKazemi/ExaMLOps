@@ -1,4 +1,5 @@
 """Traffic rules and promotion rules from shared platform.db."""
+
 from __future__ import annotations
 
 import json
@@ -27,8 +28,12 @@ async def get_all_traffic_rules(_=Depends(_viewer)) -> list[dict]:
         ).fetchall()
         conn.close()
         return [
-            {"model": r["model"], "rules": json.loads(r["rules"]),
-             "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
+            {
+                "model": r["model"],
+                "rules": json.loads(r["rules"]),
+                "updated_at": r["updated_at"],
+                "updated_by": r["updated_by"],
+            }
             for r in rows
         ]
     except Exception:
@@ -42,14 +47,17 @@ async def get_model_traffic_rules(model: str, _=Depends(_viewer)) -> dict | None
         conn = sqlite3.connect(_db_path())
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?",
-            (model,)
+            "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?", (model,)
         ).fetchone()
         conn.close()
         if not row:
             return None
-        return {"model": row["model"], "rules": json.loads(row["rules"]),
-                "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+        return {
+            "model": row["model"],
+            "rules": json.loads(row["rules"]),
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+        }
     except Exception:
         return None
 

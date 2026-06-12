@@ -1,4 +1,5 @@
 """exa production — production deployment and verification workflows."""
+
 from __future__ import annotations
 
 import json
@@ -16,13 +17,13 @@ from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
-
-_EXAMPLES_VERIFY = (
-    "Examples:\n\n"
-    "  exa production verify\n\n"
-    "  exa --json production verify"
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+_EXAMPLES_VERIFY = "Examples:\n\n  exa production verify\n\n  exa --json production verify"
 _EXAMPLES_DEPLOY = (
     "Examples:\n\n"
     "  exa production deploy\n\n"
@@ -86,7 +87,9 @@ def _deploy_pipelines(registry: str, env: EnvOverlay, no_schedule: bool) -> dict
     try:
         subprocess.run(cmd, check=True, text=True, capture_output=False)  # noqa: S603
     except FileNotFoundError:
-        _output.error("pipelines/deploy.py not found — run exa production deploy from the repo root")
+        _output.error(
+            "pipelines/deploy.py not found — run exa production deploy from the repo root"
+        )
     except subprocess.CalledProcessError as exc:
         _output.error(f"Production pipeline deployment failed with code {exc.returncode}")
     return {"status": "success", "command": cmd}
@@ -125,7 +128,9 @@ def _previous_successful_deploy_id() -> str | None:
 
 
 def _find_deploy_record(deploy_id: str) -> dict[str, Any] | None:
-    return next((record for record in _read_history() if record.get("deploy_id") == deploy_id), None)
+    return next(
+        (record for record in _read_history() if record.get("deploy_id") == deploy_id), None
+    )
 
 
 def _production_model_versions(record: dict[str, Any]) -> list[dict[str, str]]:
@@ -180,14 +185,22 @@ def _rollback(deploy_id: str, *, execute: bool) -> None:
                     "rollback_of_deploy_id": deploy_id,
                     "restored_deploy_id": previous_id,
                     "models": model_versions,
-                    "steps": ["restore Production aliases", "reload Ray Serve", "verify production"],
+                    "steps": [
+                        "restore Production aliases",
+                        "reload Ray Serve",
+                        "verify production",
+                    ],
                 }
             )
             return
-        _output.console.print("[yellow]ROLLBACK DRY RUN[/yellow] — no production state will be changed.")
+        _output.console.print(
+            "[yellow]ROLLBACK DRY RUN[/yellow] — no production state will be changed."
+        )
         _output.console.print(f"rollback_of={deploy_id} restore_to={previous_id}")
         for model in model_versions:
-            _output.console.print(f"restore {model['model']} Production alias to v{model['version']}")
+            _output.console.print(
+                f"restore {model['model']} Production alias to v{model['version']}"
+            )
         return
 
     cfg = load_config()
@@ -202,10 +215,14 @@ def _rollback(deploy_id: str, *, execute: bool) -> None:
     }
 
     def fail_record(step: str, message: str) -> None:
-        record.update({"ended_at": _now_iso(), "status": "failed", "failed_step": step, "error": message})
+        record.update(
+            {"ended_at": _now_iso(), "status": "failed", "failed_step": step, "error": message}
+        )
         _append_history(record)
 
-    _output.console.print("[bold red]ROLLBACK EXECUTE[/bold red] — restoring previous Production aliases.")
+    _output.console.print(
+        "[bold red]ROLLBACK EXECUTE[/bold red] — restoring previous Production aliases."
+    )
     alias_results: list[dict[str, str]] = []
     for model in model_versions:
         try:
@@ -268,7 +285,9 @@ def _record_matches_filters(
     return True
 
 
-def _history(limit: int, *, status: str | None = None, model: str | None = None, operation: str | None = None) -> None:
+def _history(
+    limit: int, *, status: str | None = None, model: str | None = None, operation: str | None = None
+) -> None:
     records = [
         record
         for record in reversed(_read_history())
@@ -319,7 +338,9 @@ def _check_control_plane(cfg) -> CheckResult:
         ok,
         "ok" if ok else "unreachable",
         {
-            "pending_approvals": (data or {}).get("pending_approvals", 0) if isinstance(data, dict) else 0,
+            "pending_approvals": (data or {}).get("pending_approvals", 0)
+            if isinstance(data, dict)
+            else 0,
             "message": message,
         },
     )
@@ -329,7 +350,13 @@ def _check_ray_serve(cfg) -> CheckResult:
     health_ok, health, health_message = _safe_get(f"{cfg.ray_serve_url}/health")
     models_ok, models, models_message = _safe_get(f"{cfg.ray_serve_url}/models")
     model_count = len(models) if isinstance(models, list) else 0
-    ok = health_ok and models_ok and isinstance(health, dict) and health.get("status") == "ok" and model_count > 0
+    ok = (
+        health_ok
+        and models_ok
+        and isinstance(health, dict)
+        and health.get("status") == "ok"
+        and model_count > 0
+    )
     return CheckResult(
         "Ray Serve",
         ok,
@@ -399,7 +426,9 @@ def verify():
     """Verify production service health without changing state."""
     cfg = load_config()
     checks = _run_verification_checks(cfg)
-    stale_models = next((c.details.get("stale_models", 0) for c in checks if c.name == "ModelZoo"), 0)
+    stale_models = next(
+        (c.details.get("stale_models", 0) for c in checks if c.name == "ModelZoo"), 0
+    )
     overall_pass = all(c.ok for c in checks)
 
     result = {
@@ -436,18 +465,28 @@ def deploy(
         "--models",
         help="Model selector: 'stale', 'all', or comma-separated IDs such as JPCP,MACK.",
     ),
-    dataset: str = typer.Option("FDataDataset", "--dataset", help="Dataset for retraining selected models"),
+    dataset: str = typer.Option(
+        "FDataDataset", "--dataset", help="Dataset for retraining selected models"
+    ),
     env: EnvOverlay = typer.Option(EnvOverlay.prod, "--env", "-e", help="Registry env overlay"),
     registry: str = typer.Option(
         "pipelines/model_registry.yaml",
         "--registry",
         help="Path to model_registry.yaml",
     ),
-    no_schedule: bool = typer.Option(False, "--no-schedule", help="Deploy Prefect flows without schedules"),
+    no_schedule: bool = typer.Option(
+        False, "--no-schedule", help="Deploy Prefect flows without schedules"
+    ),
     limit: int = typer.Option(20, "--limit", help="Number of deploy history records to show."),
-    history_status: str | None = typer.Option(None, "--status", help="Filter deploy history by status."),
-    history_model: str | None = typer.Option(None, "--model", help="Filter deploy history by model ID."),
-    history_operation: str | None = typer.Option(None, "--operation", help="Filter deploy history by operation."),
+    history_status: str | None = typer.Option(
+        None, "--status", help="Filter deploy history by status."
+    ),
+    history_model: str | None = typer.Option(
+        None, "--model", help="Filter deploy history by model ID."
+    ),
+    history_operation: str | None = typer.Option(
+        None, "--operation", help="Filter deploy history by operation."
+    ),
 ):
     """Plan/execute production deploys, or inspect deploy history/status."""
     if action == "history":
@@ -544,7 +583,9 @@ def deploy(
             "backend_name": None,
         }
         try:
-            result = _client.post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
+            result = _client.post(
+                f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token
+            )
         except _client.ClientError as exc:
             fail_record(f"retrain:{model}", str(exc))
             _output.error(f"Retrain failed for {model}: {exc}")

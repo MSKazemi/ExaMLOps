@@ -19,6 +19,7 @@ runner = CliRunner()
 def isolated_db(tmp_path):
     os.environ["PLATFORM_DB"] = str(tmp_path / "test.db")
     from examlops.platform_db import init_db
+
     init_db()
     # Ensure A/B tables exist (created lazily by the command itself)
     yield
@@ -59,7 +60,9 @@ def test_ab_start_duplicate_fails():
     # Second start for same model must fail
     second = runner.invoke(app, ["serve", "ab", "start", "JPCP"])
     assert second.exit_code != 0, second.output
-    combined = second.output + (second.stderr if hasattr(second, "stderr") and second.stderr else "")
+    combined = second.output + (
+        second.stderr if hasattr(second, "stderr") and second.stderr else ""
+    )
     assert "active" in combined.lower() or "already exists" in combined.lower()
 
 
@@ -74,10 +77,9 @@ def test_ab_stop_marks_completed():
 
     # Verify in the DB
     from examlops.platform_db import get_db
+
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT status FROM ab_tests WHERE model='JPCP'"
-        ).fetchone()
+        row = conn.execute("SELECT status FROM ab_tests WHERE model='JPCP'").fetchone()
     assert row is not None
     assert row["status"] == "completed"
 
@@ -119,6 +121,7 @@ def test_ab_record_stores_observation():
     assert "recorded" in result.output.lower() or "0.95" in result.output
 
     from examlops.platform_db import get_db
+
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM ab_results").fetchall()
     assert len(rows) == 1
@@ -153,13 +156,26 @@ def test_ab_status_json_mode():
 def test_ab_start_custom_options():
     result = runner.invoke(
         app,
-        ["serve", "ab", "start", "JPCP", "--variant-a", "Production", "--variant-b", "Staging",
-         "--split", "70", "--name", "exp-001"],
+        [
+            "serve",
+            "ab",
+            "start",
+            "JPCP",
+            "--variant-a",
+            "Production",
+            "--variant-b",
+            "Staging",
+            "--split",
+            "70",
+            "--name",
+            "exp-001",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "70" in result.output or "30" in result.output
 
     from examlops.platform_db import get_db
+
     with get_db() as conn:
         row = conn.execute("SELECT * FROM ab_tests WHERE model='JPCP'").fetchone()
     assert row["split_pct"] == 70

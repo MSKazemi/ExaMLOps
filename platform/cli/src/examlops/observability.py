@@ -5,6 +5,7 @@ Gated by the standard ``OTEL_SDK_DISABLED`` env: when truthy or unset, every
 call is a no-op so local dev, unit tests and the non-monitoring stack are
 unaffected.
 """
+
 from __future__ import annotations
 
 import os

@@ -27,9 +27,7 @@ _EXAMPLES_ROLLBACK = (
 )
 
 _EXAMPLES_HISTORY = (
-    "Examples:\n\n"
-    "  exa models rollback history JPCP\n\n"
-    "  exa --json models rollback history JPCP"
+    "Examples:\n\n  exa models rollback history JPCP\n\n  exa --json models rollback history JPCP"
 )
 
 _CREATE_TABLE_SQL = (
@@ -73,10 +71,7 @@ def _get_current_alias_version(cfg, model: str, alias: str) -> int | None:
     import urllib.parse
 
     encoded = urllib.parse.quote(model.lower())
-    url = (
-        f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
-        f"?name={encoded}"
-    )
+    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get?name={encoded}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -84,19 +79,20 @@ def _get_current_alias_version(cfg, model: str, alias: str) -> int | None:
     except urllib.error.URLError:
         return None
     aliases = {
-        a["alias"]: int(a["version"])
-        for a in data.get("registered_model", {}).get("aliases", [])
+        a["alias"]: int(a["version"]) for a in data.get("registered_model", {}).get("aliases", [])
     }
     return aliases.get(alias)
 
 
 def _set_alias(cfg, model: str, alias: str, version: int) -> None:
     """POST to MLflow to set *alias* → *version* for *model*."""
-    body = json.dumps({
-        "name": model.lower(),
-        "alias": alias,
-        "version": str(version),
-    }).encode()
+    body = json.dumps(
+        {
+            "name": model.lower(),
+            "alias": alias,
+            "version": str(version),
+        }
+    ).encode()
     req = urllib.request.Request(
         f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/alias",
         data=body,
@@ -161,12 +157,14 @@ def rollback(
             for v in versions_sorted:
                 ver_num = int(v["version"])
                 current_marker = f" <- {alias}" if ver_num == current_version else ""
-                rows.append([
-                    str(ver_num),
-                    v.get("current_stage", "—"),
-                    v.get("status", "—"),
-                    current_marker,
-                ])
+                rows.append(
+                    [
+                        str(ver_num),
+                        v.get("current_stage", "—"),
+                        v.get("status", "—"),
+                        current_marker,
+                    ]
+                )
             _output.print_table(
                 f"Versions — {model}",
                 ["Version", "Stage", "Status", "Note"],
@@ -186,9 +184,7 @@ def rollback(
         )
         return
 
-    if not _output.confirm(
-        f"Roll back {model} {alias}: v{current_version} -> v{version}?"
-    ):
+    if not _output.confirm(f"Roll back {model} {alias}: v{current_version} -> v{version}?"):
         _output.info("Aborted")
         return
 
@@ -221,8 +217,7 @@ def rollback(
 
     _output.ok(
         f"Rolled back [bold]{model}[/bold] {alias}: "
-        f"v{current_version} -> v{version}"
-        + (f" (reason: {reason})" if reason else "")
+        f"v{current_version} -> v{version}" + (f" (reason: {reason})" if reason else "")
     )
 
 

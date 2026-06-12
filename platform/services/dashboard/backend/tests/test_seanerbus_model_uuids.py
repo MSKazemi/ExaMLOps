@@ -1,4 +1,5 @@
 """Tests for GET /api/seanerbus/model-uuids endpoint."""
+
 import pytest
 
 from tests.conftest import VIEWER_PW
