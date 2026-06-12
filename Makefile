@@ -60,7 +60,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help \
-        full-up stop-all \
+        full-up stop-all rebuild rebuild-all lxp-rebuild \
         stack-up stack-down stack-wipe stack-restart stack-logs stack-ps stack-shell \
         touch-env-dashboard \
         monitoring-up monitoring-down \
@@ -184,6 +184,82 @@ stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + SeanerBUS + Jupyt
 	fi
 	@printf "$(GREEN)All containers stopped and removed.$(RESET)\n"
 	@printf "$(DIM)Volumes preserved. Containers will NOT restart on reboot.$(RESET)\n"
+
+rebuild: ## Force-rebuild ALL images (--no-cache) + restart core + monitoring  ← use after Dockerfile/dep changes
+	@printf "$(BOLD)Stopping all running containers...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) \
+	  --profile monitoring --profile jupyter --profile seanerbus \
+	  down --remove-orphans 2>/dev/null || true
+	@printf "$(BOLD)Rebuilding all images (no cache)...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring build --no-cache
+	@printf "$(BOLD)Starting core stack...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) up -d
+	@printf "$(BOLD)Starting monitoring stack...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring up -d \
+	  prometheus grafana loki promtail alertmanager tempo
+	@printf "\n$(GREEN)$(BOLD)Rebuild complete — all services running:$(RESET)\n"
+	@printf "  %-30s %s\n" \
+	  "Dashboard"     "http://localhost:18099" \
+	  "MLflow UI"     "http://localhost:15000" \
+	  "Prefect UI"    "http://localhost:14200" \
+	  "Ray Serve API" "http://localhost:18001" \
+	  "Control Plane" "http://localhost:18002" \
+	  "Prometheus"    "http://localhost:19090" \
+	  "Grafana"       "http://localhost:13000  (admin / admin)" \
+	  "Loki"          "http://localhost:13100"
+	@printf "\n"
+
+rebuild-all: ## Force-rebuild ALL images including JupyterHub + restart EVERYTHING (core + monitoring + jupyter)
+	@printf "$(BOLD)Stopping all running containers...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) \
+	  --profile monitoring --profile jupyter --profile seanerbus \
+	  down --remove-orphans 2>/dev/null || true
+	@printf "$(BOLD)Rebuilding JupyterLab user image...$(RESET)\n"
+	@docker build --network=host -t examlops-jupyterlab \
+	  -f $(COMPOSE_DIR)/Dockerfile.jupyterlab $(COMPOSE_DIR) --no-cache
+	@printf "$(BOLD)Rebuilding all service images (no cache)...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring --profile jupyter build --no-cache
+	@printf "$(BOLD)Starting everything...$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) up -d
+	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring up -d \
+	  prometheus grafana loki promtail alertmanager tempo
+	@cd $(COMPOSE_DIR) && $(DC) --profile jupyter up -d jupyterhub
+	@printf "\n$(GREEN)$(BOLD)Full rebuild complete — all services running:$(RESET)\n"
+	@printf "  %-30s %s\n" \
+	  "Dashboard"     "http://localhost:18099" \
+	  "MLflow UI"     "http://localhost:15000" \
+	  "Prefect UI"    "http://localhost:14200" \
+	  "Ray Serve API" "http://localhost:18001" \
+	  "Control Plane" "http://localhost:18002" \
+	  "Prometheus"    "http://localhost:19090" \
+	  "Grafana"       "http://localhost:13000  (admin / admin)" \
+	  "Loki"          "http://localhost:13100" \
+	  "JupyterHub"    "http://localhost:18888"
+	@printf "\n"
+
+lxp-rebuild: ## Pull latest code + force-rebuild + restart all containers on lxp-cpu01
+	@printf "$(BOLD)Rebuilding on lxp-cpu01...$(RESET)\n"
+	@ssh lxp-cpu01 "set -e; \
+	  cd /nfs/share01/examlops; \
+	  echo '=== git pull ==='; \
+	  git pull; \
+	  cd platform/infra/docker-compose; \
+	  echo '=== stopping all containers ==='; \
+	  docker compose --env-file /nfs/share01/examlops/.env \
+	    --profile monitoring --profile jupyter --profile seanerbus \
+	    down --remove-orphans 2>/dev/null || true; \
+	  echo '=== rebuilding all images (no cache) ==='; \
+	  docker compose --env-file /nfs/share01/examlops/.env \
+	    --profile monitoring build --no-cache; \
+	  echo '=== starting core stack ==='; \
+	  docker compose --env-file /nfs/share01/examlops/.env up -d; \
+	  echo '=== starting monitoring stack ==='; \
+	  docker compose --env-file /nfs/share01/examlops/.env \
+	    --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo; \
+	  echo '=== done ==='; \
+	  docker compose --env-file /nfs/share01/examlops/.env ps"
+	@printf "\n$(GREEN)$(BOLD)lxp-cpu01 rebuild complete.$(RESET)\n"
+	@printf "$(DIM)Connect:  ssh lxp  then open http://localhost:18099$(RESET)\n\n"
 
 stack-down: ## Stop containers — data volumes preserved
 	@cd $(COMPOSE_DIR) && $(DC) down
