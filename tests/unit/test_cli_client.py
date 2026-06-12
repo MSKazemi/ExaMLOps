@@ -38,7 +38,7 @@ def test_get_raises_client_error_on_http_error():
     with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
         url="http://x", code=404, msg="Not Found", hdrs=None, fp=None
     )):
-        with pytest.raises(ClientError, match="404"):
+        with pytest.raises(ClientError, match="Not found"):
             get("http://localhost:18002/approvals/MISSING")
 
 def test_get_raises_client_error_on_connection_error():

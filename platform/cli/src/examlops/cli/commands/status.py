@@ -92,7 +92,7 @@ def status() -> None:
                 token=cfg.control_plane_token,
             )
             _output.print_table(
-                f"Pending Approvals",
+                "Pending Approvals",
                 ["Model", "Commit", "Message", "Requested"],
                 [
                     [p["model_id"], (p.get("commit_sha") or "")[:8],

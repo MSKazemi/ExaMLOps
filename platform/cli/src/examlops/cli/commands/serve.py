@@ -229,7 +229,9 @@ _EXAMPLES_TRAFFIC_LIST = (
 def traffic_list():
     """Show traffic split configuration for all models."""
     import json as _json
-    from examlops.platform_db import get_db as _get_db, init_db as _init_db
+
+    from examlops.platform_db import get_db as _get_db
+    from examlops.platform_db import init_db as _init_db
     _init_db()
     with _get_db() as conn:
         rows = conn.execute(

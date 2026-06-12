@@ -51,11 +51,12 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import metrics as _metrics
 import uvicorn

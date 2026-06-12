@@ -6,16 +6,13 @@ Start with:  uvicorn exa_agent.server:app --port 18004
 from __future__ import annotations
 
 import asyncio
-import json
-import uuid
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from exa_agent import config
 from exa_agent.confirm import _is_affirmative
 from exa_agent.graph import build_graph
 from exa_agent.llm import check_backend

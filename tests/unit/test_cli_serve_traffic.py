@@ -29,7 +29,7 @@ def isolated_db(tmp_path):
 def test_traffic_set_writes_to_db():
     with patch("examlops.cli.commands.serve._client.post", return_value={"ok": True}):
         result = runner.invoke(app, [
-            "serve", "traffic", "JPCP",
+            "--yes", "serve", "traffic", "JPCP",
             "--production", "90", "--canary", "10",
         ])
     assert result.exit_code == 0, result.output

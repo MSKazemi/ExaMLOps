@@ -460,7 +460,8 @@ def promote_delete(
     all_rules: bool = typer.Option(False, "--all", help="Delete ALL promotion rules"),
 ) -> None:
     """Delete saved metric-gated promotion rules."""
-    from examlops.platform_db import get_db as _get_db, init_db as _init_db
+    from examlops.platform_db import get_db as _get_db
+    from examlops.platform_db import init_db as _init_db
     _init_db()
     if all_rules:
         with _get_db() as conn:

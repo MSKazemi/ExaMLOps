@@ -1,7 +1,6 @@
 """Tests for the FastAPI chat server."""
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,8 +71,10 @@ def test_api_threads_empty(client):
 def test_api_threads_lists_saved(client):
     from exa_agent import server as srv
     fake = _fake_graph()
-    t1 = MagicMock(); t1.config = {"configurable": {"thread_id": "cli-aaa"}}
-    t2 = MagicMock(); t2.config = {"configurable": {"thread_id": "cli-bbb"}}
+    t1 = MagicMock()
+    t1.config = {"configurable": {"thread_id": "cli-aaa"}}
+    t2 = MagicMock()
+    t2.config = {"configurable": {"thread_id": "cli-bbb"}}
     fake.checkpointer.list.return_value = [t1, t2]
     with patch.object(srv, "_get_graph", return_value=fake):
         resp = client.get("/api/threads")

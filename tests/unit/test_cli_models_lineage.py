@@ -22,8 +22,8 @@ _VER_DATA = {"model_version": {"run_id": "run-abc", "version": "18", "creation_t
 _RUN_DATA = {
     "run": {
         "data": {
-            "metrics": {"rmse": 4.9},
-            "params": {"n_estimators": "200"},
+            "metrics": [{"key": "rmse", "value": 4.9}],
+            "params": [{"key": "n_estimators", "value": "200"}],
             "tags": [
                 {"key": "prefect_flow_run_id", "value": "prefect-xyz"},
                 {"key": "dataset_version", "value": "2026-04-15"},

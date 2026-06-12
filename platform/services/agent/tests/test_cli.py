@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
 from exa_agent import cli
-
+from langchain_core.messages import AIMessage, HumanMessage
 
 # ── Original tests (updated for tuple return) ─────────────────────────────────
 
