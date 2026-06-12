@@ -26,7 +26,7 @@ async def get_platform_audit(
     action: str | None = Query(None),
     source: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
-) -> list[dict]:
+) -> dict:
     """Read platform audit_events from shared platform.db."""
     try:
         conn = sqlite3.connect(_db_path())
@@ -49,7 +49,7 @@ async def get_platform_audit(
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         conn.close()
-        return [
+        items = [
             {
                 "id": r["id"], "ts": r["ts"], "source": r["source"],
                 "actor": r["actor"], "action": r["action"], "target": r["target"],
@@ -57,5 +57,6 @@ async def get_platform_audit(
             }
             for r in rows
         ]
+        return {"items": items, "total": len(items)}
     except Exception:
-        return []
+        return {"items": [], "total": 0}
