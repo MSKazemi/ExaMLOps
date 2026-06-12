@@ -468,6 +468,11 @@ post-deploy:lxp:retrain-push-models:
   stage: post-deploy
   image: python:3.12-slim
   needs: [smoke:lxp]
+  # Best-effort: the deploy is already validated by deploy:lxp + smoke:lxp. This
+  # only kicks off Prefect retraining, which is racy right after a fresh deploy
+  # (Prefect still warming up) and is also driven by drift/schedule — so a timeout
+  # here must not mark an otherwise-healthy deploy as failed.
+  allow_failure: true
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: on_success

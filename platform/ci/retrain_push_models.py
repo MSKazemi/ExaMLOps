@@ -44,7 +44,10 @@ def main() -> int:
                 f"{url}/retrain",
                 json={"model_name": model, "dataset_name": dataset, "is_dummy": is_dummy},
                 headers=headers,
-                timeout=15.0,
+                # The control plane submits a Prefect flow run before responding,
+                # and right after a fresh deploy Prefect is still warming up — 15s
+                # was too tight and timed out.
+                timeout=60.0,
             )
             r.raise_for_status()
             results.append({"model": model, "status": "triggered", "data": r.json()})
