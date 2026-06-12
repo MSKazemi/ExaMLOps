@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
@@ -11,6 +12,7 @@ router = APIRouter()
 
 _CACHE_TTL = 30.0   # seconds — lower probe frequency on NFS-backed shared cluster
 _PROBE_TIMEOUT = 8.0  # seconds — NFS services can spike; 3s was too tight
+_CACHE_KEY = "_global_"  # single shared cache so Docker healthcheck warms it for all callers
 _cache: dict = {}
 _cache_lock = asyncio.Lock()
 _probe_in_progress: set[str] = set()
@@ -64,12 +66,16 @@ async def _ping_db() -> dict:
         return {"status": "down", "url": "postgresql://"}
 
 
-async def _do_health_check(request_host: str) -> dict:
+async def _do_health_check() -> dict:
+    """Probe all services and return results with raw (localhost-based) URLs.
+
+    URL rewriting per browser host happens at response time, not in the cache.
+    """
     now = datetime.now(UTC).isoformat()
     async with httpx.AsyncClient() as client:
         http_results = await asyncio.gather(
             *[
-                _ping(base, path, _rewrite_host(pub, request_host), client)
+                _ping(base, path, pub, client)
                 for _name, (base, path, pub) in _SERVICES.items()
             ]
         )
@@ -78,7 +84,7 @@ async def _do_health_check(request_host: str) -> dict:
     services["postgres"] = db_result
 
     # Dashboard is self — always ok if we're responding.
-    services["dashboard"] = {"status": "ok", "url": _rewrite_host(settings.public_dashboard_url, request_host)}
+    services["dashboard"] = {"status": "ok", "url": settings.public_dashboard_url}
 
     # Slurm adapter is inline (no HTTP endpoint); report ok in mock mode, down in real mode.
     slurm_status = "ok" if settings.slurm_mode == "mock" else "down"
@@ -91,37 +97,45 @@ async def _do_health_check(request_host: str) -> dict:
     return {"status": overall, "checked_at": now, "services": services}
 
 
+def _apply_host_rewrite(data: dict, request_host: str) -> dict:
+    """Rewrite public service URLs in cached data to match the browser's hostname."""
+    req_hostname = request_host.split(":")[0]
+    if req_hostname in ("localhost", "127.0.0.1", ""):
+        return data
+    result = copy.deepcopy(data)
+    for svc_data in result.get("services", {}).values():
+        if svc_data.get("url"):
+            svc_data["url"] = _rewrite_host(svc_data["url"], request_host)
+    return result
+
+
 @router.get("/health")
 async def get_health(request: Request) -> dict:
     request_host = request.headers.get("host", "localhost")
-    cache_key = request_host
 
-    # Fast path: serve cache without acquiring the probe lock.
-    entry = _cache.get(cache_key)
+    # Fast path: single global cache so Docker healthcheck warms it for all callers.
+    entry = _cache.get(_CACHE_KEY)
     if entry and (time.monotonic() - entry["ts"]) < _CACHE_TTL:
-        return entry["data"]
+        return _apply_host_rewrite(entry["data"], request_host)
 
-    # Slow path: only one probe per cache_key at a time.
-    # Concurrent requests while a probe is in flight get stale data instead of
-    # queueing — this prevents a slow NFS service from blocking all callers.
+    # Slow path: only one probe at a time regardless of caller.
     async with _cache_lock:
-        # Re-check: another coroutine may have refreshed while we waited for the lock.
-        entry = _cache.get(cache_key)
+        entry = _cache.get(_CACHE_KEY)
         if entry and (time.monotonic() - entry["ts"]) < _CACHE_TTL:
-            return entry["data"]
+            return _apply_host_rewrite(entry["data"], request_host)
 
-        if cache_key in _probe_in_progress:
-            # Probe already running — return stale data rather than piling up.
-            return entry["data"] if entry else {"status": "starting", "services": {}}
+        if _CACHE_KEY in _probe_in_progress:
+            # Probe already running — return stale data rather than queueing.
+            return _apply_host_rewrite(entry["data"], request_host) if entry else {"status": "starting", "services": {}}
 
-        _probe_in_progress.add(cache_key)
+        _probe_in_progress.add(_CACHE_KEY)
 
     # Run probe outside the lock so the lock isn't held for up to _PROBE_TIMEOUT seconds.
     try:
-        data = await _do_health_check(request_host)
+        data = await _do_health_check()
         async with _cache_lock:
-            _cache[cache_key] = {"data": data, "ts": time.monotonic()}
-        return data
+            _cache[_CACHE_KEY] = {"data": data, "ts": time.monotonic()}
+        return _apply_host_rewrite(data, request_host)
     finally:
         async with _cache_lock:
-            _probe_in_progress.discard(cache_key)
+            _probe_in_progress.discard(_CACHE_KEY)
