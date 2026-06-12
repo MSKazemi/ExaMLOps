@@ -357,8 +357,8 @@ def test_poll_cycle_triggers_ci_pipeline_on_new_commit(tmp_path, monkeypatch):
     with patch(
         "urllib.request.urlopen",
         side_effect=[
-            _mock_gitlab_commits(new_sha),       # poll: fetch latest commit
-            _mock_pipeline_trigger_response(),   # trigger: fire CI pipeline
+            _mock_gitlab_commits(new_sha),  # poll: fetch latest commit
+            _mock_pipeline_trigger_response(),  # trigger: fire CI pipeline
         ],
     ):
         result = cp_app._run_poll_cycle()
