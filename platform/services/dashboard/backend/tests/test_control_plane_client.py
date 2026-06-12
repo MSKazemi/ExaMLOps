@@ -54,3 +54,39 @@ async def test_list_model_names(client_factory):
     cp = client_factory(handler)
     names = await cp.list_model_names()
     assert names == ["JPCP", "MACK"]
+
+
+async def test_get_retries_transient_connect_timeout():
+    """A transient ConnectTimeout on the first attempt is retried, then succeeds.
+
+    This is the exact failure that blanked the Models page: the single-worker
+    control plane briefly refuses a connection under load.
+    """
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectTimeout("transient", request=request)
+        return httpx.Response(200, json=[{"model_name": "JPCP", "datasets": ["A"]}])
+
+    transport = httpx.MockTransport(handler)
+    cp = ControlPlaneClient(base_url="http://cp", transport=transport, backoff=0.0)
+    names = await cp.list_model_names()
+    assert names == ["JPCP"]
+    assert calls["n"] == 2  # failed once, retried once, succeeded
+
+
+async def test_get_raises_after_exhausting_retries():
+    """Persistent transport failure surfaces after all retries are exhausted."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectTimeout("always down", request=request)
+
+    transport = httpx.MockTransport(handler)
+    cp = ControlPlaneClient(base_url="http://cp", transport=transport, retries=2, backoff=0.0)
+    with pytest.raises(httpx.ConnectTimeout):
+        await cp.list_model_names()
+    assert calls["n"] == 3  # initial + 2 retries
