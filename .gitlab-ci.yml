@@ -233,7 +233,7 @@ test:examlops:
       policy: pull-push
   before_script:
     - pip install --quiet --upgrade pip uv
-    - uv venv .venv
+    - uv venv --clear .venv   # --clear: runners reuse build dirs; a leftover .venv otherwise fails
     - uv pip install -e ".[dev]"
   script:
     - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
@@ -288,7 +288,7 @@ test:integration:
       policy: pull
   before_script:
     - pip install --quiet --upgrade pip uv
-    - uv venv .venv
+    - uv venv --clear .venv   # --clear: runners reuse build dirs; a leftover .venv otherwise fails
     - uv pip install -e ".[dev]"
   script:
     - .venv/bin/pytest tests/integration/ -v --tb=short
