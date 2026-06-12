@@ -176,6 +176,9 @@ PREFECT_CB_FAIL_MAX = int(os.getenv("PREFECT_CB_FAIL_MAX", "5"))
 PREFECT_CB_RESET_TIMEOUT = float(os.getenv("PREFECT_CB_RESET_TIMEOUT", "30.0"))
 # Improvement 17
 IDEMPOTENCY_TTL_SECONDS = float(os.getenv("IDEMPOTENCY_TTL_SECONDS", "300"))
+# When set, a modelzoo push event triggers the ai-production CI pipeline automatically.
+AI_PROD_PROJECT_ID = os.getenv("AI_PROD_GITLAB_PROJECT_ID", "")
+AI_PROD_PIPELINE_TOKEN = os.getenv("AI_PROD_PIPELINE_TRIGGER_TOKEN", "")
 
 _modelzoo_config: dict[str, Any] = {
     "auto_retrain": MODELZOO_AUTO_RETRAIN,
@@ -708,10 +711,12 @@ def _record_push_event(
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Auto-retrain failed for %s: %s", model_id, exc)
 
+    ci_pipeline_triggered = _trigger_ci_pipeline(commit_sha)
     return {
         "event_id": event_id,
         "models_marked_stale": len(registry),
         "retrain_triggered": retrain_triggered,
+        "ci_pipeline_triggered": ci_pipeline_triggered,
     }
 
 
@@ -807,6 +812,7 @@ def _run_poll_cycle() -> dict[str, Any]:
                 except Exception as exc:
                     logger.warning("Auto-retrain failed for %s: %s", model_id, exc)
 
+    _trigger_ci_pipeline(latest_sha)
     return {"new": True, "commit_sha": latest_sha, "event_id": event_id}
 
 
@@ -833,6 +839,43 @@ def _start_poller() -> None:
         logger.info("ModelZoo poller stopped")
 
     threading.Thread(target=_loop, daemon=True, name="modelzoo-poller").start()
+
+
+def _trigger_ci_pipeline(commit_sha: str) -> bool:
+    """Trigger the ai-production CI pipeline via GitLab pipeline trigger API.
+
+    Called after every confirmed-new modelzoo commit (webhook or poll) so that
+    test:modelzoo always runs against the latest upstream code automatically.
+    Silently skips when AI_PROD_GITLAB_PROJECT_ID / AI_PROD_PIPELINE_TRIGGER_TOKEN
+    are not configured.
+    """
+    if not AI_PROD_PROJECT_ID or not AI_PROD_PIPELINE_TOKEN:
+        return False
+    import urllib.parse as _uparse  # noqa: PLC0415
+    import urllib.request as _ureq  # noqa: PLC0415
+
+    try:
+        project_id_enc = _uparse.quote(str(AI_PROD_PROJECT_ID), safe="")
+        url = f"{GITLAB_URL}/api/v4/projects/{project_id_enc}/trigger/pipeline"
+        data = _uparse.urlencode(
+            {
+                "token": AI_PROD_PIPELINE_TOKEN,
+                "ref": "main",
+                "variables[MODELZOO_COMMIT]": commit_sha,
+            }
+        ).encode()
+        req = _ureq.Request(url, data=data, method="POST")
+        with _ureq.urlopen(req, timeout=10) as resp:  # noqa: S310
+            result = json.loads(resp.read().decode())
+        logger.info(
+            "CI pipeline triggered id=%s for modelzoo commit %s",
+            result.get("id"),
+            commit_sha[:8],
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CI pipeline trigger failed: %s", exc)
+        return False
 
 
 # ─── Registry helpers ─────────────────────────────────────────────────────────
