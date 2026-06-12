@@ -20,6 +20,7 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     yield db
     os.environ.pop("PLATFORM_DB", None)
@@ -27,6 +28,7 @@ def isolated_db(tmp_path):
 
 def _insert_snapshots(predictions, model="JPCP", alias="Production"):
     from examlops.platform_db import write_drift_snapshot
+
     for p in predictions:
         write_drift_snapshot(model, alias, p, None)
 
@@ -51,6 +53,7 @@ def test_drift_status_ok_within_threshold():
 def test_drift_status_warning_beyond_2sigma():
     # Use a non-zero std baseline so z-score can be computed
     import random
+
     random.seed(42)
     baseline_preds = [89.0 + random.gauss(0, 2) for _ in range(100)]
     _insert_snapshots(baseline_preds)
@@ -67,6 +70,7 @@ def test_drift_baseline_stores_stats():
     result = runner.invoke(app, ["drift", "baseline", "JPCP"])
     assert result.exit_code == 0, result.output
     from examlops.platform_db import get_drift_baseline
+
     b = get_drift_baseline("JPCP")
     assert b is not None
     assert "mean" in b
@@ -78,10 +82,11 @@ def test_drift_reset_clears_snapshots():
     result = runner.invoke(app, ["drift", "reset", "JPCP"])
     assert result.exit_code == 0, result.output
     from examlops.platform_db import get_db
+
     with get_db() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM drift_snapshots WHERE model='JPCP'"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM drift_snapshots WHERE model='JPCP'").fetchone()[
+            0
+        ]
     assert count == 0
 
 

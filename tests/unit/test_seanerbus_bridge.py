@@ -16,6 +16,7 @@ a simple `import seanerbus_bridge`.  We therefore:
   2. Force-reload the bridge so its module-level names are rebound to our stubs.
   3. Pop model_schema_registry after reload so we don't pollute later tests.
 """
+
 from __future__ import annotations
 
 import os
@@ -110,12 +111,14 @@ model_schema_stub = types.ModuleType("model_schema_registry")
 
 
 class _MockRegistry:
-    def __init__(self, *a, **kw): pass
+    def __init__(self, *a, **kw):
+        pass
 
     def build_features(self, model_name, msg):
         return {"embedding": list(getattr(msg, "embedding", []))}
 
-    def validate_features(self, model_name, features): pass
+    def validate_features(self, model_name, features):
+        pass
 
 
 model_schema_stub.ModelSchemaRegistry = _MockRegistry

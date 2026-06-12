@@ -29,9 +29,7 @@ def check_password(plaintext: str) -> Role | None:
 
 def issue_token(role: Role) -> tuple[str, datetime]:
     """Create a JWT for the given role; return (token, expires_at_utc)."""
-    expires_at = datetime.now(UTC) + timedelta(
-        hours=settings.dashboard_jwt_ttl_hours
-    )
+    expires_at = datetime.now(UTC) + timedelta(hours=settings.dashboard_jwt_ttl_hours)
     token = jwt.encode(
         {"role": role, "exp": int(expires_at.timestamp())},
         settings.dashboard_jwt_secret,
@@ -43,9 +41,7 @@ def issue_token(role: Role) -> tuple[str, datetime]:
 def verify_token(token: str) -> dict:
     """Decode + verify; raise 401 on any failure."""
     try:
-        return jwt.decode(
-            token, settings.dashboard_jwt_secret, algorithms=["HS256"]
-        )
+        return jwt.decode(token, settings.dashboard_jwt_secret, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

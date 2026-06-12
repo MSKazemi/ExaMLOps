@@ -54,18 +54,20 @@ def build_deployment_params(entries: list) -> list[dict]:
     params = []
     for entry in entries:
         pf = entry.prefect or {}
-        params.append({
-            "model_name": entry.name,
-            "dataset_names": entry.datasets,
-            "deployment_name": pf.get(
-                "deployment_name", f"examlops-{entry.name.lower()}-nightly"
-            ),
-            "cron": pf.get("schedule") or None,
-            "work_pool": pf.get("work_pool", "default-agent"),
-            "concurrency_limit": pf.get("concurrency_limit", 1),
-            "dummy": entry.dummy,
-            "backend": entry.backend,
-        })
+        params.append(
+            {
+                "model_name": entry.name,
+                "dataset_names": entry.datasets,
+                "deployment_name": pf.get(
+                    "deployment_name", f"examlops-{entry.name.lower()}-nightly"
+                ),
+                "cron": pf.get("schedule") or None,
+                "work_pool": pf.get("work_pool", "default-agent"),
+                "concurrency_limit": pf.get("concurrency_limit", 1),
+                "dummy": entry.dummy,
+                "backend": entry.backend,
+            }
+        )
     return params
 
 
@@ -178,17 +180,21 @@ def deploy_from_registry(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Deploy ExaMLOps training pipeline to Prefect")
-    p.add_argument("--cron",        default="0 2 * * *", help="Cron expression (default: 2am daily)")
-    p.add_argument("--no-schedule", action="store_true",  help="Deploy without a schedule")
-    p.add_argument("--model",       default=None, help="Deploy for a single model only")
-    p.add_argument("--dataset",     default=None, help="Dataset class name (requires --model)")
-    p.add_argument("--name",        default="examlops-nightly", help="Deployment name")
+    p.add_argument("--cron", default="0 2 * * *", help="Cron expression (default: 2am daily)")
+    p.add_argument("--no-schedule", action="store_true", help="Deploy without a schedule")
+    p.add_argument("--model", default=None, help="Deploy for a single model only")
+    p.add_argument("--dataset", default=None, help="Dataset class name (requires --model)")
+    p.add_argument("--name", default="examlops-nightly", help="Deployment name")
     p.add_argument(
-        "--registry", default=None, metavar="PATH",
+        "--registry",
+        default=None,
+        metavar="PATH",
         help="Path to model_registry.yaml; if provided, deploys one flow per model entry",
     )
     p.add_argument(
-        "--env", default=None, metavar="ENV",
+        "--env",
+        default=None,
+        metavar="ENV",
         help="Environment overlay: dev | staging | prod (used only with --registry)",
     )
     return p.parse_args()

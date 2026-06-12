@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 # ── Original tests (updated for tuple return) ─────────────────────────────────
 
+
 def test_slash_help_lists_commands(capsys):
     handled, _ = cli.handle_slash("/help", state=cli.CliState())
     assert handled is True
@@ -32,6 +33,7 @@ def test_format_interrupt_summary():
 
 
 # ── Feature 7: _extract_text and colour helper ────────────────────────────────
+
 
 def test_extract_text_string():
     assert cli._extract_text("hello") == "hello"
@@ -64,6 +66,7 @@ def test_c_wraps_in_ansi_when_color_on():
 
 # ── Feature 5: Token cost calculation ─────────────────────────────────────────
 
+
 def test_cost_per_1m_has_opus():
     assert "claude-opus-4-8" in cli._COST_PER_1M
     in_price, out_price = cli._COST_PER_1M["claude-opus-4-8"]
@@ -77,6 +80,7 @@ def test_cost_formula():
 
 
 # ── Feature 1: /history ───────────────────────────────────────────────────────
+
 
 def _make_fake_graph(messages):
     state_mock = MagicMock()
@@ -116,6 +120,7 @@ def test_history_no_graph(capsys):
 
 # ── Feature 2: /export ────────────────────────────────────────────────────────
 
+
 def test_export_writes_markdown(tmp_path):
     msgs = [HumanMessage(content="Ask"), AIMessage(content="Answer")]
     graph = _make_fake_graph(msgs)
@@ -140,8 +145,12 @@ def test_export_default_filename(tmp_path, capsys):
 
 # ── Feature 3: /grep ──────────────────────────────────────────────────────────
 
+
 def test_grep_finds_match(capsys):
-    msgs = [HumanMessage(content="drift is critical"), AIMessage(content="model JPCP needs attention")]
+    msgs = [
+        HumanMessage(content="drift is critical"),
+        AIMessage(content="model JPCP needs attention"),
+    ]
     graph = _make_fake_graph(msgs)
     state = cli.CliState()
     cli.handle_slash("/grep critical", state=state, graph=graph)
@@ -176,6 +185,7 @@ def test_grep_no_pattern(capsys):
 
 # ── Feature 4: /watch command parsing ────────────────────────────────────────
 
+
 def test_watch_bad_args(capsys):
     handled, _ = cli.handle_slash("/watch notanumber query", state=cli.CliState())
     assert handled
@@ -191,6 +201,7 @@ def test_watch_missing_query(capsys):
 
 
 # ── Feature 10: startup brief ─────────────────────────────────────────────────
+
 
 def test_startup_brief_prints_services(capsys):
     with patch("exa_agent.cli.httpx.Client") as MockClient:

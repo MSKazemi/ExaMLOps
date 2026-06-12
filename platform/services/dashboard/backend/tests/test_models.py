@@ -36,11 +36,7 @@ async def test_can_insert_unset_secret_row(db_engine):
 
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as s:
-        s.add(
-            DashboardConfig(
-                key="grafana_api_key", value=None, secret_value=None, is_secret=True
-            )
-        )
+        s.add(DashboardConfig(key="grafana_api_key", value=None, secret_value=None, is_secret=True))
         await s.commit()
 
 

@@ -1,4 +1,5 @@
 """Platform audit log — reads audit_events from shared platform.db."""
+
 from __future__ import annotations
 
 import json
@@ -51,8 +52,12 @@ async def get_platform_audit(
         conn.close()
         items = [
             {
-                "id": r["id"], "ts": r["ts"], "source": r["source"],
-                "actor": r["actor"], "action": r["action"], "target": r["target"],
+                "id": r["id"],
+                "ts": r["ts"],
+                "source": r["source"],
+                "actor": r["actor"],
+                "action": r["action"],
+                "target": r["target"],
                 "details": json.loads(r["details"]) if r["details"] else None,
             }
             for r in rows

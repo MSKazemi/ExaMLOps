@@ -31,6 +31,7 @@ import pipelines.pipeline_generator as pg
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _fake_estimator() -> RandomForestRegressor:
     """Return a tiny trained sklearn model for use in tests."""
     est = RandomForestRegressor(n_estimators=2, max_depth=2, random_state=0)
@@ -76,6 +77,7 @@ def _patch_registry(model_name: str = "TestModel", config_cls=None):
 
 # ── data_extraction_task ──────────────────────────────────────────────────────
 
+
 class TestDataExtractionTask:
     def test_returns_model_and_loader(self):
         model = _fake_model()
@@ -110,6 +112,7 @@ class TestDataExtractionTask:
 
 
 # ── slurm_submit_task ─────────────────────────────────────────────────────────
+
 
 class TestSlurmSubmitTask:
     def test_mock_mode_trains_and_saves_pkl(self, tmp_path, monkeypatch):
@@ -159,8 +162,10 @@ class TestSlurmSubmitTask:
         with patch("adapter.RealSlurmAdapter", return_value=fake_adapter):
             pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "FDataDataset")
 
-        script_path = fake_adapter.submit_job.call_args[1].get("script_path") or \
-                      fake_adapter.submit_job.call_args[0][0]
+        script_path = (
+            fake_adapter.submit_job.call_args[1].get("script_path")
+            or fake_adapter.submit_job.call_args[0][0]
+        )
         assert Path(script_path).exists()
         content = Path(script_path).read_text()
         assert "JPCP" in content
@@ -169,6 +174,7 @@ class TestSlurmSubmitTask:
 
 
 # ── slurm_wait_task ───────────────────────────────────────────────────────────
+
 
 class TestSlurmWaitTask:
     def test_mock_passthrough(self):
@@ -201,6 +207,7 @@ class TestSlurmWaitTask:
 
 # ── result_fetch_task ─────────────────────────────────────────────────────────
 
+
 class TestResultFetchTask:
     def test_loads_estimator_and_sets_on_model(self, tmp_path):
         estimator = _fake_estimator()
@@ -229,6 +236,7 @@ class TestResultFetchTask:
 
 # ── evaluate_task ─────────────────────────────────────────────────────────────
 
+
 class TestEvaluateTask:
     def test_returns_metrics_dict(self):
         model = _fake_model()
@@ -254,6 +262,7 @@ class TestEvaluateTask:
 
 # ── promote_task ──────────────────────────────────────────────────────────────
 
+
 def _no_prev_production_client() -> MagicMock:
     """A MagicMock MlflowClient where get_model_version_by_alias raises (no previous Production)."""
     client = MagicMock()
@@ -269,8 +278,10 @@ class TestPromoteTask:
         cfg = _fake_config_cls()  # threshold=50, lower_is_better
         client = _no_prev_production_client()
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(), {"rmse": 10.0})
 
         assert status == "Production"
@@ -280,8 +291,10 @@ class TestPromoteTask:
         cfg = _fake_config_cls()  # threshold=50
         client = _no_prev_production_client()
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(), {"rmse": 99.0})
 
         assert status == "Staging"
@@ -299,8 +312,10 @@ class TestPromoteTask:
         cfg = _fake_config_cls()
         client = _no_prev_production_client()
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(), {})
 
         assert status == "Staging"
@@ -315,13 +330,23 @@ class TestPromoteTask:
             "promotion_direction": "higher_is_better",
         }
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=_no_prev_production_client()):
+        with (
+            _patch_registry("M", cfg),
+            patch(
+                "pipelines.pipeline_generator.mlflow.MlflowClient",
+                return_value=_no_prev_production_client(),
+            ),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(), {"accuracy": 0.95})
         assert status == "Production"
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=_no_prev_production_client()):
+        with (
+            _patch_registry("M", cfg),
+            patch(
+                "pipelines.pipeline_generator.mlflow.MlflowClient",
+                return_value=_no_prev_production_client(),
+            ),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(), {"accuracy": 0.80})
         assert status == "Staging"
 
@@ -333,14 +358,31 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Staging",    "metric": "rmse", "threshold": 200.0, "direction": "lower_is_better"},
-                {"name": "Canary",     "metric": "rmse", "threshold": 100.0, "direction": "lower_is_better"},
-                {"name": "Production", "metric": "rmse", "threshold":  50.0, "direction": "lower_is_better"},
+                {
+                    "name": "Staging",
+                    "metric": "rmse",
+                    "threshold": 200.0,
+                    "direction": "lower_is_better",
+                },
+                {
+                    "name": "Canary",
+                    "metric": "rmse",
+                    "threshold": 100.0,
+                    "direction": "lower_is_better",
+                },
+                {
+                    "name": "Production",
+                    "metric": "rmse",
+                    "threshold": 50.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = _no_prev_production_client()
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(version="3"), {"rmse": 10.0})
 
         assert status == "Production"
@@ -355,14 +397,31 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Staging",    "metric": "rmse", "threshold": 200.0, "direction": "lower_is_better"},
-                {"name": "Canary",     "metric": "rmse", "threshold": 100.0, "direction": "lower_is_better"},
-                {"name": "Production", "metric": "rmse", "threshold":  50.0, "direction": "lower_is_better"},
+                {
+                    "name": "Staging",
+                    "metric": "rmse",
+                    "threshold": 200.0,
+                    "direction": "lower_is_better",
+                },
+                {
+                    "name": "Canary",
+                    "metric": "rmse",
+                    "threshold": 100.0,
+                    "direction": "lower_is_better",
+                },
+                {
+                    "name": "Production",
+                    "metric": "rmse",
+                    "threshold": 50.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = _no_prev_production_client()
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(version="4"), {"rmse": 150.0})
 
         assert status == "Staging"
@@ -375,15 +434,22 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Production", "metric": "rmse", "threshold": 50.0, "direction": "lower_is_better"},
+                {
+                    "name": "Production",
+                    "metric": "rmse",
+                    "threshold": 50.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = MagicMock()
         # There IS a previous Production version (v2), and the new one is v3.
         client.get_model_version_by_alias.return_value = SimpleNamespace(version=2)
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(version="3"), {"rmse": 10.0})
 
         assert status == "Production"
@@ -397,13 +463,20 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Production", "metric": "rmse", "threshold": 50.0, "direction": "lower_is_better"},
+                {
+                    "name": "Production",
+                    "metric": "rmse",
+                    "threshold": 50.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = _no_prev_production_client()
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             status = pg.promote_task.fn("M", self._make_registration(version="1"), {"rmse": 10.0})
 
         assert status == "Production"
@@ -417,7 +490,12 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Production", "metric": "rmse", "threshold": 50.0, "direction": "lower_is_better"},
+                {
+                    "name": "Production",
+                    "metric": "rmse",
+                    "threshold": 50.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = _no_prev_production_client()
@@ -428,8 +506,10 @@ class TestPromoteTask:
 
         monkeypatch.setattr(pg, "_notify_ray_serve", fake_notify)
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             pg.promote_task.fn("M", self._make_registration(version="1"), {"rmse": 10.0})
 
         assert notified["model_id"] == "lc"
@@ -440,21 +520,29 @@ class TestPromoteTask:
         cfg.get_inference_params.return_value = {
             "model_id": "lc",
             "lifecycle": [
-                {"name": "Staging", "metric": "rmse", "threshold": 200.0, "direction": "lower_is_better"},
+                {
+                    "name": "Staging",
+                    "metric": "rmse",
+                    "threshold": 200.0,
+                    "direction": "lower_is_better",
+                },
             ],
         }
         client = _no_prev_production_client()
         notified: dict[str, str | None] = {"model_id": None}
         monkeypatch.setattr(pg, "_notify_ray_serve", lambda mid: notified.update({"model_id": mid}))
 
-        with _patch_registry("M", cfg), \
-             patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client):
+        with (
+            _patch_registry("M", cfg),
+            patch("pipelines.pipeline_generator.mlflow.MlflowClient", return_value=client),
+        ):
             pg.promote_task.fn("M", self._make_registration(version="1"), {"rmse": 10.0})
 
         assert notified["model_id"] is None
 
 
 # ── Auto-discovery ────────────────────────────────────────────────────────────
+
 
 class TestAutoDiscovery:
     def test_model_registry_is_populated(self):

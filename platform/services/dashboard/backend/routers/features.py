@@ -1,4 +1,5 @@
 """Feature store data — reads from shared platform.db feature_versions table."""
+
 from __future__ import annotations
 
 import os

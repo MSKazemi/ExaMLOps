@@ -22,7 +22,9 @@ def _retrain_summary(model_name, dataset_name, is_dummy=False, backend_name=""):
 
 @tool
 @confirmed_write(_retrain_summary)
-def trigger_retrain(model_name: str, dataset_name: str, is_dummy: bool = False, backend_name: str = "") -> str:
+def trigger_retrain(
+    model_name: str, dataset_name: str, is_dummy: bool = False, backend_name: str = ""
+) -> str:
     """Start a Prefect retraining run via the Control Plane.
 
     Args:

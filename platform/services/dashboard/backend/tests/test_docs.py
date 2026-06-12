@@ -51,9 +51,7 @@ async def test_docs_tree_files_have_path_and_title(client):
 @pytest.mark.asyncio
 async def test_docs_content_returns_markdown(client):
     token = await _login(client, VIEWER_PW)
-    response = await client.get(
-        "/api/docs/content?path=README.md", headers=_hdr(token)
-    )
+    response = await client.get("/api/docs/content?path=README.md", headers=_hdr(token))
     assert response.status_code == 200
     assert "ExaMLOps" in response.text or len(response.text) > 0
 
@@ -67,16 +65,12 @@ async def test_docs_content_requires_auth(client):
 @pytest.mark.asyncio
 async def test_docs_content_missing_file_returns_404(client):
     token = await _login(client, VIEWER_PW)
-    response = await client.get(
-        "/api/docs/content?path=docs/nonexistent.md", headers=_hdr(token)
-    )
+    response = await client.get("/api/docs/content?path=docs/nonexistent.md", headers=_hdr(token))
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_docs_content_rejects_path_traversal(client):
     token = await _login(client, VIEWER_PW)
-    response = await client.get(
-        "/api/docs/content?path=../../etc/passwd", headers=_hdr(token)
-    )
+    response = await client.get("/api/docs/content?path=../../etc/passwd", headers=_hdr(token))
     assert response.status_code in (400, 404)

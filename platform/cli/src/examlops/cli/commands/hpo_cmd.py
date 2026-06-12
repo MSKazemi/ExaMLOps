@@ -20,11 +20,7 @@ _EXAMPLES_START = (
     "  exa pipeline hpo start JPCP\n\n"
     "  exa pipeline hpo start JPCP --trials 50 --metric rmse --dataset PM100Dataset"
 )
-_EXAMPLES_STATUS = (
-    "Examples:\n\n"
-    "  exa pipeline hpo status\n\n"
-    "  exa pipeline hpo status JPCP"
-)
+_EXAMPLES_STATUS = "Examples:\n\n  exa pipeline hpo status\n\n  exa pipeline hpo status JPCP"
 _EXAMPLES_RECORD = (
     "Examples:\n\n"
     "  exa pipeline hpo record JPCP --trial 1 --params '{\"n_estimators\": 100}' --value 10.5"
@@ -105,20 +101,25 @@ def hpo_start(
         actor=actor,
         action="hpo_start",
         target=model,
-        details={"trials": trials, "metric": metric, "dataset": dataset, "flow_run_id": flow_run_id},
+        details={
+            "trials": trials,
+            "metric": metric,
+            "dataset": dataset,
+            "flow_run_id": flow_run_id,
+        },
     )
 
-    _output.ok(
-        f"HPO study started (flow_run_id={flow_run_id}, {trials} trials)"
+    _output.ok(f"HPO study started (flow_run_id={flow_run_id}, {trials} trials)")
+    _output.print_record(
+        {
+            "model": model,
+            "dataset": dataset,
+            "trials": trials,
+            "metric": metric,
+            "flow_run_id": flow_run_id or "—",
+            "status": "pending",
+        }
     )
-    _output.print_record({
-        "model":       model,
-        "dataset":     dataset,
-        "trials":      trials,
-        "metric":      metric,
-        "flow_run_id": flow_run_id or "—",
-        "status":      "pending",
-    })
 
 
 @app.command("status", epilog=_EXAMPLES_STATUS)
@@ -190,8 +191,7 @@ def hpo_record(
 
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO hpo_trials (study_id, trial_num, params_json, value)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO hpo_trials (study_id, trial_num, params_json, value) VALUES (?, ?, ?, ?)",
             (study_id, trial, params_json, value),
         )
 

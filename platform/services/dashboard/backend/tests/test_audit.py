@@ -14,9 +14,7 @@ async def _login(client, password):
 @pytest.mark.asyncio
 async def test_audit_requires_admin(client, db_engine):
     token = await _login(client, VIEWER_PW)
-    r = await client.get(
-        "/api/audit", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.get("/api/audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 403
 
 
@@ -31,9 +29,7 @@ async def test_audit_returns_recent_rows(client, db_engine):
         await s.commit()
 
     token = await _login(client, ADMIN_PW)
-    r = await client.get(
-        "/api/audit?limit=2", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.get("/api/audit?limit=2", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 3
@@ -45,7 +41,5 @@ async def test_audit_returns_recent_rows(client, db_engine):
 @pytest.mark.asyncio
 async def test_audit_limit_capped_at_500(client):
     token = await _login(client, ADMIN_PW)
-    r = await client.get(
-        "/api/audit?limit=99999", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.get("/api/audit?limit=99999", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 422

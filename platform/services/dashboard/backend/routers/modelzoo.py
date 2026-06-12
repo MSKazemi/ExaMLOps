@@ -1,4 +1,5 @@
 """ModelZoo stats + datasets — reads live data from the GitLab repository API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,6 +35,7 @@ _DATASET_EXCLUDES = {"__init__.py", "_backends.py"}
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
+
 async def _get_plain(db: AsyncSession, key: str) -> str | None:
     row = await db.get(DashboardConfig, key)
     return row.value if row and row.value else None
@@ -55,6 +57,7 @@ async def _get_credentials(db: AsyncSession) -> tuple[str | None, str | None, st
 
 # ── GitLab HTTP ───────────────────────────────────────────────────────────────
 
+
 async def _gitlab_get(
     gitlab_url: str,
     token: str,
@@ -72,9 +75,14 @@ async def _gitlab_get(
     if r.status_code == 403:
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         scope_hint = body.get("error_description", "")
-        raise HTTPException(status_code=502, detail=f"GitLab access denied (403) — {scope_hint or 'check token scope (read_repository) and role (Reporter+)'}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitLab access denied (403) — {scope_hint or 'check token scope (read_repository) and role (Reporter+)'}",
+        )
     if r.status_code == 404:
-        raise HTTPException(status_code=502, detail=f"GitLab path not found — check project ID and branch: {url}")
+        raise HTTPException(
+            status_code=502, detail=f"GitLab path not found — check project ID and branch: {url}"
+        )
     r.raise_for_status()
     return r.json()
 
@@ -110,21 +118,24 @@ def _tree_url(gitlab_url: str, project_id: str, dir_path: str, branch: str) -> s
 
 # ── Tree parsing ──────────────────────────────────────────────────────────────
 
+
 def _parse_models(items: list[dict], gitlab_url: str, project_id: str, branch: str) -> list[dict]:
     out = []
     for item in items:
         if item.get("type") != "tree":
             continue
-        rel = item["path"][len(_TASKS_PATH) + 1:]
+        rel = item["path"][len(_TASKS_PATH) + 1 :]
         parts = rel.split("/")
         if len(parts) == 2:
             task_cat, model_dir = parts
-            out.append({
-                "name": model_dir,
-                "task_category": task_cat,
-                "dir_path": item["path"],
-                "file_url": _tree_url(gitlab_url, project_id, item["path"], branch),
-            })
+            out.append(
+                {
+                    "name": model_dir,
+                    "task_category": task_cat,
+                    "dir_path": item["path"],
+                    "file_url": _tree_url(gitlab_url, project_id, item["path"], branch),
+                }
+            )
     return sorted(out, key=lambda x: x["name"])
 
 
@@ -134,7 +145,7 @@ def _count_models(items: list[dict]) -> tuple[int, list[str]]:
     for item in items:
         if item.get("type") != "tree":
             continue
-        rel = item["path"][len(_TASKS_PATH) + 1:]
+        rel = item["path"][len(_TASKS_PATH) + 1 :]
         parts = rel.split("/")
         if len(parts) == 1:
             task_cats.add(parts[0])
@@ -165,10 +176,13 @@ def _extract_class_name(source: str, filename: str) -> str:
     if m:
         return m.group(1)
     stem = filename[:-3]
-    return "".join(p.upper() if len(p) <= 3 else p.capitalize() for p in stem.split("_")) + "Dataset"
+    return (
+        "".join(p.upper() if len(p) <= 3 else p.capitalize() for p in stem.split("_")) + "Dataset"
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.get("/stats")
 async def get_modelzoo_stats(
@@ -182,12 +196,27 @@ async def get_modelzoo_stats(
     branch = settings.gitlab_branch
     try:
         tasks_items, datasets_items, commits = await asyncio.gather(
-            _gitlab_get(gitlab_url, token, project_id, "tree",
-                        {"path": _TASKS_PATH, "recursive": "true", "per_page": 100, "ref": branch}),
-            _gitlab_get(gitlab_url, token, project_id, "tree",
-                        {"path": _DATASETS_PATH, "per_page": 100, "ref": branch}),
-            _gitlab_get(gitlab_url, token, project_id, "commits",
-                        {"path": _TASKS_PATH, "per_page": 1, "ref_name": branch}),
+            _gitlab_get(
+                gitlab_url,
+                token,
+                project_id,
+                "tree",
+                {"path": _TASKS_PATH, "recursive": "true", "per_page": 100, "ref": branch},
+            ),
+            _gitlab_get(
+                gitlab_url,
+                token,
+                project_id,
+                "tree",
+                {"path": _DATASETS_PATH, "per_page": 100, "ref": branch},
+            ),
+            _gitlab_get(
+                gitlab_url,
+                token,
+                project_id,
+                "commits",
+                {"path": _TASKS_PATH, "per_page": 1, "ref_name": branch},
+            ),
         )
     except HTTPException:
         raise
@@ -230,8 +259,13 @@ async def get_modelzoo_datasets(
 
     branch = settings.gitlab_branch
     try:
-        items = await _gitlab_get(gitlab_url, token, project_id, "tree",
-                                  {"path": _DATASETS_PATH, "per_page": 100, "ref": branch})
+        items = await _gitlab_get(
+            gitlab_url,
+            token,
+            project_id,
+            "tree",
+            {"path": _DATASETS_PATH, "per_page": 100, "ref": branch},
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -250,12 +284,14 @@ async def get_modelzoo_datasets(
     for f, src in zip(dataset_files, sources):
         raw = src if isinstance(src, str) else ""
         class_name = _extract_class_name(raw, f["filename"])
-        out.append({
-            "class_name": class_name,
-            "filename": f["filename"],
-            "file_path": f["path"],
-            "file_url": _file_url(gitlab_url, project_id, f["path"], branch),
-        })
+        out.append(
+            {
+                "class_name": class_name,
+                "filename": f["filename"],
+                "file_path": f["path"],
+                "file_url": _file_url(gitlab_url, project_id, f["path"], branch),
+            }
+        )
 
     return sorted(out, key=lambda x: x["class_name"])
 
@@ -271,8 +307,13 @@ async def get_modelzoo_models(
 
     branch = settings.gitlab_branch
     try:
-        items = await _gitlab_get(gitlab_url, token, project_id, "tree",
-                                  {"path": _TASKS_PATH, "recursive": "true", "per_page": 100, "ref": branch})
+        items = await _gitlab_get(
+            gitlab_url,
+            token,
+            project_id,
+            "tree",
+            {"path": _TASKS_PATH, "recursive": "true", "per_page": 100, "ref": branch},
+        )
     except HTTPException:
         raise
     except Exception as exc:

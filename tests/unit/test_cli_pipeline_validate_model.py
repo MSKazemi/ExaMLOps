@@ -47,6 +47,7 @@ def test_validate_model_uses_alias():
 
 def test_validate_model_fail_on_error():
     from examlops.cli._client import ClientError
+
     with patch("examlops.cli._client.post", side_effect=ClientError("Service down", status=503)):
         result = runner.invoke(app, ["pipeline", "validate-model", "JPCP"])
     assert result.exit_code != 0
@@ -55,6 +56,7 @@ def test_validate_model_fail_on_error():
 
 def test_validate_model_json_output():
     import json
+
     with patch("examlops.cli._client.post", return_value={"prediction": 1.0}):
         result = runner.invoke(app, ["--json", "pipeline", "validate-model", "JPCP", "--n", "1"])
     assert result.exit_code == 0, result.output
@@ -72,6 +74,8 @@ def test_validate_model_fail_high_latency():
         return {"prediction": 1.0}
 
     with patch("examlops.cli._client.post", side_effect=slow_post):
-        result = runner.invoke(app, ["pipeline", "validate-model", "JPCP", "--max-latency", "0.0001"])
+        result = runner.invoke(
+            app, ["pipeline", "validate-model", "JPCP", "--max-latency", "0.0001"]
+        )
     assert result.exit_code != 0
     assert "FAIL" in result.output

@@ -1,4 +1,5 @@
 """Model detail endpoints. Reads from control-plane + MLflow + dashboard DB."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,25 +28,48 @@ def _control_plane() -> ControlPlaneClient:
     return ControlPlaneClient(base_url=settings.control_plane_url)
 
 
+# Short-lived cache so a hard browser refresh (which clears the client cache and
+# fires the whole page's requests at once) doesn't re-walk the control plane every
+# time. The registry only changes on scaffold/add-model, so a few seconds is safe.
+_REGISTRY_CACHE: dict[str, object] = {"data": None, "ts": 0.0}
+_REGISTRY_TTL = 15.0
+
+
 @router.get("/registry")
 async def list_registry(
     _claims: dict = Depends(require_role("viewer")),
 ) -> list[dict]:
+    import time as _time
+
+    cached = _REGISTRY_CACHE["data"]
+    if cached is not None and (_time.monotonic() - float(_REGISTRY_CACHE["ts"])) < _REGISTRY_TTL:
+        return cached  # type: ignore[return-value]
+
     cp = _control_plane()
     names = await cp.list_model_names()
-    out: list[dict] = []
-    for name in names:
+
+    async def _safe_meta(name: str) -> dict | None:
         try:
-            meta = await cp.get_meta(name)
+            return await cp.get_meta(name)
         except (KeyError, httpx.HTTPError):
             # Unknown model, or a transient control-plane blip after retries —
             # skip this one rather than failing the whole registry page.
-            continue
-        out.append({
+            return None
+
+    # Fetch all model metadata concurrently instead of sequentially: turns N+1
+    # serial round-trips to the control plane into two concurrent waves.
+    metas = await asyncio.gather(*[_safe_meta(n) for n in names])
+    out: list[dict] = [
+        {
             "name": meta["name"],
             "task_type": meta["task_type"],
             "supported_datasets": meta["supported_datasets"],
-        })
+        }
+        for meta in metas
+        if meta is not None
+    ]
+    _REGISTRY_CACHE["data"] = out
+    _REGISTRY_CACHE["ts"] = _time.monotonic()
     return out
 
 
@@ -128,16 +152,18 @@ async def list_versions(
             (t["value"] for t in tags if t.get("key") == "framework"),
             "sklearn",
         )
-        out.append({
-            "version": v.get("version"),
-            "run_id": v.get("run_id"),
-            "alias": alias,
-            "aliases": aliases,
-            "framework": framework,
-            "metrics": metrics,
-            "created_at": v.get("creation_timestamp"),
-            "updated_at": v.get("last_updated_timestamp"),
-        })
+        out.append(
+            {
+                "version": v.get("version"),
+                "run_id": v.get("run_id"),
+                "alias": alias,
+                "aliases": aliases,
+                "framework": framework,
+                "metrics": metrics,
+                "created_at": v.get("creation_timestamp"),
+                "updated_at": v.get("last_updated_timestamp"),
+            }
+        )
     return out
 
 
@@ -244,7 +270,9 @@ async def delete_version_alias(
             params={"name": model_id, "alias": alias},
         )
         if chk_r.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"Alias {alias!r} not found on model {name!r}")
+            raise HTTPException(
+                status_code=404, detail=f"Alias {alias!r} not found on model {name!r}"
+            )
         if chk_r.status_code != 200:
             raise HTTPException(status_code=502, detail=f"MLflow error: {chk_r.text[:200]}")
         holder_version = str(chk_r.json()["model_version"]["version"])
@@ -291,9 +319,9 @@ async def get_model_detail(
     fs_text, fs_sha = await cp.get_readme(name)
     fm, fs_body, warnings = parse_readme(fs_text)
 
-    override_row = (await db.execute(
-        select(ModelDocOverride).where(ModelDocOverride.model_name == name)
-    )).scalar_one_or_none()
+    override_row = (
+        await db.execute(select(ModelDocOverride).where(ModelDocOverride.model_name == name))
+    ).scalar_one_or_none()
 
     if override_row is not None:
         body = override_row.body
@@ -323,51 +351,60 @@ async def get_model_detail(
 
     mlflow_model_id = (meta.get("promotion") or {}).get("model_id") or name
 
-    links = build_links(LinkInputs(
-        model_name=name,
-        mlflow_model_id=mlflow_model_id,
-        model_path_in_repo=meta["path_in_repo"],
-        primary_dataset=primary_dataset,
-        run_id=prod_run,
-        version=prod_version,
-        paper_url=paper_url,
-        public_mlflow_url=settings.public_mlflow_url,
-        public_prefect_url=settings.public_prefect_url,
-        public_ray_serve_url=settings.public_ray_serve_url,
-        grafana_loki_explore_url=settings.grafana_loki_explore_url,
-        public_control_plane_url=settings.public_control_plane_url,
-        examlops_repo_url=settings.examlops_repo_url,
-        examlops_repo_branch=settings.examlops_repo_branch,
-    ))
+    links = build_links(
+        LinkInputs(
+            model_name=name,
+            mlflow_model_id=mlflow_model_id,
+            model_path_in_repo=meta["path_in_repo"],
+            primary_dataset=primary_dataset,
+            run_id=prod_run,
+            version=prod_version,
+            paper_url=paper_url,
+            public_mlflow_url=settings.public_mlflow_url,
+            public_prefect_url=settings.public_prefect_url,
+            public_ray_serve_url=settings.public_ray_serve_url,
+            grafana_loki_explore_url=settings.grafana_loki_explore_url,
+            public_control_plane_url=settings.public_control_plane_url,
+            examlops_repo_url=settings.examlops_repo_url,
+            examlops_repo_branch=settings.examlops_repo_branch,
+        )
+    )
 
     images: list[dict] = []
     for filename in meta.get("bundled_images", []):
-        images.append({
-            "id": None,
-            "url": cp.bundled_image_url(name, filename),
-            "placeholder": f"images/{filename}",
-            "source": "filesystem",
-        })
+        images.append(
+            {
+                "id": None,
+                "url": cp.bundled_image_url(name, filename),
+                "placeholder": f"images/{filename}",
+                "source": "filesystem",
+            }
+        )
 
     storage = _image_storage()
-    uploaded_rows = (await db.execute(
-        select(ModelDocImage).where(ModelDocImage.model_name == name)
-    )).scalars().all()
+    uploaded_rows = (
+        (await db.execute(select(ModelDocImage).where(ModelDocImage.model_name == name)))
+        .scalars()
+        .all()
+    )
     for row in uploaded_rows:
         try:
             url = await storage.presigned_get_url(
-                row.object_key, expires=settings.dashboard_image_url_ttl_seconds,
+                row.object_key,
+                expires=settings.dashboard_image_url_ttl_seconds,
             )
         except Exception:
             # MinIO unavailable — still surface the image record with empty URL.
             url = ""
-        images.append({
-            "id": str(row.id),
-            "url": url,
-            "placeholder": f"dashboard://image/{row.id}",
-            "source": "uploaded",
-            "original_name": row.original_name,
-        })
+        images.append(
+            {
+                "id": str(row.id),
+                "url": url,
+                "placeholder": f"dashboard://image/{row.id}",
+                "source": "uploaded",
+                "original_name": row.original_name,
+            }
+        )
 
     # Lifecycle gates: all three stages with their thresholds for the dashboard gauge
     lifecycle_raw: list[dict] = (meta.get("promotion") or {}).get("lifecycle") or []
@@ -482,9 +519,14 @@ async def put_description(
         existing.fs_sha = fs_sha
         existing.updated_by = role
     else:
-        db.add(ModelDocOverride(
-            model_name=name, body=payload.markdown, fs_sha=fs_sha, updated_by=role,
-        ))
+        db.add(
+            ModelDocOverride(
+                model_name=name,
+                body=payload.markdown,
+                fs_sha=fs_sha,
+                updated_by=role,
+            )
+        )
     await db.commit()
     return {"ok": True}
 
@@ -503,11 +545,20 @@ async def delete_description(
 
 
 _ALLOWED_MIME = {
-    "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/svg+xml",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
 }
 _MIME_TO_EXT = {
-    "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
-    "image/gif": ".gif", "image/webp": ".webp", "image/svg+xml": ".svg",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
 }
 
 
@@ -551,7 +602,8 @@ async def upload_image(
     await db.commit()
 
     url = await storage.presigned_get_url(
-        key, expires=settings.dashboard_image_url_ttl_seconds,
+        key,
+        expires=settings.dashboard_image_url_ttl_seconds,
     )
     return {
         "id": str(image_id),
@@ -588,6 +640,7 @@ async def get_model_costs(name: str, _=Depends(require_role("viewer"))) -> list[
     """HPC cost history for a model from platform.db."""
     import os as _os
     import sqlite3 as _sql
+
     db_path = _os.getenv("PLATFORM_DB", "/repo/platform.db")
     try:
         conn = _sql.connect(db_path)

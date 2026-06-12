@@ -1,4 +1,5 @@
 """MinIO async storage helper for dashboard image uploads."""
+
 from __future__ import annotations
 
 import aioboto3
@@ -46,9 +47,7 @@ class ImageStorage:
 
     async def put(self, *, key: str, data: bytes, content_type: str) -> None:
         async with self._client() as s3:
-            await s3.put_object(
-                Bucket=self._bucket, Key=key, Body=data, ContentType=content_type
-            )
+            await s3.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
     async def delete(self, key: str) -> None:
         async with self._client() as s3:

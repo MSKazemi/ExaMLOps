@@ -5,7 +5,9 @@ from exa_agent.tools import _http, services
 
 
 def _patch_dashboard(monkeypatch):
-    monkeypatch.setattr(_http, "_DASHBOARD", _http.DashboardClient(base_url="http://localhost:18099", password="pw"))
+    monkeypatch.setattr(
+        _http, "_DASHBOARD", _http.DashboardClient(base_url="http://localhost:18099", password="pw")
+    )
 
 
 @respx.mock

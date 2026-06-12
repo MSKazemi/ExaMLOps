@@ -9,6 +9,7 @@ connection within a tight deadline, surfacing as httpx.ConnectTimeout. A single
 such blip must not blank an entire dashboard page, so every read retries
 transient transport errors with a short backoff before giving up.
 """
+
 from __future__ import annotations
 
 import asyncio

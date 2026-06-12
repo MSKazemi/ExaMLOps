@@ -1,4 +1,5 @@
 """Reusable httpx MockTransports for control-plane and MLflow."""
+
 from __future__ import annotations
 
 import httpx
@@ -14,10 +15,13 @@ def make_control_plane_transport(
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/models":
-            return httpx.Response(200, json=[
-                {"model_name": name, "datasets": meta["supported_datasets"]}
-                for name, meta in meta_by_model.items()
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {"model_name": name, "datasets": meta["supported_datasets"]}
+                    for name, meta in meta_by_model.items()
+                ],
+            )
         if path.startswith("/models/") and path.endswith("/meta"):
             name = path.split("/")[2]
             if name not in meta_by_model:
@@ -59,13 +63,11 @@ def make_mlflow_transport(
         return None, []
 
     def _build_aliases_list(canonical: str) -> list[dict]:
-        return [
-            {"alias": a, "version": v}
-            for a, v in alias_state.get(canonical, {}).items()
-        ]
+        return [{"alias": a, "version": v} for a, v in alias_state.get(canonical, {}).items()]
 
     def handler(request: httpx.Request) -> httpx.Response:
         import json as _json
+
         path = request.url.path
         params = request.url.params
 
@@ -75,12 +77,15 @@ def make_mlflow_transport(
             canonical, _ = _resolve_model(model_name)
             if canonical is None:
                 return httpx.Response(404, json={"detail": "Not Found"})
-            return httpx.Response(200, json={
-                "registered_model": {
-                    "name": model_name,
-                    "aliases": _build_aliases_list(canonical),
-                }
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "registered_model": {
+                        "name": model_name,
+                        "aliases": _build_aliases_list(canonical),
+                    }
+                },
+            )
 
         # ── GET/POST/DELETE /registered-models/alias ────────────────────────
         if "registered-models/alias" in path:
@@ -125,15 +130,18 @@ def make_mlflow_transport(
         # ── GET /runs/get ───────────────────────────────────────────────────
         if "runs/get" in path:
             run_id = params.get("run_id", "")
-            return httpx.Response(200, json={
-                "run": {
-                    "info": {"run_id": run_id},
-                    "data": {
-                        "metrics": [{"key": "rmse", "value": 42.1}],
-                        "tags": [],
-                    },
-                }
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "run": {
+                        "info": {"run_id": run_id},
+                        "data": {
+                            "metrics": [{"key": "rmse", "value": 42.1}],
+                            "tags": [],
+                        },
+                    }
+                },
+            )
 
         return httpx.Response(404, json={"detail": f"unhandled {path}"})
 
@@ -143,5 +151,6 @@ def make_mlflow_transport(
 def _extract_name_from_filter(filter_str: str) -> str:
     """Pull the model name out of a MLflow filter string like ``name='JPCP'``."""
     import re
+
     m = re.search(r"name\s*=\s*['\"]([^'\"]+)['\"]", filter_str)
     return m.group(1) if m else ""

@@ -8,9 +8,9 @@ import urllib.parse
 import typer
 
 from examlops.cli import _client, _output
-from examlops.cli.commands import hpo_cmd
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
+from examlops.cli.commands import hpo_cmd
 from examlops.platform_db import (
     get_db,
     init_db,
@@ -18,7 +18,11 @@ from examlops.platform_db import (
     write_audit_event,
 )
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 _GENERATOR = "pipelines/pipeline_generator.py"
 _DEPLOY = "pipelines/deploy.py"
@@ -62,7 +66,9 @@ def _run_generator(args: list[str]) -> None:
     try:
         subprocess.run(cmd, check=True, text=True, capture_output=False)  # noqa: S603
     except FileNotFoundError:
-        _output.error("pipeline_generator.py not found — run exa pipeline commands from the repo root")
+        _output.error(
+            "pipeline_generator.py not found — run exa pipeline commands from the repo root"
+        )
     except subprocess.CalledProcessError as e:
         _output.error(f"Pipeline generator exited with code {e.returncode}")
 
@@ -96,9 +102,13 @@ def list_pipelines():
 @app.command(epilog=_EXAMPLES_RUN)
 def run(
     model: str | None = typer.Option(None, "--model", "-m", help="Run for a single model only"),
-    dataset: str | None = typer.Option(None, "--dataset", "-d", help="Run for a single dataset class only"),
+    dataset: str | None = typer.Option(
+        None, "--dataset", "-d", help="Run for a single dataset class only"
+    ),
     dummy: bool = typer.Option(False, "--dummy", help="Use dummy data (dev-safe)"),
-    backend: StorageBackend | None = typer.Option(None, "--backend", "-b", help="Dataset storage backend"),
+    backend: StorageBackend | None = typer.Option(
+        None, "--backend", "-b", help="Dataset storage backend"
+    ),
     env: EnvOverlay | None = typer.Option(None, "--env", help="YAML registry env overlay"),
     registry: str | None = typer.Option(None, "--registry", help="Path to model_registry.yaml"),
 ):
@@ -168,7 +178,9 @@ _DUMMY_EMBEDDING = [0.1] * 384
 def validate_model(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
     alias: str = typer.Option("Staging", "--alias", help="Alias to validate"),
-    max_latency: float = typer.Option(2.0, "--max-latency", help="Max acceptable latency in seconds"),
+    max_latency: float = typer.Option(
+        2.0, "--max-latency", help="Max acceptable latency in seconds"
+    ),
     n_requests: int = typer.Option(3, "--n", help="Number of smoke-test requests"),
 ):
     """Smoke-test a model alias on Ray Serve: check it responds and meets latency SLA.
@@ -222,8 +234,17 @@ def validate_model(
         _output.print_table(
             "Model Validation",
             cols,
-            [[model, alias, str(n_requests), f"{avg_latency:.3f}s", f"{max_observed:.3f}s",
-              f"{max_latency}s", row["result"]]],
+            [
+                [
+                    model,
+                    alias,
+                    str(n_requests),
+                    f"{avg_latency:.3f}s",
+                    f"{max_observed:.3f}s",
+                    f"{max_latency}s",
+                    row["result"],
+                ]
+            ],
         )
 
     if not passed:
@@ -276,8 +297,15 @@ def promote(
             return
         cols = ["Model", "Metric", "Op", "Threshold", "From", "To", "Enabled"]
         table = [
-            [r["model"], r["metric"], r["operator"], r["threshold"],
-             r["from_alias"], r["to_alias"], "yes" if r["enabled"] else "no"]
+            [
+                r["model"],
+                r["metric"],
+                r["operator"],
+                r["threshold"],
+                r["from_alias"],
+                r["to_alias"],
+                "yes" if r["enabled"] else "no",
+            ]
             for r in rows
         ]
         _output.print_table("Promotion Rules", cols, table)
@@ -314,10 +342,14 @@ def promote(
             f"?name={urllib.parse.quote(model)}"
         )
     except _client.ClientError as e:
-        _output.error(f"Failed to fetch model {model} from MLflow: {e}", hint="Is MLflow running? exa status")
+        _output.error(
+            f"Failed to fetch model {model} from MLflow: {e}", hint="Is MLflow running? exa status"
+        )
         return
 
-    aliases = {a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])}
+    aliases = {
+        a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])
+    }
     version = aliases.get(from_alias)
     if not version:
         _output.error(f"No version found under alias '{from_alias}' for {model}")
@@ -329,18 +361,22 @@ def promote(
             f"?name={urllib.parse.quote(model)}&version={version}"
         )
         run_id = ver_data["model_version"]["run_id"]
-        run_data = _client.get(
-            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
-        )
+        run_data = _client.get(f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}")
     except _client.ClientError as e:
         _output.error(str(e))
         return
 
     metrics_list = run_data.get("run", {}).get("data", {}).get("metrics", [])
-    metrics = {m["key"]: m["value"] for m in metrics_list} if isinstance(metrics_list, list) else metrics_list
+    metrics = (
+        {m["key"]: m["value"] for m in metrics_list}
+        if isinstance(metrics_list, list)
+        else metrics_list
+    )
     metric_val = metrics.get(metric)
     if metric_val is None:
-        _output.error(f"Metric '{metric}' not found in run {run_id}. Available: {list(metrics.keys())}")
+        _output.error(
+            f"Metric '{metric}' not found in run {run_id}. Available: {list(metrics.keys())}"
+        )
         return
 
     op_fn = _OPS[operator]
@@ -367,8 +403,13 @@ def promote(
         return
 
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "alias_promoted", model,
-                      {"from": from_alias, "to": to_alias, "version": version, metric: metric_val})
+    write_audit_event(
+        "cli",
+        actor,
+        "alias_promoted",
+        model,
+        {"from": from_alias, "to": to_alias, "version": version, metric: metric_val},
+    )
 
     if save:
         set_promotion_rule(model, metric, operator, threshold, from_alias, to_alias)
@@ -392,15 +433,22 @@ _TYPE_CHOICES = ["regression", "classification"]
 
 @app.command("add-model", epilog=_EXAMPLES_ADD_MODEL)
 def add_model(
-    name: str = typer.Argument(..., help="PascalCase model name matching an existing modelzoo class"),
-    task: str = typer.Option("performance_prediction", "--task", "-t",
-                             help=f"Task type [{' | '.join(_TASK_CHOICES)}]"),
-    task_type: str = typer.Option("regression", "--type", "-T",
-                                  help=f"ML type [{' | '.join(_TYPE_CHOICES)}]"),
+    name: str = typer.Argument(
+        ..., help="PascalCase model name matching an existing modelzoo class"
+    ),
+    task: str = typer.Option(
+        "performance_prediction", "--task", "-t", help=f"Task type [{' | '.join(_TASK_CHOICES)}]"
+    ),
+    task_type: str = typer.Option(
+        "regression", "--type", "-T", help=f"ML type [{' | '.join(_TYPE_CHOICES)}]"
+    ),
     promotion_metric: str = typer.Option("accuracy", "--metric", help="Promotion metric"),
-    promotion_threshold: float = typer.Option(0.7, "--threshold", help="Production promotion threshold"),
-    promotion_direction: str = typer.Option("higher_is_better", "--direction",
-                                            help="[higher_is_better | lower_is_better]"),
+    promotion_threshold: float = typer.Option(
+        0.7, "--threshold", help="Production promotion threshold"
+    ),
+    promotion_direction: str = typer.Option(
+        "higher_is_better", "--direction", help="[higher_is_better | lower_is_better]"
+    ),
     force: bool = typer.Option(False, "--force", help="Overwrite existing YAML/config files"),
 ):
     """Register an existing modelzoo model into the training pipeline.
@@ -416,8 +464,11 @@ def add_model(
 
     # Verify the model class exists in modelzoo before generating pipeline files.
     import os as _os
+
     modelzoo_tasks = _os.path.join("modelzoo", "seanergys_modelzoo", "models", "tasks")
-    found_files = _glob.glob(_os.path.join(modelzoo_tasks, "**", f"{name.lower()}_model.py"), recursive=True)
+    found_files = _glob.glob(
+        _os.path.join(modelzoo_tasks, "**", f"{name.lower()}_model.py"), recursive=True
+    )
     if not found_files:
         _output.error(
             f"Model class not found: expected a file matching "
@@ -429,13 +480,20 @@ def add_model(
     _output.ok(f"Found model class: {found_files[0]}")
 
     cmd = [
-        sys.executable, _SCRIPT,
-        "--name", name,
-        "--task", task,
-        "--task-type", task_type,
-        "--promotion-metric", promotion_metric,
-        "--promotion-threshold", str(promotion_threshold),
-        "--promotion-direction", promotion_direction,
+        sys.executable,
+        _SCRIPT,
+        "--name",
+        name,
+        "--task",
+        task,
+        "--task-type",
+        task_type,
+        "--promotion-metric",
+        promotion_metric,
+        "--promotion-threshold",
+        str(promotion_threshold),
+        "--promotion-direction",
+        promotion_direction,
         "--skip-model-class",
     ]
     if force:
@@ -444,16 +502,17 @@ def add_model(
     try:
         subprocess.run(cmd, check=True)  # noqa: S603
     except FileNotFoundError:
-        _output.error("tools/scaffold_model.py not found — run exa pipeline add-model from the repo root")
+        _output.error(
+            "tools/scaffold_model.py not found — run exa pipeline add-model from the repo root"
+        )
     except subprocess.CalledProcessError as e:
         _output.error(f"add-model exited with {e.returncode}")
 
 
 _EXAMPLES_PROMOTE_DELETE = (
-    "Examples:\n\n"
-    "  exa pipeline promote-delete JPCP\n\n"
-    "  exa pipeline promote-delete --all"
+    "Examples:\n\n  exa pipeline promote-delete JPCP\n\n  exa pipeline promote-delete --all"
 )
+
 
 @app.command("promote-delete", epilog=_EXAMPLES_PROMOTE_DELETE)
 def promote_delete(
@@ -463,6 +522,7 @@ def promote_delete(
     """Delete saved metric-gated promotion rules."""
     from examlops.platform_db import get_db as _get_db
     from examlops.platform_db import init_db as _init_db
+
     _init_db()
     if all_rules:
         with _get_db() as conn:

@@ -29,7 +29,9 @@ def audit(
     last: str = typer.Option("30d", "--last", help="Time window (e.g. 7d, 30d)"),
     model: str | None = typer.Option(None, "--model", "-m", help="Filter by target model"),
     action: str | None = typer.Option(None, "--action", "-a", help="Filter by action type"),
-    source: str | None = typer.Option(None, "--source", "-s", help="Filter by source (cli/agent/bridge)"),
+    source: str | None = typer.Option(
+        None, "--source", "-s", help="Filter by source (cli/agent/bridge)"
+    ),
     limit: int = typer.Option(100, "--limit", "-n", help="Max events to show"),
 ):
     """Show platform audit log — who did what and when."""
@@ -60,18 +62,20 @@ def audit(
         return
 
     if _output.json_mode:
-        _output.print_json([
-            {
-                "id": r["id"],
-                "ts": r["ts"],
-                "source": r["source"],
-                "actor": r["actor"],
-                "action": r["action"],
-                "target": r["target"],
-                "details": json.loads(r["details"]) if r["details"] else None,
-            }
-            for r in rows
-        ])
+        _output.print_json(
+            [
+                {
+                    "id": r["id"],
+                    "ts": r["ts"],
+                    "source": r["source"],
+                    "actor": r["actor"],
+                    "action": r["action"],
+                    "target": r["target"],
+                    "details": json.loads(r["details"]) if r["details"] else None,
+                }
+                for r in rows
+            ]
+        )
         return
 
     cols = ["Time", "Source", "Actor", "Action", "Target", "Details"]

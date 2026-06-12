@@ -35,6 +35,7 @@ runner = CliRunner()
 def isolated_db(tmp_path):
     os.environ["PLATFORM_DB"] = str(tmp_path / "test.db")
     from examlops.platform_db import init_db
+
     init_db()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -47,8 +48,8 @@ def isolated_db(tmp_path):
 _VERSIONS_DATA = {
     "model_versions": [
         {"version": "7", "current_stage": "Production", "status": "READY"},
-        {"version": "6", "current_stage": "Staging",    "status": "READY"},
-        {"version": "5", "current_stage": "None",       "status": "READY"},
+        {"version": "6", "current_stage": "Staging", "status": "READY"},
+        {"version": "5", "current_stage": "None", "status": "READY"},
     ]
 }
 
@@ -64,12 +65,12 @@ _ALIAS_SET_RESPONSE: dict = {}
 
 def _make_urlopen(versions_data=None, model_data=None, alias_response=None):
     """Return a mock for urllib.request.urlopen that handles all three endpoint shapes."""
-    versions_data  = versions_data  if versions_data  is not None else _VERSIONS_DATA
-    model_data     = model_data     if model_data     is not None else _REGISTERED_MODEL_DATA
+    versions_data = versions_data if versions_data is not None else _VERSIONS_DATA
+    model_data = model_data if model_data is not None else _REGISTERED_MODEL_DATA
     alias_response = alias_response if alias_response is not None else _ALIAS_SET_RESPONSE
 
     def _urlopen(req, timeout=10):
-        url    = req.full_url if hasattr(req, "full_url") else str(req)
+        url = req.full_url if hasattr(req, "full_url") else str(req)
         method = getattr(req, "method", "GET") or "GET"
         if "model-versions/search" in url:
             payload = json.dumps(versions_data).encode()
@@ -81,7 +82,7 @@ def _make_urlopen(versions_data=None, model_data=None, alias_response=None):
             payload = b"{}"
         ctx = MagicMock()
         ctx.__enter__ = lambda s: MagicMock(read=lambda: payload)
-        ctx.__exit__  = MagicMock(return_value=False)
+        ctx.__exit__ = MagicMock(return_value=False)
         return ctx
 
     return _urlopen
@@ -90,6 +91,7 @@ def _make_urlopen(versions_data=None, model_data=None, alias_response=None):
 # ---------------------------------------------------------------------------
 # Test 1: history is empty at start → exit 0
 # ---------------------------------------------------------------------------
+
 
 def test_rollback_history_empty():
     result = runner.invoke(app, ["models", "rollback", "history", "JPCP"])
@@ -100,6 +102,7 @@ def test_rollback_history_empty():
 # ---------------------------------------------------------------------------
 # Test 2: rollback run JPCP --version 5 stores a DB record
 # ---------------------------------------------------------------------------
+
 
 def test_rollback_version_stores_record():
     with patch("urllib.request.urlopen", side_effect=_make_urlopen()):
@@ -112,6 +115,7 @@ def test_rollback_version_stores_record():
 
     # Verify DB record
     import sqlite3
+
     db_path = os.environ["PLATFORM_DB"]
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -126,6 +130,7 @@ def test_rollback_version_stores_record():
 # ---------------------------------------------------------------------------
 # Test 3: history shows the record after rollback
 # ---------------------------------------------------------------------------
+
 
 def test_rollback_history_shows_record():
     with patch("urllib.request.urlopen", side_effect=_make_urlopen()):
@@ -145,6 +150,7 @@ def test_rollback_history_shows_record():
 # Test 4: MLflow unreachable → error message, exit code 1
 # ---------------------------------------------------------------------------
 
+
 def test_rollback_mlflow_unreachable():
     def _failing_urlopen(req, timeout=10):
         raise urllib.error.URLError("connection refused")
@@ -162,6 +168,7 @@ def test_rollback_mlflow_unreachable():
 # Test 5: dry-run does not write to DB and prints "dry-run"
 # ---------------------------------------------------------------------------
 
+
 def test_rollback_dry_run_no_db_write():
     with patch("urllib.request.urlopen", side_effect=_make_urlopen()):
         result = runner.invoke(
@@ -172,6 +179,7 @@ def test_rollback_dry_run_no_db_write():
     assert "dry" in result.output.lower()
 
     import sqlite3
+
     db_path = os.environ["PLATFORM_DB"]
     conn = sqlite3.connect(db_path)
     tables = conn.execute(
@@ -187,15 +195,27 @@ def test_rollback_dry_run_no_db_write():
 # Test 6: rollback with --reason stores reason in DB
 # ---------------------------------------------------------------------------
 
+
 def test_rollback_reason_stored():
     with patch("urllib.request.urlopen", side_effect=_make_urlopen()):
         result = runner.invoke(
             app,
-            ["--yes", "models", "rollback", "run", "JPCP", "--version", "6", "--reason", "bad metrics"],
+            [
+                "--yes",
+                "models",
+                "rollback",
+                "run",
+                "JPCP",
+                "--version",
+                "6",
+                "--reason",
+                "bad metrics",
+            ],
         )
     assert result.exit_code == 0, result.output
 
     import sqlite3
+
     db_path = os.environ["PLATFORM_DB"]
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

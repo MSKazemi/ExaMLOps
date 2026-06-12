@@ -1,4 +1,5 @@
 """Alembic environment config — handle async SQLAlchemy and settings pre-load."""
+
 import asyncio
 import os
 import sys

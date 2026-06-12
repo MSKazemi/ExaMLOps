@@ -1,4 +1,5 @@
 """SeanerBUS bridge config and status endpoints."""
+
 from __future__ import annotations
 
 import asyncio

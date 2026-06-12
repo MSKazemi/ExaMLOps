@@ -21,8 +21,18 @@ FAKE_RAY_MODELS = [
 ]
 FAKE_MODELZOO = {
     "models": [
-        {"model_id": "JPCP", "status": "current", "stale_since": None, "latest_modelzoo_commit": "abc123"},
-        {"model_id": "MACK", "status": "stale", "stale_since": "2026-05-23T07:12:00", "latest_modelzoo_commit": "def456"},
+        {
+            "model_id": "JPCP",
+            "status": "current",
+            "stale_since": None,
+            "latest_modelzoo_commit": "abc123",
+        },
+        {
+            "model_id": "MACK",
+            "status": "stale",
+            "stale_since": "2026-05-23T07:12:00",
+            "latest_modelzoo_commit": "def456",
+        },
     ],
     "last_event": None,
 }
@@ -379,7 +389,17 @@ def test_production_deploy_history_filters_by_status_model_and_operation(tmp_pat
     with patch("examlops.cli.commands.production._HISTORY_PATH", history_path):
         result = runner.invoke(
             app,
-            ["production", "deploy", "history", "--status", "success", "--model", "MACK", "--operation", "rollback"],
+            [
+                "production",
+                "deploy",
+                "history",
+                "--status",
+                "success",
+                "--model",
+                "MACK",
+                "--operation",
+                "rollback",
+            ],
         )
 
     assert result.exit_code == 0

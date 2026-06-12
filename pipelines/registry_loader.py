@@ -108,18 +108,20 @@ def load_registry(base_path: Path, env_path: Path | None = None) -> list[ModelEn
 
     entries = []
     for m in ordered.values():
-        entries.append(ModelEntry(
-            name=m["name"],
-            model_class_name=m.get("model_class", m["name"]),
-            config_class_name=m.get("config_class"),
-            datasets=m.get("datasets", []),
-            backend=m["backend"],
-            dummy=bool(m["dummy"]),
-            enabled=bool(m["enabled"]),
-            lifecycle=m["lifecycle"],
-            serve_aliases=m["serve_aliases"],
-            prefect=m["prefect"],
-        ))
+        entries.append(
+            ModelEntry(
+                name=m["name"],
+                model_class_name=m.get("model_class", m["name"]),
+                config_class_name=m.get("config_class"),
+                datasets=m.get("datasets", []),
+                backend=m["backend"],
+                dummy=bool(m["dummy"]),
+                enabled=bool(m["enabled"]),
+                lifecycle=m["lifecycle"],
+                serve_aliases=m["serve_aliases"],
+                prefect=m["prefect"],
+            )
+        )
     return entries
 
 

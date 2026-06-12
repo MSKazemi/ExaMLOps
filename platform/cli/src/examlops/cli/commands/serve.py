@@ -11,7 +11,11 @@ from examlops.cli._config import load_config
 from examlops.cli.commands import explain_cmd
 from examlops.platform_db import get_traffic_rules, init_db, set_traffic_rules, write_audit_event
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 app.add_typer(explain_cmd.app, name="explain", help="Feature importance explanations (XAI)")
 
@@ -23,24 +27,20 @@ _EXAMPLES_RELOAD = (
     "  exa serve reload --model JPCP"
 )
 _EXAMPLES_CHECK = (
-    "Examples:\n\n"
-    "  # Verify Ray Serve health and loaded model aliases\n"
-    "  exa serve check"
+    "Examples:\n\n  # Verify Ray Serve health and loaded model aliases\n  exa serve check"
 )
 _EXAMPLES_INFER_CHECK = (
     "Examples:\n\n"
     "  # POST one valid synthetic HPC job to /infer-pipeline/infer\n"
     "  exa serve infer-check"
 )
-_EXAMPLES_BENCHMARK = (
-    "Examples:\n\n"
-    "  exa serve benchmark\n\n"
-    "  exa serve benchmark --requests 25"
-)
+_EXAMPLES_BENCHMARK = "Examples:\n\n  exa serve benchmark\n\n  exa serve benchmark --requests 25"
 
 
 @app.command(epilog=_EXAMPLES_RELOAD)
-def reload(model: str | None = typer.Option(None, "--model", "-m", help="Reload one model (default: all)")) -> None:
+def reload(
+    model: str | None = typer.Option(None, "--model", "-m", help="Reload one model (default: all)"),
+) -> None:
     """Hot-reload Production models from MLflow into Ray Serve."""
     cfg = load_config()
     url = f"{cfg.ray_serve_url}/reload/{model}" if model else f"{cfg.ray_serve_url}/reload"
@@ -116,7 +116,9 @@ _EXAMPLES_TRAFFIC = (
 @app.command(epilog=_EXAMPLES_TRAFFIC)
 def traffic(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
-    production: int | None = typer.Option(None, "--production", help="% traffic to Production alias"),
+    production: int | None = typer.Option(
+        None, "--production", help="% traffic to Production alias"
+    ),
     canary: int | None = typer.Option(None, "--canary", help="% traffic to Canary alias"),
     staging: int | None = typer.Option(None, "--staging", help="% traffic to Staging alias"),
 ):
@@ -145,7 +147,9 @@ def traffic(
 
     total = sum(rules.values())
     if total != 100:
-        _output.error(f"Traffic weights must sum to 100 — got {total}. Adjust the values and retry.")
+        _output.error(
+            f"Traffic weights must sum to 100 — got {total}. Adjust the values and retry."
+        )
         raise typer.Exit(1)
 
     split_str = "  ".join(f"{alias}: {pct}%" for alias, pct in rules.items())
@@ -167,7 +171,9 @@ def traffic(
 
 
 @app.command(epilog=_EXAMPLES_BENCHMARK)
-def benchmark(requests: int = typer.Option(200, "--requests", "-n", help="Number of benchmark requests")):
+def benchmark(
+    requests: int = typer.Option(200, "--requests", "-n", help="Number of benchmark requests"),
+):
     """Benchmark Ray Serve using the dummy client and report latency stats."""
     cmd = [sys.executable, "platform/clients/dummy_client.py", "--benchmark", str(requests)]
     try:
@@ -178,11 +184,8 @@ def benchmark(requests: int = typer.Option(200, "--requests", "-n", help="Number
         _output.error(f"dummy_client.py exited with code {e.returncode}")
 
 
-_EXAMPLES_SERVE_MODELS = (
-    "Examples:\n\n"
-    "  exa serve models\n\n"
-    "  exa serve models --detail"
-)
+_EXAMPLES_SERVE_MODELS = "Examples:\n\n  exa serve models\n\n  exa serve models --detail"
+
 
 @app.command("models", epilog=_EXAMPLES_SERVE_MODELS)
 def models_cmd(
@@ -214,19 +217,23 @@ def models_cmd(
         rows = []
         for item in items:
             if isinstance(item, dict):
-                rows.append([item.get("name", "—"), item.get("alias", "—"),
-                             item.get("version", "—"), item.get("status", "—")])
+                rows.append(
+                    [
+                        item.get("name", "—"),
+                        item.get("alias", "—"),
+                        item.get("version", "—"),
+                        item.get("status", "—"),
+                    ]
+                )
             else:
                 rows.append([str(item), "—", "—", "—"])
-        _output.print_table("Ray Serve — Loaded Models",
-                            ["Name", "Alias", "Version", "Status"], rows)
+        _output.print_table(
+            "Ray Serve — Loaded Models", ["Name", "Alias", "Version", "Status"], rows
+        )
 
 
-_EXAMPLES_TRAFFIC_LIST = (
-    "Examples:\n\n"
-    "  exa serve traffic-list\n\n"
-    "  exa --json serve traffic-list"
-)
+_EXAMPLES_TRAFFIC_LIST = "Examples:\n\n  exa serve traffic-list\n\n  exa --json serve traffic-list"
+
 
 @app.command("traffic-list", epilog=_EXAMPLES_TRAFFIC_LIST)
 def traffic_list():
@@ -235,6 +242,7 @@ def traffic_list():
 
     from examlops.platform_db import get_db as _get_db
     from examlops.platform_db import init_db as _init_db
+
     _init_db()
     with _get_db() as conn:
         rows = conn.execute(
@@ -244,8 +252,12 @@ def traffic_list():
         _output.ok("No traffic rules configured — all models use 100% Production (default)")
         return
     data = [
-        {"model": r["model"], "rules": _json.loads(r["rules"]),
-         "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
+        {
+            "model": r["model"],
+            "rules": _json.loads(r["rules"]),
+            "updated_at": r["updated_at"],
+            "updated_by": r["updated_by"],
+        }
         for r in rows
     ]
     if _output.json_mode:
@@ -254,6 +266,7 @@ def traffic_list():
     table_rows = []
     for item in data:
         rules_str = "  ".join(f"{alias}:{pct}%" for alias, pct in item["rules"].items())
-        table_rows.append([item["model"], rules_str,
-                          (item["updated_at"] or "—")[:19], item["updated_by"] or "—"])
+        table_rows.append(
+            [item["model"], rules_str, (item["updated_at"] or "—")[:19], item["updated_by"] or "—"]
+        )
     _output.print_table("Traffic Rules", ["Model", "Split", "Updated At", "Updated By"], table_rows)

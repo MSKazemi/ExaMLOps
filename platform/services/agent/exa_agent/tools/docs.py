@@ -61,7 +61,9 @@ def search_docs(query: str) -> str:
     if rg:
         proc = subprocess.run(  # noqa: S603
             [rg, "-i", "-n", "--max-count", "3", query, str(root)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         out = proc.stdout.strip()
         return out[:4000] if out else f"No matches for {query!r}."

@@ -1,4 +1,5 @@
 """SeanerBUS config keys: accepted by PUT /api/config, returned by GET /api/config."""
+
 import pytest
 from httpx import AsyncClient
 

@@ -34,9 +34,7 @@ class MeResponse(BaseModel):
 async def login(body: LoginRequest) -> LoginResponse:
     role = check_password(body.password)
     if role is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password")
     token, expires_at = issue_token(role)
     return LoginResponse(token=token, role=role, expires_at=expires_at.isoformat())
 

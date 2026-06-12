@@ -42,18 +42,14 @@ _HOP_HEADERS = {
 Injector = Callable[[dict[str, str], AsyncSession], Awaitable[dict[str, str]]]
 
 
-async def inject_grafana_bearer(
-    headers: dict[str, str], db: AsyncSession
-) -> dict[str, str]:
+async def inject_grafana_bearer(headers: dict[str, str], db: AsyncSession) -> dict[str, str]:
     key = await get_decrypted_secret(db, "grafana_api_key")
     if key:
         headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
-async def inject_control_plane_bearer(
-    headers: dict[str, str], db: AsyncSession
-) -> dict[str, str]:
+async def inject_control_plane_bearer(headers: dict[str, str], db: AsyncSession) -> dict[str, str]:
     token = await get_decrypted_secret(db, "control_plane_token")
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -117,8 +113,7 @@ async def proxy(
     fwd_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() not in _HOP_HEADERS
-        and k.lower() not in ("host", "authorization")
+        if k.lower() not in _HOP_HEADERS and k.lower() not in ("host", "authorization")
     }
 
     injector = INJECTORS.get(service)
@@ -135,15 +130,9 @@ async def proxy(
                 timeout=30.0,
             )
         except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=502, detail=f"Upstream unavailable: {exc}"
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"Upstream unavailable: {exc}") from exc
 
-    resp_headers = {
-        k: v
-        for k, v in upstream.headers.items()
-        if k.lower() not in _HOP_HEADERS
-    }
+    resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,

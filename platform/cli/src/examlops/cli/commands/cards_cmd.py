@@ -133,7 +133,7 @@ def _build_markdown(model: str, meta: dict, mlflow_data: dict) -> str:
         f"{versions_section}\n\n"
         f"## Usage\n\n"
         f"```bash\n"
-        f'curl -X POST http://localhost:18001/predict/{model} -d \'{{"embedding": [...]}}\'\n'
+        f"curl -X POST http://localhost:18001/predict/{model} -d '{{\"embedding\": [...]}}'\n"
         f"```\n"
     )
 
@@ -141,7 +141,9 @@ def _build_markdown(model: str, meta: dict, mlflow_data: dict) -> str:
 @app.command("generate", epilog=_EXAMPLES_CARD)
 def generate(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
-    output: str | None = typer.Option(None, "--output", "-o", help="Write card to this file path instead of stdout"),
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Write card to this file path instead of stdout"
+    ),
 ) -> None:
     """Generate a standardised model card document."""
     cfg = load_config()
@@ -215,8 +217,7 @@ def card_history(
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT ts, model, output_path FROM model_cards "
-                "ORDER BY ts DESC LIMIT 20",
+                "SELECT ts, model, output_path FROM model_cards ORDER BY ts DESC LIMIT 20",
             ).fetchall()
 
     if not rows:
@@ -224,10 +225,7 @@ def card_history(
         _output.ok(f"No model card history{subject}.")
         return
 
-    table_rows = [
-        [r["ts"], r["model"], r["output_path"] or "(stdout)"]
-        for r in rows
-    ]
+    table_rows = [[r["ts"], r["model"], r["output_path"] or "(stdout)"] for r in rows]
     _output.print_table(
         "Model Card History",
         ["Time", "Model", "Output Path"],

@@ -47,10 +47,12 @@ def _require_docker():
 def _find_container(client, project: str, service: str):
     containers = client.containers.list(
         all=True,
-        filters={"label": [
-            f"com.docker.compose.project={project}",
-            f"com.docker.compose.service={service}",
-        ]},
+        filters={
+            "label": [
+                f"com.docker.compose.project={project}",
+                f"com.docker.compose.service={service}",
+            ]
+        },
     )
     if not containers:
         raise HTTPException(404, f"Container '{service}' not found")
@@ -102,7 +104,8 @@ async def list_containers(_user=Depends(_viewer_dep)):
     )
     return {
         "containers": [
-            _container_info(c) for c in containers
+            _container_info(c)
+            for c in containers
             if c.labels.get("com.docker.compose.service") not in _INIT_CONTAINERS
         ]
     }

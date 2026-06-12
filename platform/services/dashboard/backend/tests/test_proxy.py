@@ -78,9 +78,7 @@ async def test_unknown_service_returns_404(client):
 
 
 @pytest.mark.asyncio
-async def test_grafana_proxy_injects_bearer_when_secret_set(
-    client, db_engine, monkeypatch
-):
+async def test_grafana_proxy_injects_bearer_when_secret_set(client, db_engine, monkeypatch):
     from models import DashboardConfig
     from secret_store import encrypt
 
@@ -100,32 +98,24 @@ async def test_grafana_proxy_injects_bearer_when_secret_set(
     monkeypatch.setattr("routers.proxy.httpx.AsyncClient", lambda: fake)
 
     token = await _login(client, ADMIN_PW)
-    r = await client.get(
-        "/api/proxy/grafana/api/dashboards", headers=_hdr(token)
-    )
+    r = await client.get("/api/proxy/grafana/api/dashboards", headers=_hdr(token))
     assert r.status_code == 200
     assert _has_auth_header(fake.captured["headers"], "Bearer g-key")
 
 
 @pytest.mark.asyncio
-async def test_grafana_proxy_no_bearer_when_secret_unset(
-    client, db_engine, monkeypatch
-):
+async def test_grafana_proxy_no_bearer_when_secret_unset(client, db_engine, monkeypatch):
     fake = _FakeAsyncClient()
     monkeypatch.setattr("routers.proxy.httpx.AsyncClient", lambda: fake)
 
     token = await _login(client, ADMIN_PW)
-    r = await client.get(
-        "/api/proxy/grafana/api/dashboards", headers=_hdr(token)
-    )
+    r = await client.get("/api/proxy/grafana/api/dashboards", headers=_hdr(token))
     assert r.status_code == 200
     assert _has_auth_header(fake.captured["headers"], None)
 
 
 @pytest.mark.asyncio
-async def test_unknown_service_injector_forwards_unchanged(
-    client, monkeypatch
-):
+async def test_unknown_service_injector_forwards_unchanged(client, monkeypatch):
     fake = _FakeAsyncClient()
     monkeypatch.setattr("routers.proxy.httpx.AsyncClient", lambda: fake)
 

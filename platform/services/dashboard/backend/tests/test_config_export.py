@@ -1,4 +1,5 @@
 """Tests for POST /config/export-env."""
+
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -61,12 +62,14 @@ async def test_export_env_decrypts_secrets(client, db_engine):
 
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as s:
-        s.add(DashboardConfig(
-            key="minio_access_key",
-            value=None,
-            secret_value=encrypt("myaccesskey"),
-            is_secret=True,
-        ))
+        s.add(
+            DashboardConfig(
+                key="minio_access_key",
+                value=None,
+                secret_value=encrypt("myaccesskey"),
+                is_secret=True,
+            )
+        )
         await s.commit()
 
     token = await _login(client, ADMIN_PW)
@@ -81,9 +84,9 @@ async def test_export_env_skips_unset_secrets(client, db_engine):
 
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as s:
-        s.add(DashboardConfig(
-            key="minio_access_key", value=None, secret_value=None, is_secret=True
-        ))
+        s.add(
+            DashboardConfig(key="minio_access_key", value=None, secret_value=None, is_secret=True)
+        )
         s.add(DashboardConfig(key="mlflow_url", value="http://ml:5000", is_secret=False))
         await s.commit()
 

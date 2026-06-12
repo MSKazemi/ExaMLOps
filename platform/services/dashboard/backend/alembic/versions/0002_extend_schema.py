@@ -10,6 +10,7 @@ model-documentation schema:
     value becomes nullable.
   - model_doc_overrides and model_doc_images are created.
 """
+
 from alembic import op
 
 revision = "0002"
@@ -119,8 +120,7 @@ def upgrade() -> None:
         """)
 
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_model_doc_images_model "
-        "ON model_doc_images(model_name)"
+        "CREATE INDEX IF NOT EXISTS ix_model_doc_images_model ON model_doc_images(model_name)"
     )
 
 

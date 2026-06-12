@@ -59,6 +59,7 @@ def test_list_containers_returns_all(mock_client_fn, _mock_proj):
 @patch("routers.containers.get_docker_client", return_value=None)
 def test_list_containers_503_when_docker_unavailable(_mock_client, _mock_proj):
     from routers.containers import _viewer_dep, router
+
     app = FastAPI()
     app.dependency_overrides[_viewer_dep] = lambda: {"sub": "t", "role": "viewer"}
     app.include_router(router, prefix="/api")
@@ -70,6 +71,7 @@ def test_list_containers_503_when_docker_unavailable(_mock_client, _mock_proj):
 
 def test_uptime_format():
     from routers.containers import _uptime
+
     c = MagicMock()
     c.status = "running"
     c.attrs = {"State": {"StartedAt": "2026-05-18T08:00:00Z"}}
@@ -79,6 +81,7 @@ def test_uptime_format():
 
 def test_uptime_empty_when_not_running():
     from routers.containers import _uptime
+
     c = MagicMock()
     c.status = "exited"
     assert _uptime(c) == ""
@@ -86,6 +89,7 @@ def test_uptime_empty_when_not_running():
 
 def test_health_returns_status():
     from routers.containers import _health
+
     c = MagicMock()
     c.attrs = {"State": {"Health": {"Status": "healthy"}}}
     assert _health(c) == "healthy"
@@ -93,6 +97,7 @@ def test_health_returns_status():
 
 def test_health_returns_none_when_absent():
     from routers.containers import _health
+
     c = MagicMock()
     c.attrs = {"State": {}}
     assert _health(c) == "none"

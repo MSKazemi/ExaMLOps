@@ -20,6 +20,7 @@ The pipeline deploys three deployments (ModelRouter, FeatureTransformer,
 InferencePipelineIngress), each with ``num_replicas=1``.  Ray allocates 1 CPU
 per replica, so we need at least 3 CPUs.  We request 4 to leave headroom.
 """
+
 import importlib
 import json
 import os
@@ -34,7 +35,7 @@ from ray import serve
 # ---------------------------------------------------------------------------
 # Ports
 # ---------------------------------------------------------------------------
-_MOCK_PORT = 19210   # threading HTTP mock for the downstream MultiModelServer
+_MOCK_PORT = 19210  # threading HTTP mock for the downstream MultiModelServer
 _SERVE_PORT = 19111  # Ray Serve ingress
 
 _MOCK_URL = f"http://127.0.0.1:{_MOCK_PORT}"
@@ -97,6 +98,7 @@ def pipeline_url():
     # 5. Reload the pipeline module *after* setting RAY_SERVE_URL so the
     #    module-level constant _RAY_SERVE_URL picks up the mock URL.
     import serving.inference_pipeline.app as pipeline_module
+
     importlib.reload(pipeline_module)
 
     # 6. Deploy the pipeline graph.

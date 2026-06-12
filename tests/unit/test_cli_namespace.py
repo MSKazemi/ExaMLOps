@@ -27,6 +27,7 @@ def isolated_db(tmp_path):
 
 # --- 1. namespace list shows "default" auto-created ---
 
+
 def test_namespace_list_autocreates_default():
     result = runner.invoke(app, ["namespace", "list"])
     assert result.exit_code == 0, result.output
@@ -34,6 +35,7 @@ def test_namespace_list_autocreates_default():
 
 
 # --- 2. namespace create + list shows two namespaces ---
+
 
 def test_namespace_create_and_list():
     result = runner.invoke(app, ["namespace", "create", "myproject"])
@@ -48,6 +50,7 @@ def test_namespace_create_and_list():
 
 # --- 3. namespace create duplicate -> error "already exists", exit 1 ---
 
+
 def test_namespace_create_duplicate_errors():
     runner.invoke(app, ["namespace", "create", "myproject"])
     result = runner.invoke(app, ["namespace", "create", "myproject"])
@@ -56,6 +59,7 @@ def test_namespace_create_duplicate_errors():
 
 
 # --- 4. namespace assign records the model ---
+
 
 def test_namespace_assign_records():
     runner.invoke(app, ["namespace", "create", "myproject"])
@@ -67,6 +71,7 @@ def test_namespace_assign_records():
 
 # --- 5. namespace info shows assigned model ---
 
+
 def test_namespace_info_shows_model():
     runner.invoke(app, ["namespace", "create", "myproject"])
     runner.invoke(app, ["namespace", "assign", "JPCP", "--namespace", "myproject"])
@@ -76,6 +81,7 @@ def test_namespace_info_shows_model():
 
 
 # --- 6. namespace list shows correct model counts ---
+
 
 def test_namespace_list_shows_model_counts():
     runner.invoke(app, ["namespace", "create", "ns1"])
@@ -91,6 +97,7 @@ def test_namespace_list_shows_model_counts():
 
 # --- 7. namespace assign to non-existent namespace -> error ---
 
+
 def test_namespace_assign_nonexistent_namespace_errors():
     result = runner.invoke(app, ["namespace", "assign", "JPCP", "--namespace", "ghost"])
     assert result.exit_code == 1
@@ -99,6 +106,7 @@ def test_namespace_assign_nonexistent_namespace_errors():
 
 # --- 8. namespace info on missing namespace -> exit 1 ---
 
+
 def test_namespace_info_missing_errors():
     result = runner.invoke(app, ["namespace", "info", "ghost"])
     assert result.exit_code == 1
@@ -106,6 +114,7 @@ def test_namespace_info_missing_errors():
 
 
 # --- 9. namespace create with description ---
+
 
 def test_namespace_create_with_description():
     result = runner.invoke(
@@ -118,6 +127,7 @@ def test_namespace_create_with_description():
 
 
 # --- 10. namespace info json mode ---
+
 
 def test_namespace_info_json_mode():
     runner.invoke(app, ["namespace", "create", "proj"])

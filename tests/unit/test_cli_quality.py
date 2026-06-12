@@ -20,15 +20,18 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     # Also create the quality table
     from examlops.cli.commands.quality_cmd import _init_quality_table
+
     _init_quality_table()
     yield tmp_path
     os.environ.pop("PLATFORM_DB", None)
 
 
 # ── Test 1: history on empty DB ───────────────────────────────────────────────
+
 
 def test_quality_history_empty(isolated_db):
     result = runner.invoke(app, ["pipeline", "quality", "history", "JPCP"])
@@ -39,6 +42,7 @@ def test_quality_history_empty(isolated_db):
 
 # ── Test 2: check with no data dir → status "warn" ────────────────────────────
 
+
 def test_quality_check_no_dir(isolated_db):
     """When .data_cache/<dataset> does not exist the status must be 'warn'."""
     result = runner.invoke(app, ["pipeline", "quality", "check", "JPCP", "PM100Dataset"])
@@ -47,6 +51,7 @@ def test_quality_check_no_dir(isolated_db):
 
     # Verify it was recorded in DB
     import sqlite3
+
     conn = sqlite3.connect(os.environ["PLATFORM_DB"])
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
@@ -59,6 +64,7 @@ def test_quality_check_no_dir(isolated_db):
 
 
 # ── Test 3: check with existing dir + files → status "pass" ──────────────────
+
 
 def test_quality_check_with_files(isolated_db):
     """When .data_cache/<dataset>/ has parquet files the status must be 'pass'."""
@@ -75,6 +81,7 @@ def test_quality_check_with_files(isolated_db):
     assert "PASS" in result.output or "pass" in result.output.lower()
 
     import sqlite3
+
     conn = sqlite3.connect(os.environ["PLATFORM_DB"])
     conn.row_factory = sqlite3.Row
     row = conn.execute(
@@ -84,11 +91,12 @@ def test_quality_check_with_files(isolated_db):
     conn.close()
     assert row is not None
     assert row["status"] == "pass"
-    assert row["passed"] == 3   # all three checks pass
+    assert row["passed"] == 3  # all three checks pass
     assert row["failed"] == 0
 
 
 # ── Test 4: history shows records after checks ────────────────────────────────
+
 
 def test_quality_history_after_checks(isolated_db):
     """quality history shows rows recorded by quality check."""
@@ -114,6 +122,7 @@ def test_quality_history_after_checks(isolated_db):
 
 # ── Test 5: JSON mode output ──────────────────────────────────────────────────
 
+
 def test_quality_check_json_mode(isolated_db):
     """--json flag must produce a parseable JSON list for the check table."""
     result = runner.invoke(app, ["--json", "pipeline", "quality", "check", "MACK", "FakeDS"])
@@ -125,6 +134,7 @@ def test_quality_check_json_mode(isolated_db):
 
 
 # ── Test 6: history JSON mode ─────────────────────────────────────────────────
+
 
 def test_quality_history_json_mode(isolated_db):
     """--json flag returns a list of history records."""

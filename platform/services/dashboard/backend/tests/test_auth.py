@@ -40,9 +40,7 @@ async def test_login_with_empty_password_returns_401(client):
 async def test_me_returns_role_for_valid_token(client):
     login = await client.post("/api/auth/login", json={"password": VIEWER_PW})
     token = login.json()["token"]
-    r = await client.get(
-        "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert r.json()["role"] == "viewer"
 
@@ -57,7 +55,5 @@ async def test_me_without_token_returns_401(client):
 async def test_logout_returns_204(client):
     login = await client.post("/api/auth/login", json={"password": VIEWER_PW})
     token = login.json()["token"]
-    r = await client.post(
-        "/api/auth/logout", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 204

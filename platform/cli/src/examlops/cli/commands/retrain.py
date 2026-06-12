@@ -27,15 +27,16 @@ def retrain(
     cfg = load_config()
     dataset_name = dataset or "PM100Dataset"
     body = {
-        "model_name":   model,
+        "model_name": model,
         "dataset_name": dataset_name,
-        "is_dummy":     dummy,
+        "is_dummy": dummy,
         "backend_name": backend,
     }
     with _output.spinner(f"Scheduling retrain for {model}…"):
         try:
             result = _client.post(
-                f"{cfg.control_plane_url}/retrain", body,
+                f"{cfg.control_plane_url}/retrain",
+                body,
                 token=cfg.control_plane_token,
             )
         except _client.ClientError as e:
@@ -46,12 +47,14 @@ def retrain(
             return
 
     _output.ok(f"Retrain scheduled for [bold]{model}[/bold] (dataset: {dataset_name})")
-    _output.print_record({
-        "flow_run_id": result.get("flow_run_id", "—"),
-        "model":       model,
-        "dataset":     dataset_name,
-        "dummy":       dummy,
-    })
+    _output.print_record(
+        {
+            "flow_run_id": result.get("flow_run_id", "—"),
+            "model": model,
+            "dataset": dataset_name,
+            "dummy": dummy,
+        }
+    )
     _output.hint("Monitor: exa status  |  Watch logs: exa stack logs --service prefect")
     if _output.json_mode:
         _output.print_json(result)

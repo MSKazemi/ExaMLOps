@@ -9,13 +9,17 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 from tests.fakes import make_control_plane_transport, make_mlflow_transport
 
 _JPCP_META = {
-    "name": "JPCP", "task_type": "regression",
+    "name": "JPCP",
+    "task_type": "regression",
     "estimator_class": "sklearn.ensemble.RandomForestRegressor",
     "supported_datasets": ["PM100Dataset", "FDataDataset"],
-    "input_schema": {"submit_time": "float"}, "output_schema": {"power": "float"},
+    "input_schema": {"submit_time": "float"},
+    "output_schema": {"power": "float"},
     "promotion": {
-        "metric": "rmse", "threshold": 0.15,
-        "direction": "lower_is_better", "model_id": "JPCP",
+        "metric": "rmse",
+        "threshold": 0.15,
+        "direction": "lower_is_better",
+        "model_id": "JPCP",
     },
     "path_in_repo": "modelzoo/.../jpcp/",
     "bundled_images": ["diagram.png"],
@@ -64,18 +68,38 @@ async def test_registry_requires_auth(client):
 @pytest.fixture
 def fake_mlflow(monkeypatch):
     versions = [
-        {"version": "9", "run_id": "r9", "current_stage": "None",
-         "aliases": ["Staging"], "creation_timestamp": 1700000000000,
-         "last_updated_timestamp": 1700000000000},
-        {"version": "8", "run_id": "r8", "current_stage": "None",
-         "aliases": ["Canary"], "creation_timestamp": 1690000000000,
-         "last_updated_timestamp": 1690000000000},
-        {"version": "7", "run_id": "r7", "current_stage": "None",
-         "aliases": ["Production"], "creation_timestamp": 1680000000000,
-         "last_updated_timestamp": 1680000000000},
-        {"version": "6", "run_id": "r6", "current_stage": "None",
-         "aliases": ["Archived"], "creation_timestamp": 1670000000000,
-         "last_updated_timestamp": 1670000000000},
+        {
+            "version": "9",
+            "run_id": "r9",
+            "current_stage": "None",
+            "aliases": ["Staging"],
+            "creation_timestamp": 1700000000000,
+            "last_updated_timestamp": 1700000000000,
+        },
+        {
+            "version": "8",
+            "run_id": "r8",
+            "current_stage": "None",
+            "aliases": ["Canary"],
+            "creation_timestamp": 1690000000000,
+            "last_updated_timestamp": 1690000000000,
+        },
+        {
+            "version": "7",
+            "run_id": "r7",
+            "current_stage": "None",
+            "aliases": ["Production"],
+            "creation_timestamp": 1680000000000,
+            "last_updated_timestamp": 1680000000000,
+        },
+        {
+            "version": "6",
+            "run_id": "r6",
+            "current_stage": "None",
+            "aliases": ["Archived"],
+            "creation_timestamp": 1670000000000,
+            "last_updated_timestamp": 1670000000000,
+        },
     ]
     transport = make_mlflow_transport({"JPCP": versions})
     monkeypatch.setattr(
@@ -156,12 +180,14 @@ async def test_get_model_uses_db_override(client, fake_cp_with_readme, fake_mlfl
 
     Session = async_sessionmaker(db_engine, expire_on_commit=False)
     async with Session() as s:
-        s.add(ModelDocOverride(
-            model_name="JPCP",
-            body="# Custom body",
-            fs_sha="a" * 64,  # mismatches the README sha → drift
-            updated_by="hash",
-        ))
+        s.add(
+            ModelDocOverride(
+                model_name="JPCP",
+                body="# Custom body",
+                fs_sha="a" * 64,  # mismatches the README sha → drift
+                updated_by="hash",
+            )
+        )
         await s.commit()
 
     token = await _login(client, VIEWER_PW)
@@ -239,7 +265,8 @@ async def test_delete_description_reverts(client, fake_cp_with_readme, fake_mlfl
         headers=_hdr(admin_token),
     )
     response = await client.delete(
-        "/api/models/JPCP/description", headers=_hdr(admin_token),
+        "/api/models/JPCP/description",
+        headers=_hdr(admin_token),
     )
     assert response.status_code == 204
 
@@ -265,6 +292,7 @@ async def test_put_unknown_model_404(client, fake_cp_with_readme):
 class _FakeImageStorage:
     """In-memory storage stub — avoids moto/aiobotocore async compatibility issues.
     The real aioboto3 + moto integration is exercised in tests/test_storage.py."""
+
     def __init__(self):
         self._objects: dict[str, bytes] = {}
 

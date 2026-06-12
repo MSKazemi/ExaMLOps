@@ -30,7 +30,9 @@ def isolate_db(tmp_path):
 
 
 def test_auto_retrain_enable():
-    result = runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--dataset", "PM100Dataset"])
+    result = runner.invoke(
+        app, ["drift", "auto-retrain", "enable", "JPCP", "--dataset", "PM100Dataset"]
+    )
     assert result.exit_code == 0, result.output
     assert "enabled" in result.output.lower()
     cfg = get_drift_auto_retrain("JPCP")
@@ -68,7 +70,9 @@ def test_auto_retrain_status_empty():
 
 
 def test_auto_retrain_status_shows_config():
-    runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "2.5", "--cooldown", "1800"])
+    runner.invoke(
+        app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "2.5", "--cooldown", "1800"]
+    )
     result = runner.invoke(app, ["drift", "auto-retrain", "status"])
     assert result.exit_code == 0, result.output
     assert "JPCP" in result.output
@@ -84,6 +88,7 @@ def test_trigger_no_config():
 
 def test_trigger_dry_run_below_threshold():
     import random
+
     random.seed(42)
     for _ in range(20):
         write_drift_snapshot("JPCP", "Production", random.gauss(0, 0.1), None)
@@ -92,7 +97,11 @@ def test_trigger_dry_run_below_threshold():
     result = runner.invoke(app, ["drift", "trigger", "--dry-run"])
     assert result.exit_code == 0, result.output
     # z is very small, should be in skipped
-    assert "Skipped" in result.output or "below" in result.output.lower() or "no retrains" in result.output.lower()
+    assert (
+        "Skipped" in result.output
+        or "below" in result.output.lower()
+        or "no retrains" in result.output.lower()
+    )
 
 
 def test_trigger_dry_run_above_threshold():
@@ -104,7 +113,11 @@ def test_trigger_dry_run_above_threshold():
     result = runner.invoke(app, ["drift", "trigger", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "JPCP" in result.output
-    assert "dry-run" in result.output.lower() or "would retrain" in result.output.lower() or "Triggered" in result.output
+    assert (
+        "dry-run" in result.output.lower()
+        or "would retrain" in result.output.lower()
+        or "Triggered" in result.output
+    )
 
 
 def test_trigger_fires_retrain(tmp_path):

@@ -4,6 +4,7 @@ Each model has its own YAML file at pipelines/models/<name>.yaml.
 This module parses those files into typed dataclasses consumed by
 pipeline_generator.py and other system components.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -59,7 +60,9 @@ class ModelYAMLConfig:
             return ds.splits[split]
         if split == "test" and "validation" in ds.splits:
             return ds.splits["validation"]
-        raise KeyError(f"Split {split!r} not found for dataset {dataset_name!r} in model {self.name!r}")
+        raise KeyError(
+            f"Split {split!r} not found for dataset {dataset_name!r} in model {self.name!r}"
+        )
 
 
 def _parse_split(raw: dict | None) -> SplitConfig:
@@ -109,7 +112,5 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
 def scan_model_yamls(models_dir: Path) -> list[ModelYAMLConfig]:
     """Scan a directory for *.yaml files and return parsed configs (alphabetical order)."""
     return [
-        load_model_yaml(f)
-        for f in sorted(models_dir.glob("*.yaml"))
-        if not f.stem.startswith("_")
+        load_model_yaml(f) for f in sorted(models_dir.glob("*.yaml")) if not f.stem.startswith("_")
     ]

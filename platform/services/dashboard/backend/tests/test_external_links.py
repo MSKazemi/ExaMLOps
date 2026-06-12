@@ -26,12 +26,12 @@ def _inputs(**overrides):
 def test_all_links_built_when_inputs_complete():
     out = build_links(_inputs())
     assert out["mlflow_model"] == "https://mlflow.example/#/models/jpcp"
-    assert out["mlflow_run"]   == "https://mlflow.example/#/experiments/0/runs/abc123"
+    assert out["mlflow_run"] == "https://mlflow.example/#/experiments/0/runs/abc123"
     assert out["ray_serve_api"] == "https://ray.example/docs#/default/predict_predict__name__post"
     assert out["prefect_flow"].startswith("https://prefect.example/")
     assert "JPCP_PM100Dataset_training_flow" in out["prefect_flow"]
-    assert out["paper"]        == "https://arxiv.org/abs/1"
-    assert out["git_source"]   == (
+    assert out["paper"] == "https://arxiv.org/abs/1"
+    assert out["git_source"] == (
         "https://github.com/org/repo/blob/main/"
         "modelzoo/seanergys_modelzoo/models/tasks/power_consumption_prediction/jpcp/"
     )

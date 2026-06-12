@@ -20,6 +20,7 @@ def isolated_db(tmp_path):
     db = str(tmp_path / "test.db")
     os.environ["PLATFORM_DB"] = db
     from examlops.platform_db import init_db
+
     init_db()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -27,6 +28,7 @@ def isolated_db(tmp_path):
 
 def _seed(n=3):
     from examlops.platform_db import write_audit_event
+
     for i in range(n):
         write_audit_event("cli", "alice", f"action_{i}", "JPCP", {"i": i})
 
@@ -46,6 +48,7 @@ def test_audit_empty_shows_no_events():
 
 def test_audit_filter_by_model():
     from examlops.platform_db import write_audit_event
+
     write_audit_event("cli", "alice", "retrain_triggered", "JPCP", {})
     write_audit_event("cli", "bob", "retrain_triggered", "MACK", {})
     result = runner.invoke(app, ["audit", "--model", "JPCP"])
@@ -56,6 +59,7 @@ def test_audit_filter_by_model():
 
 def test_audit_filter_by_action():
     from examlops.platform_db import write_audit_event
+
     write_audit_event("cli", "alice", "model_approved", "JPCP", {})
     write_audit_event("cli", "alice", "retrain_triggered", "JPCP", {})
     result = runner.invoke(app, ["audit", "--action", "model_approved"])

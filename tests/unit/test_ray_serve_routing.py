@@ -26,7 +26,9 @@ for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
 from serving.ray_serving import app as rs_app  # noqa: E402
 
 
-def _make_server(version_cache_size: int = 8, preload_aliases: list[str] | None = None) -> rs_app.MultiModelServer:
+def _make_server(
+    version_cache_size: int = 8, preload_aliases: list[str] | None = None
+) -> rs_app.MultiModelServer:
     """Build a MultiModelServer skeleton without invoking __init__ side-effects."""
     # The @serve.deployment decorator returns a Deployment wrapper; the user-defined
     # class lives at .func_or_class. The wrapper also gives methods a frozen copy
@@ -117,8 +119,10 @@ class TestVersionCache:
 
         # Phase 5 adds a get_model_version probe before loading so the loader
         # can pick the right MLflow flavour from the version's framework tag.
-        with patch.object(rs_app.mlflow, "MlflowClient") as MC, \
-             patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc) as load:
+        with (
+            patch.object(rs_app.mlflow, "MlflowClient") as MC,
+            patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc) as load,
+        ):
             MC.return_value.get_model_version.return_value = SimpleNamespace(version="1", tags={})
             resolved = server._resolve("M", alias=None, version="1")
             # Second call must hit the cache.
@@ -133,8 +137,10 @@ class TestVersionCache:
         server = _make_server(version_cache_size=2)
         fake_pyfunc = SimpleNamespace(metadata=SimpleNamespace(run_id="r"))
 
-        with patch.object(rs_app.mlflow, "MlflowClient") as MC, \
-             patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc):
+        with (
+            patch.object(rs_app.mlflow, "MlflowClient") as MC,
+            patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc),
+        ):
             MC.return_value.get_model_version.return_value = SimpleNamespace(version="X", tags={})
             server._resolve("M", alias=None, version="1")
             server._resolve("M", alias=None, version="2")
@@ -149,8 +155,10 @@ class TestVersionCache:
         server = _make_server(version_cache_size=2)
         fake_pyfunc = SimpleNamespace(metadata=SimpleNamespace(run_id="r"))
 
-        with patch.object(rs_app.mlflow, "MlflowClient") as MC, \
-             patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc):
+        with (
+            patch.object(rs_app.mlflow, "MlflowClient") as MC,
+            patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc),
+        ):
             MC.return_value.get_model_version.return_value = SimpleNamespace(version="X", tags={})
             server._resolve("M", alias=None, version="1")
             server._resolve("M", alias=None, version="2")
@@ -164,8 +172,12 @@ class TestVersionCache:
 
     def test_version_not_in_mlflow_returns_404(self):
         server = _make_server()
-        with patch.object(rs_app.mlflow, "MlflowClient") as MC, \
-             patch.object(rs_app.mlflow.pyfunc, "load_model", side_effect=Exception("no such version")):
+        with (
+            patch.object(rs_app.mlflow, "MlflowClient") as MC,
+            patch.object(
+                rs_app.mlflow.pyfunc, "load_model", side_effect=Exception("no such version")
+            ),
+        ):
             MC.return_value.get_model_version.side_effect = Exception("no such version")
             with pytest.raises(rs_app.HTTPException) as exc_info:
                 server._resolve("M", alias=None, version="999")
@@ -227,17 +239,21 @@ class TestReloadOneModel:
         server._version_cache[("OTHER", "5")] = _fake_hot_entry("5")
 
         client = MagicMock()
+
         # Production still exists at v5; Canary alias has been removed in MLflow.
         def by_alias(name, alias):
             if (name, alias) == ("M", "Production"):
                 return SimpleNamespace(version=5)
             raise Exception("missing")
+
         client.get_model_version_by_alias.side_effect = by_alias
 
         fake_pyfunc = SimpleNamespace(metadata=SimpleNamespace(run_id="r"))
 
-        with patch.object(rs_app.mlflow, "MlflowClient", return_value=client), \
-             patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc):
+        with (
+            patch.object(rs_app.mlflow, "MlflowClient", return_value=client),
+            patch.object(rs_app.mlflow.pyfunc, "load_model", return_value=fake_pyfunc),
+        ):
             count = server._reload_one_model("M")
 
         assert count == 1

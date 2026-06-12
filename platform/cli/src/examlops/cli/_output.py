@@ -19,6 +19,7 @@ yes_mode: bool = False  # --yes/-y skips confirmation prompts
 
 # ── Core output primitives ────────────────────────────────────────────────────
 
+
 def print_json(data: Any) -> None:
     typer.echo(json.dumps(data, indent=2, default=str))
 
@@ -67,6 +68,7 @@ def hint(message: str) -> None:
 
 # ── Structured output ─────────────────────────────────────────────────────────
 
+
 def print_table(title: str, columns: list[str], rows: list[list[Any]]) -> None:
     if json_mode:
         print_json([dict(zip(columns, row)) for row in rows])
@@ -91,6 +93,7 @@ def print_record(data: dict[str, Any]) -> None:
 
 # ── Interaction helpers ───────────────────────────────────────────────────────
 
+
 def confirm(prompt: str, default: bool = False) -> bool:
     """Prompt for confirmation — returns True immediately when --yes or --json."""
     if yes_mode or json_mode:
@@ -99,6 +102,7 @@ def confirm(prompt: str, default: bool = False) -> bool:
 
 
 # ── Progress ─────────────────────────────────────────────────────────────────
+
 
 @contextmanager
 def spinner(message: str) -> Generator[None, None, None]:

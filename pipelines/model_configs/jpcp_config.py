@@ -4,6 +4,7 @@ All declarative config (datasets, features, lifecycle, serving, prefect) lives i
 pipelines/models/jpcp.yaml. This shim provides model-bound callables that require
 a live model instance and cannot be expressed in YAML.
 """
+
 from __future__ import annotations
 
 import sys

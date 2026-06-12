@@ -3,6 +3,7 @@
 Serves a streaming WebSocket chat interface at / and a REST API at /api/*.
 Start with:  uvicorn exa_agent.server:app --port 18004
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +37,8 @@ def _extract_text(content) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text"
+            block.get("text", "")
+            if isinstance(block, dict) and block.get("type") == "text"
             else (block if isinstance(block, str) else "")
             for block in content
         )
@@ -79,11 +81,13 @@ async def thread_history(thread_id: str):
                 role = "tool"
             else:
                 role = "unknown"
-            result.append({
-                "role": role,
-                "content": _extract_text(msg.content) if hasattr(msg, "content") else "",
-                "name": getattr(msg, "name", None),
-            })
+            result.append(
+                {
+                    "role": role,
+                    "content": _extract_text(msg.content) if hasattr(msg, "content") else "",
+                    "name": getattr(msg, "name", None),
+                }
+            )
         return {"messages": result}
     except Exception:
         return {"messages": []}
@@ -133,7 +137,9 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
                         loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "text": text})
                     usage = getattr(msg, "usage_metadata", None)
                     if usage:
-                        loop.call_soon_threadsafe(queue.put_nowait, {"type": "usage", "usage": usage})
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, {"type": "usage", "usage": usage}
+                        )
                 elif isinstance(msg, ToolMessage):
                     loop.call_soon_threadsafe(queue.put_nowait, {"type": "tool", "name": msg.name})
         except Exception as exc:
@@ -170,4 +176,5 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
 @app.get("/", response_class=HTMLResponse)
 async def index():
     from exa_agent.chat_html import CHAT_HTML
+
     return CHAT_HTML

@@ -1,4 +1,5 @@
 """Unit tests for SeanerBUS bridge Prometheus metrics."""
+
 from __future__ import annotations
 
 import os
@@ -95,10 +96,10 @@ def test_all_five_metrics_registered():
     # prometheus_client strips _total suffix from Counter .name; check base names
     names = _metric_names()
     assert "seanerbus_bridge_up" in names
-    assert "seanerbus_inferences" in names          # registered as seanerbus_inferences_total
-    assert "seanerbus_inference_errors" in names    # registered as seanerbus_inference_errors_total
+    assert "seanerbus_inferences" in names  # registered as seanerbus_inferences_total
+    assert "seanerbus_inference_errors" in names  # registered as seanerbus_inference_errors_total
     assert "seanerbus_inference_latency_seconds" in names
-    assert "seanerbus_retrain_triggers" in names    # registered as seanerbus_retrain_triggers_total
+    assert "seanerbus_retrain_triggers" in names  # registered as seanerbus_retrain_triggers_total
 
 
 def test_metrics_output_contains_expected_lines():

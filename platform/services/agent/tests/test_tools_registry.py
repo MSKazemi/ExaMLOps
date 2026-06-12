@@ -35,7 +35,9 @@ def test_list_models_unreachable():
 @respx.mock
 def test_list_datasets():
     respx.get("http://localhost:18002/models").mock(
-        return_value=httpx.Response(200, json=[{"model_name": "JPCP", "datasets": ["PM100Dataset"]}])
+        return_value=httpx.Response(
+            200, json=[{"model_name": "JPCP", "datasets": ["PM100Dataset"]}]
+        )
     )
     out = registry.list_datasets.invoke({})
     assert "JPCP" in out and "PM100Dataset" in out

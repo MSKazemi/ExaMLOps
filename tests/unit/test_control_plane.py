@@ -14,7 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo"), str(REPO_ROOT / "platform/services/control_plane")):
+for p in (
+    str(REPO_ROOT),
+    str(REPO_ROOT / "modelzoo"),
+    str(REPO_ROOT / "platform/services/control_plane"),
+):
     if p not in sys.path:
         sys.path.insert(0, p)
 

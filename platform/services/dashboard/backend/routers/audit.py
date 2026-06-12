@@ -40,17 +40,18 @@ async def get_audit(
 ) -> AuditPage:
     total = (await db.execute(select(func.count(DashboardAudit.id)))).scalar_one()
     rows = (
-        await db.execute(
-            select(DashboardAudit)
-            .order_by(DashboardAudit.id.desc())
-            .limit(limit)
-            .offset(offset)
+        (
+            await db.execute(
+                select(DashboardAudit)
+                .order_by(DashboardAudit.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return AuditPage(
-        items=[
-            AuditRow(id=r.id, at=r.at, role=r.role, action=r.action, key=r.key)
-            for r in rows
-        ],
+        items=[AuditRow(id=r.id, at=r.at, role=r.role, action=r.action, key=r.key) for r in rows],
         total=total,
     )

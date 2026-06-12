@@ -19,11 +19,13 @@ def _mock_response(body: dict, status: int = 200):
     resp.status = status
     return resp
 
+
 def test_get_returns_dict():
     resp = _mock_response({"ok": True})
     with patch("urllib.request.urlopen", return_value=resp):
         result = get("http://localhost:18002/health")
     assert result == {"ok": True}
+
 
 def test_post_sends_json_body():
     resp = _mock_response({"id": "abc"})
@@ -33,16 +35,23 @@ def test_post_sends_json_body():
     req = mock_open.call_args[0][0]
     assert req.get_header("Authorization") == "Bearer tok"
 
+
 def test_get_raises_client_error_on_http_error():
     import urllib.error
-    with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
-        url="http://x", code=404, msg="Not Found", hdrs=None, fp=None
-    )):
+
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            url="http://x", code=404, msg="Not Found", hdrs=None, fp=None
+        ),
+    ):
         with pytest.raises(ClientError, match="Not found"):
             get("http://localhost:18002/approvals/MISSING")
 
+
 def test_get_raises_client_error_on_connection_error():
     import urllib.error
+
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
         with pytest.raises(ClientError, match="unreachable"):
             get("http://localhost:18002/health")

@@ -3,26 +3,22 @@ from __future__ import annotations
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
-_EXAMPLES = (
-    "Examples:\n\n"
-    "  exa status\n\n"
-    "  exa --json status"
-)
+_EXAMPLES = "Examples:\n\n  exa status\n\n  exa --json status"
 
 _SERVICE_ORDER = ["control_plane", "mlflow", "prefect", "ray_serve", "dashboard"]
 _SERVICE_LABELS = {
     "control_plane": "Control Plane",
-    "mlflow":        "MLflow",
-    "prefect":       "Prefect",
-    "ray_serve":     "Ray Serve",
-    "dashboard":     "Dashboard",
+    "mlflow": "MLflow",
+    "prefect": "Prefect",
+    "ray_serve": "Ray Serve",
+    "dashboard": "Dashboard",
 }
 _SERVICE_URLS = {
     "control_plane": ":18002",
-    "mlflow":        ":15000",
-    "prefect":       ":14200",
-    "ray_serve":     ":18001",
-    "dashboard":     ":18099",
+    "mlflow": ":15000",
+    "prefect": ":14200",
+    "ray_serve": ":18001",
+    "dashboard": ":18099",
 }
 
 
@@ -78,7 +74,9 @@ def status() -> None:
     _output.print_table("ExaMLOps Service Health", ["Service", "Status"], rows)
 
     if n_down:
-        _output.warning(f"{n_down} service{'s' if n_down != 1 else ''} unreachable — run: exa doctor")
+        _output.warning(
+            f"{n_down} service{'s' if n_down != 1 else ''} unreachable — run: exa doctor"
+        )
 
     # ── Pending approvals ──────────────────────────────────────────────────
     pending_count = data.get("pending_approvals", 0)
@@ -95,8 +93,12 @@ def status() -> None:
                 "Pending Approvals",
                 ["Model", "Commit", "Message", "Requested"],
                 [
-                    [p["model_id"], (p.get("commit_sha") or "")[:8],
-                     (p.get("commit_msg") or "")[:50], (p.get("requested_at") or "")[:16]]
+                    [
+                        p["model_id"],
+                        (p.get("commit_sha") or "")[:8],
+                        (p.get("commit_msg") or "")[:50],
+                        (p.get("requested_at") or "")[:16],
+                    ]
                     for p in pending
                 ],
             )

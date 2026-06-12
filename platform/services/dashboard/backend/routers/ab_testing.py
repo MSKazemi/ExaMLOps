@@ -1,4 +1,5 @@
 """A/B testing router — exposes ab_tests and ab_results from shared platform.db."""
+
 from __future__ import annotations
 
 import os
@@ -70,10 +71,7 @@ async def get_results(test_id: int, _=Depends(_viewer)) -> dict:
         ).fetchall()
         conn.close()
 
-        aggregates = {
-            r["variant"]: {"count": r["count"], "mean": r["mean"]}
-            for r in agg_rows
-        }
+        aggregates = {r["variant"]: {"count": r["count"], "mean": r["mean"]} for r in agg_rows}
 
         return {
             "test": dict(test_row),

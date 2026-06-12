@@ -25,6 +25,7 @@ def _get_split(model_name: str) -> dict[str, int] | None:
     with _traffic_lock:
         return _traffic_rules.get(model_name)
 
+
 # No-op unless OTEL_SDK_DISABLED=false; get_tracer returns a no-op tracer otherwise.
 setup_tracing("ray-serving")
 _tracer = _otel_trace.get_tracer("examlops.inference_pipeline")
@@ -164,7 +165,9 @@ class InferencePipelineIngress:
 # remain accessible for unit testing (static methods, etc.).
 _ModelRouterDeployment = serve.deployment(num_replicas=1)(ModelRouter)
 _FeatureTransformerDeployment = serve.deployment(num_replicas=1)(FeatureTransformer)
-_IngressDeployment = serve.deployment(num_replicas=1)(serve.ingress(_ingress_app)(InferencePipelineIngress))
+_IngressDeployment = serve.deployment(num_replicas=1)(
+    serve.ingress(_ingress_app)(InferencePipelineIngress)
+)
 
 # Deployment graph — imported by serving/ray_serving/app.py
 router = _ModelRouterDeployment.bind()

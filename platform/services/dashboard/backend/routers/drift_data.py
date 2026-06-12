@@ -1,4 +1,5 @@
 """Drift monitoring data — reads from shared platform.db drift tables."""
+
 from __future__ import annotations
 
 import json
@@ -63,15 +64,17 @@ async def drift_status(
             else:
                 z = abs(live["mean"] - baseline["mean"]) / baseline["std"]
                 status = "CRITICAL" if z >= _CRIT_Z else ("WARNING" if z >= _WARN_Z else "OK")
-            results.append({
-                "model": m,
-                "live_mean": round(live["mean"], 3),
-                "live_std": round(live["std"], 3),
-                "baseline_mean": round(baseline["mean"], 3) if baseline else None,
-                "z_score": round(z, 2),
-                "status": status,
-                "n_snapshots": len(preds),
-            })
+            results.append(
+                {
+                    "model": m,
+                    "live_mean": round(live["mean"], 3),
+                    "live_std": round(live["std"], 3),
+                    "baseline_mean": round(baseline["mean"], 3) if baseline else None,
+                    "z_score": round(z, 2),
+                    "status": status,
+                    "n_snapshots": len(preds),
+                }
+            )
         conn.close()
         return results
     except Exception:
@@ -110,7 +113,8 @@ async def input_drift_status(
         for m in models_list:
             snap_rows = conn.execute(
                 "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots "
-                "WHERE model=? ORDER BY ts DESC LIMIT ?", (m, INPUT_WINDOW)
+                "WHERE model=? ORDER BY ts DESC LIMIT ?",
+                (m, INPUT_WINDOW),
             ).fetchall()
             if not snap_rows:
                 continue
@@ -118,9 +122,9 @@ async def input_drift_status(
             means = [r["emb_mean"] for r in snap_rows]
             stds = [r["emb_std"] for r in snap_rows]
             live = {
-                "norm_mean": sum(norms)/len(norms),
-                "mean_mean": sum(means)/len(means),
-                "std_mean": sum(stds)/len(stds),
+                "norm_mean": sum(norms) / len(norms),
+                "mean_mean": sum(means) / len(means),
+                "std_mean": sum(stds) / len(stds),
             }
             bl_row = conn.execute(
                 "SELECT stats FROM input_baselines WHERE model=?", (m,)
@@ -135,13 +139,20 @@ async def input_drift_status(
                     if bstd > 0:
                         zs.append(abs(live[metric] - baseline[metric]) / bstd)
                 max_z = max(zs) if zs else 0.0
-                status = "CRITICAL" if max_z >= _CRIT_Z else ("WARNING" if max_z >= _WARN_Z else "OK")
-            results.append({
-                "model": m, "live_norm_mean": round(live["norm_mean"], 3),
-                "live_emb_mean": round(live["mean_mean"], 4),
-                "live_emb_std": round(live["std_mean"], 4),
-                "max_z": round(max_z, 2), "status": status, "n_snapshots": len(snap_rows),
-            })
+                status = (
+                    "CRITICAL" if max_z >= _CRIT_Z else ("WARNING" if max_z >= _WARN_Z else "OK")
+                )
+            results.append(
+                {
+                    "model": m,
+                    "live_norm_mean": round(live["norm_mean"], 3),
+                    "live_emb_mean": round(live["mean_mean"], 4),
+                    "live_emb_std": round(live["std_mean"], 4),
+                    "max_z": round(max_z, 2),
+                    "status": status,
+                    "n_snapshots": len(snap_rows),
+                }
+            )
         conn.close()
         return results
     except Exception:

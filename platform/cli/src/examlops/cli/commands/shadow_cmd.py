@@ -20,11 +20,7 @@ _EXAMPLES_ENABLE = (
     "  exa serve shadow enable JPCP --shadow-alias Canary"
 )
 _EXAMPLES_DISABLE = "Examples:\n\n  exa serve shadow disable JPCP"
-_EXAMPLES_STATUS = (
-    "Examples:\n\n"
-    "  exa serve shadow status\n\n"
-    "  exa serve shadow status JPCP"
-)
+_EXAMPLES_STATUS = "Examples:\n\n  exa serve shadow status\n\n  exa serve shadow status JPCP"
 _EXAMPLES_LOG = "Examples:\n\n  exa serve shadow log JPCP"
 
 
@@ -54,7 +50,9 @@ def _ensure_tables() -> None:
 @app.command("enable", epilog=_EXAMPLES_ENABLE)
 def shadow_enable(
     model: str = typer.Argument(..., help="Model name (uppercase, e.g. JPCP)"),
-    shadow_alias: str = typer.Option("Staging", "--shadow-alias", "-a", help="MLflow alias to mirror traffic to"),
+    shadow_alias: str = typer.Option(
+        "Staging", "--shadow-alias", "-a", help="MLflow alias to mirror traffic to"
+    ),
 ) -> None:
     """Enable shadow deployment for a model."""
     _ensure_tables()
@@ -73,7 +71,9 @@ def shadow_enable(
         target=model,
         details={"shadow_alias": shadow_alias},
     )
-    _output.ok(f"Shadow deployment enabled for [bold]{model}[/bold] → alias [cyan]{shadow_alias}[/cyan]")
+    _output.ok(
+        f"Shadow deployment enabled for [bold]{model}[/bold] → alias [cyan]{shadow_alias}[/cyan]"
+    )
 
 
 @app.command("disable", epilog=_EXAMPLES_DISABLE)

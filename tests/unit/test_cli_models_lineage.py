@@ -18,7 +18,9 @@ _ALIAS_DATA = {
         "latest_versions": [],
     }
 }
-_VER_DATA = {"model_version": {"run_id": "run-abc", "version": "18", "creation_timestamp": 1700000000000}}
+_VER_DATA = {
+    "model_version": {"run_id": "run-abc", "version": "18", "creation_timestamp": 1700000000000}
+}
 _RUN_DATA = {
     "run": {
         "data": {

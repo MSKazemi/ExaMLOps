@@ -1,4 +1,5 @@
 """Namespace (multi-tenancy) — reads namespace / namespace_models from shared platform.db."""
+
 from __future__ import annotations
 
 import os
@@ -90,10 +91,7 @@ async def get_namespace_models(name: str, _=Depends(_viewer)) -> dict:
             "description": ns_row["description"],
             "created_at": ns_row["created_at"],
             "created_by": ns_row["created_by"],
-            "models": [
-                {"model": r["model"], "assigned_at": r["assigned_at"]}
-                for r in model_rows
-            ],
+            "models": [{"model": r["model"], "assigned_at": r["assigned_at"]} for r in model_rows],
         }
     except Exception:
         return {"error": "internal error"}

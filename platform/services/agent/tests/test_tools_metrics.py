@@ -17,8 +17,12 @@ def test_get_metrics_formats_results():
 
 @respx.mock
 def test_platform_health_aggregates():
-    respx.get("http://localhost:18002/health").mock(return_value=httpx.Response(200, json={"status": "ok"}))
-    respx.get("http://localhost:18001/health").mock(return_value=httpx.Response(200, json={"status": "ok"}))
+    respx.get("http://localhost:18002/health").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
+    respx.get("http://localhost:18001/health").mock(
+        return_value=httpx.Response(200, json={"status": "ok"})
+    )
     respx.get("http://localhost:15000/health").mock(return_value=httpx.Response(200, text="OK"))
     out = metrics.platform_health.invoke({})
     assert "control_plane" in out and "ray_serve" in out and "mlflow" in out

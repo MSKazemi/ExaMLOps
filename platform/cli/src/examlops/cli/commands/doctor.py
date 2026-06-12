@@ -65,7 +65,8 @@ def doctor() -> None:
         _row("Config file", True, str(CONFIG_PATH))
     else:
         _row(
-            "Config file", False,
+            "Config file",
+            False,
             "not found",
             f"Create {CONFIG_PATH} or set env vars. Run: exa config show",
         )
@@ -75,23 +76,23 @@ def doctor() -> None:
         _row("API token", True, "configured (CONTROL_PLANE_TOKEN or config)")
     else:
         _row(
-            "API token", False,
+            "API token",
+            False,
             "not set — write endpoints will return 503",
             "Set CONTROL_PLANE_TOKEN env var or: exa config set control_plane_token <token>",
         )
 
     # ── Services ───────────────────────────────────────────────────────────
     _SERVICE_CHECKS = [
-        ("Control Plane", cfg.control_plane_url + "/health",
-         "exa stack up  (or check make control-plane-up)"),
-        ("MLflow",         cfg.mlflow_url + "/health",
-         "exa stack up --service mlflow"),
-        ("Prefect",        cfg.prefect_url + "/api/health",
-         "exa stack up --service prefect"),
-        ("Ray Serve",      cfg.ray_serve_url + "/health",
-         "exa stack up --service ray-serving"),
-        ("Dashboard",      cfg.dashboard_url + "/health",
-         "exa stack up --service dashboard"),
+        (
+            "Control Plane",
+            cfg.control_plane_url + "/health",
+            "exa stack up  (or check make control-plane-up)",
+        ),
+        ("MLflow", cfg.mlflow_url + "/health", "exa stack up --service mlflow"),
+        ("Prefect", cfg.prefect_url + "/api/health", "exa stack up --service prefect"),
+        ("Ray Serve", cfg.ray_serve_url + "/health", "exa stack up --service ray-serving"),
+        ("Dashboard", cfg.dashboard_url + "/health", "exa stack up --service dashboard"),
     ]
     for label, url, fix in _SERVICE_CHECKS:
         ok_val, detail = _ping(url)
@@ -101,7 +102,9 @@ def doctor() -> None:
     db_path = os.getenv("PLATFORM_DB", str(Path(__file__).parents[6] / "platform.db"))
     db_ok, db_detail = _db_check(db_path)
     _row(
-        "Platform DB", db_ok, db_detail,
+        "Platform DB",
+        db_ok,
+        db_detail,
         "Set PLATFORM_DB env var to the correct path" if not db_ok else "",
     )
 
@@ -109,28 +112,30 @@ def doctor() -> None:
     ver = sys.version_info
     py_ok = ver >= (3, 12)
     _row(
-        "Python", py_ok,
+        "Python",
+        py_ok,
         f"{ver.major}.{ver.minor}.{ver.micro} ({sys.executable})",
         "Python 3.12+ required" if not py_ok else "",
     )
 
     # ── Docker ─────────────────────────────────────────────────────────────
     import shutil
+
     docker_ok = shutil.which("docker") is not None
     _row(
-        "Docker", docker_ok,
+        "Docker",
+        docker_ok,
         shutil.which("docker") or "not found",
         "Install Docker: https://docs.docker.com/get-docker/" if not docker_ok else "",
     )
 
     if _output.json_mode:
-        _output.print_json({
-            "checks": [
-                {"name": r[0], "ok": r[1], "detail": r[2], "fix": r[3]}
-                for r in rows
-            ],
-            "issues": len(issues),
-        })
+        _output.print_json(
+            {
+                "checks": [{"name": r[0], "ok": r[1], "detail": r[2], "fix": r[3]} for r in rows],
+                "issues": len(issues),
+            }
+        )
         return
 
     table = Table(title="ExaMLOps Doctor", show_header=True, header_style="bold cyan")
@@ -150,7 +155,9 @@ def doctor() -> None:
     if not issues:
         console.print("\n[green]✓ All checks passed — your setup looks healthy![/green]\n")
     else:
-        console.print(f"\n[yellow]⚠ {len(issues)} issue{'s' if len(issues) != 1 else ''} found:[/yellow]")
+        console.print(
+            f"\n[yellow]⚠ {len(issues)} issue{'s' if len(issues) != 1 else ''} found:[/yellow]"
+        )
         for issue in issues:
             if issue:
                 console.print(f"  [dim]→ {issue}[/dim]")

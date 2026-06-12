@@ -38,7 +38,11 @@ from pathlib import Path as _Path
 
 try:
     _REPO_ROOT_RS = _Path(__file__).resolve().parents[2]
-    for _p in (str(_REPO_ROOT_RS), str(_REPO_ROOT_RS / "pipelines"), str(_REPO_ROOT_RS / "modelzoo")):
+    for _p in (
+        str(_REPO_ROOT_RS),
+        str(_REPO_ROOT_RS / "pipelines"),
+        str(_REPO_ROOT_RS / "modelzoo"),
+    ):
         if _p not in _sys.path:
             _sys.path.insert(0, _p)
 except IndexError:
@@ -114,33 +118,40 @@ if _ray_models_dir_str:
             ]
             logger.info(
                 "Loaded %d model entries from RAY_MODELS_DIR=%s",
-                len(_REGISTRY_ENTRIES), _models_dir,
+                len(_REGISTRY_ENTRIES),
+                _models_dir,
             )
         else:
-            logger.warning("RAY_MODELS_DIR=%s does not exist — falling back to RAY_PRELOAD_ALIASES", _models_dir)
+            logger.warning(
+                "RAY_MODELS_DIR=%s does not exist — falling back to RAY_PRELOAD_ALIASES",
+                _models_dir,
+            )
     except Exception as _reg_exc:
         logger.warning(
             "Could not load RAY_MODELS_DIR %s: %s — falling back to RAY_PRELOAD_ALIASES",
-            _ray_models_dir_str, _reg_exc,
+            _ray_models_dir_str,
+            _reg_exc,
         )
 elif _ray_registry_path_str:
     try:
         from pipelines.registry_loader import load_registry as _load_reg  # noqa: PLC0415
+
         _reg_env = os.getenv("RAY_REGISTRY_ENV", "").strip()
         _reg_env_path = (
-            _Path(_ray_registry_path_str).parent / "envs" / f"{_reg_env}.yaml"
-            if _reg_env else None
+            _Path(_ray_registry_path_str).parent / "envs" / f"{_reg_env}.yaml" if _reg_env else None
         )
         _REGISTRY_ENTRIES = _load_reg(_Path(_ray_registry_path_str), _reg_env_path)
         _REGISTRY_ENTRIES = [e for e in _REGISTRY_ENTRIES if e.enabled]
         logger.info(
             "Loaded %d model entries from %s (legacy RAY_REGISTRY_PATH)",
-            len(_REGISTRY_ENTRIES), _ray_registry_path_str,
+            len(_REGISTRY_ENTRIES),
+            _ray_registry_path_str,
         )
     except Exception as _reg_exc:
         logger.warning(
             "Could not load registry %s: %s — falling back to RAY_PRELOAD_ALIASES",
-            _ray_registry_path_str, _reg_exc,
+            _ray_registry_path_str,
+            _reg_exc,
         )
 
 
@@ -245,6 +256,7 @@ class MultiModelServer:
         self._poll_task: asyncio.Task[None] | None = None
 
         import os as _os
+
         self._replica_id = _os.getenv("RAY_WORKER_ID", "default")
 
         # ── Online metrics ────────────────────────────────────────────────────
@@ -564,6 +576,7 @@ class MultiModelServer:
         _t0 = time.time()
         try:
             import numpy as np
+
             row: list = []
             for v in request.features.values():
                 if isinstance(v, list):
@@ -672,6 +685,7 @@ def main() -> None:
     serve.run(MultiModelServer.bind(), name="multi_model_server", route_prefix="/")  # type: ignore[attr-defined]
 
     from serving.inference_pipeline.app import pipeline_app  # noqa: PLC0415
+
     serve.run(pipeline_app, name="inference_pipeline", route_prefix="/infer-pipeline")
 
     print("\nExaMLOps Ray Multi-Model Serving is up:")

@@ -1,4 +1,5 @@
 """HPO studies and trials read-only router."""
+
 from __future__ import annotations
 
 import os

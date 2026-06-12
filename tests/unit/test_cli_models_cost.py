@@ -30,6 +30,7 @@ def isolate_db(tmp_path):
 # display (no data)
 # ---------------------------------------------------------------------------
 
+
 def test_cost_empty_table():
     result = runner.invoke(app, ["models", "cost", "JPCP"])
     assert result.exit_code == 0, result.output
@@ -39,6 +40,7 @@ def test_cost_empty_table():
 # ---------------------------------------------------------------------------
 # display (pre-seeded data)
 # ---------------------------------------------------------------------------
+
 
 def test_cost_shows_seeded_data():
     record_model_cost("JPCP", 17, "5f015850abcdef12", "job-1234", 12.5, 31.25)
@@ -134,6 +136,7 @@ def test_cost_record_no_versions():
 # mock determinism — same model+version always yields same data
 # ---------------------------------------------------------------------------
 
+
 def test_mock_slurm_determinism():
     from examlops.cli.commands.models import _mock_slurm_data
 
@@ -153,11 +156,13 @@ def test_mock_slurm_determinism():
 # JSON output
 # ---------------------------------------------------------------------------
 
+
 def test_cost_json_mode():
     record_model_cost("JPCP", 17, "run0001", "job-0001", 8.0, 20.0)
     result = runner.invoke(app, ["--json", "models", "cost", "JPCP"])
     assert result.exit_code == 0, result.output
     import json
+
     data = json.loads(result.output)
     assert isinstance(data, list)
     assert len(data) == 1

@@ -31,7 +31,9 @@ def list_runs(limit: int = 20) -> str:
 
 
 @tool
-def scaffold_preview(name: str, task: str = "performance_prediction", task_type: str = "regression") -> str:
+def scaffold_preview(
+    name: str, task: str = "performance_prediction", task_type: str = "regression"
+) -> str:
     """Dry-run a new-model scaffold: returns the files that WOULD be generated (no writes).
 
     Args:
@@ -40,7 +42,9 @@ def scaffold_preview(name: str, task: str = "performance_prediction", task_type:
         task_type: 'regression' or 'classification'.
     """
     data, err = _http.dashboard().request(
-        "dashboard", "POST", "/api/scaffold/preview",
+        "dashboard",
+        "POST",
+        "/api/scaffold/preview",
         json={"name": name, "task": task, "task_type": task_type},
     )
     if err:
@@ -50,8 +54,14 @@ def scaffold_preview(name: str, task: str = "performance_prediction", task_type:
 
 
 @tool
-@confirmed_write(lambda name, task="performance_prediction", task_type="regression": f"Scaffold a new model '{name}' (task={task}, type={task_type}) — writes files into the repo")
-def scaffold_create(name: str, task: str = "performance_prediction", task_type: str = "regression") -> str:
+@confirmed_write(
+    lambda name, task="performance_prediction", task_type="regression": (
+        f"Scaffold a new model '{name}' (task={task}, type={task_type}) — writes files into the repo"
+    )
+)
+def scaffold_create(
+    name: str, task: str = "performance_prediction", task_type: str = "regression"
+) -> str:
     """Generate a new model's scaffold files in the repo (via the dashboard).
 
     Args:
@@ -60,7 +70,9 @@ def scaffold_create(name: str, task: str = "performance_prediction", task_type: 
         task_type: 'regression' or 'classification'.
     """
     data, err = _http.dashboard().request(
-        "dashboard", "POST", "/api/scaffold/create",
+        "dashboard",
+        "POST",
+        "/api/scaffold/create",
         json={"name": name, "task": task, "task_type": task_type},
     )
     if err:

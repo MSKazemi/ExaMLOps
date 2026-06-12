@@ -264,9 +264,7 @@ def set_traffic_rules(model: str, rules: dict[str, int], updated_by: str | None 
 
 def get_traffic_rules(model: str) -> dict[str, int] | None:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT rules FROM traffic_rules WHERE model=?", (model,)
-        ).fetchone()
+        row = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (model,)).fetchone()
     if row is None:
         return None
     return json.loads(row["rules"])
@@ -291,9 +289,7 @@ def set_promotion_rule(
 
 def get_promotion_rule(model: str) -> dict[str, Any] | None:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM promotion_rules WHERE model=?", (model,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM promotion_rules WHERE model=?", (model,)).fetchone()
     return dict(row) if row else None
 
 
@@ -307,9 +303,7 @@ def set_drift_baseline(model: str, stats: dict[str, float]) -> None:
 
 def get_drift_baseline(model: str) -> dict[str, float] | None:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT stats FROM drift_baselines WHERE model=?", (model,)
-        ).fetchone()
+        row = conn.execute("SELECT stats FROM drift_baselines WHERE model=?", (model,)).fetchone()
     return json.loads(row["stats"]) if row else None
 
 
@@ -334,9 +328,7 @@ def set_input_baseline(model: str, stats: dict[str, Any]) -> None:
 
 def get_input_baseline(model: str) -> dict[str, Any] | None:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT stats FROM input_baselines WHERE model=?", (model,)
-        ).fetchone()
+        row = conn.execute("SELECT stats FROM input_baselines WHERE model=?", (model,)).fetchone()
     return json.loads(row["stats"]) if row else None
 
 
@@ -358,9 +350,7 @@ def set_drift_auto_retrain(
 
 def get_drift_auto_retrain(model: str) -> dict[str, Any] | None:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM drift_auto_retrain WHERE model=?", (model,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM drift_auto_retrain WHERE model=?", (model,)).fetchone()
     return dict(row) if row else None
 
 

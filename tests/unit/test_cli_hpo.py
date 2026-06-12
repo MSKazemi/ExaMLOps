@@ -23,6 +23,7 @@ def isolated_db(tmp_path):
     init_db()
     # Ensure HPO tables are created
     from examlops.cli.commands.hpo_cmd import _ensure_hpo_tables
+
     _ensure_hpo_tables()
     yield
     os.environ.pop("PLATFORM_DB", None)
@@ -56,7 +57,9 @@ def test_hpo_start_creates_study():
 def test_hpo_status_shows_study():
     mock_response = {"flow_run_id": "xyz789"}
     with patch("examlops.cli._client.post", return_value=mock_response):
-        runner.invoke(app, ["pipeline", "hpo", "start", "JPCP", "--trials", "30", "--metric", "rmse"])
+        runner.invoke(
+            app, ["pipeline", "hpo", "start", "JPCP", "--trials", "30", "--metric", "rmse"]
+        )
 
     result = runner.invoke(app, ["pipeline", "hpo", "status"])
     assert result.exit_code == 0, result.output
@@ -72,19 +75,26 @@ def test_hpo_record_trial():
         runner.invoke(app, ["pipeline", "hpo", "start", "JPCP"])
 
     params = json.dumps({"n_estimators": 100})
-    result = runner.invoke(app, [
-        "pipeline", "hpo", "record", "JPCP",
-        "--trial", "1",
-        "--params", params,
-        "--value", "10.5",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "hpo",
+            "record",
+            "JPCP",
+            "--trial",
+            "1",
+            "--params",
+            params,
+            "--value",
+            "10.5",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "Trial 1 recorded" in result.output
 
     with get_db() as conn:
-        trial_rows = conn.execute(
-            "SELECT * FROM hpo_trials WHERE trial_num=1"
-        ).fetchall()
+        trial_rows = conn.execute("SELECT * FROM hpo_trials WHERE trial_num=1").fetchall()
     assert len(trial_rows) == 1
     assert trial_rows[0]["value"] == pytest.approx(10.5)
     assert trial_rows[0]["params_json"] == params
@@ -93,6 +103,7 @@ def test_hpo_record_trial():
 # Test 5: hpo start with HTTP error → exit 1 and error message
 def test_hpo_start_http_error():
     from examlops.cli._client import ClientError
+
     with patch("examlops.cli._client.post", side_effect=ClientError("connection refused")):
         result = runner.invoke(app, ["pipeline", "hpo", "start", "JPCP"])
     assert result.exit_code != 0
@@ -102,12 +113,21 @@ def test_hpo_start_http_error():
 # Test 6: hpo record with no existing study → exit 1
 def test_hpo_record_no_study():
     params = json.dumps({"lr": 0.01})
-    result = runner.invoke(app, [
-        "pipeline", "hpo", "record", "UNKNOWNMODEL",
-        "--trial", "1",
-        "--params", params,
-        "--value", "5.0",
-    ])
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "hpo",
+            "record",
+            "UNKNOWNMODEL",
+            "--trial",
+            "1",
+            "--params",
+            params,
+            "--value",
+            "5.0",
+        ],
+    )
     assert result.exit_code != 0
     assert "No HPO study found" in result.output or "no hpo study" in result.output.lower()
 

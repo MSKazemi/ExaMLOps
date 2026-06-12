@@ -54,9 +54,7 @@ def test_model_class_is_concrete(model_name):
 def test_supported_datasets_are_listed(model_name):
     """Each config must declare at least one SeanergysDataset subclass."""
     _, config_cls, _ = MODEL_REGISTRY[model_name]
-    assert config_cls.SUPPORTED_DATASETS, (
-        f"{config_cls.__name__}.SUPPORTED_DATASETS is empty"
-    )
+    assert config_cls.SUPPORTED_DATASETS, f"{config_cls.__name__}.SUPPORTED_DATASETS is empty"
     for ds_cls in config_cls.SUPPORTED_DATASETS:
         assert hasattr(ds_cls, "__name__"), f"non-class entry in SUPPORTED_DATASETS: {ds_cls!r}"
 
@@ -121,12 +119,21 @@ def test_no_duplicate_model_ids():
 
 _MODELS_DIR = REPO_ROOT / "pipelines" / "models"
 
-REQUIRED_YAML_FIELDS = ("name", "config_class", "task_type", "lifecycle", "serving", "prefect", "inference")
+REQUIRED_YAML_FIELDS = (
+    "name",
+    "config_class",
+    "task_type",
+    "lifecycle",
+    "serving",
+    "prefect",
+    "inference",
+)
 
 
 @pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
 def test_yaml_has_required_top_level_fields(yaml_path):
     from pipelines.model_loader import load_model_yaml
+
     cfg = load_model_yaml(yaml_path)
     assert cfg.name, f"{yaml_path.name}: name is empty"
     assert cfg.config_class, f"{yaml_path.name}: config_class is empty"
@@ -137,12 +144,15 @@ def test_yaml_has_required_top_level_fields(yaml_path):
     assert cfg.serving.get("model_id"), f"{yaml_path.name}: serving.model_id is missing"
     assert cfg.prefect.get("schedule"), f"{yaml_path.name}: prefect.schedule is missing"
     assert cfg.inference.get("input_schema"), f"{yaml_path.name}: inference.input_schema is missing"
-    assert cfg.inference.get("output_schema"), f"{yaml_path.name}: inference.output_schema is missing"
+    assert cfg.inference.get("output_schema"), (
+        f"{yaml_path.name}: inference.output_schema is missing"
+    )
 
 
 @pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
 def test_yaml_lifecycle_stages_have_valid_directions(yaml_path):
     from pipelines.model_loader import load_model_yaml
+
     cfg = load_model_yaml(yaml_path)
     for stage in cfg.lifecycle:
         assert stage.get("direction") in VALID_DIRECTIONS, (
@@ -157,6 +167,7 @@ def test_yaml_lifecycle_stages_have_valid_directions(yaml_path):
 def test_yaml_config_class_resolves(yaml_path):
     from pipelines.model_loader import load_model_yaml
     from pipelines.pipeline_generator import _import_shim
+
     cfg = load_model_yaml(yaml_path)
     shim = _import_shim(cfg.config_class)
     assert shim.MODEL_CLASS is not None, f"{yaml_path.name}: shim.MODEL_CLASS is None"
@@ -167,6 +178,7 @@ def test_yaml_config_class_resolves(yaml_path):
 def test_yaml_datasets_match_shim_supported_datasets(yaml_path):
     from pipelines.model_loader import load_model_yaml
     from pipelines.pipeline_generator import _import_shim
+
     cfg = load_model_yaml(yaml_path)
     shim = _import_shim(cfg.config_class)
     shim_ds_names = {d.__name__ for d in shim.SUPPORTED_DATASETS}
@@ -179,6 +191,7 @@ def test_yaml_datasets_match_shim_supported_datasets(yaml_path):
 
 def test_no_duplicate_yaml_model_ids():
     from pipelines.model_loader import scan_model_yamls
+
     configs = scan_model_yamls(_MODELS_DIR)
     seen: dict[str, str] = {}
     for cfg in configs:

@@ -9,6 +9,7 @@ HEADERS = {"Authorization": "Bearer test-token"}
 def clear_health_cache():
     """Reset module-level health cache between tests to prevent state bleed."""
     import routers.health as h
+
     h._cache.clear()
     h._probe_in_progress.clear()
     yield
@@ -88,8 +89,18 @@ async def test_health_contains_all_services(client):
 
     body = response.json()
     assert set(body["services"].keys()) == {
-        "mlflow", "prefect", "ray_serve", "prometheus",
-        "grafana", "minio", "control_plane", "postgres",
-        "loki", "seanerbus", "jupyterhub",
-        "dashboard", "slurm", "seanerbus_sim",
+        "mlflow",
+        "prefect",
+        "ray_serve",
+        "prometheus",
+        "grafana",
+        "minio",
+        "control_plane",
+        "postgres",
+        "loki",
+        "seanerbus",
+        "jupyterhub",
+        "dashboard",
+        "slurm",
+        "seanerbus_sim",
     }

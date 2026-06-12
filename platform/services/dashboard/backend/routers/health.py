@@ -10,7 +10,7 @@ from settings import settings
 
 router = APIRouter()
 
-_CACHE_TTL = 30.0   # seconds — lower probe frequency on NFS-backed shared cluster
+_CACHE_TTL = 30.0  # seconds — lower probe frequency on NFS-backed shared cluster
 _PROBE_TIMEOUT = 8.0  # seconds — NFS services can spike; 3s was too tight
 _CACHE_KEY = "_global_"  # single shared cache so Docker healthcheck warms it for all callers
 _cache: dict = {}
@@ -19,16 +19,20 @@ _probe_in_progress: set[str] = set()
 
 # (internal_url, health_path, default_public_url)
 _SERVICES = {
-    "mlflow":         (settings.mlflow_url,                   "/health",            settings.public_mlflow_url),
-    "prefect":        (settings.prefect_url,                   "/api/health",        settings.public_prefect_url),
-    "ray_serve":      (settings.ray_serve_url,                 "/health",            settings.public_ray_dashboard_url),
-    "prometheus":     (settings.prometheus_url,                "/-/healthy",         settings.public_prometheus_url),
-    "grafana":        (settings.grafana_url,                   "/api/health",        settings.public_grafana_url),
-    "minio":          (settings.minio_url,                     "/minio/health/live", settings.public_minio_console_url),
-    "control_plane":  (settings.control_plane_url,             "/health",            settings.public_control_plane_url),
-    "loki":           (settings.loki_url,                      "/ready",             settings.public_loki_url),
-    "seanerbus":      (settings.seanerbus_bridge_status_url,   "/health",            settings.public_seanerbus_bridge_url),
-    "jupyterhub":     (settings.jupyterhub_url,                "/hub/api/",          settings.public_jupyterhub_url),
+    "mlflow": (settings.mlflow_url, "/health", settings.public_mlflow_url),
+    "prefect": (settings.prefect_url, "/api/health", settings.public_prefect_url),
+    "ray_serve": (settings.ray_serve_url, "/health", settings.public_ray_dashboard_url),
+    "prometheus": (settings.prometheus_url, "/-/healthy", settings.public_prometheus_url),
+    "grafana": (settings.grafana_url, "/api/health", settings.public_grafana_url),
+    "minio": (settings.minio_url, "/minio/health/live", settings.public_minio_console_url),
+    "control_plane": (settings.control_plane_url, "/health", settings.public_control_plane_url),
+    "loki": (settings.loki_url, "/ready", settings.public_loki_url),
+    "seanerbus": (
+        settings.seanerbus_bridge_status_url,
+        "/health",
+        settings.public_seanerbus_bridge_url,
+    ),
+    "jupyterhub": (settings.jupyterhub_url, "/hub/api/", settings.public_jupyterhub_url),
 }
 
 
@@ -57,9 +61,11 @@ async def _ping(base: str, path: str, public_url: str, client: httpx.AsyncClient
 async def _ping_db() -> dict:
     """Check Postgres connectivity via a lightweight SELECT 1."""
     from database import engine
+
     try:
         async with engine.connect() as conn:
             from sqlalchemy import text
+
             await conn.execute(text("SELECT 1"))
         return {"status": "ok", "url": "postgresql://"}
     except Exception:
@@ -74,10 +80,7 @@ async def _do_health_check() -> dict:
     now = datetime.now(UTC).isoformat()
     async with httpx.AsyncClient() as client:
         http_results = await asyncio.gather(
-            *[
-                _ping(base, path, pub, client)
-                for _name, (base, path, pub) in _SERVICES.items()
-            ]
+            *[_ping(base, path, pub, client) for _name, (base, path, pub) in _SERVICES.items()]
         )
     db_result = await _ping_db()
     services = dict(zip(_SERVICES.keys(), http_results))
@@ -126,7 +129,11 @@ async def get_health(request: Request) -> dict:
 
         if _CACHE_KEY in _probe_in_progress:
             # Probe already running — return stale data rather than queueing.
-            return _apply_host_rewrite(entry["data"], request_host) if entry else {"status": "starting", "services": {}}
+            return (
+                _apply_host_rewrite(entry["data"], request_host)
+                if entry
+                else {"status": "starting", "services": {}}
+            )
 
         _probe_in_progress.add(_CACHE_KEY)
 

@@ -26,7 +26,9 @@ def _cb(
     _output.yes_mode = yes
 
 
-_test_app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
+_test_app.add_typer(
+    features_cmd.app, name="features", help="Feature store — versioned training features"
+)
 
 runner = CliRunner()
 
@@ -38,13 +40,16 @@ def isolated_db(tmp_path):
     os.environ["PLATFORM_DB"] = db_path
     os.environ["FEATURE_STORE_DIR"] = store_path
     from examlops.platform_db import init_db
+
     init_db()
     yield tmp_path
     os.environ.pop("PLATFORM_DB", None)
     os.environ.pop("FEATURE_STORE_DIR", None)
 
 
-def _make_feature_file(tmp_path: Path, name: str = "feats.csv", content: str = "col1,col2\n1,2\n") -> Path:
+def _make_feature_file(
+    tmp_path: Path, name: str = "feats.csv", content: str = "col1,col2\n1,2\n"
+) -> Path:
     p = tmp_path / name
     p.write_text(content)
     return p

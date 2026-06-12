@@ -8,17 +8,15 @@ from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.platform_db import init_db, write_audit_event
 
-app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich", context_settings={"help_option_names": ["-h", "--help"]})
-
-_EXAMPLES_LIST = (
-    "Examples:\n\n"
-    "  exa approvals list\n\n"
-    "  exa approvals list --all"
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+_EXAMPLES_LIST = "Examples:\n\n  exa approvals list\n\n  exa approvals list --all"
 _EXAMPLES_APPROVE = (
-    "Examples:\n\n"
-    "  exa approvals approve JPCP\n\n"
-    "  exa --json approvals approve JPCP"
+    "Examples:\n\n  exa approvals approve JPCP\n\n  exa --json approvals approve JPCP"
 )
 _EXAMPLES_REJECT = (
     "Examples:\n\n"
@@ -27,9 +25,7 @@ _EXAMPLES_REJECT = (
     "  exa --yes approvals reject JPCP --reason automated"
 )
 _EXAMPLES_DELETE = (
-    "Examples:\n\n"
-    "  exa approvals delete <uuid>\n\n"
-    "  exa --yes approvals delete <uuid>"
+    "Examples:\n\n  exa approvals delete <uuid>\n\n  exa --yes approvals delete <uuid>"
 )
 
 
@@ -45,14 +41,21 @@ def list_approvals(
     try:
         rows_raw = _client.get(url, token=cfg.control_plane_token)
     except _client.ClientError as e:
-        _output.error(f"Failed to list approvals: {e}", hint="Is the control plane running? exa status")
+        _output.error(
+            f"Failed to list approvals: {e}", hint="Is the control plane running? exa status"
+        )
         return
     if not rows_raw:
         _output.ok("No approvals found")
         return
     rows = [
-        [r["model_id"], (r.get("commit_sha") or "")[:8], (r.get("commit_msg") or "")[:50],
-         r["status"], (r.get("requested_at") or "")[:16]]
+        [
+            r["model_id"],
+            (r.get("commit_sha") or "")[:8],
+            (r.get("commit_msg") or "")[:50],
+            r["status"],
+            (r.get("requested_at") or "")[:16],
+        ]
         for r in rows_raw
     ]
     _output.print_table(
@@ -71,7 +74,8 @@ def approve(
     with _output.spinner(f"Approving {model} and scheduling training…"):
         try:
             result = _client.post(
-                f"{cfg.control_plane_url}/approve/{model}", {},
+                f"{cfg.control_plane_url}/approve/{model}",
+                {},
                 token=cfg.control_plane_token,
             )
         except _client.ClientError as e:
@@ -80,15 +84,18 @@ def approve(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     try:
         init_db()
-        write_audit_event("cli", actor, "model_approved", model,
-                          {"flow_run_id": result.get("flow_run_id")})
+        write_audit_event(
+            "cli", actor, "model_approved", model, {"flow_run_id": result.get("flow_run_id")}
+        )
     except Exception:
         pass
     _output.ok(f"Approved {model}")
-    _output.print_record({
-        "flow_run_id": result.get("flow_run_id", "—"),
-        "status":      result.get("status", "scheduled"),
-    })
+    _output.print_record(
+        {
+            "flow_run_id": result.get("flow_run_id", "—"),
+            "status": result.get("status", "scheduled"),
+        }
+    )
     _output.hint("Monitor progress: exa status")
 
 
@@ -98,7 +105,9 @@ def reject(
     reason: str | None = typer.Option(None, "--reason", "-r", help="Rejection reason"),
 ) -> None:
     """Reject a pending model change — no training will run."""
-    if not _output.confirm(f"Reject pending approval for [bold]{model}[/bold]? This cannot be undone."):
+    if not _output.confirm(
+        f"Reject pending approval for [bold]{model}[/bold]? This cannot be undone."
+    ):
         _output.info("Cancelled.")
         return
     cfg = load_config()

@@ -76,12 +76,30 @@ _LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
 class _JsonFormatter(logging.Formatter):
     """Emit each log record as a single-line JSON object for Loki ingestion."""
 
-    _SKIP = frozenset((
-        "args", "created", "exc_info", "exc_text", "filename", "funcName",
-        "levelno", "lineno", "message", "module", "msecs", "msg", "name",
-        "pathname", "process", "processName", "relativeCreated",
-        "stack_info", "thread", "threadName",
-    ))
+    _SKIP = frozenset(
+        (
+            "args",
+            "created",
+            "exc_info",
+            "exc_text",
+            "filename",
+            "funcName",
+            "levelno",
+            "lineno",
+            "message",
+            "module",
+            "msecs",
+            "msg",
+            "name",
+            "pathname",
+            "process",
+            "processName",
+            "relativeCreated",
+            "stack_info",
+            "thread",
+            "threadName",
+        )
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         d: dict[str, Any] = {
@@ -110,10 +128,12 @@ def _configure_logging() -> None:
     if _LOG_FORMAT == "json":
         handler.setFormatter(_JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s [control-plane] %(levelname)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [control-plane] %(levelname)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -171,6 +191,7 @@ _request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_i
 
 # ─── Rate limiter (improvement 6) ────────────────────────────────────────────
 
+
 class _TokenBucket:
     def __init__(self, capacity: int, refill_rate: float) -> None:
         self._capacity = float(capacity)
@@ -182,7 +203,9 @@ class _TokenBucket:
     def consume(self, n: float = 1.0) -> bool:
         with self._lock:
             now = time.monotonic()
-            self._tokens = min(self._capacity, self._tokens + (now - self._last_refill) * self._refill_rate)
+            self._tokens = min(
+                self._capacity, self._tokens + (now - self._last_refill) * self._refill_rate
+            )
             self._last_refill = now
             if self._tokens >= n:
                 self._tokens -= n
@@ -197,6 +220,7 @@ _rate_limiter = _TokenBucket(
 
 
 # ─── Improvement 12: Prefect circuit breaker ─────────────────────────────────
+
 
 class _CircuitBreaker:
     """Three-state circuit breaker: CLOSED → OPEN → HALF-OPEN → CLOSED.
@@ -296,6 +320,7 @@ def _store_idempotency(key: str, response: dict[str, Any]) -> None:
 
 
 # ─── Improvement 1: Registry TTL cache ───────────────────────────────────────
+
 
 @dataclass
 class _RegistryCache:
@@ -460,6 +485,7 @@ def _is_poller_stale() -> bool:
 
 # ─── Improvement 16: Approval expiry ─────────────────────────────────────────
 
+
 def _expire_old_approvals() -> int:
     """Mark pending approvals older than APPROVAL_EXPIRY_HOURS as 'expired'."""
     if APPROVAL_EXPIRY_HOURS <= 0:
@@ -480,7 +506,9 @@ def _expire_old_approvals() -> int:
         finally:
             conn.close()
     if expired:
-        logger.info("Expired %d stale pending approval(s) (>%dh old)", expired, APPROVAL_EXPIRY_HOURS)
+        logger.info(
+            "Expired %d stale pending approval(s) (>%dh old)", expired, APPROVAL_EXPIRY_HOURS
+        )
         _metrics.record_approvals_expired(expired)
     return expired
 
@@ -556,6 +584,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # ─── Improvement 14: Request-ID middleware ────────────────────────────────────
 
+
 class _RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
@@ -567,16 +596,19 @@ class _RequestIDMiddleware(BaseHTTPMiddleware):
 
 # ─── Improvement 18: Security headers middleware ──────────────────────────────
 
+
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         response = await call_next(request)
-        response.headers.update({
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-            "X-XSS-Protection": "1; mode=block",
-            "Cache-Control": "no-store",
-            "Referrer-Policy": "no-referrer",
-        })
+        response.headers.update(
+            {
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "X-XSS-Protection": "1; mode=block",
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+            }
+        )
         return response
 
 
@@ -597,8 +629,10 @@ app.add_middleware(_RequestIDMiddleware)
 
 def _require_token(authorization: str | None = Header(default=None)) -> None:
     if not CONTROL_PLANE_TOKEN:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
-                            "Control plane not configured (CONTROL_PLANE_TOKEN unset)")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Control plane not configured (CONTROL_PLANE_TOKEN unset)",
+        )
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     if authorization.removeprefix("Bearer ").strip() != CONTROL_PLANE_TOKEN:
@@ -629,14 +663,17 @@ def _verify_github_signature(raw_body: bytes, x_hub_signature_256: str | None) -
         raise HTTPException(503, "MODELZOO_WEBHOOK_SECRET not configured")
     if not x_hub_signature_256:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing X-Hub-Signature-256")
-    expected = "sha256=" + _hmac.new(
-        MODELZOO_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + _hmac.new(MODELZOO_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    )
     if not _hmac.compare_digest(expected, x_hub_signature_256):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid X-Hub-Signature-256")
 
 
-def _record_push_event(commit_sha: str, branch: str, pushed_by: str, raw_payload: str) -> dict[str, Any]:
+def _record_push_event(
+    commit_sha: str, branch: str, pushed_by: str, raw_payload: str
+) -> dict[str, Any]:
     now = datetime.utcnow().isoformat()
     registry = _get_registry()
     event_id: int = 0
@@ -671,7 +708,11 @@ def _record_push_event(commit_sha: str, branch: str, pushed_by: str, raw_payload
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Auto-retrain failed for %s: %s", model_id, exc)
 
-    return {"event_id": event_id, "models_marked_stale": len(registry), "retrain_triggered": retrain_triggered}
+    return {
+        "event_id": event_id,
+        "models_marked_stale": len(registry),
+        "retrain_triggered": retrain_triggered,
+    }
 
 
 def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> None:
@@ -679,7 +720,12 @@ def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> No
     deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
     flow_run_id = gateway.create_flow_run(
         deployment_id,
-        {"model_name": model_id, "dataset_cls_name": dataset_name, "is_dummy": False, "backend_name": None},
+        {
+            "model_name": model_id,
+            "dataset_cls_name": dataset_name,
+            "is_dummy": False,
+            "backend_name": None,
+        },
     )
     now = datetime.utcnow().isoformat()
     with _DB_LOCK:
@@ -771,8 +817,10 @@ def _start_poller() -> None:
 
     def _loop() -> None:
         global _poller_last_ok_ts
-        logger.info("ModelZoo poller started (interval=%ds)",
-                    _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS))
+        logger.info(
+            "ModelZoo poller started (interval=%ds)",
+            _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS),
+        )
         while not _stop_event.wait(
             timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
         ):
@@ -873,11 +921,23 @@ class PrefectGateway:
                     raise HTTPException(exc.code, f"Prefect GET {url} -> HTTP {exc.code}") from exc
                 last_exc = exc
                 _metrics.record_prefect_retry("GET")
-                logger.warning("Prefect GET %s -> %d (attempt %d), retry in %.1fs", url, exc.code, attempt, delay)
+                logger.warning(
+                    "Prefect GET %s -> %d (attempt %d), retry in %.1fs",
+                    url,
+                    exc.code,
+                    attempt,
+                    delay,
+                )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 _metrics.record_prefect_retry("GET")
-                logger.warning("Prefect GET %s error (attempt %d): %s, retry in %.1fs", url, attempt, exc, delay)
+                logger.warning(
+                    "Prefect GET %s error (attempt %d): %s, retry in %.1fs",
+                    url,
+                    attempt,
+                    exc,
+                    delay,
+                )
             time.sleep(delay)
         raise HTTPException(502, f"Prefect unreachable after retries: {last_exc}") from last_exc
 
@@ -889,7 +949,8 @@ class PrefectGateway:
         last_exc: Exception | None = None
         for attempt, delay in enumerate(self._RETRY_DELAYS, start=1):
             req = urllib.request.Request(
-                url, data=data,
+                url,
+                data=data,
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
             )
@@ -901,11 +962,23 @@ class PrefectGateway:
                     raise HTTPException(exc.code, f"Prefect POST {url} -> HTTP {exc.code}") from exc
                 last_exc = exc
                 _metrics.record_prefect_retry("POST")
-                logger.warning("Prefect POST %s -> %d (attempt %d), retry in %.1fs", url, exc.code, attempt, delay)
+                logger.warning(
+                    "Prefect POST %s -> %d (attempt %d), retry in %.1fs",
+                    url,
+                    exc.code,
+                    attempt,
+                    delay,
+                )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 _metrics.record_prefect_retry("POST")
-                logger.warning("Prefect POST %s error (attempt %d): %s, retry in %.1fs", url, attempt, exc, delay)
+                logger.warning(
+                    "Prefect POST %s error (attempt %d): %s, retry in %.1fs",
+                    url,
+                    attempt,
+                    exc,
+                    delay,
+                )
             time.sleep(delay)
         raise HTTPException(502, f"Prefect unreachable after retries: {last_exc}") from last_exc
 
@@ -945,7 +1018,9 @@ def health() -> dict[str, Any]:
     conn = None
     try:
         conn = _get_db()
-        row = conn.execute("SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+        ).fetchone()
         pending_count = row[0] if row else 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query pending approvals count: %s", exc)
@@ -956,7 +1031,9 @@ def health() -> dict[str, Any]:
     poller_enabled = MODELZOO_POLL_SECONDS > 0
     poller_info: dict[str, Any] = {"enabled": poller_enabled}
     if poller_enabled:
-        poller_info["last_ok_seconds_ago"] = int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
+        poller_info["last_ok_seconds_ago"] = (
+            int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
+        )
         poller_info["stale"] = _is_poller_stale()
 
     all_ok = all(v == "ok" for v in _startup_checks.values())
@@ -997,7 +1074,9 @@ def platform_status() -> dict[str, Any]:
     conn = None
     try:
         conn = _get_db()
-        row = conn.execute("SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+        ).fetchone()
         pending_count = row[0] if row else 0
     except Exception:  # noqa: BLE001
         pass
@@ -1096,7 +1175,9 @@ def trigger_retrain(
     _metrics.record_retrain(req.model_name, req.dataset_name, "success")
     logger.info(
         "Scheduled retrain model=%s dataset=%s flow_run_id=%s",
-        req.model_name, req.dataset_name, flow_run_id,
+        req.model_name,
+        req.dataset_name,
+        flow_run_id,
     )
 
     response_data = {
@@ -1138,8 +1219,12 @@ async def webhook_gitlab(
     commit_sha = commits[0]["id"] if commits else payload.get("after", "")
     if not commit_sha:
         return {"skipped": True, "reason": "no commit SHA in payload"}
-    pushed_by = payload.get("user_name") or (commits[0].get("author", {}).get("name") if commits else "unknown")
-    return _record_push_event(commit_sha, MODELZOO_WATCH_BRANCH, pushed_by or "unknown", json.dumps(payload))
+    pushed_by = payload.get("user_name") or (
+        commits[0].get("author", {}).get("name") if commits else "unknown"
+    )
+    return _record_push_event(
+        commit_sha, MODELZOO_WATCH_BRANCH, pushed_by or "unknown", json.dumps(payload)
+    )
 
 
 @app.post("/webhooks/modelzoo/github")
@@ -1155,7 +1240,8 @@ async def webhook_github(request: Request) -> dict[str, Any]:
     if not commit_sha:
         return {"skipped": True, "reason": "no commit SHA in payload"}
     return _record_push_event(
-        commit_sha, MODELZOO_WATCH_BRANCH,
+        commit_sha,
+        MODELZOO_WATCH_BRANCH,
         (payload.get("pusher") or {}).get("name", "unknown"),
         raw_body.decode(),
     )
@@ -1225,17 +1311,33 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
                     (model_id,),
                 ).fetchone()
                 if existing:
-                    logger.info("Skipping duplicate pending approval model=%s (id=%s)", model_id, existing[0])
+                    logger.info(
+                        "Skipping duplicate pending approval model=%s (id=%s)",
+                        model_id,
+                        existing[0],
+                    )
                     continue
                 row_id = str(uuid.uuid4())
                 conn.execute(
                     "INSERT INTO pending_approvals (id, model_id, commit_sha, commit_msg, changed_files, status, requested_at) "
                     "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-                    (row_id, model_id, notification.commit_sha, notification.commit_msg, changed_files_json, now),
+                    (
+                        row_id,
+                        model_id,
+                        notification.commit_sha,
+                        notification.commit_msg,
+                        changed_files_json,
+                        now,
+                    ),
                 )
                 created.append(row_id)
                 created_model_ids.append(model_id)
-                logger.info("Created pending approval id=%s model=%s commit=%s", row_id, model_id, notification.commit_sha)
+                logger.info(
+                    "Created pending approval id=%s model=%s commit=%s",
+                    row_id,
+                    model_id,
+                    notification.commit_sha,
+                )
             conn.commit()
             pending_count: int = conn.execute(
                 "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
@@ -1259,24 +1361,44 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
         )
         rows = (
             conn.execute(sql + " WHERE status = ? ORDER BY requested_at DESC", (status,)).fetchall()
-            if status else
-            conn.execute(sql + " ORDER BY requested_at DESC").fetchall()
+            if status
+            else conn.execute(sql + " ORDER BY requested_at DESC").fetchall()
         )
     finally:
         conn.close()
 
     entries: list[ApprovalEntry] = []
     for row in rows:
-        row_id, model_id, commit_sha, commit_msg, changed_files_raw, row_status, prefect_run_id, reject_reason, requested_at, resolved_at = row
+        (
+            row_id,
+            model_id,
+            commit_sha,
+            commit_msg,
+            changed_files_raw,
+            row_status,
+            prefect_run_id,
+            reject_reason,
+            requested_at,
+            resolved_at,
+        ) = row
         try:
             changed_files = json.loads(changed_files_raw) if changed_files_raw else []
         except (TypeError, ValueError):
             changed_files = []
-        entries.append(ApprovalEntry(
-            id=row_id, model_id=model_id, commit_sha=commit_sha, commit_msg=commit_msg,
-            changed_files=changed_files, status=row_status, prefect_run_id=prefect_run_id,
-            reject_reason=reject_reason, requested_at=requested_at, resolved_at=resolved_at,
-        ))
+        entries.append(
+            ApprovalEntry(
+                id=row_id,
+                model_id=model_id,
+                commit_sha=commit_sha,
+                commit_msg=commit_msg,
+                changed_files=changed_files,
+                status=row_status,
+                prefect_run_id=prefect_run_id,
+                reject_reason=reject_reason,
+                requested_at=requested_at,
+                resolved_at=resolved_at,
+            )
+        )
     return entries
 
 
@@ -1310,8 +1432,10 @@ def approve_model(model_id: str) -> dict[str, Any]:
     dataset_name = datasets[0]
 
     parameters: dict[str, Any] = {
-        "model_name": model_id, "dataset_cls_name": dataset_name,
-        "is_dummy": False, "backend_name": None,
+        "model_name": model_id,
+        "dataset_cls_name": dataset_name,
+        "is_dummy": False,
+        "backend_name": None,
     }
 
     gateway = _get_gateway()
@@ -1335,7 +1459,11 @@ def approve_model(model_id: str) -> dict[str, Any]:
 
     _metrics.record_approved(model_id, pending_count)
     logger.info("Approved model=%s approval_id=%s flow_run_id=%s", model_id, row_id, flow_run_id)
-    return {"flow_run_id": flow_run_id, "status_url": f"/retrain/{flow_run_id}", "model_id": model_id}
+    return {
+        "flow_run_id": flow_run_id,
+        "status_url": f"/retrain/{flow_run_id}",
+        "model_id": model_id,
+    }
 
 
 @app.post(
@@ -1409,22 +1537,37 @@ def modelzoo_status() -> dict[str, Any]:
     for model_id in registry:
         row = freshness_map.get(model_id)
         if row:
-            models.append({
-                "model_id": model_id, "status": "stale" if row[3] else "current",
-                "latest_modelzoo_commit": row[1], "last_retrain_commit": row[2],
-                "stale_since": row[4], "retrain_triggered_at": row[5],
-            })
+            models.append(
+                {
+                    "model_id": model_id,
+                    "status": "stale" if row[3] else "current",
+                    "latest_modelzoo_commit": row[1],
+                    "last_retrain_commit": row[2],
+                    "stale_since": row[4],
+                    "retrain_triggered_at": row[5],
+                }
+            )
         else:
-            models.append({
-                "model_id": model_id, "status": "unknown",
-                "latest_modelzoo_commit": None, "last_retrain_commit": None,
-                "stale_since": None, "retrain_triggered_at": None,
-            })
+            models.append(
+                {
+                    "model_id": model_id,
+                    "status": "unknown",
+                    "latest_modelzoo_commit": None,
+                    "last_retrain_commit": None,
+                    "stale_since": None,
+                    "retrain_triggered_at": None,
+                }
+            )
 
     return {
         "models": models,
-        "last_event": {"commit_sha": last_event[0], "timestamp": last_event[1], "source": last_event[2]}
-        if last_event else None,
+        "last_event": {
+            "commit_sha": last_event[0],
+            "timestamp": last_event[1],
+            "source": last_event[2],
+        }
+        if last_event
+        else None,
     }
 
 
@@ -1439,8 +1582,17 @@ def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
         ).fetchall()
     finally:
         conn.close()
-    return [{"id": r[0], "commit_sha": r[1], "branch": r[2], "pushed_by": r[3], "timestamp": r[4], "source": r[5]}
-            for r in rows]
+    return [
+        {
+            "id": r[0],
+            "commit_sha": r[1],
+            "branch": r[2],
+            "pushed_by": r[3],
+            "timestamp": r[4],
+            "source": r[5],
+        }
+        for r in rows
+    ]
 
 
 @app.post("/modelzoo/sync", dependencies=[Depends(_require_token)])
@@ -1448,7 +1600,11 @@ def modelzoo_sync() -> dict[str, Any]:
     result = _run_poll_cycle()
     if not result:
         return {"new_commit": False}
-    return {"new_commit": True, "commit_sha": result.get("commit_sha"), "models_marked_stale": len(_get_registry())}
+    return {
+        "new_commit": True,
+        "commit_sha": result.get("commit_sha"),
+        "models_marked_stale": len(_get_registry()),
+    }
 
 
 @app.get("/modelzoo/config")
