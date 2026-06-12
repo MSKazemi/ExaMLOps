@@ -99,6 +99,136 @@ def init_db() -> None:
                 cost_usd    REAL,
                 recorded_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS explain_logs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model      TEXT NOT NULL,
+                alias      TEXT NOT NULL DEFAULT 'Production',
+                input_hash TEXT,
+                top_n      INTEGER,
+                status     TEXT NOT NULL DEFAULT 'ok',
+                error      TEXT
+            );
+            CREATE TABLE IF NOT EXISTS model_rollbacks (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model        TEXT NOT NULL,
+                from_version INTEGER,
+                to_version   INTEGER NOT NULL,
+                alias        TEXT NOT NULL DEFAULT 'Production',
+                actor        TEXT,
+                reason       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS data_quality_checks (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model        TEXT NOT NULL,
+                dataset      TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                passed       INTEGER NOT NULL DEFAULT 0,
+                failed       INTEGER NOT NULL DEFAULT 0,
+                details_json TEXT,
+                actor        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS shadow_config (
+                model        TEXT PRIMARY KEY,
+                shadow_alias TEXT NOT NULL DEFAULT 'Staging',
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by   TEXT
+            );
+            CREATE TABLE IF NOT EXISTS shadow_results (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model           TEXT NOT NULL,
+                production_pred REAL,
+                shadow_pred     REAL,
+                diff_pct        REAL,
+                job_id          TEXT
+            );
+            CREATE TABLE IF NOT EXISTS ab_tests (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                name       TEXT,
+                variant_a  TEXT NOT NULL DEFAULT 'Production',
+                variant_b  TEXT NOT NULL DEFAULT 'Canary',
+                split_pct  INTEGER NOT NULL DEFAULT 50,
+                status     TEXT NOT NULL DEFAULT 'running',
+                started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at   DATETIME,
+                created_by TEXT
+            );
+            CREATE TABLE IF NOT EXISTS ab_results (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_id INTEGER NOT NULL,
+                ts      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                variant TEXT NOT NULL,
+                value   REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS batch_jobs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model       TEXT NOT NULL,
+                alias       TEXT NOT NULL DEFAULT 'Production',
+                input_path  TEXT,
+                output_path TEXT,
+                n_inputs    INTEGER,
+                n_success   INTEGER,
+                n_errors    INTEGER,
+                elapsed_s   REAL,
+                actor       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS hpo_studies (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model            TEXT NOT NULL,
+                dataset          TEXT,
+                n_trials         INTEGER NOT NULL DEFAULT 20,
+                metric           TEXT NOT NULL DEFAULT 'rmse',
+                status           TEXT NOT NULL DEFAULT 'pending',
+                flow_run_id      TEXT,
+                best_params_json TEXT,
+                best_value       REAL,
+                actor            TEXT
+            );
+            CREATE TABLE IF NOT EXISTS hpo_trials (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                study_id    INTEGER NOT NULL,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                trial_num   INTEGER NOT NULL,
+                params_json TEXT NOT NULL,
+                value       REAL
+            );
+            CREATE TABLE IF NOT EXISTS model_cards (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model       TEXT NOT NULL,
+                output_path TEXT,
+                actor       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS feature_versions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model       TEXT NOT NULL,
+                name        TEXT NOT NULL DEFAULT 'default',
+                version     INTEGER NOT NULL DEFAULT 1,
+                local_path  TEXT,
+                size_bytes  INTEGER,
+                schema_json TEXT,
+                actor       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS namespaces (
+                name        TEXT PRIMARY KEY,
+                description TEXT,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by  TEXT
+            );
+            CREATE TABLE IF NOT EXISTS namespace_models (
+                model       TEXT NOT NULL,
+                namespace   TEXT NOT NULL DEFAULT 'default',
+                assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, namespace)
+            );
         """)
 
 

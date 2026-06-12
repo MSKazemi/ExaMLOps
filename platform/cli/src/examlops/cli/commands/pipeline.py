@@ -8,6 +8,7 @@ import urllib.parse
 import typer
 
 from examlops.cli import _client, _output
+from examlops.cli.commands import hpo_cmd
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
 from examlops.platform_db import (
@@ -492,3 +493,6 @@ def promote_delete(
             raise typer.Exit(1)
         conn.execute("DELETE FROM promotion_rules WHERE model=?", (model,))
     _output.ok(f"Deleted promotion rule for {model}")
+
+
+app.add_typer(hpo_cmd.app, name="hpo", help="Hyperparameter optimisation")

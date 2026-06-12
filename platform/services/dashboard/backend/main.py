@@ -6,22 +6,32 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routers import (
+    ab_testing,
     approvals,
     audit,
     auth,
+    batch,
+    cards,
     config,
     containers,
     docs,
     drift_data,
+    explain,
+    features,
     health,
+    hpo,
     models,
     modelzoo,
+    namespace,
     pipelines,
     platform_audit,
     platform_data,
     proxy,
+    quality,
+    rollback,
     scaffold,
     seanerbus,
+    shadow,
 )
 
 
@@ -68,6 +78,16 @@ app.include_router(scaffold.router, prefix="/api")
 app.include_router(platform_audit.router, prefix="/api")
 app.include_router(drift_data.router, prefix="/api")
 app.include_router(platform_data.router, prefix="/api")
+app.include_router(rollback.router, prefix="/api")
+app.include_router(quality.router, prefix="/api")
+app.include_router(shadow.router, prefix="/api")
+app.include_router(ab_testing.router, prefix="/api")
+app.include_router(batch.router, prefix="/api")
+app.include_router(explain.router, prefix="/api")
+app.include_router(hpo.router, prefix="/api")
+app.include_router(cards.router, prefix="/api")
+app.include_router(features.router, prefix="/api")
+app.include_router(namespace.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
 _dist = Path(__file__).parent.parent / "frontend" / "dist"
