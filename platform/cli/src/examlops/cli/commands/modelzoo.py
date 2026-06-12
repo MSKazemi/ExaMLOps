@@ -104,7 +104,7 @@ def sync():
     cfg = load_config()
     url = f"{cfg.control_plane_url}/modelzoo/sync"
     try:
-        data = _client.post(url, {}, token=cfg.control_plane_token)
+        data = _client.post(url, {}, token=cfg.control_plane_token, timeout=30.0)
     except _client.ClientError as e:
         _output.error(str(e))
         return
