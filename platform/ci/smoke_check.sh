@@ -71,7 +71,7 @@ echo ""
 echo "── Docker container health states ──────"
 cd "$DEPLOY_PATH"
 check_container_health "mlflow"
-check_container_health "prefect"
+check_container_health "orchestrator"   # Prefect server — compose service is "orchestrator", not "prefect"
 check_container_health "control-plane"
 check_container_health "dashboard"
 check_container_health "postgres"    false
