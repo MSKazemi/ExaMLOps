@@ -276,7 +276,21 @@ export interface ModelDetailResponse {
     input_schema: Record<string, string>
     output_schema: Record<string, string>
     promotion: { metric: string; threshold: number; direction: string; model_id: string }
+    hyperparameters?: Record<string, unknown>
   }
+  lifecycle_gates?: Array<{
+    name: string
+    metric: string
+    threshold: number
+    direction: string
+  }>
+  retraining?: {
+    schedule: string | null
+    deployment_name: string | null
+    work_pool: string | null
+    concurrency_limit: number | null
+  }
+  seanerbus_uuid?: string | null
   stages: {
     production: ModelStageInfo | null
     canary: ModelStageInfo | null
