@@ -309,7 +309,7 @@ def promote(
 
     try:
         rm_data = _client.get(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/get"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
             f"?name={urllib.parse.quote(model)}"
         )
     except _client.ClientError as e:
@@ -324,12 +324,12 @@ def promote(
 
     try:
         ver_data = _client.get(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/model-versions/get"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/get"
             f"?name={urllib.parse.quote(model)}&version={version}"
         )
         run_id = ver_data["model_version"]["run_id"]
         run_data = _client.get(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
         )
     except _client.ClientError as e:
         _output.error(str(e))
@@ -358,7 +358,7 @@ def promote(
 
     try:
         _client.post(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/alias",
+            f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/alias",
             {"name": model, "alias": to_alias, "version": version},
         )
     except _client.ClientError as e:

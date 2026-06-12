@@ -16,7 +16,7 @@ def list_models(model_name: str = "") -> str:
     data, err = _http.request_json(
         "mlflow",
         "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/search",
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/search",
         params={"max_results": 100},
     )
     if err:
