@@ -55,7 +55,7 @@ def _mock_get(url: str, token: str = ""):
     raise ValueError(f"Unexpected URL: {url}")
 
 
-def _mock_post(url: str, body: dict, token: str = ""):
+def _mock_post(url: str, body: dict, token: str = "", timeout: float = 10.0):
     if "/modelzoo/sync" in url:
         return {"new_commit": True, "commit_sha": "abc12345", "models_marked_stale": 3}
     raise ValueError(f"Unexpected URL: {url}")
