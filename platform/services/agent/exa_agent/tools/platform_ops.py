@@ -618,7 +618,6 @@ def diagnose_platform() -> str:
             for model, preds in grouped.items():
                 n = len(preds)
                 mean = sum(preds) / n
-                std = math.sqrt(sum((p - mean) ** 2 for p in preds) / n)
                 baseline = get_drift_baseline(model)
                 if baseline and baseline["std"] > 0:
                     z = abs(mean - baseline["mean"]) / baseline["std"]

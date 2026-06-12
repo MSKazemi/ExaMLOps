@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import time
-import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -14,7 +13,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 

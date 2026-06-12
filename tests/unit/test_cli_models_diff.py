@@ -14,8 +14,14 @@ runner = CliRunner()
 
 _V17_META = {"model_version": {"run_id": "run-v17", "version": "17"}}
 _V18_META = {"model_version": {"run_id": "run-v18", "version": "18"}}
-_RUN_V17 = {"run": {"data": {"metrics": {"rmse": 6.1, "mae": 4.0}, "params": {"n_estimators": "100"}}}}
-_RUN_V18 = {"run": {"data": {"metrics": {"rmse": 4.9, "mae": 3.8}, "params": {"n_estimators": "200"}}}}
+_RUN_V17 = {"run": {"data": {
+    "metrics": [{"key": "rmse", "value": 6.1}, {"key": "mae", "value": 4.0}],
+    "params": [{"key": "n_estimators", "value": "100"}],
+}}}
+_RUN_V18 = {"run": {"data": {
+    "metrics": [{"key": "rmse", "value": 4.9}, {"key": "mae", "value": 3.8}],
+    "params": [{"key": "n_estimators", "value": "200"}],
+}}}
 
 
 def _get_side_effect(url, **kwargs):

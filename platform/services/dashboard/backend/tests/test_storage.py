@@ -1,7 +1,6 @@
 """Storage layer talks to MinIO via aioboto3. Tests use moto's mock_aws."""
 import pytest
 from moto import mock_aws
-from settings import settings
 from storage import ImageStorage
 
 

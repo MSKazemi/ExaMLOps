@@ -1,8 +1,7 @@
-import httpx
-import pytest
-import respx
 from unittest.mock import patch
 
+import httpx
+import respx
 from exa_agent.tools import _http
 
 

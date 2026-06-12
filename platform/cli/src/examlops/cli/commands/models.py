@@ -446,7 +446,8 @@ _EXAMPLES_COST_LIST = (
 @app.command("cost-list", epilog=_EXAMPLES_COST_LIST)
 def cost_list():
     """Show HPC cost summary across all models."""
-    from examlops.platform_db import get_db as _gdb, init_db as _init
+    from examlops.platform_db import get_db as _gdb
+    from examlops.platform_db import init_db as _init
     _init()
     with _gdb() as conn:
         rows = conn.execute(

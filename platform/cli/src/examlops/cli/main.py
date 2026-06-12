@@ -4,8 +4,6 @@ import importlib.metadata
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
 
 from examlops.cli import _output
 from examlops.cli.commands import (

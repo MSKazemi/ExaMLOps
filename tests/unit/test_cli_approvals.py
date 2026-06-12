@@ -40,5 +40,5 @@ def test_approvals_approve():
 def test_approvals_reject():
     with patch("examlops.cli.commands.approvals._client.post",
                return_value={"model_id": "JPCP", "status": "rejected"}):
-        result = runner.invoke(app, ["approvals", "reject", "JPCP", "--reason", "bad"])
+        result = runner.invoke(app, ["--yes", "approvals", "reject", "JPCP", "--reason", "bad"])
     assert result.exit_code == 0
