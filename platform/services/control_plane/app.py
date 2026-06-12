@@ -978,9 +978,9 @@ def platform_status() -> dict[str, Any]:
     """Improvement 4: all pings concurrent via ThreadPoolExecutor."""
     import urllib.request  # noqa: PLC0415
 
-    def _ping(url: str) -> bool:
+    def _ping(url: str, timeout: float = 5.0) -> bool:
         try:
-            with urllib.request.urlopen(url, timeout=5.0) as r:  # noqa: S310
+            with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
                 return r.status < 400
         except Exception:
             return False
@@ -1009,7 +1009,7 @@ def platform_status() -> dict[str, Any]:
         f_mlflow = pool.submit(_ping, f"{MLFLOW_URL}/health")
         f_prefect = pool.submit(_ping, f"{PREFECT_API_URL}/health")
         f_ray = pool.submit(_ping_json, f"{RAY_SERVE_URL}/models")
-        f_dashboard = pool.submit(_ping, f"{DASHBOARD_URL}/api/health")
+        f_dashboard = pool.submit(_ping, f"{DASHBOARD_URL}/api/health", 12.0)
         mlflow_ok = f_mlflow.result()
         prefect_ok = f_prefect.result()
         ray_ok, ray_data = f_ray.result()
