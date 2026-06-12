@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft, ExternalLink, AlertTriangle, Tag,
   Cpu, BarChart3, Edit3, X, RotateCcw, Upload, Trash2, Send,
-  ChevronDown, GitBranch, Clock, Layers,
+  ChevronDown, Clock, Layers,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useQuery } from '@tanstack/react-query'
