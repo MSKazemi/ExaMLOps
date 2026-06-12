@@ -51,7 +51,7 @@ def compare_model_versions(model_name: str, v1: str, v2: str) -> str:
     def _get_run(version: str) -> tuple[dict, dict]:
         ver_data, err = _http.request_json(
             "mlflow", "GET",
-            f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/model-versions/get"
+            f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
             f"?name={urllib.parse.quote(model_name)}&version={version}",
         )
         if err:
@@ -59,7 +59,7 @@ def compare_model_versions(model_name: str, v1: str, v2: str) -> str:
         run_id = ver_data["model_version"]["run_id"]
         run_data, err = _http.request_json(
             "mlflow", "GET",
-            f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}",
+            f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
         )
         if err:
             return {}, {}
@@ -95,7 +95,7 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
     if not version:
         rm_data, err = _http.request_json(
             "mlflow", "GET",
-            f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/get"
+            f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/get"
             f"?name={urllib.parse.quote(model_name)}",
         )
         if err:
@@ -107,7 +107,7 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
 
     ver_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/model-versions/get"
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
         f"?name={urllib.parse.quote(model_name)}&version={version}",
     )
     if err:
@@ -116,7 +116,7 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
 
     run_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}",
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
     )
     if err:
         return err
@@ -294,7 +294,7 @@ def promote_model(
 
     rm_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/get"
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/get"
         f"?name={urllib.parse.quote(model_name)}",
     )
     if err:
@@ -306,7 +306,7 @@ def promote_model(
 
     ver_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/model-versions/get"
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/model-versions/get"
         f"?name={urllib.parse.quote(model_name)}&version={version}",
     )
     if err:
@@ -315,7 +315,7 @@ def promote_model(
 
     run_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}",
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/runs/get?run_id={run_id}",
     )
     if err:
         return err
@@ -337,7 +337,7 @@ def promote_model(
 
     _, err = _http.request_json(
         "mlflow", "POST",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/alias",
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/alias",
         json={"name": model_name, "alias": to_alias, "version": version},
     )
     if err:
@@ -558,7 +558,7 @@ def get_platform_summary() -> str:
     # Registered model count
     models_data, err = _http.request_json(
         "mlflow", "GET",
-        f"{config.MLFLOW_URL}/ajax-api/2.0/mlflow/registered-models/list",
+        f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/search",
     )
     model_count: int | str = len(models_data.get("registered_models", [])) if not err else "?"
 

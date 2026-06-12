@@ -37,7 +37,7 @@ _EXAMPLES_INFO = (
 def list_models():
     """List all registered models with their production alias and latest version."""
     cfg = load_config()
-    url = f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/list"
+    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search"
     try:
         data = _client.get(url)
     except _client.ClientError as e:
@@ -57,7 +57,7 @@ def list_models():
 def info(model: str = typer.Argument(..., help="Registered model name (e.g. jpcp)")):
     """Show detail for one model: all versions, aliases, metrics."""
     cfg = load_config()
-    url = (f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/get"
+    url = (f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
            f"?name={urllib.parse.quote(model)}")
     try:
         data = _client.get(url)
@@ -93,7 +93,7 @@ def diff(
 
     def _get_run(version: str) -> tuple[str, dict, dict]:
         ver_url = (
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/model-versions/get"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/get"
             f"?name={urllib.parse.quote(model)}&version={version}"
         )
         try:
@@ -102,7 +102,7 @@ def diff(
             _output.error(str(e))
             raise  # re-raise ClientError so outer try/except catches it
         run_id = ver_data["model_version"]["run_id"]
-        run_url = f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}"
+        run_url = f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
         try:
             run_data = _client.get(run_url)
         except _client.ClientError as e:
@@ -193,7 +193,7 @@ def lineage(
     if version is None:
         try:
             rm_data = _client.get(
-                f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/get"
+                f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
                 f"?name={urllib.parse.quote(model)}"
             )
         except _client.ClientError as e:
@@ -210,7 +210,7 @@ def lineage(
 
     try:
         ver_data = _client.get(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/model-versions/get"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/get"
             f"?name={urllib.parse.quote(model)}&version={version}"
         )
     except _client.ClientError as e:
@@ -223,7 +223,7 @@ def lineage(
 
     try:
         run_data = _client.get(
-            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}"
+            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
         )
     except _client.ClientError as e:
         _output.error(str(e))
@@ -338,7 +338,7 @@ def _tag_mlflow_version(
     cost_usd: float,
 ) -> None:
     """Set gpu_hours and cost_usd tags on an MLflow model version (best-effort)."""
-    url = f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/model-versions/set-tag"
+    url = f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/set-tag"
     for key, value in [("gpu_hours", f"{gpu_hours:.4f}"), ("cost_usd", f"{cost_usd:.4f}")]:
         try:
             _client.post(url, {"name": model, "version": version, "key": key, "value": value})
@@ -362,7 +362,7 @@ def cost(
         # Resolve all versions for this model from MLflow
         try:
             rm_data = _client.get(
-                f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/registered-models/get"
+                f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
                 f"?name={urllib.parse.quote(model)}"
             )
         except _client.ClientError as e:
@@ -390,7 +390,7 @@ def cost(
                 if run_id:
                     try:
                         run_data = _client.get(
-                            f"{cfg.mlflow_url}/ajax-api/2.0/mlflow/runs/get?run_id={run_id}"
+                            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
                         )
                         tags = {
                             t["key"]: t["value"]

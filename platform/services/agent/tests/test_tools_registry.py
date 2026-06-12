@@ -5,7 +5,7 @@ from exa_agent.tools import registry
 
 @respx.mock
 def test_list_models_formats_aliases():
-    respx.get("http://localhost:15000/ajax-api/2.0/mlflow/registered-models/search").mock(
+    respx.get("http://localhost:15000/api/2.0/mlflow/registered-models/search").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -25,7 +25,7 @@ def test_list_models_formats_aliases():
 
 @respx.mock
 def test_list_models_unreachable():
-    respx.get("http://localhost:15000/ajax-api/2.0/mlflow/registered-models/search").mock(
+    respx.get("http://localhost:15000/api/2.0/mlflow/registered-models/search").mock(
         side_effect=httpx.ConnectError("x")
     )
     out = registry.list_models.invoke({"model_name": ""})

@@ -77,7 +77,7 @@ async def list_versions(
         if not run_id:
             return {}
         try:
-            r = await mlflow.get("/ajax-api/2.0/mlflow/runs/get", params={"run_id": run_id})
+            r = await mlflow.get("/api/2.0/mlflow/runs/get", params={"run_id": run_id})
             if r.status_code != 200:
                 return {}
             metrics_list = r.json().get("run", {}).get("data", {}).get("metrics", [])
@@ -88,7 +88,7 @@ async def list_versions(
     async with _mlflow_client() as mlflow:
         # Fetch registered model to get alias→version mapping.
         reg_r = await mlflow.get(
-            "/ajax-api/2.0/mlflow/registered-models/get",
+            "/api/2.0/mlflow/registered-models/get",
             params={"name": model_id},
         )
         version_aliases: dict[str, list[str]] = {}
@@ -101,7 +101,7 @@ async def list_versions(
 
         # Fetch all model versions.
         ver_r = await mlflow.get(
-            "/ajax-api/2.0/mlflow/model-versions/search",
+            "/api/2.0/mlflow/model-versions/search",
             params={"filter": f"name='{model_id}'"},
         )
         if ver_r.status_code == 404:
@@ -173,7 +173,7 @@ async def set_version_alias(
         prev_version: str | None = None
         if body.alias == "Production":
             prev_r = await mlflow.get(
-                "/ajax-api/2.0/mlflow/registered-models/alias",
+                "/api/2.0/mlflow/registered-models/alias",
                 params={"name": model_id, "alias": "Production"},
             )
             if prev_r.status_code == 200:
@@ -184,7 +184,7 @@ async def set_version_alias(
         elif body.alias == "Archived":
             for a in ("Staging", "Canary", "Production"):
                 chk = await mlflow.get(
-                    "/ajax-api/2.0/mlflow/registered-models/alias",
+                    "/api/2.0/mlflow/registered-models/alias",
                     params={"name": model_id, "alias": a},
                 )
                 if chk.status_code == 200:
@@ -192,13 +192,13 @@ async def set_version_alias(
                     if str(mv.get("version", "")) == version:
                         await mlflow.request(
                             "DELETE",
-                            "/ajax-api/2.0/mlflow/registered-models/alias",
+                            "/api/2.0/mlflow/registered-models/alias",
                             content=_json.dumps({"name": model_id, "alias": a}).encode(),
                             headers={"Content-Type": "application/json"},
                         )
 
         set_r = await mlflow.post(
-            "/ajax-api/2.0/mlflow/registered-models/alias",
+            "/api/2.0/mlflow/registered-models/alias",
             json={"name": model_id, "alias": body.alias, "version": version},
         )
         if set_r.status_code not in (200, 201):
@@ -209,7 +209,7 @@ async def set_version_alias(
         # moved the alias in MLflow. Just mark the old holder as Archived.
         if body.alias == "Production" and prev_version is not None:
             await mlflow.post(
-                "/ajax-api/2.0/mlflow/registered-models/alias",
+                "/api/2.0/mlflow/registered-models/alias",
                 json={"name": model_id, "alias": "Archived", "version": prev_version},
             )
 
@@ -238,7 +238,7 @@ async def delete_version_alias(
     async with _mlflow_client() as mlflow:
         # Verify alias exists and belongs to the specified version before deleting.
         chk_r = await mlflow.get(
-            "/ajax-api/2.0/mlflow/registered-models/alias",
+            "/api/2.0/mlflow/registered-models/alias",
             params={"name": model_id, "alias": alias},
         )
         if chk_r.status_code == 404:
@@ -254,7 +254,7 @@ async def delete_version_alias(
 
         del_r = await mlflow.request(
             "DELETE",
-            "/ajax-api/2.0/mlflow/registered-models/alias",
+            "/api/2.0/mlflow/registered-models/alias",
             content=_json.dumps({"name": model_id, "alias": alias}).encode(),
             headers={"Content-Type": "application/json"},
         )
