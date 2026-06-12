@@ -7,16 +7,25 @@ from rich.console import Console
 
 from examlops.cli import _output
 from examlops.cli.commands import (
+    ab_cmd,
     approvals,
+    cards_cmd,
+    batch_cmd,
     config_cmd,
     doctor,
     drift,
+    explain_cmd,
+    features_cmd,
+    hpo_cmd,
     models,
     modelzoo,
+    namespace_cmd,
     pipeline,
     predict,
     production,
+    quality_cmd,
     retrain,
+    rollback_cmd,
     scaffold,
     seanerbus_cmd,
     serve,
@@ -26,6 +35,7 @@ from examlops.cli.commands import (
 from examlops.cli.commands import (
     audit as audit_cmd,
 )
+from examlops.cli.commands import shadow_cmd
 from examlops.platform_db import init_db as _init_platform_db
 
 _console = Console()
@@ -94,9 +104,19 @@ app.add_typer(modelzoo.app,   name="modelzoo",   help="ModelZoo repository fresh
 app.add_typer(production.app, name="production", help="Production deployment and verification")
 app.add_typer(serve.app,      name="serve",      help="Ray Serve operations")
 app.add_typer(pipeline.app,   name="pipeline",   help="Prefect training pipeline")
+pipeline.app.add_typer(quality_cmd.app, name="quality", help="Data quality validation gates")
 app.add_typer(stack.app,      name="stack",      help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config",     help="CLI configuration")
 app.add_typer(seanerbus_cmd.app, name="seanerbus", help="SeanerBUS bridge UUID management")
+app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isolation")
+serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
+serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
+serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
+models.app.add_typer(cards_cmd.app, name="card", help="Generate model cards")
+models.app.add_typer(rollback_cmd.app, name="rollback", help="Roll back a model alias to a previous version")
+serve.app.add_typer(explain_cmd.app, name="explain", help="Feature importance explanations (XAI)")
+pipeline.app.add_typer(hpo_cmd.app, name="hpo", help="Hyperparameter optimisation")
+app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
 
 app.command("retrain",  epilog=retrain._EXAMPLES)(retrain.retrain)
 app.command("predict",  epilog=predict._EXAMPLES)(predict.predict)
