@@ -37,7 +37,9 @@ async def list_registry(
     for name in names:
         try:
             meta = await cp.get_meta(name)
-        except KeyError:
+        except (KeyError, httpx.HTTPError):
+            # Unknown model, or a transient control-plane blip after retries —
+            # skip this one rather than failing the whole registry page.
             continue
         out.append({
             "name": meta["name"],
