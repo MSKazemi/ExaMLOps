@@ -20,13 +20,13 @@ def get(url: str, token: str = "") -> Any:
     return _send(req, url)
 
 
-def post(url: str, body: dict[str, Any], token: str = "") -> Any:
+def post(url: str, body: dict[str, Any], token: str = "", timeout: float = 10.0) -> Any:
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    return _send(req, url)
+    return _send(req, url, timeout=timeout)
 
 
 def delete(url: str, token: str | None = None) -> Any:
