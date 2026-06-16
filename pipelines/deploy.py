@@ -87,6 +87,11 @@ def deploy(
     deployment_name: str = "examlops-nightly",
 ) -> None:
     prefect_url = os.getenv("PREFECT_API_URL", "http://localhost:14200/api")
+    # Apply the resolved URL into the environment so the Prefect SDK actually
+    # connects to it. Without this, an unset PREFECT_API_URL makes .serve() fall
+    # back to an ephemeral server ("Cannot schedule flows on an ephemeral
+    # server…") and the deployment never lands on the real server.
+    os.environ["PREFECT_API_URL"] = prefect_url
     print(f"Deploying to Prefect at {prefect_url}")
 
     if model and dataset:
@@ -128,6 +133,10 @@ def deploy_from_registry(
 
     from pipelines.pipeline_generator import training_flow  # noqa: PLC0415
     from pipelines.registry_loader import load_registry  # noqa: PLC0415
+
+    # Same fix as deploy(): ensure the Prefect SDK targets the configured server
+    # instead of silently spinning up an ephemeral one.
+    os.environ["PREFECT_API_URL"] = os.getenv("PREFECT_API_URL", "http://localhost:14200/api")
 
     base_path = _Path(registry_path)
     env_path = _Path(f"pipelines/envs/{env}.yaml") if env else None

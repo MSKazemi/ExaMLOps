@@ -275,10 +275,12 @@ def _get_dataset_class_map() -> dict[str, type]:
     if _DATASET_CLASS_MAP is None:
         from seanergys_modelzoo.datasets.f_data import FDataDataset
         from seanergys_modelzoo.datasets.pm100 import PM100Dataset
+        from seanergys_modelzoo.datasets.synthetic_anomaly import SyntheticAnomalyDataset
 
         _DATASET_CLASS_MAP = {
             "PM100Dataset": PM100Dataset,
             "FDataDataset": FDataDataset,
+            "SyntheticAnomalyDataset": SyntheticAnomalyDataset,
         }
     return _DATASET_CLASS_MAP
 
@@ -364,6 +366,11 @@ def _build_train_components(
 
     # Merge transforms (target_transform, transform, preprocessing_functions)
     ds_kwargs.update(transforms)
+
+    # Split-aware datasets (e.g. SyntheticAnomalyDataset) use the split name to
+    # draw disjoint train/validation/test samples. Datasets that don't model a
+    # split accept it as an ignored extra field (extra="allow").
+    ds_kwargs["split"] = split
 
     # Backend: YAML default overridden by runtime arg
     effective_backend = backend_name or ds_entry.backend
@@ -822,6 +829,13 @@ def log_mlflow_task(
         mlflow.log_param("dataset", dataset_name)
         mlflow.log_param("estimator", type(model.estimator).__name__)
         mlflow.log_param("framework", adapter.flavour)
+        # Source-level model version (the demo "staleness knob"). Logged so
+        # `exa models diff <id> <v1> <v2>` and the MLflow UI can show which
+        # source revision produced each registered version. Models without a
+        # ``model_version`` attribute simply skip this param.
+        source_version = getattr(model, "model_version", None)
+        if source_version:
+            mlflow.log_param("model_version", str(source_version))
         if model.metadata and model.metadata.hyperparameters:
             mlflow.log_params(model.metadata.hyperparameters)
         mlflow.log_metrics(metrics)
@@ -846,6 +860,13 @@ def log_mlflow_task(
                         "framework",
                         adapter.flavour,
                     )
+                    if source_version:
+                        client.set_model_version_tag(
+                            registered_model_name,
+                            str(versions[0].version),
+                            "model_version",
+                            str(source_version),
+                        )
                 except Exception as tag_exc:  # noqa: BLE001
                     print(f"[pipeline] Could not tag framework on version: {tag_exc}")
                 print(

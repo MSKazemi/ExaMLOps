@@ -42,7 +42,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     window.location.reload()
     throw new Error(res.status === 403 ? 'Forbidden' : 'Unauthorized')
   }
-  if (!res.ok) throw new Error(`API error ${res.status}`)
+  if (!res.ok) {
+    let detail = `API error ${res.status}`
+    try {
+      const body = await res.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch { /* non-JSON error body — keep generic message */ }
+    throw new Error(detail)
+  }
   return res.json() as Promise<T>
 }
 
@@ -460,6 +467,7 @@ export const useModelzooStats = () =>
     queryKey: ['modelzoo', 'stats'],
     queryFn: () => apiFetch<ModelzooStats>('/api/modelzoo/stats'),
     staleTime: 120_000,
+    retry: false,
   })
 
 export const useModelzooDatasets = () =>
@@ -467,6 +475,7 @@ export const useModelzooDatasets = () =>
     queryKey: ['modelzoo', 'datasets'],
     queryFn: () => apiFetch<ModelzooDataset[]>('/api/modelzoo/datasets'),
     staleTime: 120_000,
+    retry: false,
   })
 
 export interface ModelzooModel {
