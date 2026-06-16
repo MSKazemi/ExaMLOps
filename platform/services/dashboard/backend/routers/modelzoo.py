@@ -331,26 +331,67 @@ async def trigger_pipeline(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     pipeline_token = await get_decrypted_secret(db, "gitlab_pipeline_token")
-    if not pipeline_token:
-        raise HTTPException(
-            status_code=503,
-            detail="GitLab pipeline token not configured",
-        )
     project_id = await _get_plain(db, "gitlab_project_id")
-    if not project_id:
-        raise HTTPException(status_code=503, detail="gitlab_project_id not configured")
     gitlab_url = await _get_plain(db, "gitlab_url") or settings.gitlab_url
     branch = await _get_plain(db, "gitlab_branch") or settings.examlops_repo_branch
+
+    # Fall back to AI-Production pipeline trigger env vars when DB token is absent.
+    # This triggers the ai-production CI pipeline (test:modelzoo job) rather than
+    # the modelzoo project's own pipeline.
+    if not pipeline_token and settings.ai_prod_pipeline_trigger_token:
+        pipeline_token = settings.ai_prod_pipeline_trigger_token
+        if not project_id and settings.ai_prod_gitlab_project_id:
+            project_id = settings.ai_prod_gitlab_project_id
+        branch = "main"
+
+    # Last resort: use the personal access token (GITLAB_TOKEN) with the regular
+    # pipeline-create API. This avoids needing a separate pipeline trigger token
+    # for local dev where only a PAT is available.
+    use_pat_fallback = not pipeline_token and bool(settings.gitlab_token)
+    if use_pat_fallback:
+        project_id = project_id or settings.gitlab_project_id
+        if not project_id:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "GitLab project ID not configured. "
+                    "Add gitlab_project_id in Config or set GITLAB_PROJECT_ID in .env."
+                ),
+            )
+    elif not pipeline_token:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitLab pipeline token not configured. "
+                "Set AI_PROD_PIPELINE_TRIGGER_TOKEN in .env or add a token in Config."
+            ),
+        )
+    elif not project_id:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitLab project ID not configured. "
+                "Set AI_PROD_GITLAB_PROJECT_ID in .env or add it in Config."
+            ),
+        )
+
     encoded_project_id = urllib.parse.quote(project_id, safe="")
 
     async with _http_client() as http:
-        resp = await http.post(
-            f"{gitlab_url}/api/v4/projects/{encoded_project_id}/trigger/pipeline",
-            data={"token": pipeline_token, "ref": branch},
-        )
+        if use_pat_fallback:
+            resp = await http.post(
+                f"{gitlab_url}/api/v4/projects/{encoded_project_id}/pipeline",
+                json={"ref": branch},
+                headers={"PRIVATE-TOKEN": settings.gitlab_token},
+            )
+        else:
+            resp = await http.post(
+                f"{gitlab_url}/api/v4/projects/{encoded_project_id}/trigger/pipeline",
+                data={"token": pipeline_token, "ref": branch},
+            )
 
     if resp.status_code == 401:
-        raise HTTPException(status_code=502, detail="GitLab: invalid pipeline trigger token")
+        raise HTTPException(status_code=502, detail="GitLab: authentication failed — check token")
     if resp.status_code == 404:
         raise HTTPException(status_code=502, detail="GitLab: project not found")
     if resp.status_code not in (200, 201):

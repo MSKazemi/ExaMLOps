@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     gitlab_token: str | None = None
     gitlab_project_id: str | None = None
 
+    # ── AI-Production pipeline trigger (fallback for "Run CI Pipeline" button) ──
+    ai_prod_pipeline_trigger_token: str | None = None
+    ai_prod_gitlab_project_id: str | None = None
+
     # ── Secrets at rest (REQUIRED) ──
     dashboard_secret_key: str = Field(...)
 

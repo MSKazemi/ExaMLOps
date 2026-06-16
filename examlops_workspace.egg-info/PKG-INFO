@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: examlops-workspace
-Version: 0.1.0
+Version: 0.24.0
 Requires-Python: >=3.12
 Requires-Dist: examlops
 Requires-Dist: setuptools<80,>=65
@@ -28,6 +28,6 @@ Requires-Dist: pytest>=7.4; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
 Requires-Dist: pytest-cov>=4.1; extra == "dev"
 Requires-Dist: httpx>=0.24; extra == "dev"
-Requires-Dist: ruff>=0.4; extra == "dev"
+Requires-Dist: ruff==0.15.6; extra == "dev"
 Requires-Dist: mypy>=1.8; extra == "dev"
 Requires-Dist: pandas-stubs>=2.0; extra == "dev"
