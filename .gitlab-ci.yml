@@ -117,24 +117,25 @@ sanity:check-structure:
 #   2. Pipeline trigger — fired by the control plane when modelzoo pushes to main
 #   3. Scheduled pipeline — catches any drift not covered by webhooks
 #
-# Blocking gate: a modelzoo failure fails the pipeline (and blocks deploy).
-# Runs on every main push and tag (full-suite policy), plus trigger/schedule
-# and any branch/MR that touches modelzoo files.
+# NON-BLOCKING, informational only — NOT a deploy gate.
+# ModelZoo has its own CI/CD in its own repo (software/modelzoo) which runs its
+# full unit/smoke/integration suite. Re-cloning and re-running that suite here
+# is redundant, couples our deploy to upstream-repo health, and requires a
+# GITLAB_TOKEN that can clone the upstream repo. So this job:
+#   • never blocks the pipeline or deploy (allow_failure: true, off deploy needs)
+#   • does NOT run on every main push/tag — only when modelzoo files change here
+#     or when fired by the control-plane webhook trigger / schedule.
 test:modelzoo:
   stage: test
   image: python:3.12-slim
   interruptible: true
+  allow_failure: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
-      when: on_success
-    - if: $CI_COMMIT_TAG                            # tags → release gate
-      when: on_success
     - changes:
         - modelzoo/**/*
-        - .gitlab-ci.yml
       when: on_success
     - when: never
   cache:
@@ -338,12 +339,13 @@ deploy:lxp:
   stage: deploy
   image: ubuntu:22.04
   timeout: 20 minutes
-  # deploy:lxp only runs on main, where every test job is created (full-suite
-  # policy), so all are required here — deploy proceeds only when the entire
-  # suite is green. No optional:true needed: the jobs always exist on main.
+  # deploy:lxp only runs on main, where every gating test job is created
+  # (full-suite policy), so all are required here — deploy proceeds only when the
+  # entire suite is green. test:modelzoo is intentionally excluded: it is a
+  # non-blocking, informational job (ModelZoo owns its own CI/CD) and is not
+  # created on plain main pushes, so requiring it would break pipeline creation.
   needs:
     - job: test:examlops            # core gate — always runs
-    - job: test:modelzoo
     - job: test:infra:compose
     - job: test:infra:slurm-lint
     - job: test:infra:alert-rules

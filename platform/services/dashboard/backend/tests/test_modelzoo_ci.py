@@ -48,7 +48,17 @@ async def test_trigger_pipeline_requires_admin(client, db_engine):
 
 
 @pytest.mark.asyncio
-async def test_trigger_pipeline_503_when_token_not_set(client, db_engine):
+async def test_trigger_pipeline_503_when_token_not_set(client, db_engine, monkeypatch):
+    # Genuinely "no token configured": clear the env-derived fallbacks so the
+    # route cannot take its PAT/trigger-token fallback paths (which would attempt
+    # a real GitLab call). CI sets GITLAB_TOKEN as a job variable, so without
+    # this the route falls back to a live request and the test became
+    # environment-fragile (passed locally, failed in CI with a DNS/egress error).
+    from settings import settings
+
+    monkeypatch.setattr(settings, "gitlab_token", "", raising=False)
+    monkeypatch.setattr(settings, "ai_prod_pipeline_trigger_token", "", raising=False)
+
     await _seed_gitlab_config(db_engine, pipeline_token=None)
     token = await _login(client, ADMIN_PW)
     r = await client.post("/api/modelzoo/trigger-pipeline", headers=_hdr(token))
