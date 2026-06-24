@@ -69,6 +69,7 @@ endif
         dashboard-up dashboard-logs dashboard-check \
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
+        firewall-fix-up firewall-fix-down firewall-fix-logs \
         agent \
         venv install install-dev clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \
@@ -429,6 +430,22 @@ control-plane-down: ## Stop the control plane container
 
 control-plane-logs: ## Tail control plane logs
 	@cd $(COMPOSE_DIR) && $(DC) logs -f control-plane
+
+# =============================================================================
+##@ Firewall fix  (lxp-cpu01 self-healing Docker egress — stopgap)
+# =============================================================================
+FIREWALL_FIX_DIR := platform/infra/firewall-fix
+
+firewall-fix-up: ## Start self-healing Docker-egress sidecar (lxp-cpu01; Docker access only, no sudo)
+	@chmod +x $(FIREWALL_FIX_DIR)/ensure-egress.sh
+	@cd $(FIREWALL_FIX_DIR) && docker compose up -d
+	@printf "$(BOLD)firewall-fix running.$(RESET) Re-applies the nft egress rule across firewalld reloads / docker restarts.\n"
+
+firewall-fix-down: ## Stop the self-healing Docker-egress sidecar
+	@cd $(FIREWALL_FIX_DIR) && docker compose down
+
+firewall-fix-logs: ## Tail the firewall-fix sidecar (shows each rule (re-)apply)
+	@cd $(FIREWALL_FIX_DIR) && docker compose logs -f
 
 # =============================================================================
 ##@ Agent  (LangGraph + Ollama management CLI)

@@ -72,8 +72,13 @@ def test_model_instantiation(project_root):
     minimal_hp = {"n_estimators": 2, "n_jobs": 1}
 
     for name, model_cls in model_classes.items():
-        # Skip base/abstract classes
+        # Skip base/abstract classes by name, and any class that still has
+        # unimplemented abstract methods (e.g. SeanergysHuggingFaceModel in
+        # models/common/). The session conftest only scans models/tasks/ for the
+        # same reason; this rglob over all of models/ must guard explicitly.
         if model_cls.__name__ in ("SeanergysModel", "SeanergysSklearnModel"):
+            continue
+        if getattr(model_cls, "__abstractmethods__", frozenset()):
             continue
         try:
             model = model_cls(model_hyperparameters=minimal_hp)

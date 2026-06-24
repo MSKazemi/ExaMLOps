@@ -110,10 +110,10 @@ def test_shadow_log_with_rows(isolated_db):
 def test_shadow_status_model_filter():
     """shadow status MODEL should only show that model."""
     runner.invoke(app, ["serve", "shadow", "enable", "JPCP"])
-    runner.invoke(app, ["serve", "shadow", "enable", "DEMOAD"])
+    runner.invoke(app, ["serve", "shadow", "enable", "MACK"])
 
     result = runner.invoke(app, ["serve", "shadow", "status", "JPCP"])
     assert result.exit_code == 0, result.output
     assert "JPCP" in result.output
-    # DEMOAD should not appear when filtering by JPCP
-    assert "DEMOAD" not in result.output
+    # MACK should not appear when filtering by JPCP
+    assert "MACK" not in result.output

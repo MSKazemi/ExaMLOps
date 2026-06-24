@@ -275,12 +275,10 @@ def _get_dataset_class_map() -> dict[str, type]:
     if _DATASET_CLASS_MAP is None:
         from seanergys_modelzoo.datasets.f_data import FDataDataset
         from seanergys_modelzoo.datasets.pm100 import PM100Dataset
-        from seanergys_modelzoo.datasets.synthetic_anomaly import SyntheticAnomalyDataset
 
         _DATASET_CLASS_MAP = {
             "PM100Dataset": PM100Dataset,
             "FDataDataset": FDataDataset,
-            "SyntheticAnomalyDataset": SyntheticAnomalyDataset,
         }
     return _DATASET_CLASS_MAP
 
@@ -367,7 +365,7 @@ def _build_train_components(
     # Merge transforms (target_transform, transform, preprocessing_functions)
     ds_kwargs.update(transforms)
 
-    # Split-aware datasets (e.g. SyntheticAnomalyDataset) use the split name to
+    # Split-aware datasets use the split name to
     # draw disjoint train/validation/test samples. Datasets that don't model a
     # split accept it as an ignored extra field (extra="allow").
     ds_kwargs["split"] = split

@@ -95,6 +95,21 @@ def test_modelzoo_sync(_mock):
     assert "new commit" in result.output.lower() or "abc12345" in result.output
 
 
+def _mock_post_poll_error(url: str, body: dict, token: str = "", timeout: float = 10.0):
+    if "/modelzoo/sync" in url:
+        return {"new_commit": False, "error": "Temporary failure in name resolution"}
+    raise ValueError(f"Unexpected URL: {url}")
+
+
+@patch("examlops.cli._client.post", side_effect=_mock_post_poll_error)
+def test_modelzoo_sync_surfaces_poll_error(_mock):
+    """A failed poll must show the error, not 'up-to-date'."""
+    result = runner.invoke(app, ["modelzoo", "sync"])
+    assert "poll failed" in result.output.lower()
+    assert "name resolution" in result.output
+    assert "up-to-date" not in result.output.lower()
+
+
 @patch("examlops.cli._client.get", side_effect=_mock_get)
 def test_modelzoo_config_show(_mock):
     result = runner.invoke(app, ["modelzoo", "config"])

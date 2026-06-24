@@ -112,6 +112,9 @@ def sync():
         _output.print_json(data)
         return
 
+    if data.get("error"):
+        _output.error(f"ModelZoo poll failed — {data['error']}")
+        return
     if data.get("new_commit"):
         sha = (data.get("commit_sha") or "")[:8]
         n = data.get("models_marked_stale", 0)
