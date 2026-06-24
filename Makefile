@@ -559,6 +559,29 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
 
+preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
+	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
+	@printf "$(BOLD)1/7 sanity: python syntax$(RESET)\n"
+	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" -print0 \
+	  | xargs -0 -r $(VENV)/bin/python -m py_compile
+	@printf "$(BOLD)2/7 ruff check$(RESET)\n"
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@printf "$(BOLD)3/7 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@printf "$(BOLD)4/7 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+	@printf "$(BOLD)5/7 unit tests$(RESET)\n"
+	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
+	@printf "$(BOLD)6/7 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
+	@printf "$(BOLD)7/7 dashboard backend$(RESET)\n"
+	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
+	@cd platform/services/dashboard/backend && \
+	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q --ignore=tests/test_storage.py
+	@$(MAKE) ci-infra
+	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
+	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"
+
 # =============================================================================
 ##@ Documentation  (MkDocs)
 # =============================================================================
