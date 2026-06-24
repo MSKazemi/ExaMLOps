@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import typer
+
+from examlops.cli import _output
+from examlops.cli._config import CONFIG_PATH, load_config, write_config
+
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+_EXAMPLES_SHOW = "Examples:\n\n  exa config show"
+_EXAMPLES_INIT = "Examples:\n\n  exa config init"
+_EXAMPLES_SET = (
+    "Examples:\n\n"
+    "  exa config set control_plane http://<CONTROL_PLANE_HOST>:18002\n\n"
+    "  exa config set control_plane_token mysecrettoken\n\n"
+    "  exa config set mlflow http://<CONTROL_PLANE_HOST>:15000"
+)
+
+
+@app.command(epilog=_EXAMPLES_SHOW)
+def show():
+    """Print the current resolved config (env vars + TOML file)."""
+    cfg = load_config()
+    data = {
+        "control_plane_url": cfg.control_plane_url,
+        "ray_serve_url": cfg.ray_serve_url,
+        "mlflow_url": cfg.mlflow_url,
+        "prefect_url": cfg.prefect_url,
+        "dashboard_url": cfg.dashboard_url,
+        "control_plane_token": "***" if cfg.control_plane_token else "(unset)",
+        "config_file": str(CONFIG_PATH),
+    }
+    _output.print_record(data)
+
+
+@app.command(epilog=_EXAMPLES_INIT)
+def init():
+    """Interactive wizard — write ~/.config/examlops/config.toml."""
+    cfg = load_config()
+    typer.echo("Press Enter to keep current value shown in [brackets].\n")
+    updates = {}
+    for key, current in [
+        ("control_plane", cfg.control_plane_url),
+        ("ray_serve", cfg.ray_serve_url),
+        ("mlflow", cfg.mlflow_url),
+        ("prefect", cfg.prefect_url),
+        ("dashboard", cfg.dashboard_url),
+    ]:
+        val = typer.prompt(f"  {key} URL", default=current)
+        if val != current:
+            updates[key] = val
+    token = typer.prompt(
+        "  control_plane_token", default=cfg.control_plane_token or "", hide_input=True
+    )
+    if token != cfg.control_plane_token:
+        updates["control_plane_token"] = token
+    if updates:
+        write_config(updates)
+        _output.ok(f"Config saved to {CONFIG_PATH}")
+    else:
+        typer.echo("No changes.")
+
+
+@app.command(name="set", epilog=_EXAMPLES_SET)
+def set_config(
+    key: str = typer.Argument(
+        ..., help="Config key (e.g. control_plane, ray_serve, control_plane_token)"
+    ),
+    value: str = typer.Argument(..., help="New value"),
+):
+    """Set a single config key in ~/.config/examlops/config.toml."""
+    write_config({key: value})
+    _output.ok(f"Set {key} = {value}")

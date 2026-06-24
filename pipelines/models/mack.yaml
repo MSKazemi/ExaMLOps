@@ -1,0 +1,53 @@
+name: MACK
+model_class: MACK
+config_class: mack_config.MACKConfiguration
+task_type: classification
+framework: sklearn
+enabled: true
+
+model:
+  embedding_type: SB
+  k_flops: 2
+  k_memory_bw: 2
+  hyperparameters:
+    n_jobs: -1
+
+datasets:
+  - name: FDataDataset
+    backend: zenodo
+    cache_dir: .data_cache/fdata
+    batch_size: 1
+    input_features: [embedding]
+    output_features: [pclass]
+    splits:
+      train:
+        files: ["23_12", "24_01"]
+        filters:
+          - [adt, ">=", "2023-12-01"]
+          - [adt, "<=", "2024-01-31"]
+      validation:
+        files: ["24_02"]
+        filters:
+          - [adt, ">=", "2024-02-01"]
+          - [adt, "<=", "2024-02-28"]
+
+lifecycle:
+  - {name: Staging,    metric: accuracy, threshold: 0.50, direction: higher_is_better}
+  - {name: Canary,     metric: accuracy, threshold: 0.65, direction: higher_is_better}
+  - {name: Production, metric: accuracy, threshold: 0.70, direction: higher_is_better}
+
+serving:
+  model_id: mack
+  aliases: [Production, Canary, Staging]
+
+prefect:
+  schedule: "0 2 * * *"
+  deployment_name: examlops-mack-nightly
+  work_pool: default-agent
+  concurrency_limit: 1
+
+inference:
+  input_schema:
+    embedding: list[float]
+  output_schema:
+    pclass: int
