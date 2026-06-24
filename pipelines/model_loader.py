@@ -46,6 +46,7 @@ class ModelYAMLConfig:
     serving: dict[str, Any] = field(default_factory=dict)
     prefect: dict[str, Any] = field(default_factory=dict)
     inference: dict[str, Any] = field(default_factory=dict)
+    dataplane_uuid: str | None = None
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -104,6 +105,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         serving=raw.get("serving", {}),
         prefect=raw.get("prefect", {}),
         inference=raw.get("inference", {}),
+        dataplane_uuid=raw.get("dataplane_uuid") or None,
     )
 
 

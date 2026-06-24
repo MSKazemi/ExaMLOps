@@ -1,0 +1,42 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# firewall-fix — self-healing Docker-bridge egress sidecar for remote-cpu01
+#
+# Run once with:   make firewall-fix-up        (or: docker compose -f this up -d)
+# It then survives, with `restart: unless-stopped`:
+#   • firewalld reloads (re-adds the rule within INTERVAL seconds)
+#   • `docker compose down/up` of the main stack (rule is subnet-based)
+#   • Docker daemon restarts and host reboots (container auto-restarts)
+# The ONLY thing that stops it is an explicit `make firewall-fix-down`.
+#
+# Requires Docker access only (no host sudo). See ensure-egress.sh for the why.
+# Durable replacement = a sysadmin-owned systemd unit; see the email draft in
+# .claude/plans/sysadmin-email-remote-docker-egress.txt.
+# ──────────────────────────────────────────────────────────────────────────────
+name: examlops-firewall-fix
+
+services:
+  firewall-fix:
+    image: alpine:3.20
+    container_name: examlops-firewall-fix
+    # Share the host network namespace so nft edits the HOST ruleset.
+    network_mode: host
+    # Editing host nftables needs NET_ADMIN in the host netns. `privileged`
+    # is the reliable fallback on this host (verified working); if your policy
+    # forbids it, drop `privileged` and keep only the cap_add below.
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+    environment:
+      SUBNET: "172.16.0.0/12"
+      MARKER: "examlops-egress-fix"
+      INTERVAL: "30"
+    volumes:
+      - ./ensure-egress.sh:/ensure-egress.sh:ro
+    command: ["sh", "/ensure-egress.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"

@@ -400,7 +400,7 @@ def _check_dataplane() -> CheckResult:
     inferences = stats.get("inferences_total", 0) if isinstance(stats, dict) else 0
     ok = health_ok and stats_ok and isinstance(health, dict) and health.get("status") == "ok"
     return CheckResult(
-        "data plane",
+        "DataPlane",
         ok,
         f"{inferences} inference(s)" if ok else "unreachable",
         {

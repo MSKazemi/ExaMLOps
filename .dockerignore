@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.venv
+venv
+env
+.pytest_cache
+.mypy_cache
+
+# IDE / OS
+.idea
+.vscode
+.cursor
+.DS_Store
+
+# Docs served via /api/docs — keep docs/ and component READMEs
+docs/superpowers/
+
+# Temp / logs
+temp
+tmp
+*.log
+mlruns
+
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# Exclude env files but allow markdown (needed for docs serving)
+.env
+.env.*

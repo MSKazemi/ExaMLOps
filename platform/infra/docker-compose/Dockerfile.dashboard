@@ -1,0 +1,28 @@
+# ── Stage 1: build the React frontend ────────────────────────────────────────
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app/frontend
+COPY platform/services/dashboard/frontend/package*.json ./
+RUN npm install --include=dev
+COPY platform/services/dashboard/frontend/ ./
+RUN ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build
+
+# ── Stage 2: Python runtime with built frontend ───────────────────────────────
+FROM python:3.12-slim
+WORKDIR /app
+
+COPY platform/services/dashboard/backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY platform/services/dashboard/backend/ ./backend/
+COPY tools/ /app/tools/
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+# Docs served by the /api/docs router — auto-detected via README.md + docs/
+# COPY README.md ./
+# COPY docs/guides/ ./docs/guides/
+# COPY docs/components/ ./docs/components/
+# COPY docs/reference/ ./docs/reference/
+
+WORKDIR /app/backend
+EXPOSE 8099
+CMD ["sh", "-c", "alembic upgrade head && opentelemetry-instrument uvicorn main:app --host 0.0.0.0 --port ${DASHBOARD_PORT:-8099}"]

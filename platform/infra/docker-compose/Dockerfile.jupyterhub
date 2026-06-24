@@ -1,0 +1,7 @@
+FROM quay.io/jupyterhub/jupyterhub:4
+
+RUN pip install --no-cache-dir \
+    "dockerspawner>=13.0,<14" \
+    "jupyterhub-nativeauthenticator>=1.2,<2"
+
+COPY jupyterhub_config.py /srv/jupyterhub/jupyterhub_config.py

@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from langchain_core.tools import tool
+
+from exa_agent import config
+from exa_agent.confirm import confirmed_write
+from exa_agent.tools import _http
+
+
+@tool
+def list_pending_approvals() -> str:
+    """List pending model-change approvals awaiting sysadmin action."""
+    data, err = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/approvals")
+    if err:
+        return err
+    if not data:
+        return "No pending approvals."
+    return "\n".join(f"- {a.get('model_id')}: {a.get('status')}" for a in data)
+
+
+@tool
+@confirmed_write(lambda model_id: f"Approve model change for {model_id} (fires a training run)")
+def approve_model(model_id: str) -> str:
+    """Approve the most recent pending change for a model, triggering a Prefect run.
+
+    Args:
+        model_id: Model identifier (e.g. 'jpcp').
+    """
+    data, err = _http.request_json(
+        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/approve/{model_id}"
+    )
+    if err:
+        return err
+    return f"Approved {model_id}: {data}"
+
+
+@tool
+@confirmed_write(
+    lambda model_id, reason="": f"Reject model change for {model_id} (reason: {reason or 'none'})"
+)
+def reject_model(model_id: str, reason: str = "") -> str:
+    """Reject the most recent pending change for a model without training.
+
+    Args:
+        model_id: Model identifier (e.g. 'jpcp').
+        reason: Optional rejection reason.
+    """
+    data, err = _http.request_json(
+        "control_plane",
+        "POST",
+        f"{config.CONTROL_PLANE_URL}/reject/{model_id}",
+        json={"reason": reason or None},
+    )
+    if err:
+        return err
+    return f"Rejected {model_id}: {data}"
+
+
+TOOLS = [list_pending_approvals, approve_model, reject_model]

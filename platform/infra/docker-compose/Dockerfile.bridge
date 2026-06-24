@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libcapnp-dev capnproto \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+RUN pip install --no-cache-dir pycapnp httpx prometheus_client pyyaml
+
+# Directory names vary by deploy environment:
+#   local dev:  DATAPLANE_DIR=dataplane          AI_PRODUCTIONS_DIR=ai-productions
+#   remote-cpu01:  DATAPLANE_DIR=examlops-dataplane/dataplane  AI_PRODUCTIONS_DIR=examlops
+ARG DATAPLANE_DIR=dataplane
+ARG AI_PRODUCTIONS_DIR=ai-productions
+
+# Copy and install the dataplane Python bindings
+# (build context is the parent dataplane/ directory so both repos are accessible)
+COPY ${DATAPLANE_DIR}/bindings/python /app/dataplane-pkg
+RUN pip install --no-cache-dir /app/dataplane-pkg
+
+# Copy bridge client code from ai-productions
+COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
+COPY ${AI_PRODUCTIONS_DIR}/pipelines/models /app/pipelines/models
+
+WORKDIR /app
+
+CMD ["python", "clients/dataplane_bridge.py"]

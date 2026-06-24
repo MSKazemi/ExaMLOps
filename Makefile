@@ -16,7 +16,7 @@ ROOT_DIR        := $(CURDIR)
 COMPOSE_DIR     := platform/infra/docker-compose
 RAY_SERVING_DIR := serving/ray_serving
 MODELZOO_DIR    := modelzoo
-# <host> layout: /<DATA_DIR>/examlops-dataplane/dataplane
+# remote layout: /<DATA_DIR>/examlops-dataplane/dataplane
 # laptop layout: ../../dataplane  (two levels up from repo root)
 DATAPLANE_DIR   ?= $(or $(wildcard $(ROOT_DIR)/../examlops-dataplane/dataplane),$(ROOT_DIR)/../../dataplane)
 PID_DIR         := .run
@@ -128,21 +128,21 @@ help: ## Show this help message
 ##@ Stack  (Docker Compose)
 # =============================================================================
 
-full-up: _guard-uv ## Start everything: stack + monitoring + data plane (reqgen + bridge)
+full-up: _guard-uv ## Start everything: stack + monitoring + DataPlane (reqgen + bridge)
 	@if ! docker network ls --format "{{.Name}}" | grep -q "^dataplane-net$$"; then \
 	  printf "$(RED)ERROR: Docker network 'dataplane-net' not found.$(RESET)\n"; \
 	  printf "$(DIM)Run once: docker network create dataplane-net$(RESET)\n"; \
 	  exit 1; \
 	fi
 	@if [ ! -d "$(DATAPLANE_DIR)" ]; then \
-	  printf "$(RED)ERROR: data plane repo not found at $(DATAPLANE_DIR)$(RESET)\n"; \
+	  printf "$(RED)ERROR: DataPlane repo not found at $(DATAPLANE_DIR)$(RESET)\n"; \
 	  printf "$(DIM)Clone it: git clone <dataplane-repo> $(DATAPLANE_DIR)$(RESET)\n"; \
 	  exit 1; \
 	fi
-	@printf "$(BOLD)Starting ExaMLOps stack + monitoring + data plane...$(RESET)\n"
+	@printf "$(BOLD)Starting ExaMLOps stack + monitoring + DataPlane...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) up -d --build
 	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo
-	@printf "$(DIM)Starting data plane reqgen...$(RESET)\n"
+	@printf "$(DIM)Starting DataPlane reqgen...$(RESET)\n"
 	@cd $(DATAPLANE_DIR) && docker compose up -d
 	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane up -d dataplane-bridge
 	@printf "\n$(GREEN)All services are up:$(RESET)\n"
@@ -159,7 +159,7 @@ full-up: _guard-uv ## Start everything: stack + monitoring + data plane (reqgen 
 	  "Grafana"            "http://localhost:13000  (admin / admin)" \
 	  "Loki"               "http://localhost:13100" \
 	  "Tempo"              "http://localhost:13200" \
-	  "data plane Bridge"   "http://localhost:18003  (/health · /stats · /metrics)"
+	  "DataPlane Bridge"   "http://localhost:18003  (/health · /stats · /metrics)"
 	@printf "\n$(DIM)Logs: make dataplane-bridge-logs · make dataplane-reqgen-logs$(RESET)\n\n"
 
 stack-up: _guard-uv ## Start core stack only: Postgres · MLflow · Prefect · Ray Serve · Dashboard · Control Plane
@@ -174,13 +174,13 @@ stack-up: _guard-uv ## Start core stack only: Postgres · MLflow · Prefect · R
 	  "Ray Dashboard" "http://localhost:18265"
 	@printf "\n$(DIM)Tip: 'make monitoring-up' to also start Prometheus/Grafana/Loki · 'make full-up' for everything$(RESET)\n\n"
 
-stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + data plane + Jupyter) — prevents auto-restart on reboot
+stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + DataPlane + Jupyter) — prevents auto-restart on reboot
 	@printf "$(BOLD)Stopping all ExaMLOps containers...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) \
 	  --profile monitoring --profile dataplane --profile jupyter \
 	  down 2>/dev/null || true
 	@if [ -d "$(DATAPLANE_DIR)" ]; then \
-	  printf "$(DIM)Stopping data plane reqgen...$(RESET)\n"; \
+	  printf "$(DIM)Stopping DataPlane reqgen...$(RESET)\n"; \
 	  cd $(DATAPLANE_DIR) && docker compose down 2>/dev/null || true; \
 	fi
 	@printf "$(GREEN)All containers stopped and removed.$(RESET)\n"
@@ -238,9 +238,9 @@ rebuild-all: ## Force-rebuild ALL images including JupyterHub + restart EVERYTHI
 	  "JupyterHub"    "http://localhost:18888"
 	@printf "\n"
 
-remote-rebuild: ## Pull latest code + force-rebuild + restart all containers on <HOST>
-	@printf "$(BOLD)Rebuilding on <HOST>...$(RESET)\n"
-	@ssh <host>-cpu01 "set -e; \
+remote-rebuild: ## Pull latest code + force-rebuild + restart all containers on remote-cpu01
+	@printf "$(BOLD)Rebuilding on remote-cpu01...$(RESET)\n"
+	@ssh remote-cpu01 "set -e; \
 	  cd /<DATA_DIR>/examlops; \
 	  echo '=== git pull ==='; \
 	  git pull; \
@@ -259,8 +259,8 @@ remote-rebuild: ## Pull latest code + force-rebuild + restart all containers on 
 	    --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo; \
 	  echo '=== done ==='; \
 	  docker compose --env-file /<DATA_DIR>/examlops/.env ps"
-	@printf "\n$(GREEN)$(BOLD)<HOST> rebuild complete.$(RESET)\n"
-	@printf "$(DIM)Connect:  ssh <host>  then open http://localhost:18099$(RESET)\n\n"
+	@printf "\n$(GREEN)$(BOLD)remote-cpu01 rebuild complete.$(RESET)\n"
+	@printf "$(DIM)Connect:  ssh remote  then open http://localhost:18099$(RESET)\n\n"
 
 stack-down: ## Stop containers — data volumes preserved
 	@cd $(COMPOSE_DIR) && $(DC) down
@@ -307,39 +307,39 @@ monitoring-up: ## Start Prometheus (9090) · Alertmanager (9093) · Tempo (3200)
 	@printf "\n"
 
 # =============================================================================
-##@ data plane Bridge  (Docker Compose container)
+##@ DataPlane Bridge  (Docker Compose container)
 # =============================================================================
-# Prerequisite: real data plane must be running on port <PORT>.
+# Prerequisite: real DataPlane must be running on port <PORT>.
 #   cd ../dataplane && docker compose up -d
 #
 # Default: bridge connects to host.docker.internal:<PORT> in reqres mode.
 # Override host:  DATAPLANE_HOST=<ip> make dataplane-up
 
-dataplane-up: ## Start ExaMLOps data plane bridge container (NOT the data plane system itself)
-	@printf "$(BOLD)Starting data plane bridge...$(RESET)\n"
-	@printf "$(DIM)Note: this starts the bridge inside ExaMLOps, not the data plane system.$(RESET)\n"
-	@printf "$(DIM)      To start data plane first: cd $(DATAPLANE_DIR)/.. && docker compose up -d$(RESET)\n"
+dataplane-up: ## Start ExaMLOps DataPlane bridge container (NOT the DataPlane system itself)
+	@printf "$(BOLD)Starting DataPlane bridge...$(RESET)\n"
+	@printf "$(DIM)Note: this starts the bridge inside ExaMLOps, not the DataPlane system.$(RESET)\n"
+	@printf "$(DIM)      To start DataPlane first: cd $(DATAPLANE_DIR)/.. && docker compose up -d$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane up -d dataplane-bridge
-	@printf "$(GREEN)data plane bridge is up:$(RESET)\n"
+	@printf "$(GREEN)DataPlane bridge is up:$(RESET)\n"
 	@printf "  %-30s %s\n" \
 	  "Bridge endpoint" "http://localhost:18003  (/health · /stats)" \
 	  "Logs" "make dataplane-bridge-logs"
 	@printf "\n"
 
-dataplane-down: ## Stop ExaMLOps data plane bridge container (does NOT stop the data plane system)
+dataplane-down: ## Stop ExaMLOps DataPlane bridge container (does NOT stop the DataPlane system)
 	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane stop dataplane-bridge
 	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane rm -f dataplane-bridge
-	@printf "$(DIM)data plane bridge stopped. data plane system is unaffected.$(RESET)\n"
+	@printf "$(DIM)DataPlane bridge stopped. DataPlane system is unaffected.$(RESET)\n"
 
-dataplane-bridge-logs: ## Tail data plane bridge logs
+dataplane-bridge-logs: ## Tail DataPlane bridge logs
 	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane logs -f dataplane-bridge
 
-dataplane-reqgen-logs: ## Tail data plane request generator logs (inference_requests.log + dataplane.log)
+dataplane-reqgen-logs: ## Tail DataPlane request generator logs (inference_requests.log + dataplane.log)
 	@tail -f $(DATAPLANE_DIR)/logs/inference_requests.log $(DATAPLANE_DIR)/logs/dataplane.log
 
 
 # =============================================================================
-##@ data plane Integration  (Python CLI tools)
+##@ DataPlane Integration  (Python CLI tools)
 # =============================================================================
 
 DATAPLANE_SERVER ?= localhost
@@ -348,7 +348,7 @@ DATAPLANE_PORT   ?= <PORT>
 dataplane-install: ## Install dataplane Python bindings + pycapnp into .venv
 	uv pip install -e ".[dataplane]"
 
-dataplane-bridge-up: ## Start dataplane bridge bare-metal (reqres mode, real data plane)
+dataplane-bridge-up: ## Start dataplane bridge bare-metal (reqres mode, real DataPlane)
 	DATAPLANE_HOST=$(DATAPLANE_SERVER) DATAPLANE_PORT=$(DATAPLANE_PORT) \
 	DATAPLANE_MODE=reqres \
 	DATAPLANE_VECTOR_UUID=$(DATAPLANE_VECTOR_UUID) \
@@ -432,11 +432,11 @@ control-plane-logs: ## Tail control plane logs
 	@cd $(COMPOSE_DIR) && $(DC) logs -f control-plane
 
 # =============================================================================
-##@ Firewall fix  (<HOST> self-healing Docker egress — stopgap)
+##@ Firewall fix  (remote-cpu01 self-healing Docker egress — stopgap)
 # =============================================================================
 FIREWALL_FIX_DIR := platform/infra/firewall-fix
 
-firewall-fix-up: ## Start self-healing Docker-egress sidecar (<HOST>; Docker access only, no sudo)
+firewall-fix-up: ## Start self-healing Docker-egress sidecar (remote-cpu01; Docker access only, no sudo)
 	@chmod +x $(FIREWALL_FIX_DIR)/ensure-egress.sh
 	@cd $(FIREWALL_FIX_DIR) && docker compose up -d
 	@printf "$(BOLD)firewall-fix running.$(RESET) Re-applies the nft egress rule across firewalld reloads / docker restarts.\n"
@@ -515,7 +515,7 @@ test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.h
 check: lint typecheck test dashboard-check ## Run all quality checks: lint · typecheck · test · dashboard
 	@printf "\n$(GREEN)$(BOLD)All checks passed.$(RESET)\n\n"
 
-ci: ci-modelzoo ci-infra ci-examlops ## Run all three CI job groups locally (mirrors CI)
+ci: ci-modelzoo ci-infra ci-examlops ## Run all three CI job groups locally (mirrors GitLab CI)
 	@printf "\n$(GREEN)$(BOLD)All CI job groups passed locally.$(RESET)\n\n"
 
 smoke-check: ## Run post-deploy health probes against the local stack

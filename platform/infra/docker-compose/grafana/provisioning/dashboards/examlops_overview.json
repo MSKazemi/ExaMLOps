@@ -1,0 +1,595 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "loki", "uid": "loki"},
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Retrain Events",
+        "target": {
+          "expr": "{project=\"examlops\",compose_service=\"control-plane\"} |~ \"Scheduled retrain\"",
+          "maxLines": 50,
+          "refId": "annotations"
+        },
+        "type": "logs"
+      },
+      {
+        "builtIn": 2,
+        "datasource": {"type": "loki", "uid": "loki"},
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "Errors",
+        "target": {
+          "expr": "{project=\"examlops\"} |~ \"(?i)(error|exception|traceback)\"",
+          "maxLines": 20,
+          "refId": "errors"
+        },
+        "type": "logs"
+      }
+    ]
+  },
+  "description": "ExaMLOps Platform — top-level service health, retrain pipeline, inference activity, and operations summary",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {"title": "Inference Metrics", "url": "/d/examlops-online-metrics",  "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Control Plane",     "url": "/d/examlops-control-plane",   "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Drift Monitor",     "url": "/d/examlops-drift",           "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Logs",              "url": "/d/examlops-logs",            "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Approvals",         "url": "/d/examlops-approvals",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "DataPlane",         "url": "/d/examlops-dataplane",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Service Health",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Ray Serve",
+      "gridPos": {"h": 3, "w": 3, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"ray_serve\"}", "legendFormat": "ray serve", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Control Plane",
+      "gridPos": {"h": 3, "w": 3, "x": 3, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"control_plane\"}", "legendFormat": "control plane", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "DataPlane Bridge",
+      "gridPos": {"h": 3, "w": 3, "x": 6, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "dataplane_bridge_up", "legendFormat": "bridge", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Alertmanager",
+      "gridPos": {"h": 3, "w": 3, "x": 9, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"alertmanager\"}", "legendFormat": "alertmanager", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Prometheus",
+      "gridPos": {"h": 3, "w": 3, "x": 12, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"prometheus\"} or vector(1)", "legendFormat": "prometheus", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Loki",
+      "gridPos": {"h": 3, "w": 3, "x": 15, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"loki\"} or vector(1)", "legendFormat": "loki", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Tempo",
+      "gridPos": {"h": 3, "w": 3, "x": 18, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "up{job=\"tempo\"} or vector(1)", "legendFormat": "tempo", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Offline", "color": "red",   "index": 0}}},
+            {"type": "value", "options": {"1": {"text": "Online",  "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Firing Alerts",
+      "gridPos": {"h": 3, "w": 3, "x": 21, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Platform KPIs",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Models in Production",
+      "gridPos": {"h": 3, "w": 4, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "ray_examlops_models_loaded", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]}
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Total Inferences (24 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 4, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(dataplane_inferences_total[24h])", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Inference Error Rate",
+      "gridPos": {"h": 3, "w": 4, "x": 8, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(dataplane_inference_errors_total[5m])) / sum(rate(dataplane_inferences_total[5m])) * 100",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Inference p99 Latency",
+      "gridPos": {"h": 3, "w": 4, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(dataplane_inference_latency_seconds_bucket[5m])))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.3}, {"color": "red", "value": 0.5}]}
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Pending Approvals",
+      "gridPos": {"h": 3, "w": 4, "x": 16, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "examlops_approvals_pending", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Oldest Pending Approval",
+      "gridPos": {"h": 3, "w": 4, "x": 20, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "examlops_approval_age_oldest_seconds / 60", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "m",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 120}]}
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Retrain Pipeline",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 8},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Retrains (24 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 0, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_retrain_requests_total[24h])", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Retrain Success Rate",
+      "gridPos": {"h": 3, "w": 4, "x": 4, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum(increase(examlops_retrain_requests_total{outcome=\"success\"}[24h])) / sum(increase(examlops_retrain_requests_total[24h])) * 100",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 80}, {"color": "green", "value": 95}]}
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Retrain p99 Duration",
+      "gridPos": {"h": 3, "w": 4, "x": 8, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(examlops_retrain_duration_seconds_bucket[1h])))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 120}, {"color": "red", "value": 300}]}
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Circuit Breaker Opens (1 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 12, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_prefect_circuit_breaker_opens_total[1h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "Retrain Triggers from Bus (24 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 16, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(dataplane_retrain_triggers_total[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "stat",
+      "title": "Prefect Retries (1 h)",
+      "gridPos": {"h": 3, "w": 4, "x": 20, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "increase(examlops_prefect_retries_total[1h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Inference Activity",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Inference Rate by Model (req/s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(dataplane_inferences_total[2m])", "legendFormat": "{{model_id}}", "refId": "A"},
+        {"expr": "rate(dataplane_inference_errors_total[2m])", "legendFormat": "ERR {{model_id}}", "refId": "B"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 8, "drawStyle": "line"},
+          "unit": "reqps"
+        },
+        "overrides": [
+          {"matcher": {"id": "byNamePattern", "options": "ERR.*"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [4, 4], "fill": "dash"}}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Inference Latency Percentiles (p50 / p95 / p99)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "legendFormat": "p50 {{model_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "legendFormat": "p95 {{model_id}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "legendFormat": "p99 {{model_id}}",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 5},
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.3}, {"color": "red", "value": 0.5}]}
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Retrain Requests by Outcome",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"success\"}[5m])", "legendFormat": "success {{model_name}}", "refId": "A"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"error\"}[5m])",   "legendFormat": "error {{model_name}}",   "refId": "B"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"dedup\"}[5m])",   "legendFormat": "dedup {{model_name}}",   "refId": "C"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 10, "stacking": {"mode": "value"}},
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Approval Events",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(examlops_approval_events_total{action=\"created\"}[5m])",  "legendFormat": "created {{model_id}}",  "refId": "A"},
+        {"expr": "rate(examlops_approval_events_total{action=\"approved\"}[5m])", "legendFormat": "approved {{model_id}}", "refId": "B"},
+        {"expr": "rate(examlops_approval_events_total{action=\"rejected\"}[5m])", "legendFormat": "rejected {{model_id}}", "refId": "C"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 8},
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Errors & Logs",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "logs",
+      "title": "Recent Errors & Warnings",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "{project=\"examlops\"} |~ \"(?i)(error|exception|traceback|warn|critical)\"",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "signature",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["examlops", "overview"],
+  "templating": {
+    "list": []
+  },
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "title": "ExaMLOps — Platform Overview",
+  "uid": "examlops-overview",
+  "version": 2
+}

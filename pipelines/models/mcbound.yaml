@@ -4,6 +4,7 @@ config_class: mcbound_config.MCBoundConfiguration
 task_type: classification
 framework: sklearn
 enabled: true
+dataplane_uuid: <UUID>
 
 model:
   embedding_type: NONE

@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  # Ray Serve metrics — auto-exported by Ray's built-in Prometheus integration.
+  # RAY_METRICS_EXPORT_PORT=8080 must be set on the ray-serving container.
+  - job_name: ray_serve
+    static_configs:
+      - targets: ['ray-serving:8080']
+    metrics_path: /metrics
+
+  - job_name: control_plane
+    static_configs:
+      - targets: ['control-plane:8002']
+    metrics_path: /metrics
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']
+
+  - job_name: tempo
+    static_configs:
+      - targets: ['tempo:3200']
+
+  - job_name: dataplane_bridge
+    static_configs:
+      - targets: ['dataplane-bridge:8003']
+    metrics_path: /metrics

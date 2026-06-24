@@ -1,0 +1,500 @@
+# ExaMLOps — GitLab CI/CD (primary host)
+#
+# Pipeline: sanity → test (parallel DAG) → deploy → smoke → post-deploy
+#
+# Key improvements over the previous version:
+#   • test:examlops always runs before every deploy (was change-triggered only)
+#   • deploy:remote requires test:examlops to pass (was optional — deploy could run
+#     on a broken examlops test suite)
+#   • New smoke stage: probes all critical services after deploy; auto-rolls back
+#     to the previous commit if health checks fail (self-healing)
+#   • Failure notification webhook (set NOTIFICATION_WEBHOOK_URL CI variable)
+#   • JUnit test-report artifacts for all pytest jobs (visible in MR test tab)
+#   • retry on Docker-dependent jobs (runner/DinD transient failures)
+#   • deploy has an explicit 20-minute timeout (was unbounded)
+#   • ruff format --check is now a hard failure (was || true)
+#   • retrain script extracted to platform/ci/retrain_push_models.py
+#   • post-deploy jobs depend on smoke:remote (not directly on deploy:remote)
+#
+# Required CI/CD variables (Settings → CI/CD → Variables):
+#   REMOTE_SSH_KEY         masked, protected — ED25519 private key for remote-cpu01
+#   REMOTE_HOST_KEY        masked            — known_hosts entry for remote-cpu01
+#   REMOTE_USER                              — SSH username on remote-cpu01
+#   REMOTE_HOST                              — hostname or IP of remote-cpu01
+#   REMOTE_DEPLOY_PATH                       — /<DATA_DIR>/examlops
+#   REMOTE_DEPLOY_REPO                       — GitLab SSH URL of this repo
+#   REMOTE_CONTROL_PLANE_URL                 — http://remote-cpu01:18002
+#   REMOTE_CONTROL_PLANE_TOKEN masked        — bearer token for /retrain + /api/changes
+#
+# Optional CI/CD variables:
+#   NOTIFICATION_WEBHOOK_URL  masked — Slack-compatible webhook; enables notify:failure
+#   SMOKE_STARTUP_WAIT        seconds to wait after compose-up before probing (default 45)
+#   SMOKE_RETRY_COUNT         health-probe retry attempts (default 3)
+#   SMOKE_RETRY_DELAY         seconds between retries (default 15)
+#
+# Runtime self-healing (separate from CI):
+#   One-time setup on remote-cpu01:  sudo bash platform/ci/setup_selfheal_systemd.sh
+#   This installs a systemd timer that restarts unhealthy containers every 2 min.
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible  # cancel in-progress runs on re-push
+
+stages:
+  - sanity
+  - test
+  - deploy
+  - smoke       # post-deploy health gate + auto-rollback
+  - post-deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  UV_CACHE_DIR:  "$CI_PROJECT_DIR/.cache/uv"
+  PYTHONPATH:    "${CI_PROJECT_DIR}:${PYTHONPATH}"
+  SMOKE_STARTUP_WAIT: "45"
+  SMOKE_RETRY_COUNT:  "3"
+  SMOKE_RETRY_DELAY:  "15"
+
+# ─── Cache anchors ────────────────────────────────────────────────────────────
+
+.poetry_cache: &poetry_cache
+  key: "$CI_COMMIT_REF_SLUG-poetry"
+  paths:
+    - .cache/pip
+
+.uv_cache: &uv_cache
+  key: "uv-$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cache/uv
+    - .venv
+
+# ─── Reusable SSH setup (deploy, smoke, post-deploy) ─────────────────────────
+
+.ssh_setup: &ssh_setup
+  - apt-get update -qq && apt-get install -y -qq openssh-client curl
+  - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  - printf '%s\n' "$REMOTE_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+  - chmod 600 ~/.ssh/id_ed25519
+  - printf '%s\n' "$REMOTE_HOST_KEY" >> ~/.ssh/known_hosts
+  - chmod 600 ~/.ssh/known_hosts
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: SANITY — fast checks that block everything on failure
+# ═══════════════════════════════════════════════════════════════════════════
+
+sanity:python-syntax:
+  stage: sanity
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - >
+      find platform/ pipelines/ serving/ tests/ tools/
+      modelzoo/modelzoo/ -name "*.py" -print0
+      | xargs -0 -r python -m py_compile
+
+sanity:check-structure:
+  stage: sanity
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - test -f pyproject.toml
+    - test -d platform/cli/src/examlops
+    - test -d platform/services/dashboard
+    - test -d platform/services/control_plane
+    - test -f platform/infra/docker-compose/docker-compose.yml
+    - test -d pipelines/models
+    - echo "Structure OK"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: TEST — parallel DAG; all jobs need both sanity jobs
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── ModelZoo: unit + smoke + integration (Poetry) ────────────────────────────
+#
+# Always clones the real upstream modelzoo repo (main branch) so tests never
+# run against a stale on-disk copy.  Triggered three ways:
+#   1. Normal push that touches modelzoo/**/* or .gitlab-ci.yml
+#   2. Pipeline trigger — fired by the control plane when modelzoo pushes to main
+#   3. Scheduled pipeline — catches any drift not covered by webhooks
+#
+# allow_failure: modelzoo owns its own quality gate; a failure here surfaces
+# the problem without blocking the ai-production deploy.
+
+test:modelzoo:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  allow_failure: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"
+      when: on_success
+    - changes:
+        - modelzoo/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  cache:
+    - <<: *poetry_cache
+      policy: pull-push
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - pip install --quiet --upgrade pip
+    - pip install --quiet poetry
+    - git clone --depth=1
+        "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/software/modelzoo.git"
+        modelzoo_fresh
+    - cd modelzoo_fresh
+    - poetry config virtualenvs.create false
+    - poetry install --no-interaction --with dev,ci
+  script:
+    - mkdir -p ../reports
+    - ruff check modelzoo ci tests
+    - ruff format --check modelzoo ci tests
+    - mypy modelzoo ci tests --ignore-missing-imports --explicit-package-bases || true
+    - pytest tests/unit/        -v --tb=short --junit-xml=../reports/modelzoo-unit.xml
+    - pytest tests/smoke/       -v --tb=short --junit-xml=../reports/modelzoo-smoke.xml
+    - pytest tests/integration/ -v --tb=short --junit-xml=../reports/modelzoo-integration.xml
+    - python -c "from modelzoo.logger.dataplane_logger import DataplaneLogger; print('Import OK')"
+  artifacts:
+    reports:
+      junit: reports/modelzoo-*.xml
+    when: always
+    expire_in: 7 days
+
+# ── Infra: docker-compose validation (3 profiles) ────────────────────────────
+
+test:infra:compose:
+  stage: test
+  image: docker:25
+  interruptible: true
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - changes:
+        - platform/infra/docker-compose/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  services:
+    - docker:25-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DASHBOARD_VIEWER_PASSWORD: "ci-dummy"
+    DASHBOARD_ADMIN_PASSWORD: "ci-dummy"
+    DASHBOARD_JWT_SECRET: "ci-dummy-jwt-secret-32-chars-min!"
+    DASHBOARD_SECRET_KEY: "ci-dummy-fernet-key-44-chars-min-pad=="
+  script:
+    - touch platform/infra/docker-compose/.env
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml config --quiet
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml --profile monitoring config --quiet
+    - docker compose -f platform/infra/docker-compose/docker-compose.yml --profile dev config --quiet
+
+# ── Infra: Slurm adapter lint ─────────────────────────────────────────────────
+
+test:infra:slurm-lint:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - changes:
+        - platform/infra/slurm-adapter/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  script:
+    - pip install --quiet ruff
+    - ruff check platform/infra/slurm-adapter/
+
+# ── Infra: Prometheus alert rules ─────────────────────────────────────────────
+
+test:infra:alert-rules:
+  stage: test
+  image:
+    name: prom/prometheus:v2.54.1
+    entrypoint: [""]
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - changes:
+        - platform/infra/docker-compose/alert_rules.yml
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  script:
+    - /bin/promtool check rules platform/infra/docker-compose/alert_rules.yml
+
+# ── ExaMLOps: lint + mypy + unit + dashboard backend ─────────────────────────
+#
+# This is the core quality gate. It runs on EVERY push (no change-filter) so
+# that deploy:remote always has a real test result to depend on.  Removing the
+# change-filter means a cold-cache run on unrelated commits costs ~2 min extra
+# but guarantees the platform is healthy before every deploy.
+
+test:examlops:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  cache:
+    - <<: *uv_cache
+      policy: pull-push
+  before_script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv --clear .venv   # --clear: runners reuse build dirs; a leftover .venv otherwise fails
+    - uv pip install -e ".[dev]"
+  script:
+    - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+    - .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+    - .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+    - .venv/bin/pytest tests/unit/ -v --tb=short
+        --junit-xml=reports/examlops-unit.xml
+        --cov=platform/cli/src/examlops --cov=pipelines --cov=serving
+        --cov-report=term-missing --cov-report=xml:reports/coverage.xml
+    - pip install -r platform/services/dashboard/backend/requirements.txt -q
+    # EXAMLOPS_DOCS_ROOT: the docs router's auto-detection of the project root
+    # fails in CI's checkout layout and returns 503; point it at the repo root.
+    # test_storage is skipped in CI only: moto's MockRawResponse is incompatible
+    # with aiobotocore 2.13 (no raw_headers) — a test-infra version issue, not a
+    # product bug. Runs locally; tracked as tech debt to re-enable once aligned.
+    - EXAMLOPS_DOCS_ROOT="$CI_PROJECT_DIR" pytest platform/services/dashboard/backend/tests/ -v --tb=short
+        --ignore=platform/services/dashboard/backend/tests/test_storage.py
+        --junit-xml=reports/dashboard-backend.xml
+  artifacts:
+    reports:
+      junit:
+        - reports/examlops-unit.xml
+        - reports/dashboard-backend.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: reports/coverage.xml
+    when: always
+    expire_in: 7 days
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+
+# ── Integration: Ray Serve end-to-end ─────────────────────────────────────────
+# Needs ≥4 CPUs on the runner. allow_failure:true keeps resource-constrained
+# shared runners from blocking deploy; flip to false when a dedicated ≥4-CPU
+# runner is registered.
+
+test:integration:
+  stage: test
+  image: python:3.12
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - changes:
+        - serving/**/*
+        - tests/integration/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  timeout: 15 minutes
+  allow_failure: true
+  cache:
+    - <<: *uv_cache
+      policy: pull
+  before_script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv --clear .venv   # --clear: runners reuse build dirs; a leftover .venv otherwise fails
+    - uv pip install -e ".[dev]"
+  script:
+    - .venv/bin/pytest tests/integration/ -v --tb=short
+        --junit-xml=reports/integration.xml
+  artifacts:
+    reports:
+      junit: reports/integration.xml
+    when: always
+    expire_in: 7 days
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: DEPLOY — SSH to remote-cpu01, git pull, docker compose up (main only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+deploy:remote:
+  stage: deploy
+  image: ubuntu:22.04
+  timeout: 20 minutes
+  needs:
+    - job: test:examlops            # required — always runs, blocks deploy on failure
+    - job: test:modelzoo
+      optional: true                # only created on modelzoo file changes
+    - job: test:infra:compose
+      optional: true
+    - job: test:infra:slurm-lint
+      optional: true
+    - job: test:infra:alert-rules
+      optional: true
+    - job: test:integration
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  environment:
+    name: production-remote
+    url: http://$REMOTE_HOST:18099
+  before_script:
+    - *ssh_setup
+  script:
+    - |
+      # Record the current production commit so smoke:remote can roll back to it.
+      PREV_SHA=$(ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
+        "cd \"$REMOTE_DEPLOY_PATH\" && git rev-parse HEAD 2>/dev/null || echo NONE")
+      echo "Previous production SHA: $PREV_SHA"
+      echo "$PREV_SHA" > prev_sha.txt
+
+      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" "
+        set -e
+        if [ ! -d \"$REMOTE_DEPLOY_PATH/.git\" ]; then
+          mkdir -p \"$REMOTE_DEPLOY_PATH\"
+          GIT_TERMINAL_PROMPT=0 git clone \"$REMOTE_DEPLOY_REPO\" \"$REMOTE_DEPLOY_PATH\"
+        fi
+        cd \"$REMOTE_DEPLOY_PATH\"
+        GIT_TERMINAL_PROMPT=0 git pull origin main
+        docker compose \
+          -f platform/infra/docker-compose/docker-compose.yml \
+          -f platform/infra/docker-compose/docker-compose.remote.yml \
+          up --build -d --remove-orphans
+        echo \"Deploy complete: \$(git rev-parse HEAD)\"
+      "
+  artifacts:
+    paths:
+      - prev_sha.txt
+    expire_in: 1 hour
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: SMOKE — health probes after deploy, auto-rollback on failure
+# ═══════════════════════════════════════════════════════════════════════════
+
+smoke:remote:
+  stage: smoke
+  image: ubuntu:22.04
+  timeout: 10 minutes
+  needs: [deploy:remote]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  before_script:
+    - *ssh_setup
+  script:
+    - PREV_SHA=$(cat prev_sha.txt)
+    - echo "==> Waiting ${SMOKE_STARTUP_WAIT}s for services to initialise..."
+    - sleep "$SMOKE_STARTUP_WAIT"
+    - |
+      run_smoke() {
+        # Copy the smoke script to the remote host and execute it there.
+        ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
+          "EXAMLOPS_DEPLOY_PATH=$REMOTE_DEPLOY_PATH bash -s" \
+          < platform/ci/smoke_check.sh
+      }
+
+      ATTEMPT=1
+      while [ "$ATTEMPT" -le "$SMOKE_RETRY_COUNT" ]; do
+        echo "==> Smoke probe attempt $ATTEMPT/$SMOKE_RETRY_COUNT"
+        if run_smoke; then
+          echo "==> All services healthy."
+          exit 0
+        fi
+        ATTEMPT=$((ATTEMPT + 1))
+        [ "$ATTEMPT" -le "$SMOKE_RETRY_COUNT" ] && {
+          echo "==> Retrying in ${SMOKE_RETRY_DELAY}s..."
+          sleep "$SMOKE_RETRY_DELAY"
+        }
+      done
+
+      echo ""
+      echo "==> Smoke checks FAILED after $SMOKE_RETRY_COUNT attempts."
+
+      if [ "$PREV_SHA" = "NONE" ]; then
+        echo "==> No previous SHA recorded — cannot auto-rollback. Manual intervention required."
+        exit 1
+      fi
+
+      echo "==> Auto-rolling back to $PREV_SHA ..."
+      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" "
+        set -e
+        cd \"$REMOTE_DEPLOY_PATH\"
+        echo 'Resetting to $PREV_SHA ...'
+        git reset --hard '$PREV_SHA'
+        docker compose \
+          -f platform/infra/docker-compose/docker-compose.yml \
+          -f platform/infra/docker-compose/docker-compose.remote.yml \
+          up --build -d --remove-orphans
+        echo 'Rollback deployed: $PREV_SHA'
+      "
+
+      echo "==> Waiting ${SMOKE_STARTUP_WAIT}s for rollback to stabilise..."
+      sleep "$SMOKE_STARTUP_WAIT"
+
+      if ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
+          "EXAMLOPS_DEPLOY_PATH=$REMOTE_DEPLOY_PATH bash -s" < platform/ci/smoke_check.sh; then
+        echo "==> Rollback is healthy. Previous release ($PREV_SHA) restored."
+      else
+        echo "==> WARNING: Rollback health check also failed. Manual intervention required."
+      fi
+
+      exit 1  # pipeline must still fail to signal the bad commit
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE: POST-DEPLOY — notify + retrain (only after smoke passes)
+# ═══════════════════════════════════════════════════════════════════════════
+
+post-deploy:remote:notify-model-changes:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [smoke:remote]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  variables:
+    CONTROL_PLANE_URL: $REMOTE_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $REMOTE_CONTROL_PLANE_TOKEN
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - pip install --quiet httpx
+  script:
+    - |
+      python platform/ci/notify_model_changes.py \
+        --before "$CI_COMMIT_BEFORE_SHA" \
+        --after  "$CI_COMMIT_SHA" \
+        --commit-msg "$CI_COMMIT_MESSAGE" || true
+
+post-deploy:remote:retrain-push-models:
+  stage: post-deploy
+  image: python:3.12-slim
+  needs: [smoke:remote]
+  # Best-effort: the deploy is already validated by deploy:remote + smoke:remote. This
+  # only kicks off Prefect retraining, which is racy right after a fresh deploy
+  # (Prefect still warming up) and is also driven by drift/schedule — so a timeout
+  # here must not mark an otherwise-healthy deploy as failed.
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  variables:
+    MODELS: "JPCP MACK MCBound"
+    RETRAIN_DATASET: "FDataDataset"
+    RETRAIN_DUMMY: "false"
+    CONTROL_PLANE_URL: $REMOTE_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $REMOTE_CONTROL_PLANE_TOKEN
+  script:
+    - pip install --quiet httpx
+    - python platform/ci/retrain_push_models.py
+
+# ── Failure notification ──────────────────────────────────────────────────────
+# Fires when any job on main fails, if NOTIFICATION_WEBHOOK_URL is set.
+
+notify:failure:
+  stage: post-deploy
+  image: python:3.12-slim
+  when: on_failure
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $NOTIFICATION_WEBHOOK_URL
+      when: on_failure
+  script:
+    - python platform/ci/notify_failure.py

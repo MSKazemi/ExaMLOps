@@ -1,0 +1,19 @@
+# REMOTE-CPU01 overrides — apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
+#
+# Adjusts bridge build ARGs to match remote directory layout:
+#   /<DATA_DIR>/examlops/           (the ai-productions repo)
+#   /<DATA_DIR>/examlops-dataplane/dataplane/  (the dataplane repo)
+
+services:
+  control-plane:
+    extra_hosts:
+      - "gitlab.dataplane.example.org:<GITLAB_HOST>"
+
+  dataplane-bridge:
+    build:
+      dockerfile: examlops/platform/infra/docker-compose/Dockerfile.bridge
+      network: host
+      args:
+        AI_PRODUCTIONS_DIR: examlops
+        DATAPLANE_DIR: examlops-dataplane/dataplane

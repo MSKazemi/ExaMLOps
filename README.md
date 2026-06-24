@@ -1,6 +1,6 @@
 # ExaMLOps
 
-End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a data plane HPC message bridge, a LangGraph management agent, and the `exa` platform CLI for operator use.
+End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a DataPlane HPC message bridge, a LangGraph management agent, and the `exa` platform CLI for operator use.
 
 ## Quick Start
 
@@ -66,8 +66,8 @@ make stack-wipe             # DESTRUCTIVE: remove containers, volumes, images
 make stack-restart          # restart without rebuild
 make stack-logs             # tail docker-compose logs
 make monitoring-up          # start Prometheus + Grafana + Loki + Promtail
-# cd ../dataplane && docker compose up -d   # start real data plane + reqgen
-make dataplane-up           # start bridge (connects to real data plane)
+# cd ../dataplane && docker compose up -d   # start real DataPlane + reqgen
+make dataplane-up           # start bridge (connects to real DataPlane)
 
 # Exa CLI: pipelines, deployments, serving, and production state
 exa pipeline list
@@ -88,9 +88,9 @@ make dashboard-up           # build + start dashboard on :18099
 make dashboard-logs         # tail dashboard logs
 make dashboard-check        # run backend pytest + frontend npm test
 
-# data plane bridge
-make dataplane-up           # start data plane bridge
-make dataplane-down         # stop data plane bridge
+# DataPlane bridge
+make dataplane-up           # start DataPlane bridge
+make dataplane-down         # stop DataPlane bridge
 
 # Approval gate (Phase 11)
 exa approvals list
@@ -131,11 +131,15 @@ exa status                  # show services, approvals, and production state
 | Ray Serve API | http://localhost:18001 |
 | Ray Dashboard | http://localhost:18265 |
 | Control Plane | http://localhost:18002 |
-| data plane Bridge Status | http://localhost:18003 |
+| DataPlane Bridge Status | http://localhost:18003 |
 | JupyterHub | http://localhost:18888 |
 | MinIO Console | http://localhost:19001 |
 | Prometheus | http://localhost:19090 |
 | Grafana | http://localhost:13000 |
+
+### Remote Server remote-cpu01 (<DATAPLANE_HOST>)
+
+Same ports as local — e.g. http://<DATAPLANE_HOST>:18099 for the Dashboard. Accessible via `ssh remote` with all ports forwarded to localhost.
 
 ## Adding a New Model
 
@@ -158,7 +162,7 @@ The pipeline discovers and runs it automatically; CI enforces registry integrity
 ExaMLOps/
 ├── docs/                       # Documentation
 │   ├── components/             # Per-service component docs
-│   ├── guides/                 # Quickstart, add-a-model, data plane, etc.
+│   ├── guides/                 # Quickstart, add-a-model, DataPlane, etc.
 │   └── reference/              # Commands, env vars, CLI, API reference
 ├── modelzoo/                   # modelzoo model library (poetry)
 │   └── modelzoo/
@@ -174,7 +178,7 @@ ExaMLOps/
 │   ├── ray_serving/            # Multi-model Ray Serve inference :18001
 │   └── inference_pipeline/     # Ray Serve DeploymentGraph (Phase 10)
 └── platform/                   # Platform area (workspace coordinator: examlops-workspace)
-    ├── clients/                # data plane bridge + dataplane_sim.py + dummy client
+    ├── clients/                # DataPlane bridge + dataplane_sim.py + dummy client
     ├── ci/                     # CI helper scripts (notify_model_changes.py)
     ├── infra/
     │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / dataplane / dev)
@@ -199,13 +203,21 @@ Two separate environments coexist:
 
 Activate root env: `source .venv/bin/activate`
 
+## CI/CD
+
+- `.github/workflows/ci.yml` — three parallel jobs (`modelzoo`, `infra`, `examlops`) on PRs and main
+- `.github/workflows/deploy.yml` — retired (commented out); `.gitlab-ci.yml` deploys to `remote-cpu01` via `deploy:remote`
+- `.gitlab-ci.yml` — GitLab mirror of the GitHub workflow
+
+Run all CI checks locally: `make ci`
+
 ## Documentation
 
 - [Quickstart](docs/guides/quickstart.md)
 - [System Overview](docs/architecture/system-overview.md)
 - [Command Reference](docs/reference/commands.md)
 - [Environment Variables](docs/reference/env-vars.md)
-- [data plane Integration](docs/guides/dataplane.md)
+- [DataPlane Integration](docs/guides/dataplane.md)
 - [Add a New Model](docs/guides/add-a-new-model.md)
 - [exa CLI Reference](docs/reference/commands.md#exa-cli)
 - [Approval Gate](docs/guides/control-plane.md#approval-gate-phase-11)

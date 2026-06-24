@@ -1,0 +1,440 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+  ],
+  "annotations": {
+    "list": [
+      {
+        "datasource": {"type": "loki", "uid": "loki"},
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "Drift Baseline Resets",
+        "target": {
+          "expr": "{project=\"examlops\"} |~ \"drift baseline\" |~ \"(?i)(stored|reset)\"",
+          "maxLines": 50,
+          "refId": "baseline"
+        },
+        "type": "logs"
+      }
+    ]
+  },
+  "description": "ExaMLOps Drift Monitor — prediction drift, input embedding drift, auto-retrain triggers, baseline comparisons",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {"title": "Overview",          "url": "/d/examlops-overview",      "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Control Plane",     "url": "/d/examlops-control-plane", "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Inference Metrics", "url": "/d/examlops-online-metrics","type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Drift Summary",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Models with CRITICAL Drift",
+      "gridPos": {"h": 3, "w": 6, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertname=~\".*Drift.*\",alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 2}]}
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Auto-Retrain Triggers (24 h)",
+      "gridPos": {"h": 3, "w": 6, "x": 6, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "increase(examlops_retrain_requests_total[24h]) or vector(0)",
+          "legendFormat": "{{model_name}}",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Inference Error Rate Now",
+      "gridPos": {"h": 3, "w": 6, "x": 12, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[5m])) / sum(rate(ray_examlops_predict_requests_total[5m])) * 100",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "p99 Inference Latency Now",
+      "gridPos": {"h": 3, "w": 6, "x": 18, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(ray_examlops_predict_latency_seconds_bucket[5m])))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 1.0}]}
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Prediction Drift",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Prediction Value Median (per model)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by(le, model_name) (rate(ray_examlops_prediction_value_bucket[5m])))",
+          "legendFormat": "p50 {{model_name}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "stdDev", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 8},
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Prediction Value p95 (per model)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by(le, model_name) (rate(ray_examlops_prediction_value_bucket[5m])))",
+          "legendFormat": "p95 {{model_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.05, sum by(le, model_name) (rate(ray_examlops_prediction_value_bucket[5m])))",
+          "legendFormat": "p05 {{model_name}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "desc"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 5},
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Inference Error Rate by Model (drift proxy)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "rate(ray_examlops_predict_requests_total{status=\"error\"}[5m]) / rate(ray_examlops_predict_requests_total[5m]) * 100",
+          "legendFormat": "error% {{model_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(dataplane_inference_errors_total[5m]) / rate(dataplane_inferences_total[5m]) * 100",
+          "legendFormat": "bus_error% {{model_id}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 5},
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 5}]}
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Input Embedding Drift (Phase 21)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Embedding Norm Drift (per model)",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "dataplane_embedding_norm_mean",
+          "legendFormat": "norm_mean {{model_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "dataplane_embedding_norm_baseline",
+          "legendFormat": "norm_baseline {{model_id}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 5},
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byNamePattern", "options": ".*baseline.*"},
+            "properties": [{"id": "custom.lineStyle", "value": {"dash": [6, 6], "fill": "dash"}}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Embedding Mean Drift (per model)",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "dataplane_embedding_mean_value",
+          "legendFormat": "mean {{model_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "dataplane_embedding_mean_baseline",
+          "legendFormat": "baseline_mean {{model_id}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 5},
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byNamePattern", "options": ".*baseline.*"},
+            "properties": [{"id": "custom.lineStyle", "value": {"dash": [6, 6], "fill": "dash"}}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Embedding Std Drift (per model)",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "dataplane_embedding_std_value",
+          "legendFormat": "std {{model_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "dataplane_embedding_std_baseline",
+          "legendFormat": "baseline_std {{model_id}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 5},
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byNamePattern", "options": ".*baseline.*"},
+            "properties": [{"id": "custom.lineStyle", "value": {"dash": [6, 6], "fill": "dash"}}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Auto-Retrain & Pipeline",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Retrain Requests Rate (success vs error)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"success\"}[5m])", "legendFormat": "success {{model_name}}", "refId": "A"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"error\"}[5m])",   "legendFormat": "error {{model_name}}",   "refId": "B"}
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 8},
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Retrain Duration (p50 / p99)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by(le,model_name) (rate(examlops_retrain_duration_seconds_bucket[10m])))",
+          "legendFormat": "p50 {{model_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le,model_name) (rate(examlops_retrain_duration_seconds_bucket[10m])))",
+          "legendFormat": "p99 {{model_name}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 1, "fillOpacity": 5},
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Drift Events Log",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "logs",
+      "title": "Drift & Retrain Events",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 40},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {
+          "expr": "{project=\"examlops\"} |~ \"(?i)(drift|retrain|baseline|trigger|auto-retrain)\"",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "signature",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["examlops", "drift", "mlops"],
+  "time": {"from": "now-12h", "to": "now"},
+  "timepicker": {},
+  "title": "ExaMLOps — Drift Monitor",
+  "uid": "examlops-drift",
+  "version": 1
+}

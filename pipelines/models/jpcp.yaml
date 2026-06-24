@@ -4,6 +4,7 @@ config_class: jpcp_config.JPCPConfiguration
 task_type: regression
 framework: sklearn
 enabled: true
+dataplane_uuid: <UUID>
 
 model:
   embedding_type: INT

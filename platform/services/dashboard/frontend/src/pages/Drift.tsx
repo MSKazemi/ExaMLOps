@@ -1,0 +1,325 @@
+import { useState } from 'react'
+import { Activity, RefreshCw } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { apiFetch } from '@/lib/api'
+
+interface DriftStatus {
+  model: string
+  live_mean: number
+  live_std: number
+  baseline_mean: number | null
+  z_score: number
+  status: string
+  n_snapshots: number
+}
+
+interface InputDriftStatus {
+  model: string
+  live_norm_mean: number
+  live_emb_mean: number
+  live_emb_std: number
+  max_z: number
+  status: string
+  n_snapshots: number
+}
+
+interface AutoRetrain {
+  model: string
+  enabled: number
+  min_z_score: number
+  dataset_name: string
+  cooldown_s: number
+  last_triggered: string | null
+}
+
+function statusStyle(status: string): React.CSSProperties {
+  const s = status.toUpperCase()
+  if (s === 'CRITICAL') return { color: 'var(--error-text, #ef4444)' }
+  if (s === 'WARNING') return { color: 'var(--warning-text, #f59e0b)' }
+  if (s === 'OK') return { color: 'var(--success-text, #22c55e)' }
+  return { color: 'var(--muted-foreground)' }
+}
+
+function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
+  const { data: rows = [], isLoading, error } = useQuery<DriftStatus[]>({
+    queryKey: ['drift-status'],
+    queryFn: () => apiFetch<DriftStatus[]>('/api/drift/status'),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Prediction score drift vs. stored baseline.</p>
+        <button
+          onClick={onRefresh}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+          style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+        >
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-sm rounded-lg px-4 py-3"
+          style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+          Failed to load drift status.
+        </p>
+      )}
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+      {!isLoading && !error && rows.length === 0 && (
+        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
+          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
+          <p className="text-sm font-medium text-muted-foreground">No drift snapshots yet.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift baseline {'<MODEL>'}</code> to set a baseline.
+          </p>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <table className="w-full text-sm">
+            <thead style={{ background: 'var(--surface-1)' }}>
+              <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-2.5">Model</th>
+                <th className="px-4 py-2.5">Live μ</th>
+                <th className="px-4 py-2.5">Live σ</th>
+                <th className="px-4 py-2.5">Baseline μ</th>
+                <th className="px-4 py-2.5">Z-score</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Snapshots</th>
+              </tr>
+            </thead>
+            <tbody style={{ background: 'var(--surface-0)' }}>
+              {rows.map(row => (
+                <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
+                  <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.live_mean.toFixed(4)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.live_std.toFixed(4)}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                    {row.baseline_mean != null ? row.baseline_mean.toFixed(4) : '—'}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.z_score.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-xs font-semibold" style={statusStyle(row.status)}>
+                    {row.status}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.n_snapshots}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
+  const { data: rows = [], isLoading, error } = useQuery<InputDriftStatus[]>({
+    queryKey: ['drift-input-status'],
+    queryFn: () => apiFetch<InputDriftStatus[]>('/api/drift/input-status'),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Embedding distribution drift vs. stored baseline.</p>
+        <button
+          onClick={onRefresh}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+          style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+        >
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-sm rounded-lg px-4 py-3"
+          style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+          Failed to load input drift status.
+        </p>
+      )}
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+      {!isLoading && !error && rows.length === 0 && (
+        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
+          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
+          <p className="text-sm font-medium text-muted-foreground">No input drift snapshots yet.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift input baseline {'<MODEL>'}</code> to set a baseline.
+          </p>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <table className="w-full text-sm">
+            <thead style={{ background: 'var(--surface-1)' }}>
+              <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-2.5">Model</th>
+                <th className="px-4 py-2.5">Norm μ</th>
+                <th className="px-4 py-2.5">Emb μ</th>
+                <th className="px-4 py-2.5">Emb σ</th>
+                <th className="px-4 py-2.5">Max Z</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Snapshots</th>
+              </tr>
+            </thead>
+            <tbody style={{ background: 'var(--surface-0)' }}>
+              {rows.map(row => (
+                <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
+                  <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.live_norm_mean.toFixed(4)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.live_emb_mean.toFixed(4)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.live_emb_std.toFixed(4)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.max_z.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-xs font-semibold" style={statusStyle(row.status)}>
+                    {row.status}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.n_snapshots}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
+  const { data: rows = [], isLoading, error } = useQuery<AutoRetrain[]>({
+    queryKey: ['drift-auto-retrain'],
+    queryFn: () => apiFetch<AutoRetrain[]>('/api/drift/auto-retrain'),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Auto-retrain configuration per model.</p>
+        <button
+          onClick={onRefresh}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+          style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+        >
+          <RefreshCw size={12} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-sm rounded-lg px-4 py-3"
+          style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+          Failed to load auto-retrain config.
+        </p>
+      )}
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+      {!isLoading && !error && rows.length === 0 && (
+        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
+          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
+          <p className="text-sm font-medium text-muted-foreground">No auto-retrain rules configured.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift auto-retrain enable {'<MODEL>'} --dataset {'<DATASET>'}</code> to enable.
+          </p>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <table className="w-full text-sm">
+            <thead style={{ background: 'var(--surface-1)' }}>
+              <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-2.5">Model</th>
+                <th className="px-4 py-2.5">Enabled</th>
+                <th className="px-4 py-2.5">Min Z-score</th>
+                <th className="px-4 py-2.5">Dataset</th>
+                <th className="px-4 py-2.5">Cooldown (s)</th>
+                <th className="px-4 py-2.5">Last Triggered</th>
+              </tr>
+            </thead>
+            <tbody style={{ background: 'var(--surface-0)' }}>
+              {rows.map(row => (
+                <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
+                  <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
+                  <td className="px-4 py-3 text-xs">
+                    <span
+                      className="px-2 py-0.5 rounded-full text-xs font-medium"
+                      style={row.enabled
+                        ? { background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }
+                        : { background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--muted-foreground)' }
+                      }
+                    >
+                      {row.enabled ? 'enabled' : 'disabled'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.min_z_score.toFixed(1)}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.dataset_name}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{row.cooldown_s}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {row.last_triggered ? new Date(row.last_triggered).toLocaleString() : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type DriftTab = 'prediction' | 'input' | 'auto-retrain'
+
+export function Drift() {
+  const [activeTab, setActiveTab] = useState<DriftTab>('prediction')
+
+  const tabs: { id: DriftTab; label: string }[] = [
+    { id: 'prediction', label: 'Prediction Drift' },
+    { id: 'input', label: 'Input Drift' },
+    { id: 'auto-retrain', label: 'Auto-Retrain' },
+  ]
+
+  // Simple no-op for refresh — queries have their own refetch
+  const handleRefresh = () => {}
+
+  return (
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center"
+          style={{ background: 'oklch(0.64 0.20 265 / 15%)', border: '1px solid oklch(0.64 0.20 265 / 30%)' }}>
+          <Activity className="w-4 h-4" style={{ color: 'var(--accent-text)' }} />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold">Drift Monitoring</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Prediction and input embedding drift detection.
+          </p>
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b" style={{ borderColor: 'var(--border)' }}>
+        {tabs.map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id)}
+            className="px-4 py-2 text-sm font-medium transition-colors"
+            style={activeTab === id
+              ? { borderBottom: '2px solid oklch(0.64 0.20 265)', color: 'oklch(0.64 0.20 265)' }
+              : { color: 'var(--muted-foreground)' }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'prediction' && <PredictionDriftTab onRefresh={handleRefresh} />}
+      {activeTab === 'input' && <InputDriftTab onRefresh={handleRefresh} />}
+      {activeTab === 'auto-retrain' && <AutoRetrainTab onRefresh={handleRefresh} />}
+    </div>
+  )
+}
