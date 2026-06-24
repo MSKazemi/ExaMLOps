@@ -214,6 +214,47 @@ def test_run_poll_cycle_skips_known_sha(tmp_path, monkeypatch):
     assert result == {}
 
 
+def test_run_poll_cycle_reports_network_error(tmp_path, monkeypatch):
+    """A failed GitLab fetch must return an error marker, not an empty/no-op dict."""
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "poll_err.db"))
+    monkeypatch.setenv("GITLAB_TOKEN", "tok")
+    monkeypatch.setenv("GITLAB_PROJECT_ID", "42")
+    import importlib
+
+    import app as cp_app
+
+    importlib.reload(cp_app)
+
+    boom = OSError("Temporary failure in name resolution")
+    with patch("urllib.request.urlopen", side_effect=boom):
+        result = cp_app._run_poll_cycle()
+
+    assert "error" in result
+    assert "name resolution" in result["error"]
+
+
+def test_modelzoo_sync_surfaces_poll_error(tmp_path, monkeypatch):
+    """`/modelzoo/sync` must report the failure reason rather than 'up-to-date'."""
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-token")
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(tmp_path / "sync_err.db"))
+    monkeypatch.setenv("GITLAB_TOKEN", "tok")
+    monkeypatch.setenv("GITLAB_PROJECT_ID", "42")
+    import importlib
+
+    import app as cp_app
+
+    importlib.reload(cp_app)
+    from fastapi.testclient import TestClient
+
+    c = TestClient(cp_app.app)
+    with patch("urllib.request.urlopen", side_effect=OSError("boom")):
+        resp = c.post("/modelzoo/sync", headers=_auth(c))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["new_commit"] is False
+    assert body["error"] == "boom"
+
+
 def _auth(client):
     return {"Authorization": "Bearer test-token"}
 

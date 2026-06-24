@@ -765,8 +765,12 @@ def _run_poll_cycle() -> dict[str, Any]:
         with _ureq.urlopen(req, timeout=10.0) as resp:  # noqa: S310
             commits = json.loads(resp.read().decode())
     except Exception as exc:
+        # A failed GitLab fetch is an ERROR, not "no new commits". Return a
+        # distinct marker so the poller treats the cycle as failed (health goes
+        # stale) and `exa modelzoo sync` surfaces the reason instead of silently
+        # reporting "up-to-date".
         logger.warning("ModelZoo poll failed: %s", exc)
-        return {}
+        return {"error": str(exc)}
 
     if not commits:
         return {}
@@ -831,9 +835,15 @@ def _start_poller() -> None:
             timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
         ):
             try:
-                _run_poll_cycle()
+                result = _run_poll_cycle()
                 _expire_old_approvals()
-                _poller_last_ok_ts = time.time()
+                # Only count the cycle as healthy if the GitLab fetch did not
+                # error. A network/DNS failure must surface as a stale poller in
+                # /health rather than masquerading as a successful "no-op" cycle.
+                if result.get("error"):
+                    logger.warning("ModelZoo poll cycle failed: %s", result["error"])
+                else:
+                    _poller_last_ok_ts = time.time()
             except Exception as exc:
                 logger.warning("Poll cycle error: %s", exc)
         logger.info("ModelZoo poller stopped")
@@ -1641,6 +1651,9 @@ def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
 @app.post("/modelzoo/sync", dependencies=[Depends(_require_token)])
 def modelzoo_sync() -> dict[str, Any]:
     result = _run_poll_cycle()
+    if result.get("error"):
+        # Poll could not reach GitLab — report it instead of "up-to-date".
+        return {"new_commit": False, "error": result["error"]}
     if not result:
         return {"new_commit": False}
     return {
