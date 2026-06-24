@@ -426,6 +426,9 @@ services:
     networks:
       - default
       - seanerbus-net     # shared with seanerbus repo — allows direct container-to-container connection
+    # Lets SEANERBUS_HOST=host.docker.internal reach a SeanerBUS running bare-metal on the host (Linux needs host-gateway)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SEANERBUS_HOST: "${SEANERBUS_HOST:-seanerbus-reqgen}"
       SEANERBUS_PORT: "${SEANERBUS_PORT:-5398}"
