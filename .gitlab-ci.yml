@@ -117,17 +117,20 @@ sanity:check-structure:
 #   2. Pipeline trigger — fired by the control plane when modelzoo pushes to main
 #   3. Scheduled pipeline — catches any drift not covered by webhooks
 #
-# allow_failure: modelzoo owns its own quality gate; a failure here surfaces
-# the problem without blocking the ai-production deploy.
-
+# Blocking gate: a modelzoo failure fails the pipeline (and blocks deploy).
+# Runs on every main push and tag (full-suite policy), plus trigger/schedule
+# and any branch/MR that touches modelzoo files.
 test:modelzoo:
   stage: test
   image: python:3.12-slim
   interruptible: true
-  allow_failure: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
     - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
       when: on_success
     - changes:
         - modelzoo/**/*
@@ -175,6 +178,10 @@ test:infra:compose:
       - stuck_or_timeout_failure
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
     - changes:
         - platform/infra/docker-compose/**/*
         - .gitlab-ci.yml
@@ -202,6 +209,10 @@ test:infra:slurm-lint:
   interruptible: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
     - changes:
         - platform/infra/slurm-adapter/**/*
         - .gitlab-ci.yml
@@ -221,6 +232,10 @@ test:infra:alert-rules:
   interruptible: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
     - changes:
         - platform/infra/docker-compose/alert_rules.yml
         - .gitlab-ci.yml
@@ -278,16 +293,20 @@ test:examlops:
   coverage: '/TOTAL.*\s+(\d+%)$/'
 
 # ── Integration: Ray Serve end-to-end ─────────────────────────────────────────
-# Needs ≥4 CPUs on the runner. allow_failure:true keeps resource-constrained
-# shared runners from blocking deploy; flip to false when a dedicated ≥4-CPU
-# runner is registered.
-
+# Needs ≥4 CPUs on the runner (the active runner already satisfies this).
+# Blocking gate: a failure here fails the pipeline and blocks deploy. Runs on
+# every main push and tag (full-suite policy) plus any branch/MR touching
+# serving/ or tests/integration/.
 test:integration:
   stage: test
   image: python:3.12
   interruptible: true
   needs: [sanity:python-syntax, sanity:check-structure]
   rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
     - changes:
         - serving/**/*
         - tests/integration/**/*
@@ -295,7 +314,6 @@ test:integration:
       when: on_success
     - when: never
   timeout: 15 minutes
-  allow_failure: true
   cache:
     - <<: *uv_cache
       policy: pull
@@ -320,18 +338,16 @@ deploy:lxp:
   stage: deploy
   image: ubuntu:22.04
   timeout: 20 minutes
+  # deploy:lxp only runs on main, where every test job is created (full-suite
+  # policy), so all are required here — deploy proceeds only when the entire
+  # suite is green. No optional:true needed: the jobs always exist on main.
   needs:
-    - job: test:examlops            # required — always runs, blocks deploy on failure
+    - job: test:examlops            # core gate — always runs
     - job: test:modelzoo
-      optional: true                # only created on modelzoo file changes
     - job: test:infra:compose
-      optional: true
     - job: test:infra:slurm-lint
-      optional: true
     - job: test:infra:alert-rules
-      optional: true
     - job: test:integration
-      optional: true
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: on_success
