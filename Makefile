@@ -451,9 +451,8 @@ firewall-fix-logs: ## Tail the firewall-fix sidecar (shows each rule (re-)apply)
 ##@ Agent  (LangGraph + Ollama management CLI)
 # =============================================================================
 
-agent: install ## Start the ExaMLOps management agent CLI (requires Ollama running locally)
+agent: install ## Start the ExaMLOps management agent CLI (backend: Azure/Claude API or Ollama)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
-	printf "$(BOLD)ExaMLOps Agent$(RESET)  →  model: $${AGENT_MODEL:-llama3.2}  ·  ollama: $${AGENT_OLLAMA_URL:-http://localhost:11434}\n"; \
 	$(PYTHON) platform/services/agent/agent.py
 
 # =============================================================================
