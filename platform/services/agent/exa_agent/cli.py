@@ -78,7 +78,11 @@ class CliState:
     thread_id: str = field(default_factory=lambda: f"cli-{uuid.uuid4().hex[:8]}")
     model: str = field(
         default_factory=lambda: (
-            config.ANTHROPIC_MODEL if config.ANTHROPIC_API_KEY else config.AGENT_MODEL
+            config.AZURE_OPENAI_DEPLOYMENT
+            if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT
+            else config.ANTHROPIC_MODEL
+            if config.ANTHROPIC_API_KEY
+            else config.AGENT_MODEL
         )
     )
 
