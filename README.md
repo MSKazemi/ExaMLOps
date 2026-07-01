@@ -1,6 +1,21 @@
 # ExaMLOps
 
+**ExaMLOps is an end-to-end MLOps platform for HPC (high-performance computing) workload management** — an "HPC MLOps" platform that runs the full machine-learning lifecycle (training, model registry, serving, and observability) on Slurm-based clusters.
+
+ExaMLOps is an open-source MLOps platform for HPC workload management, built for ML and platform engineers who operate models on HPC systems in large European research projects. Its main benefit is an auto-discovery training pipeline that trains, evaluates, logs, and promotes every registered model automatically, so adding a new model needs only a config file rather than new orchestration code. Use ExaMLOps when you need MLflow-style model management and multi-model serving on HPC/Slurm rather than a Kubernetes-only cloud stack; it is not intended for pure cloud-native MLOps or one-off notebook experiments where a full platform is overkill. Unlike a generic MLflow or Kubeflow setup, ExaMLOps combines Slurm job orchestration, auto-discovery Prefect pipelines, a sysadmin approval gate, Ray Serve multi-model serving, and a LangGraph management agent ("Skipper") in a single platform driven by the `exa` CLI.
+
+## Overview
+
 End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a DataPlane HPC message bridge, **Skipper** (a LangGraph management agent with a kube-q chat frontend), and the `exa` platform CLI for operator use.
+
+## Use Cases
+
+- **HPC model lifecycle management** — train, evaluate, version, and promote ML models on Slurm-based HPC clusters through one auto-discovery pipeline.
+- **Multi-model serving** — serve many models concurrently behind a single Ray Serve endpoint with a batching inference pipeline.
+- **Governed promotion to production** — gate model deployment behind a sysadmin approval step (push-to-serve) so no model reaches serving without review.
+- **Research-project MLOps** — provide a shared, reproducible platform for ML workloads in large European HPC research projects.
+- **Operator-driven operations** — manage pipelines, deployments, serving, and production state from the `exa` CLI and a React 19 + FastAPI dashboard, with a LangGraph agent ("Skipper") for conversational management.
+- **Observability for ML workloads** — collect real-time metrics (Prometheus + Grafana) and centralized logs (Loki) across the platform.
 
 ## Quick Start
 
@@ -211,10 +226,62 @@ Activate root env: `source .venv/bin/activate`
 
 Run all CI checks locally: `make ci`
 
+## Comparison / Alternatives
+
+ExaMLOps is not a replacement for MLflow, Prefect, or Ray — it composes them into an HPC-focused platform. How it compares to common alternatives:
+
+| Approach | Focus | Where ExaMLOps differs |
+|---|---|---|
+| Generic **MLflow** setup | Experiment tracking + model registry | ExaMLOps uses MLflow as its registry but adds auto-discovery training pipelines, Slurm orchestration, serving, and an approval gate around it. |
+| **Kubeflow** / Kubernetes-native MLOps | Cloud/Kubernetes-first ML pipelines | ExaMLOps targets Slurm-based HPC clusters instead of a Kubernetes-only cloud stack. |
+| Hand-rolled **Prefect/Ray** scripts | Custom per-model orchestration | ExaMLOps auto-discovers registered models, so adding a model needs only a config file, not new orchestration code. |
+
+Choose ExaMLOps when your models run on HPC/Slurm and you want one platform for training, registry, serving, approval, and observability. Choose a lighter tool if you only need a single capability (e.g. experiment tracking alone).
+
+## Limitations / When Not to Use
+
+- **Not a cloud-native / Kubernetes-first platform.** ExaMLOps is built around Slurm-based HPC and a Docker-Compose dev stack; teams that are fully Kubernetes-native may prefer Kubeflow or a managed cloud MLOps service.
+- **Not for one-off experiments.** For a single model in a notebook, standing up the full stack (MLflow, Prefect, Ray Serve, MinIO, dashboard) is more overhead than it's worth.
+- **Assumes an HPC/Slurm context.** The Slurm adapter and DataPlane bridge are designed for HPC environments; value is limited without an HPC-style workload.
+- **Research-oriented.** It was developed for MLOps in large European research projects and reflects that context rather than a turnkey commercial product.
+
+## FAQ
+
+**What is ExaMLOps?**
+An end-to-end, open-source MLOps platform for managing the machine-learning lifecycle — training, model registry, serving, and observability — on HPC (Slurm-based) clusters.
+
+**Who is it for?**
+ML and platform engineers who operate models on HPC systems, particularly within large European research projects.
+
+**What does the auto-discovery pipeline do?**
+It scans all registered models and runs train → evaluate → MLflow log → promote for every model × dataset combination, so adding a model requires only a config file.
+
+**How do I add a new model?**
+Run `exa scaffold <Name> --task <task> --type <type>` (or add a model class plus config manually); the pipeline discovers and runs it automatically. See [docs/guides/add-a-new-model.md](docs/guides/add-a-new-model.md).
+
+**Does it require Kubernetes?**
+No. It uses a Docker-Compose dev stack and a Slurm adapter for HPC orchestration.
+
+**What is "Skipper"?**
+A LangGraph-based management agent with a chat frontend for conversational operation of the platform.
+
+**How do I interact with the platform?**
+Through the `exa` CLI (primary operator interface), the React 19 + FastAPI dashboard, and the Skipper agent.
+
+## License
+
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+
+## Citation
+
+If you use ExaMLOps in your work, please cite it. Citation metadata is provided in [CITATION.cff](CITATION.cff). Example:
+
+> Seyedkazemi Ardebili, Mohsen. *ExaMLOps: End-to-End MLOps Platform for HPC Workload Management.* https://github.com/MSKazemi/ExaMLOps
+
 ## Documentation
 
 - [Quickstart](docs/guides/quickstart.md)
-- [System Overview](docs/architecture/system-overview.md)
+- [Architecture](docs/guides/architecture.md)
 - [Command Reference](docs/reference/commands.md)
 - [Environment Variables](docs/reference/env-vars.md)
 - [DataPlane Integration](docs/guides/dataplane.md)
