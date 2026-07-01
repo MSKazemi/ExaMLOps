@@ -1,121 +1,120 @@
-# Slurm Adapter — HPC Abstraction
+# HPC Scheduler Adapter — Slurm / Flux Abstraction
 
-The Slurm adapter decouples training logic from the compute environment. The same Prefect pipeline runs on a laptop (mock mode) or a real HPC cluster (slurm mode) — just by setting one environment variable.
+The scheduler adapter decouples training logic from the compute environment. The same
+Prefect pipeline runs on a laptop (mock mode), a Slurm cluster, or a Flux cluster — by
+setting environment variables. Two concerns are independent:
+
+- **Scheduler backend** — which queue runs the job: `mock` | `slurm` | `flux`.
+- **Transport** — how commands reach the cluster: `local` (subprocess, shared filesystem)
+  or `ssh` (paramiko + SFTP, no shared filesystem — a Docker worker submitting to a remote
+  login node).
+
+> Backwards compatible: `EXAMLOPS_SLURM_MODE=mock|slurm` still works. `EXAMLOPS_HPC_SCHEDULER`
+> takes precedence when set.
 
 ## Modes
 
-| Mode | Env var value | Behaviour |
+| Scheduler | Env | Behaviour |
 |---|---|---|
-| **Mock** (default) | `EXAMLOPS_SLURM_MODE=mock` | Trains inline in the Prefect worker process. No HPC needed. |
-| **Real Slurm** | `EXAMLOPS_SLURM_MODE=slurm` | Submits an `sbatch` job to the cluster. Requires the HPC tools to be on PATH. |
+| **Mock** (default) | `EXAMLOPS_HPC_SCHEDULER=mock` (or `EXAMLOPS_SLURM_MODE=mock`) | Trains inline in the Prefect worker. No HPC needed. |
+| **Slurm** | `EXAMLOPS_HPC_SCHEDULER=slurm` (or `EXAMLOPS_SLURM_MODE=slurm`) | Submits an `sbatch` job. |
+| **Flux** | `EXAMLOPS_HPC_SCHEDULER=flux` | Submits a `flux batch` job (flux-core). |
+
+| Transport | Env | Behaviour |
+|---|---|---|
+| **Local** | `EXAMLOPS_HPC_TRANSPORT=local` | `subprocess` + `shutil.copy`; assumes the worker is on the cluster with a shared FS. |
+| **SSH** | `EXAMLOPS_HPC_TRANSPORT=ssh` | paramiko SSH + SFTP; stages the job script up and fetches the model back. |
 
 ## Switching modes
 
 ```bash
-# Mock (default — use this for local development)
+# Mock (default — local development)
 exa pipeline run --dummy
 
-# Real Slurm
+# Real Flux over SSH (e.g. the remote cluster; CPU-only, 0 GPUs enrolled)
+export EXAMLOPS_HPC_SCHEDULER=flux EXAMLOPS_HPC_TRANSPORT=ssh \
+       EXAMLOPS_HPC_SSH_HOST=remote-cpu01 EXAMLOPS_HPC_SSH_USER=<user> \
+       EXAMLOPS_HPC_REMOTE_REPO=/path/to/deployed/ExaMLOps EXAMLOPS_HPC_GPUS=0
+exa pipeline run --model JPCP --dataset PM100Dataset --dummy
+
+# Real Slurm (worker on a login node, shared FS)
 EXAMLOPS_SLURM_MODE=slurm exa pipeline run --dummy
 ```
 
-## Mock mode — how it works
+## How it works
 
-In mock mode, the `slurm_submit_task` runs `model.train_step(loader)` inline:
+**Mock** — `slurm_submit_task` runs `model.train_step(loader)` inline, dumps the estimator
+to a temp `model.pkl`, and `slurm_wait_task` returns `COMPLETED` immediately.
 
-```
-slurm_submit_task (mock)
-  1. Calls model.train_step(loader) — trains the sklearn estimator in-process
-  2. Serialises the estimator to a temp directory as model.pkl
-  3. Returns (job_id="mock-<uuid>", artifact_path="/tmp/examlops_mock_.../model.pkl")
-
-slurm_wait_task (mock)
-  1. artifact_path is already set → returns "COMPLETED" immediately
-```
-
-This means the full pipeline completes in seconds with no HPC dependency.
-
-## Real Slurm mode — how it works
-
-In real mode, the adapter calls `sbatch` to submit a pre-baked training script:
+**Real (slurm | flux)**:
 
 ```
 slurm_submit_task (real)
-  1. Validates RealSlurmAdapter is reachable
-  2. Submits script via sbatch with resource flags
-  3. Returns (job_id="12345678", artifact_path=None)
+  1. get_scheduler_adapter() → FluxAdapter | RealSlurmAdapter (with a RemoteExecutor)
+  2. Generates a portable run.sh (no #SBATCH comments — all directives via CLI flags)
+     that runs the remote python + slurm_train_script.py, writing <remote_dir>/model.pkl
+  3. adapter.submit_job(script, resources, remote_dir=<per-run dir>)
+       flux:  flux batch -N.. -n.. -c.. -t..  <staged run.sh>   → F58 id (ƒAbCdEf)
+       slurm: sbatch --nodes.. --time.. ..    <staged run.sh>   → numeric id
+  4. Records an hpc_jobs tracking row; returns (job_id, <remote_dir>/model.pkl)
 
 slurm_wait_task (real)
-  1. Polls squeue (active jobs) every 10 seconds
-  2. Falls back to sacct (history) once job leaves the queue
-  3. Waits until state ∈ {COMPLETED, FAILED, CANCELLED, TIMEOUT}
-  4. Returns (state, "{working_dir}/{job_id}/model.pkl")
+  1. adapter.wait_until_complete(job_id) — bounded poll (deadline, UNKNOWN-streak, CLI-timeout)
+       flux:  flux jobs / flux job info eventlog
+       slurm: squeue (active) → sacct (history)
+  2. Updates the hpc_jobs row; raises unless state == COMPLETED
+  3. adapter.executor.get(<remote_dir>/model.pkl → local temp)  (a plain copy when local)
+  4. Returns (state, local model.pkl)
 ```
+
+The trained-job id is tagged onto the MLflow run (`hpc_job_id`, `hpc_scheduler`, and the
+legacy `slurm_job_id`), so `exa models cost --record` can attribute GPU/CPU-hours.
 
 ## Resource configuration
 
-Pass a `resources` dict to `submit_job()` to override sbatch flags:
+Pass a scheduler-neutral `resources` dict to `submit_job()`; each backend translates:
 
-```python
-resources = {
-    "partition":     "gpu",
-    "time":          "02:00:00",
-    "nodes":         1,
-    "ntasks":        8,
-    "cpus_per_task": 4,
-    "mem":           "32G",
-    "gpus":          "1",
-    "job_name":      "examlops_train",
-}
-adapter.submit_job(script_path="train.sh", resources=resources)
-```
+| Key | sbatch flag | flux flag |
+|---|---|---|
+| `partition` | `--partition` | — |
+| `qos` | `--qos` | `--queue` |
+| `account` | `--account` | `--bank` (flux-accounting) |
+| `constraint` | `--constraint` | `--requires` |
+| `time` | `--time` | `-t<FSD>` (e.g. `2:00:00`→`7200s`) |
+| `nodes` | `--nodes` | `-N` |
+| `ntasks` | `--ntasks` | `-n` |
+| `cpus_per_task` | `--cpus-per-task` | `-c` |
+| `mem` | `--mem` | *dropped* (flux-core has no schedulable mem) |
+| `gpus` | `--gpus` | `-g` (omitted when `0`) |
+| `job_name` | `--job-name` | `--job-name` |
 
-Supported keys map directly to sbatch flags:
-
-| Key | sbatch flag |
-|---|---|
-| `partition` | `--partition` |
-| `time` | `--time` |
-| `nodes` | `--nodes` |
-| `ntasks` | `--ntasks` |
-| `cpus_per_task` | `--cpus-per-task` |
-| `mem` | `--mem` |
-| `gpus` | `--gpus` |
-| `output` | `--output` |
-| `error` | `--error` |
-| `job_name` | `--job-name` |
-| `account` | `--account` |
-
-Default log locations are `{working_dir}/{job_id}.out` and `{working_dir}/{job_id}.err`.
+In the pipeline these come from `EXAMLOPS_HPC_*` (falling back to `EXAMLOPS_SLURM_*`); see
+the [env-vars reference](../reference/env-vars.md#hpc-scheduler-adapter-phase-23).
 
 ## Using the adapter directly
 
 ```python
-from adapter import get_slurm_adapter, RealSlurmAdapter
+from adapter import get_scheduler_adapter          # respects EXAMLOPS_HPC_SCHEDULER
+from executor import SSHExecutor
+from flux_adapter import FluxAdapter
 
-# Factory — respects EXAMLOPS_SLURM_MODE
-adapter = get_slurm_adapter()
+adapter = get_scheduler_adapter()                   # factory (mock/slurm/flux + transport)
 
-# Direct instantiation
-adapter = RealSlurmAdapter(working_dir="slurm_jobs")
+# Or construct explicitly:
+adapter = FluxAdapter(executor=SSHExecutor(host="remote-cpu01", user="me"),
+                      remote_workdir="/home/me/examlops_jobs")
 
-# Submit
-job_id = adapter.submit_job("train.sh", resources={"partition": "cpu"})
-
-# Status
-status = adapter.get_job_status(job_id)
-# {"state": "RUNNING", "exit_code": None, "start_time": "...", "end_time": None}
-
-# Wait (blocking)
+job_id = adapter.submit_job("run.sh", resources={"nodes": 2, "time": "2:00:00"},
+                            remote_dir="/home/me/examlops_jobs/abc")
+status = adapter.get_job_status(job_id)             # {state, exit_code, start_time, end_time}
 log_path = adapter.wait_until_complete(job_id, poll_interval=10)
-
-# Logs
 logs = adapter.get_job_logs(job_id)
 ```
 
 ## Job status values
 
-The adapter maps Slurm states directly:
+Both backends normalize to the same set. Flux states (`DEPEND/PRIORITY/SCHED`→`PENDING`,
+`RUN/CLEANUP`→`RUNNING`, `INACTIVE`+result→terminal) and Slurm states map onto:
 
 | State | Meaning |
 |---|---|
@@ -123,19 +122,25 @@ The adapter maps Slurm states directly:
 | `RUNNING` | Currently executing |
 | `COMPLETED` | Finished successfully |
 | `FAILED` | Exited with non-zero code |
-| `CANCELLED` | Manually cancelled |
-| `TIMEOUT` | Hit the wall time limit |
+| `CANCELLED` | Cancelled |
+| `TIMEOUT` | Hit the wall-time limit |
 
-Terminal states (adapter stops polling): `COMPLETED`, `FAILED`, `CANCELLED`, `TIMEOUT`.
+Terminal states (polling stops): `COMPLETED`, `FAILED`, `CANCELLED`, `TIMEOUT`.
 
 ## Errors
 
 | Exception | When |
 |---|---|
-| `JobSubmissionError` | `sbatch` returned non-zero, or `script_path` not found |
-| `JobNotFoundError` | Job ID not found in `squeue` or `sacct` |
-| `SlurmAdapterError` | Base class — catch this for any adapter failure |
+| `JobSubmissionError` | Scheduler returned non-zero, or `script_path` not found |
+| `JobNotFoundError` | Job id not observable (queue/history/eventlog) |
+| `JobTimeoutError` | A scheduler CLI call or the overall wait exceeded its budget |
+| `SchedulerAdapterError` (alias `SlurmAdapterError`) | Base class — catch for any failure |
 
-## Current limitation
+## Notes / limitations
 
-Real Slurm mode requires a pre-baked training script that saves the trained estimator to `{working_dir}/{job_id}/model.pkl` on the shared filesystem. The automatic generation of this script from a `DataplaneModel` instance is not yet implemented. Use `EXAMLOPS_SLURM_MODE=mock` for local development.
+- The training script imports the full modelzoo registry, so the **repo + venv must be
+  deployed on the cluster** (per the remote deploy runbook); the worker stages only `run.sh`
+  up and fetches `model.pkl` back over SFTP.
+- remote Flux currently has **0 GPUs enrolled** — runs are CPU-only; `hpc_jobs.gpus` records 0
+  and cost uses a CPU-hour term (`CPU_COST_PER_HOUR`).
+- Flux `account`/`qos` require flux-accounting; without it those flags should be left unset.

@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-_ADAPTER_DIR = (
-    Path(__file__).resolve().parents[2] / "platform" / "infra" / "slurm-adapter"
-)
+_ADAPTER_DIR = Path(__file__).resolve().parents[2] / "platform" / "infra" / "slurm-adapter"
 if str(_ADAPTER_DIR) not in sys.path:
     sys.path.insert(0, str(_ADAPTER_DIR))
 
 import adapter as slurm_adapter  # noqa: E402
+import executor as executor_mod  # noqa: E402
+import scheduler as scheduler_mod  # noqa: E402
 
 
 def _adapter(tmp_path):
@@ -49,7 +49,7 @@ def test_wait_tolerates_then_gives_up_on_unknown(tmp_path, monkeypatch):
         raise slurm_adapter.JobNotFoundError("gone")
 
     monkeypatch.setattr(a, "get_job_status", _always_missing)
-    monkeypatch.setattr(slurm_adapter, "_MAX_UNKNOWN_POLLS", 3)
+    monkeypatch.setattr(scheduler_mod, "_MAX_UNKNOWN_POLLS", 3)
     with pytest.raises(slurm_adapter.JobNotFoundError):
         a.wait_until_complete("123", poll_interval=0)
     assert calls["n"] == 3  # tolerated up to the streak limit, then gave up
@@ -57,12 +57,14 @@ def test_wait_tolerates_then_gives_up_on_unknown(tmp_path, monkeypatch):
 
 def test_wait_recovers_after_transient_unknown(tmp_path, monkeypatch):
     a = _adapter(tmp_path)
-    states = iter([
-        {"state": "RUNNING"},
-        slurm_adapter.JobNotFoundError("blip"),  # transient
-        {"state": "RUNNING"},
-        {"state": "COMPLETED"},
-    ])
+    states = iter(
+        [
+            {"state": "RUNNING"},
+            slurm_adapter.JobNotFoundError("blip"),  # transient
+            {"state": "RUNNING"},
+            {"state": "COMPLETED"},
+        ]
+    )
 
     def _next(_job):
         v = next(states)
@@ -71,15 +73,17 @@ def test_wait_recovers_after_transient_unknown(tmp_path, monkeypatch):
         return v
 
     monkeypatch.setattr(a, "get_job_status", _next)
-    monkeypatch.setattr(slurm_adapter, "_MAX_UNKNOWN_POLLS", 3)
+    monkeypatch.setattr(scheduler_mod, "_MAX_UNKNOWN_POLLS", 3)
     # A single UNKNOWN in the middle must not abort the wait.
     assert a.wait_until_complete("123", poll_interval=0).endswith("123.out")
 
 
 def test_scheduler_cmd_timeout_becomes_job_timeout(monkeypatch):
+    """A hung scheduler CLI is converted to JobTimeoutError by the LocalExecutor."""
+
     def _hang(*_a, **_kw):
         raise subprocess.TimeoutExpired(cmd="squeue", timeout=30)
 
-    monkeypatch.setattr(slurm_adapter.subprocess, "run", _hang)
+    monkeypatch.setattr(executor_mod.subprocess, "run", _hang)
     with pytest.raises(slurm_adapter.JobTimeoutError):
-        slurm_adapter._run_scheduler_cmd(["squeue", "-j", "1"], capture_output=True, text=True)
+        executor_mod.LocalExecutor().run(["squeue", "-j", "1"])

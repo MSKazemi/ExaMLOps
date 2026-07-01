@@ -29,7 +29,7 @@ graph TB
         SB["DataPlane\n(Cap'n'Proto TCP :<PORT>)\nReal bus in prod; MockDataPlaneServer in dev"]
         GitLab["GitLab\n(ModelZoo repo)"]
         GitHub["GitHub\n(ModelZoo repo)"]
-        HPC["HPC Cluster\n(Slurm)"]
+        HPC["HPC Cluster\n(Slurm / Flux)"]
     end
 
     subgraph Core["ExaMLOps Core"]
@@ -75,7 +75,7 @@ graph TB
     Bridge -- "GET /health /stats /metrics" --> BridgeStat
     Bridge -- "metrics" --> Prom
     CP -- "create_flow_run" --> Prefect
-    Prefect -- "sbatch / inline" --> HPC
+    Prefect -- "sbatch / flux batch / inline" --> HPC
     Prefect -- "log artifacts + aliases" --> MLflow
     MLflow -- "artifacts" --> MinIO
     MLflow -- "webhook reload" --> Ray
@@ -158,7 +158,7 @@ sequenceDiagram
     participant CP as Control Plane
     participant SA as Sysadmin
     participant Prefect as Prefect
-    participant HPC as HPC/Slurm
+    participant HPC as HPC/Slurm-Flux
     participant ML as MLflow
     participant Ray as Ray Serve
 
@@ -169,7 +169,7 @@ sequenceDiagram
     Note over SA: Dashboard badge OR exa approvals list
     SA->>CP: POST /approve/{model_id}
     CP->>Prefect: create_flow_run(training_flow, model+dataset params)
-    Prefect->>HPC: sbatch (or inline mock)
+    Prefect->>HPC: sbatch / flux batch (or inline mock)
     HPC-->>Prefect: trained estimator
     Prefect->>ML: log metrics + artifacts
     Prefect->>ML: set aliases Staging→Canary→Production
@@ -191,8 +191,9 @@ sequenceDiagram
 2. Prefect training_flow(model_name, dataset_cls_name, is_dummy, backend_name)
    ├─ data_extraction_task → instantiate model + build train loader
    │   └─ Phase 1: dataset backend (zenodo/minio/dataplane) resolves data_path
-   ├─ slurm_submit_task    → train inline (mock) or submit sbatch (real HPC)
-   ├─ slurm_wait_task      → wait for COMPLETED state
+   ├─ slurm_submit_task    → train inline (mock) or submit a batch job (Slurm sbatch /
+   │                        Flux flux batch), staged over local FS or SSH+SFTP
+   ├─ slurm_wait_task      → poll to a terminal state, fetch model.pkl back
    ├─ result_fetch_task    → Phase 5: framework adapter loads the estimator
    │                        (joblib | torch.load | from_pretrained)
    ├─ evaluate_task        → regression: RMSE/MAPE/MSE | classification: acc/F1
@@ -348,7 +349,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 
 **Combined polling + webhook auto-reload** — Prefect fires a best-effort webhook on Production promotion for sub-second propagation; the background poller is the safety net when the webhook is unreachable. Either is sufficient on its own.
 
-**Slurm adapter is swappable** — setting `EXAMLOPS_SLURM_MODE=slurm` switches from local training to real HPC without any code changes. The Prefect tasks are identical in both modes.
+**Scheduler adapter is swappable on two axes (Phase 23)** — the *scheduler backend* (`EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux`, via the `SchedulerAdapter` protocol) and the *transport* (`EXAMLOPS_HPC_TRANSPORT=local|ssh`, via the `RemoteExecutor` protocol — `LocalExecutor` subprocess or a paramiko `SSHExecutor`) are independent. The same Prefect tasks submit to a local mock, a Slurm cluster (`sbatch`), or a Flux cluster (`flux batch`) — the real `remote-cpu01/02` scheduler — over a shared filesystem or SSH+SFTP, with no code changes. `EXAMLOPS_SLURM_MODE=slurm` remains a supported legacy alias. See `docs/components/slurm-adapter.md`.
 
 **Framework extensibility** — `DataplaneFrameworkAdapter` abstracts the four operations (`fit`, `predict`, `save`, `load`, `log_mlflow`) so the pipeline + Ray Serve dispatch on `framework=<flavour>` (sklearn / pytorch / huggingface) without per-model special-casing. New frameworks plug in via `register_adapter()`.
 

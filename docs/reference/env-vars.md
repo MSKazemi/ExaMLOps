@@ -52,6 +52,30 @@ Docker Compose memory ceilings (OOM isolation) are also env-overridable:
 | `EXAMLOPS_SLURM_MEM` | `16G` | Memory per node |
 | `EXAMLOPS_SLURM_CPUS` | `4` | CPUs per task |
 | `GPU_COST_PER_HOUR` | `2.50` | USD cost per GPU-hour used by `exa models cost --record` |
+| `CPU_COST_PER_HOUR` | `0.05` | USD cost per CPU-hour (used for Flux/CPU-only jobs in `exa models cost --record`) |
+
+### HPC scheduler adapter (Phase 23)
+
+The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` and every
+`EXAMLOPS_SLURM_*` key keep working; `EXAMLOPS_HPC_*` takes precedence when set.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_HPC_SCHEDULER` | derived from `EXAMLOPS_SLURM_MODE` | `mock` \| `slurm` \| `flux` — which scheduler backend to submit to |
+| `EXAMLOPS_HPC_TRANSPORT` | `ssh` if `EXAMLOPS_HPC_SSH_HOST` set, else `local` | `local` (subprocess/shared-FS) \| `ssh` (paramiko + SFTP) |
+| `EXAMLOPS_HPC_SSH_HOST` | unset | SSH host of the cluster login node (e.g. `remote-cpu01`) |
+| `EXAMLOPS_HPC_SSH_USER` | unset | SSH username (falls back to agent/default) |
+| `EXAMLOPS_HPC_SSH_KEY` | unset | Path to the SSH private key (else agent/default keys) |
+| `EXAMLOPS_HPC_SSH_PORT` | `22` | SSH port |
+| `EXAMLOPS_HPC_REMOTE_REPO` | repo root | Path to the deployed ExaMLOps repo on the cluster |
+| `EXAMLOPS_HPC_REMOTE_PYTHON` | `<remote_repo>/.venv/bin/python` | Remote interpreter that runs the training script |
+| `EXAMLOPS_HPC_REMOTE_WORKDIR` | adapter working dir | Root for per-job dirs on the cluster |
+| `EXAMLOPS_HPC_GPUS` | unset | GPUs per job (`0`/unset ⇒ no GPU flag; remote Flux has 0 enrolled) |
+| `EXAMLOPS_HPC_ACCOUNT` | unset | Account/bank (`--account` for Slurm, `--bank` for flux-accounting) |
+| `EXAMLOPS_HPC_QOS` | unset | QoS/queue (`--qos` for Slurm, `--queue` for Flux) |
+| `EXAMLOPS_HPC_CONSTRAINT` | unset | Node constraint (`--constraint` / `--requires`) |
+| `EXAMLOPS_HPC_NTASKS` | `1` | Tasks per job |
+| `EXAMLOPS_HPC_PARTITION` / `_TIME` / `_NODES` / `_MEM` / `_CPUS` | fall back to `EXAMLOPS_SLURM_*` | Scheduler-neutral resource mirrors |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | MLflow server endpoint for logging and model loading |
 | `MLFLOW_S3_ENDPOINT_URL` | `http://localhost:19000` | MinIO S3-compatible endpoint for MLflow artifact storage |
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |

@@ -16,6 +16,8 @@ from examlops.cli.commands import (
     drift,
     explain_cmd,
     features_cmd,
+    feedback_cmd,
+    finops_cmd,
     hpo_cmd,
     models,
     modelzoo,
@@ -121,6 +123,18 @@ models.app.add_typer(
 serve.app.add_typer(explain_cmd.app, name="explain", help="Feature importance explanations (XAI)")
 pipeline.app.add_typer(hpo_cmd.app, name="hpo", help="Hyperparameter optimisation")
 app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
+
+# Continuous evaluation & the ground-truth feedback loop (#9/#14).
+eval_app = typer.Typer(
+    help="Model evaluation — ground-truth feedback loop and live accuracy.",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+eval_app.add_typer(feedback_cmd.app, name="feedback", help="Ground-truth feedback loop")
+app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
+
+app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
 
 app.command("retrain", epilog=retrain._EXAMPLES)(retrain.retrain)
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)

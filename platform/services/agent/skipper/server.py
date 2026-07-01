@@ -166,9 +166,7 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
     timed_out = False
     while True:
         try:
-            event = await asyncio.wait_for(
-                queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT
-            )
+            event = await asyncio.wait_for(queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT)
         except TimeoutError:
             # Hung LLM/tool — no output for the idle window. Tell the client and stop
             # rather than blocking the socket forever.

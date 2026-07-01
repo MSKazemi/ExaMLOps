@@ -333,6 +333,14 @@ test:integration:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE: DEPLOY — SSH to remote-cpu01, git pull, docker compose up (main only)
+#
+# ⛔⛔ AUTO-DEPLOY TO REMOTE IS TEMPORARILY DISABLED (presentation freeze, 2026-07). ⛔⛔
+# Every job in the deploy → smoke → post-deploy chain below is gated `when: never`
+# so a push to main will NOT touch the live remote stack. To re-enable, in each of
+# deploy:remote / smoke:remote / post-deploy:remote:* restore the commented
+# `if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH / when: on_success` rule and delete
+# the `- when: never` line. (Manual deploy meanwhile: run `make` targets / the
+# mska-remote-deploy steps by hand on remote, or trigger via the GitLab UI after re-enabling.)
 # ═══════════════════════════════════════════════════════════════════════════
 
 deploy:remote:
@@ -351,8 +359,11 @@ deploy:remote:
     - job: test:infra:alert-rules
     - job: test:integration
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
+    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). No automatic deploy
+    #    to remote. Re-enable by uncommenting the rule below and deleting `when: never`.
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    #   when: on_success
+    - when: never
   environment:
     name: production-remote
     url: http://$REMOTE_HOST:18099
@@ -395,8 +406,10 @@ smoke:remote:
   timeout: 10 minutes
   needs: [deploy:remote]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
+    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    #   when: on_success
+    - when: never
   before_script:
     - *ssh_setup
   script:
@@ -467,8 +480,10 @@ post-deploy:remote:notify-model-changes:
   image: python:3.12-slim
   needs: [smoke:remote]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
+    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    #   when: on_success
+    - when: never
   variables:
     CONTROL_PLANE_URL: $REMOTE_CONTROL_PLANE_URL
     CONTROL_PLANE_TOKEN: $REMOTE_CONTROL_PLANE_TOKEN
@@ -492,8 +507,10 @@ post-deploy:remote:retrain-push-models:
   # here must not mark an otherwise-healthy deploy as failed.
   allow_failure: true
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: on_success
+    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    #   when: on_success
+    - when: never
   variables:
     MODELS: "JPCP MACK MCBound"
     RETRAIN_DATASET: "FDataDataset"

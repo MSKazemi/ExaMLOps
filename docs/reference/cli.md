@@ -153,20 +153,29 @@ exa --json models lineage jpcp
 
 ### `exa models cost <model>`
 
-Show HPC training cost history for a model, or fetch and record the latest Slurm GPU-hour data.
+Show HPC training cost history for a model, or fetch and record the latest scheduler cost data (Slurm or Flux).
 
 ```bash
 exa models cost jpcp                # show cost history from DB
-exa models cost jpcp --record       # fetch Slurm data, record to DB, tag MLflow versions
+exa models cost jpcp --record       # fetch scheduler data, record to DB, tag MLflow versions
 exa --json models cost jpcp
 ```
 
 | Argument / Option | Description |
 |---|---|
 | `MODEL` | Registered model name (e.g. `jpcp`) |
-| `--record` | Fetch GPU-hours via `sacct` (or mock), write to `platform.db`, tag MLflow versions |
+| `--record` | Fetch GPU/CPU-hours, write to `platform.db`, tag MLflow versions |
 
-Cost is computed as `gpu_hours × GPU_COST_PER_HOUR` (default `$2.50/hr`, override with `GPU_COST_PER_HOUR` env var). In mock mode (`EXAMLOPS_SLURM_MODE=mock`) synthetic data is generated deterministically from the model name and version.
+The scheduler is read from the MLflow run's `hpc_scheduler` tag (falling back to
+`EXAMLOPS_HPC_SCHEDULER` / `EXAMLOPS_SLURM_MODE`). Cost is computed per backend:
+
+- **Slurm** — `gpu_hours × GPU_COST_PER_HOUR` via `sacct` (`gpu_hours` from `gres/gpu`).
+- **Flux** — `gpu_hours × GPU_COST_PER_HOUR + cpu_hours × CPU_COST_PER_HOUR` via
+  `flux job info R`/`eventlog`, so CPU-only Flux runs (e.g. remote, 0 GPUs) still show a cost.
+- **Mock** — synthetic GPU-hours, deterministic on model name + version.
+
+Defaults: `GPU_COST_PER_HOUR=$2.50/hr`, `CPU_COST_PER_HOUR=$0.05/hr` (both env-overridable).
+The job id is looked up from the `hpc_job_id` MLflow tag (legacy `slurm_job_id` still honored).
 
 MLflow model versions are tagged with `gpu_hours` and `cost_usd` when `--record` is used.
 

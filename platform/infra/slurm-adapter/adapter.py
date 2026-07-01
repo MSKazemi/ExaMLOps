@@ -1,95 +1,114 @@
 """
-Dual-mode Slurm adapter factory for ExaMLOps.
+Dual-mode scheduler adapter factory for ExaMLOps.
 
-Modes:
-- mock  : local fake Slurm — runs real sklearn training locally (no HPC needed)
-- slurm : real Slurm integration for HPC environments
+Scheduler backends (which queue runs the job):
+- mock  : local fake scheduler — runs real sklearn training locally (no HPC needed)
+- slurm : real Slurm integration (sbatch/squeue/sacct)
+- flux  : real Flux integration (flux batch/jobs) — see flux_adapter.py
 
-Mode is selected via:
-  EXAMLOPS_SLURM_MODE=mock|slurm  (default: mock)
+Transport (how commands reach the cluster) is orthogonal and lives in executor.py
+(local subprocess vs SSH). See scheduler.py for the shared contract + wait loop.
+
+Selection via env (back-compatible):
+  EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux   (preferred)
+  EXAMLOPS_SLURM_MODE=mock|slurm           (legacy; used when the above is unset)
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 
-# ── Exceptions ─────────────────────────────────────────────────────────────────
+from executor import LocalExecutor, RemoteExecutor, get_executor
+from scheduler import (
+    _CMD_TIMEOUT,
+    BasePollingAdapter,
+    JobNotFoundError,
+    JobStatus,
+    JobSubmissionError,
+    JobTimeoutError,
+    SchedulerAdapterError,
+)
 
+# ── Back-compat exception aliases ───────────────────────────────────────────────
+# Older call sites do ``from adapter import SlurmAdapterError`` etc.
+SlurmAdapterError = SchedulerAdapterError
 
-class SlurmAdapterError(Exception):
-    """Base exception for all Slurm adapter failures."""
-
-
-class JobSubmissionError(SlurmAdapterError):
-    """Failed to submit a job (invalid script, queue full, etc.)."""
-
-
-class JobNotFoundError(SlurmAdapterError):
-    """Job ID does not exist in Slurm or mock store."""
-
+__all__ = [
+    "SlurmAdapterError",
+    "SchedulerAdapterError",
+    "JobSubmissionError",
+    "JobNotFoundError",
+    "JobTimeoutError",
+    "RealSlurmAdapter",
+    "get_scheduler_adapter",
+    "get_slurm_adapter",
+]
 
 # Map resource-dict keys → sbatch flag names
 _RESOURCE_FLAGS: dict[str, str] = {
-    "partition":     "--partition",
-    "time":          "--time",
-    "nodes":         "--nodes",
-    "ntasks":        "--ntasks",
+    "partition": "--partition",
+    "qos": "--qos",
+    "time": "--time",
+    "nodes": "--nodes",
+    "ntasks": "--ntasks",
     "cpus_per_task": "--cpus-per-task",
-    "mem":           "--mem",
-    "gpus":          "--gpus",
-    "output":        "--output",
-    "error":         "--error",
-    "job_name":      "--job-name",
-    "account":       "--account",
+    "mem": "--mem",
+    "gpus": "--gpus",
+    "constraint": "--constraint",
+    "output": "--output",
+    "error": "--error",
+    "job_name": "--job-name",
+    "account": "--account",
 }
 
-_TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
 
-# Wall-clock ceiling on any scheduler CLI call so a hung sbatch/squeue/sacct can't
-# freeze the Prefect worker. Overridable via env.
-_CMD_TIMEOUT = int(os.getenv("EXAMLOPS_SLURM_CMD_TIMEOUT", "30"))
-# Absolute ceiling on wait_until_complete so a stuck/lost job can't poll forever.
-_MAX_WAIT_S = int(os.getenv("EXAMLOPS_SLURM_MAX_WAIT_S", "86400"))  # 24h default
-# Consecutive UNKNOWN/errored polls tolerated before declaring the job lost.
-_MAX_UNKNOWN_POLLS = int(os.getenv("EXAMLOPS_SLURM_MAX_UNKNOWN_POLLS", "5"))
+class RealSlurmAdapter(BasePollingAdapter):
+    """Real Slurm adapter — runs sbatch/squeue/sacct through a RemoteExecutor."""
 
-
-class JobTimeoutError(SlurmAdapterError):
-    """A scheduler CLI call or the overall wait exceeded its time budget."""
-
-
-def _run_scheduler_cmd(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    """Run a scheduler CLI with a hard timeout; convert hangs into JobTimeoutError."""
-    try:
-        return subprocess.run(cmd, timeout=_CMD_TIMEOUT, **kwargs)
-    except subprocess.TimeoutExpired as exc:
-        raise JobTimeoutError(f"{cmd[0]} timed out after {_CMD_TIMEOUT}s") from exc
-
-
-class RealSlurmAdapter:
-    """Real Slurm adapter — calls sbatch/squeue/sacct on an HPC cluster."""
-
-    def __init__(self, working_dir: str = "slurm_jobs"):
+    def __init__(
+        self,
+        executor: RemoteExecutor | None = None,
+        working_dir: str = "slurm_jobs",
+    ):
+        self.executor: RemoteExecutor = executor or LocalExecutor()
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
+        self._jobdir_hint: str | None = None
 
     def submit_job(
         self,
         script_path: str | None = None,
         resources: dict | None = None,
         training_data: dict | None = None,  # unused in real mode
+        remote_dir: str | None = None,
     ) -> str:
-        """Submit a job script via sbatch. Returns the Slurm job ID string."""
+        """Submit a job script via sbatch. Returns the Slurm job ID string.
+
+        When ``remote_dir`` is given the script is staged there through the executor
+        (SSH-friendly) and job stdout/stderr default under it; the caller fetches
+        ``<remote_dir>/model.pkl`` afterward. Without it, behavior matches the historical
+        shared-filesystem path.
+        """
         if not script_path:
             raise JobSubmissionError("script_path is required for real Slurm mode")
 
         script = Path(script_path)
         if not script.exists():
             raise JobSubmissionError(f"Job script not found: {script}")
+
+        submit_target = str(script)
+        run_cwd: str | None = str(script.parent)
+        if remote_dir:
+            self.executor.run(["mkdir", "-p", remote_dir])
+            submit_target = f"{remote_dir}/run.sh"
+            self.executor.put(str(script), submit_target)
+            self._jobdir_hint = remote_dir
+            run_cwd = remote_dir
+            resources = dict(resources or {})
+            resources.setdefault("output", f"{remote_dir}/%j.out")
+            resources.setdefault("error", f"{remote_dir}/%j.err")
 
         cmd = ["sbatch"]
         for key, flag in _RESOURCE_FLAGS.items():
@@ -102,11 +121,9 @@ class RealSlurmAdapter:
         if not resources or "error" not in resources:
             cmd.append(f"--error={self.working_dir / '%j.err'}")
 
-        cmd.append(str(script))
+        cmd.append(submit_target)
 
-        result = _run_scheduler_cmd(
-            cmd, capture_output=True, text=True, cwd=str(script.parent)
-        )
+        result = self.executor.run(cmd, timeout=_CMD_TIMEOUT, cwd=run_cwd)
         if result.returncode != 0:
             raise JobSubmissionError(f"sbatch failed: {result.stderr.strip()}")
 
@@ -115,25 +132,24 @@ class RealSlurmAdapter:
             raise JobSubmissionError("sbatch returned no output")
         return tokens[-1]  # "Submitted batch job 12345678" → "12345678"
 
-    def get_job_status(self, job_id: str) -> dict:
+    def get_job_status(self, job_id: str) -> JobStatus:
         """Return status dict. Tries squeue (active jobs) then sacct (history)."""
-        sq = _run_scheduler_cmd(
-            ["squeue", "-j", job_id, "-h", "-o", "%T|%S|%e"],
-            capture_output=True, text=True,
+        sq = self.executor.run(
+            ["squeue", "-j", job_id, "-h", "-o", "%T|%S|%e"], timeout=_CMD_TIMEOUT
         )
         line = sq.stdout.strip()
         if line:
             parts = line.split("|")
             return {
-                "state":      parts[0] if parts else "UNKNOWN",
-                "exit_code":  None,
+                "state": parts[0] if parts else "UNKNOWN",
+                "exit_code": None,
                 "start_time": parts[1] if len(parts) > 1 and parts[1] != "N/A" else None,
-                "end_time":   parts[2] if len(parts) > 2 and parts[2] != "N/A" else None,
+                "end_time": parts[2] if len(parts) > 2 and parts[2] != "N/A" else None,
             }
 
-        sa = _run_scheduler_cmd(
+        sa = self.executor.run(
             ["sacct", "-j", job_id, "--format=State,ExitCode,Start,End", "--noheader", "-P"],
-            capture_output=True, text=True,
+            timeout=_CMD_TIMEOUT,
         )
         for raw in sa.stdout.strip().splitlines():
             parts = raw.split("|")
@@ -143,10 +159,10 @@ class RealSlurmAdapter:
             code_str = exit_raw.split(":")[0] if exit_raw else None
             exit_code = int(code_str) if code_str and code_str.isdigit() else None
             return {
-                "state":      state.strip(),
-                "exit_code":  exit_code,
+                "state": state.strip(),
+                "exit_code": exit_code,
                 "start_time": start.strip() or None,
-                "end_time":   end.strip()   or None,
+                "end_time": end.strip() or None,
             }
 
         raise JobNotFoundError(f"Job {job_id} not found in squeue or sacct")
@@ -158,80 +174,73 @@ class RealSlurmAdapter:
             return default_log.read_text()
 
         # Ask sacct where Slurm wrote the log file
-        sa = _run_scheduler_cmd(
-            ["sacct", "-j", job_id, "--format=StdOut", "--noheader", "-P"],
-            capture_output=True, text=True,
+        sa = self.executor.run(
+            ["sacct", "-j", job_id, "--format=StdOut", "--noheader", "-P"], timeout=_CMD_TIMEOUT
         )
         for line in sa.stdout.strip().splitlines():
             path = line.strip()
-            if path and Path(path).exists():
-                return Path(path).read_text()
+            if not path:
+                continue
+            local = self.working_dir / f"{job_id}.out"
+            try:
+                self.executor.get(path, str(local))
+                return local.read_text()
+            except (FileNotFoundError, OSError):
+                continue
 
         return f"[SlurmAdapter] No log found for job {job_id}"
 
-    def wait_until_complete(
-        self,
-        job_id: str,
-        poll_interval: int = 10,
-        max_wait_s: int | None = None,
-    ) -> str:
-        """Poll until the job reaches a terminal state. Returns the log path.
+    def remote_jobdir(self, job_id: str) -> str:
+        """Per-job dir where the training script wrote ``model.pkl``.
 
-        Hardened against three failure modes the old ``while True`` loop had:
-          * **No ceiling** → now bounded by ``max_wait_s`` (env ``_MAX_WAIT_S``);
-            exceeding it raises :class:`JobTimeoutError` instead of hanging forever.
-          * **UNKNOWN treated as terminal** → a transient ``squeue``/``sacct`` hiccup
-            (or a job momentarily absent from both) no longer ends the wait early;
-            UNKNOWN/errored polls are tolerated up to ``_MAX_UNKNOWN_POLLS`` in a row
-            before the job is declared lost (:class:`JobNotFoundError`).
-          * **CLI hang** → each poll uses the timeout-bounded scheduler helper.
+        Uses the staged ``remote_dir`` when submission staged over the executor;
+        otherwise the shared-FS convention ``working_dir/<job_id>``.
         """
-        deadline = time.monotonic() + (max_wait_s if max_wait_s is not None else _MAX_WAIT_S)
-        unknown_streak = 0
-
-        while True:
-            if time.monotonic() > deadline:
-                raise JobTimeoutError(
-                    f"Job {job_id} did not reach a terminal state within the wait budget"
-                )
-            try:
-                status = self.get_job_status(job_id)
-                state = status.get("state", "UNKNOWN")
-            except JobNotFoundError:
-                state = "UNKNOWN"
-            except JobTimeoutError:
-                # A single slow scheduler call — treat like an UNKNOWN poll, keep waiting.
-                state = "UNKNOWN"
-
-            print(f"[Slurm] job {job_id} → {state}", flush=True)
-
-            if state in _TERMINAL_STATES:
-                break
-            if state == "UNKNOWN":
-                unknown_streak += 1
-                if unknown_streak >= _MAX_UNKNOWN_POLLS:
-                    raise JobNotFoundError(
-                        f"Job {job_id} not observable after {unknown_streak} consecutive polls"
-                    )
-            else:
-                unknown_streak = 0
-            time.sleep(poll_interval)
-
-        return str(self.working_dir / f"{job_id}.out")
+        return self._jobdir_hint or str(self.working_dir / job_id)
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────
 
-def get_slurm_adapter():
-    """Return MockSlurmAdapter or RealSlurmAdapter per EXAMLOPS_SLURM_MODE."""
-    _here = Path(__file__).parent
-    if str(_here) not in sys.path:
-        sys.path.insert(0, str(_here))
-    from mock_slurm_adapter import MockSlurmAdapter  # noqa: PLC0415
 
-    mode = os.getenv("EXAMLOPS_SLURM_MODE", "mock").lower().strip()
-    if mode == "slurm":
-        print("[SlurmAdapter] mode=slurm (real HPC)", flush=True)
-        return RealSlurmAdapter()
-    print("[SlurmAdapter] mode=mock (local)", flush=True)
-    return MockSlurmAdapter()
+def _ensure_on_path() -> None:
+    here = Path(__file__).parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+
+
+def _resolve_scheduler() -> str:
+    """Resolve the scheduler backend, honoring the legacy EXAMLOPS_SLURM_MODE."""
+    sched = os.getenv("EXAMLOPS_HPC_SCHEDULER", "").lower().strip()
+    if sched:
+        return sched
+    legacy = os.getenv("EXAMLOPS_SLURM_MODE", "mock").lower().strip()
+    return "slurm" if legacy == "slurm" else "mock"
+
+
+def get_scheduler_adapter(executor: RemoteExecutor | None = None):
+    """Return the adapter for EXAMLOPS_HPC_SCHEDULER (mock|slurm|flux)."""
+    _ensure_on_path()
+    sched = _resolve_scheduler()
+
+    if sched == "mock":
+        from mock_slurm_adapter import MockSlurmAdapter  # noqa: PLC0415
+
+        print("[scheduler] backend=mock (local)", flush=True)
+        return MockSlurmAdapter()
+
+    executor = executor or get_executor()
+    if sched == "flux":
+        from flux_adapter import FluxAdapter  # noqa: PLC0415
+
+        print("[scheduler] backend=flux (real HPC)", flush=True)
+        return FluxAdapter(executor=executor)
+    if sched == "slurm":
+        print("[scheduler] backend=slurm (real HPC)", flush=True)
+        return RealSlurmAdapter(executor=executor)
+
+    raise SchedulerAdapterError(f"unknown EXAMLOPS_HPC_SCHEDULER={sched!r}")
+
+
+def get_slurm_adapter():
+    """Back-compat alias — selects the adapter per env (see get_scheduler_adapter)."""
+    return get_scheduler_adapter()
