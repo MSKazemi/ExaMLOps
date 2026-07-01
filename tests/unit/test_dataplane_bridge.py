@@ -62,6 +62,9 @@ class _HTTPStatusError(Exception):
 
 httpx_stub.HTTPStatusError = _HTTPStatusError
 httpx_stub.AsyncClient = MagicMock()
+httpx_stub.Timeout = MagicMock()  # used by the shared examlops.resilience timeout helper
+httpx_stub.RequestError = Exception
+httpx_stub.ConnectError = Exception
 sys.modules["httpx"] = httpx_stub
 
 # dataplane_msgs — define concrete stub classes so isinstance checks work
