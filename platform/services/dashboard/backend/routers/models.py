@@ -42,7 +42,7 @@ async def list_registry(
     import time as _time
 
     cached = _REGISTRY_CACHE["data"]
-    if cached is not None and (_time.monotonic() - float(_REGISTRY_CACHE["ts"])) < _REGISTRY_TTL:
+    if cached is not None and (_time.monotonic() - float(_REGISTRY_CACHE["ts"])) < _REGISTRY_TTL:  # type: ignore[arg-type]
         return cached  # type: ignore[return-value]
 
     cp = _control_plane()
@@ -621,6 +621,7 @@ async def delete_image(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     # Tolerate both UUID-string and bare strings (sqlite stores as str via .with_variant).
+    lookup_id: uuid.UUID | str
     try:
         lookup_id = uuid.UUID(image_id)
     except ValueError:

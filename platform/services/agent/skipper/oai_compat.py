@@ -30,6 +30,7 @@ import asyncio
 import hmac
 import json
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -100,7 +101,7 @@ def _chunk(
     return obj
 
 
-def _norm_usage(usage_metadata: dict | None) -> dict | None:
+def _norm_usage(usage_metadata: Mapping[str, Any] | None) -> dict | None:
     """Map LangChain usage_metadata → OpenAI usage shape."""
     if not usage_metadata:
         return None

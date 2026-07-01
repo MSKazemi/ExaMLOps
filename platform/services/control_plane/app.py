@@ -1235,7 +1235,7 @@ def trigger_retrain(
         flow_run_id,
     )
 
-    response_data = {
+    response_data: dict[str, Any] = {
         "flow_run_id": flow_run_id,
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "status_url": f"/retrain/{flow_run_id}",

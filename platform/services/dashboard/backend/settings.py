@@ -79,4 +79,6 @@ class Settings(BaseSettings):
     platform_db: str = "/repo/platform.db"
 
 
-settings = Settings()
+# Required fields are supplied from the environment at runtime by
+# pydantic-settings; mypy can't see that, so it flags them as missing.
+settings = Settings()  # type: ignore[call-arg]

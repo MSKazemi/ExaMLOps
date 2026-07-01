@@ -72,7 +72,8 @@ async def trigger_run(body: TriggerBody, _=Depends(_admin)) -> dict:
     if body.dataset_name:
         params["dataset_name"] = body.dataset_name
     result = await _post(f"/deployments/{dep_id}/create_flow_run", {"parameters": params})
+    data = result if isinstance(result, dict) else {}
     return {
-        "flow_run_id": result.get("id"),
-        "state": (result.get("state") or {}).get("type"),
+        "flow_run_id": data.get("id"),
+        "state": (data.get("state") or {}).get("type"),
     }
