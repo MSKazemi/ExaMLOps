@@ -146,6 +146,9 @@ Live charts are visible in the Grafana **SeanerBUS Bridge** dashboard (`http://l
 | `exa serve models` | List models currently hot-loaded in Ray Serve |
 | `exa serve models --detail` | Show full detail per model (alias, version, status) |
 | `exa serve traffic-list` | Show traffic split configuration for all models |
+| `exa serve ab analyze JPCP` | Statistical A/B verdict (Welch's t-test) over recorded observations |
+| `exa serve ab analyze JPCP --lower-is-better` | Interpret smaller metric as the winner (RMSE, latency) |
+| `exa serve ab analyze JPCP --alpha 0.01 --min-sample 100` | Tune significance level and minimum sample gate |
 
 ## Control Plane
 
@@ -211,6 +214,48 @@ export CONTROL_PLANE_URL=http://localhost:18002   # used by CI notify script
 | `GET /metrics` | — | Prometheus scrape target |
 | `POST /retrain` | Bearer token | Trigger a training run |
 | `POST /admin/reload` | Bearer token | Hot-reload YAML registry + re-run startup checks |
+
+## Evaluation & Feedback
+
+Closes the loop between predictions and delayed real-world labels to measure **live model
+quality** (RMSE/MAE against observed outcomes), rather than the drift proxy alone.
+
+| Command | Description |
+|---|---|
+| `exa eval feedback ingest --request-hash <h> --label 88.5` | Record one observed ground-truth label, keyed by prediction `request_hash` |
+| `exa eval feedback ingest --from-csv labels.csv` | Bulk-ingest labels from a CSV with `request_hash,label[,source]` columns |
+| `exa eval feedback ingest ... --source hpc-sacct` | Tag the label provenance (default `manual`) |
+| `exa eval feedback join JPCP` | Show prediction/label pairs joined on `request_hash` |
+| `exa eval feedback join JPCP --alias Production` | Restrict the join to one MLflow alias |
+| `exa eval feedback accuracy JPCP` | Compute live RMSE/MAE over labelled predictions |
+| `exa eval feedback accuracy JPCP --alias Production --record` | Compute and persist metrics to the `live_metrics` table |
+
+**How it works:** each served prediction is stored with a `request_hash`. When the true
+outcome becomes known (often hours/days later), `ingest` writes it to the `ground_truth`
+table; `join`/`accuracy` then match labels to predictions to report real model quality.
+
+## FinOps & Green-AI
+
+Per-project (= namespace) GPU-hour / cost **budgets** enforced against real recorded training
+spend, plus **energy (kWh) and CO₂e accounting** for training runs — relevant to EU-research
+sustainability reporting.
+
+| Command | Description |
+|---|---|
+| `exa finops budget set eu-hpc --gpu-hours 1000 --cost 5000` | Set a project's GPU-hour / cost budget |
+| `exa finops budget set eu-hpc --gpu-hours 500 --period weekly` | Budget with a period label |
+| `exa finops budget status` | Show every project's budget vs consumed GPU-hours / cost (flags `OVER`) |
+| `exa finops budget status eu-hpc` | Budget status for one project |
+| `exa finops carbon estimate --gpu-hours 12` | Estimate kWh + gCO₂e for a GPU-hour figure (no DB write) |
+| `exa finops carbon estimate --gpu-hours 12 --grid-intensity 232` | Override grid carbon intensity (gCO₂e/kWh) |
+| `exa finops carbon record JPCP --gpu-hours 12 --run-id abc` | Estimate and persist a run's energy/carbon to `carbon_records` |
+| `exa finops carbon report` | Aggregate recorded energy and carbon across all runs |
+| `exa finops carbon report --model JPCP` | Aggregate for one model |
+
+**How it works:** budgets map to namespaces; consumption is summed from the `model_costs`
+table (the same GPU-hours `exa models cost` records) joined through `namespace_models`. Carbon
+is estimated as `kWh = gpu_hours × (TDP/1000) × PUE` and `gCO₂e = kWh × grid_intensity`, with
+documented, overridable defaults (400 W, PUE 1.5, 300 gCO₂e/kWh).
 
 ## `exa` CLI
 

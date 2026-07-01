@@ -28,15 +28,19 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Monitor a Slurm (or mock) job")
     p.add_argument("--job-id", required=True, dest="job_id", help="Job ID to monitor")
     p.add_argument(
-        "--wait", action="store_true",
+        "--wait",
+        action="store_true",
         help="Poll until the job reaches a terminal state",
     )
     p.add_argument(
-        "--logs", action="store_true",
+        "--logs",
+        action="store_true",
         help="Print job stdout after checking status",
     )
     p.add_argument(
-        "--interval", type=int, default=10,
+        "--interval",
+        type=int,
+        default=10,
         help="Polling interval in seconds (default: 10)",
     )
     return p.parse_args()

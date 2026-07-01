@@ -264,6 +264,7 @@ def lineage(
 # ---------------------------------------------------------------------------
 
 _GPU_COST_PER_HOUR_DEFAULT = 2.50
+_CPU_COST_PER_HOUR_DEFAULT = 0.05
 
 _EXAMPLES_COST = (
     "Examples:\n\n"
@@ -330,6 +331,84 @@ def _real_sacct(job_id: str) -> float | None:
     return None
 
 
+def _count_idset(idset: str) -> int:
+    """Count ids in a Flux idset like '0-15' or '0-3,8,10-11'."""
+    total = 0
+    for part in (idset or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            try:
+                total += int(hi) - int(lo) + 1
+            except ValueError:
+                continue
+        else:
+            total += 1
+    return total
+
+
+def _flux_elapsed_hours(eventlog: str) -> float:
+    """Elapsed wall-hours between the first 'alloc' and the 'finish'/'free' event."""
+    start = end = None
+    for line in eventlog.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            ts = float(parts[0])
+        except ValueError:
+            continue
+        name = parts[1]
+        if name in ("alloc", "start") and start is None:
+            start = ts
+        if name in ("finish", "free", "clean"):
+            end = ts
+    if start is None or end is None or end < start:
+        return 0.0
+    return (end - start) / 3600.0
+
+
+def _real_flux_cost(job_id: str) -> tuple[float, float] | None:
+    """Query Flux for a job's (gpu_hours, cpu_hours), or None on failure.
+
+    Runs ``flux`` locally (symmetric with ``_real_sacct``); use from a host where the
+    Flux instance is reachable (e.g. the login node).
+    """
+    import json
+
+    try:
+        r_json = subprocess.check_output(
+            ["flux", "job", "info", job_id, "R"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        eventlog = subprocess.check_output(
+            ["flux", "job", "info", job_id, "eventlog"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    try:
+        resource_set = json.loads(r_json)
+    except json.JSONDecodeError:
+        return None
+
+    n_cpus = n_gpus = 0
+    for entry in resource_set.get("execution", {}).get("R_lite", []):
+        children = entry.get("children", {})
+        n_cpus += _count_idset(children.get("core", ""))
+        n_gpus += _count_idset(children.get("gpu", ""))
+
+    elapsed_hours = _flux_elapsed_hours(eventlog)
+    return round(n_gpus * elapsed_hours, 4), round(n_cpus * elapsed_hours, 4)
+
+
 def _tag_mlflow_version(
     cfg,
     model: str,
@@ -350,7 +429,7 @@ def _tag_mlflow_version(
 def cost(
     model: str = typer.Argument(..., help="Registered model name (e.g. JPCP)"),
     record: bool = typer.Option(
-        False, "--record", help="Fetch latest Slurm data, record to DB and tag MLflow"
+        False, "--record", help="Fetch latest scheduler data (Slurm/Flux), record to DB and tag MLflow"
     ),
 ):
     """Show HPC cost history for a model.  Use --record to ingest new data."""
@@ -376,38 +455,51 @@ def cost(
             _output.error(f"No versions found for model '{model}' in MLflow")
             return
 
-        slurm_mode = os.getenv("EXAMLOPS_SLURM_MODE", "mock")
+        # Scheduler resolution mirrors the pipeline: EXAMLOPS_HPC_SCHEDULER wins,
+        # EXAMLOPS_SLURM_MODE is the legacy fallback.
+        default_scheduler = (
+            os.getenv("EXAMLOPS_HPC_SCHEDULER")
+            or ("slurm" if os.getenv("EXAMLOPS_SLURM_MODE", "mock") == "slurm" else "mock")
+        ).lower()
         gpu_cost = float(os.getenv("GPU_COST_PER_HOUR", str(_GPU_COST_PER_HOUR_DEFAULT)))
+        cpu_cost = float(os.getenv("CPU_COST_PER_HOUR", str(_CPU_COST_PER_HOUR_DEFAULT)))
         recorded_count = 0
 
         for ver in versions:
             ver_num = int(ver["version"])
             run_id = ver.get("run_id")
 
-            if slurm_mode == "mock":
+            job_id = None
+            scheduler = default_scheduler
+            if run_id:
+                try:
+                    run_data = _client.get(
+                        f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
+                    )
+                    tags = {
+                        t["key"]: t["value"]
+                        for t in run_data.get("run", {}).get("data", {}).get("tags", [])
+                    }
+                    job_id = tags.get("hpc_job_id") or tags.get("slurm_job_id")
+                    scheduler = (tags.get("hpc_scheduler") or default_scheduler).lower()
+                except _client.ClientError:
+                    pass
+
+            gpu_hours = None
+            cost_usd = None
+            if scheduler == "mock":
                 job_id, gpu_hours = _mock_slurm_data(model, ver_num)
-            else:
-                # In real mode, look up the job_id from the MLflow run tags
-                job_id = None
-                if run_id:
-                    try:
-                        run_data = _client.get(
-                            f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
-                        )
-                        tags = {
-                            t["key"]: t["value"]
-                            for t in run_data.get("run", {}).get("data", {}).get("tags", [])
-                        }
-                        job_id = tags.get("slurm_job_id")
-                    except _client.ClientError:
-                        pass
+                cost_usd = round(gpu_hours * gpu_cost, 4)
+            elif scheduler == "flux" and job_id:
+                flux_cost = _real_flux_cost(job_id)
+                if flux_cost is not None:
+                    gpu_hours, cpu_hours = flux_cost
+                    cost_usd = round(gpu_hours * gpu_cost + cpu_hours * cpu_cost, 4)
+            elif job_id:  # slurm (or any sacct-backed scheduler)
+                gpu_hours = _real_sacct(job_id)
+                if gpu_hours is not None:
+                    cost_usd = round(gpu_hours * gpu_cost, 4)
 
-                if job_id:
-                    gpu_hours = _real_sacct(job_id)
-                else:
-                    gpu_hours = None
-
-            cost_usd = round(gpu_hours * gpu_cost, 4) if gpu_hours is not None else None
             record_model_cost(model, ver_num, run_id, job_id, gpu_hours, cost_usd)
 
             if gpu_hours is not None and cost_usd is not None:

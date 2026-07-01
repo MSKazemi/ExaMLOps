@@ -194,9 +194,7 @@ async def _stream_completion(session_id: str, text: str, model: str):
     timed_out = False
     while True:
         try:
-            event = await asyncio.wait_for(
-                queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT
-            )
+            event = await asyncio.wait_for(queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT)
         except TimeoutError:
             # No token/tool for the idle window — a hung LLM or tool. Abort the
             # stream cleanly rather than blocking the client indefinitely.

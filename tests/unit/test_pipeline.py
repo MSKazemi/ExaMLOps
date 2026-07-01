@@ -144,11 +144,12 @@ class TestSlurmSubmitTask:
         fake_adapter.working_dir = tmp_path
         fake_adapter.submit_job.return_value = "12345678"
 
-        with patch("adapter.RealSlurmAdapter", return_value=fake_adapter):
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
             job_id, artifact_hint = pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "FData")
 
         assert job_id == "12345678"
-        assert artifact_hint is None
+        # Real mode now returns the remote model path so slurm_wait can fetch it back.
+        assert artifact_hint is not None and artifact_hint.endswith("model.pkl")
         fake_adapter.submit_job.assert_called_once()
 
     def test_real_slurm_generates_bash_script(self, monkeypatch, tmp_path):
@@ -159,7 +160,7 @@ class TestSlurmSubmitTask:
         fake_adapter.working_dir = tmp_path
         fake_adapter.submit_job.return_value = "99999"
 
-        with patch("adapter.RealSlurmAdapter", return_value=fake_adapter):
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
             pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "FDataDataset")
 
         script_path = (
@@ -172,6 +173,23 @@ class TestSlurmSubmitTask:
         assert "FDataDataset" in content
         assert "slurm_train_script.py" in content
 
+    def test_real_slurm_threads_gpu_resources(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "flux")
+        monkeypatch.setenv("EXAMLOPS_HPC_GPUS", "2")
+        monkeypatch.setenv("EXAMLOPS_HPC_ACCOUNT", "proj42")
+        model = _fake_model()
+
+        fake_adapter = MagicMock()
+        fake_adapter.working_dir = tmp_path
+        fake_adapter.submit_job.return_value = "ƒAbCdEf"
+
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
+            pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "FData")
+
+        resources = fake_adapter.submit_job.call_args[1]["resources"]
+        assert resources["gpus"] == "2"
+        assert resources["account"] == "proj42"
+
 
 # ── slurm_wait_task ───────────────────────────────────────────────────────────
 
@@ -182,25 +200,38 @@ class TestSlurmWaitTask:
         assert state == "COMPLETED"
         assert path == "/tmp/model.pkl"
 
-    def test_real_slurm_polls_and_returns_path(self, tmp_path):
+    def test_real_slurm_polls_and_returns_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_SLURM_MODE", "slurm")
+        remote_model = str(tmp_path / "remote" / "model.pkl")
+
         fake_adapter = MagicMock()
         fake_adapter.working_dir = str(tmp_path)
-        fake_adapter.wait_until_complete.return_value = str(tmp_path / "12345" / "12345.out")
+        fake_adapter.wait_until_complete.return_value = str(tmp_path / "12345.out")
         fake_adapter.get_job_status.return_value = {"state": "COMPLETED"}
 
-        with patch("adapter.RealSlurmAdapter", return_value=fake_adapter):
-            state, artifact_path = pg.slurm_wait_task.fn("12345", None)
+        # executor.get simulates fetching the remote artifact to a local path.
+        def _fake_get(remote, local):
+            Path(local).parent.mkdir(parents=True, exist_ok=True)
+            Path(local).write_text("model")
+
+        fake_adapter.executor.get.side_effect = _fake_get
+
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
+            state, artifact_path = pg.slurm_wait_task.fn("12345", remote_model)
 
         assert state == "COMPLETED"
-        assert artifact_path == str(tmp_path / "12345" / "model.pkl")
+        assert artifact_path.endswith("model.pkl")
+        assert Path(artifact_path).exists()
+        fake_adapter.executor.get.assert_called_once_with(remote_model, artifact_path)
 
-    def test_real_slurm_raises_on_failure(self, tmp_path):
+    def test_real_slurm_raises_on_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_SLURM_MODE", "slurm")
         fake_adapter = MagicMock()
         fake_adapter.working_dir = str(tmp_path)
         fake_adapter.wait_until_complete.return_value = ""
         fake_adapter.get_job_status.return_value = {"state": "FAILED"}
 
-        with patch("adapter.RealSlurmAdapter", return_value=fake_adapter):
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
             with pytest.raises(RuntimeError, match="FAILED"):
                 pg.slurm_wait_task.fn("99999", None)
 

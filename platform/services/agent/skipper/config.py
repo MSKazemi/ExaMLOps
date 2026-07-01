@@ -33,8 +33,10 @@ AGENT_OLLAMA_URL = os.getenv("AGENT_OLLAMA_URL", "http://localhost:11436")
 AGENT_OLLAMA_KEEP_ALIVE = os.getenv("AGENT_OLLAMA_KEEP_ALIVE", "30m")
 _reasoning = os.getenv("AGENT_OLLAMA_REASONING", "false").strip().lower()
 AGENT_OLLAMA_REASONING = (
-    True if _reasoning in ("true", "1", "yes", "on")
-    else False if _reasoning in ("false", "0", "no", "off")
+    True
+    if _reasoning in ("true", "1", "yes", "on")
+    else False
+    if _reasoning in ("false", "0", "no", "off")
     else None
 )
 

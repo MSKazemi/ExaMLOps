@@ -14,6 +14,7 @@ dependencies = [
     "joblib>=1.3.0",
     "pyyaml>=6.0",
     "prefect>=3.0.0,<4.0",
+    "paramiko>=3.5.0",  # SSH transport for the HPC scheduler adapter (Flux/Slurm over SSH)
 ]
 
 [tool.setuptools.packages.find]

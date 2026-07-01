@@ -268,7 +268,14 @@ def _is_mlflow_unreachable(exc: BaseException) -> bool:
         text = f"{type(cur).__name__}: {cur}".lower()
         if any(
             marker in text
-            for marker in ("connection", "timed out", "timeout", "max retries", "refused", "unreachable")
+            for marker in (
+                "connection",
+                "timed out",
+                "timeout",
+                "max retries",
+                "refused",
+                "unreachable",
+            )
         ):
             return True
         cur = cur.__cause__ or cur.__context__
@@ -467,7 +474,9 @@ class MultiModelServer:
             loop = asyncio.get_running_loop()
             self._poll_task = loop.create_task(self._poll_loop())
             self._poller_alive = True
-            logger.info("MLflow alias poller started on running loop (interval=%ss)", RELOAD_POLL_SECONDS)
+            logger.info(
+                "MLflow alias poller started on running loop (interval=%ss)", RELOAD_POLL_SECONDS
+            )
             return
         except RuntimeError:
             pass

@@ -66,7 +66,9 @@ def test_breaker_half_open_then_close_on_success():
 
 def test_breaker_on_open_hook_fires_once():
     calls = {"n": 0}
-    cb = CircuitBreaker(fail_max=1, reset_timeout=9999, on_open=lambda: calls.__setitem__("n", calls["n"] + 1))
+    cb = CircuitBreaker(
+        fail_max=1, reset_timeout=9999, on_open=lambda: calls.__setitem__("n", calls["n"] + 1)
+    )
     with pytest.raises(RuntimeError):
         cb.call(_boom)
     assert calls["n"] == 1
@@ -74,7 +76,9 @@ def test_breaker_on_open_hook_fires_once():
 
 def test_breaker_is_failure_predicate_ignores_client_errors():
     # A predicate that treats ValueError as non-failure must not trip the breaker.
-    cb = CircuitBreaker(fail_max=1, reset_timeout=9999, is_failure=lambda e: not isinstance(e, ValueError))
+    cb = CircuitBreaker(
+        fail_max=1, reset_timeout=9999, is_failure=lambda e: not isinstance(e, ValueError)
+    )
     with pytest.raises(ValueError):
         cb.call(lambda: (_ for _ in ()).throw(ValueError("client")))
     assert cb.state == CircuitBreaker.CLOSED
@@ -111,7 +115,9 @@ def test_retry_does_not_retry_non_matching():
 
 def test_retry_reraises_after_exhaustion():
     with pytest.raises(TimeoutError):
-        retry_call(lambda: (_ for _ in ()).throw(TimeoutError("nope")), retries=2, sleep=lambda _s: None)
+        retry_call(
+            lambda: (_ for _ in ()).throw(TimeoutError("nope")), retries=2, sleep=lambda _s: None
+        )
 
 
 def test_classifiers():
