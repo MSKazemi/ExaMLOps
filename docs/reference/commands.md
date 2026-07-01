@@ -371,12 +371,13 @@ exa --json approvals list | jq '.[] | select(.status == "pending")'
 
 | Command | Description |
 |---|---|
-| `make agent` | Start the ExaMLOps management agent REPL (terminal) — reads `ANTHROPIC_API_KEY` / `AGENT_OLLAMA_URL` / `AGENT_MODEL` from `.env` |
-| `make agent-server` | Start the web chat UI + OpenAI/kube-q bridge on port 18004 — open `http://localhost:18004` in a browser |
-| `make agent-chat` | Chat with the agent via the kube-q (`kq`) terminal client (needs `agent-server` running; installs `kube-q` if missing) |
-| `make agent-test` | Run the agent's unit test suite (`platform/services/agent/tests/`) |
+| `make skipper` | Start Skipper, the ExaMLOps management agent REPL (terminal) — reads `ANTHROPIC_API_KEY` / `AGENT_OLLAMA_URL` / `AGENT_MODEL` from `.env` |
+| `make skipper-server` | Start Skipper's web chat UI + OpenAI/kube-q bridge on port 18004 — open `http://localhost:18004` in a browser |
+| `make skipper-chat` | Chat with Skipper via the kube-q (`kq`) terminal client (needs `skipper-server` running; installs `kube-q` if missing) |
+| `make skipper-test` | Run Skipper's unit test suite (`platform/services/agent/tests/`) |
+| `make agent` / `agent-server` / `agent-chat` / `agent-test` | Backward-compatible aliases for the `skipper*` targets above |
 
-The agent is a packaged LangGraph ReAct agent (`exa_agent/`) exposing **45 tools across 10 groups** for natural-language operations and Q&A.
+The agent is a packaged LangGraph ReAct agent (`skipper/`) exposing **45 tools across 10 groups** for natural-language operations and Q&A.
 
 ### LLM backend (triple)
 
@@ -391,17 +392,17 @@ The agent selects a backend by which keys are set, in order: **Azure Foundry →
 ```bash
 # Claude API (recommended)
 export ANTHROPIC_API_KEY=sk-ant-...
-make agent               # or: make agent-server
+make skipper               # or: make skipper-server
 
 # Ollama (local)
 ollama-tunnel start
-make agent               # uses AGENT_OLLAMA_URL + AGENT_MODEL from .env
+make skipper               # uses AGENT_OLLAMA_URL + AGENT_MODEL from .env
 ```
 
 ### Web chat UI (primary interface)
 
 ```bash
-make agent-server        # starts FastAPI at http://localhost:18004
+make skipper-server        # starts FastAPI at http://localhost:18004
 ```
 
 Features: real-time token streaming (WebSocket), dark-theme GitHub palette, thread sidebar, Markdown rendering (marked.js + highlight.js), write-confirm modal, auto-reconnect, copy-to-clipboard, per-message token count. All conversations are persisted and resumable.
@@ -411,7 +412,7 @@ REST endpoints: `GET /` (chat UI), `GET /api/info` (backend + model), `GET /api/
 ### Terminal REPL (secondary)
 
 ```bash
-make agent               # streaming REPL with ANSI colors and token cost display
+make skipper               # streaming REPL with ANSI colors and token cost display
 ```
 
 **Slash-commands:** `/help` `/tools` `/new` `/resume <id>` `/threads` `/model <name>` `/report` `/exit`
@@ -439,9 +440,9 @@ make agent               # streaming REPL with ANSI colors and token cost displa
 ollama-tunnel start                         # port 11436 (Omega)
 ollama-tunnel start kapa                    # port 11437 (Kapa, 16 models)
 
-AGENT_MODEL=hermes3:70b make agent          # best tool calling
-AGENT_MODEL=llama3.1:70b make agent         # best Llama quality
-AGENT_MODEL=qwen3-coder:30b make agent      # strongest reasoning
+AGENT_MODEL=hermes3:70b make skipper          # best tool calling
+AGENT_MODEL=llama3.1:70b make skipper         # best Llama quality
+AGENT_MODEL=qwen3-coder:30b make skipper      # strongest reasoning
 ```
 
 ## JupyterHub (Multi-User Notebooks)
@@ -481,7 +482,7 @@ Log in as admin, go to **Models → New Model** to use the 3-step ScaffoldWizard
 | `make test-unit` | Unit tests only |
 | `make test-integration` | Integration tests only |
 | `make test-cov` | Tests with HTML coverage → htmlcov/index.html |
-| `make agent-test` | Management-agent unit tests (`platform/services/agent/tests/`) |
+| `make skipper-test` | Management-agent unit tests (`platform/services/agent/tests/`) |
 | `make check` | lint + typecheck + test + dashboard-check |
 | `make modelzoo-test` | ModelZoo smoke + unit tests (poetry env) |
 | `make ci` | All three CI job groups (mirrors GitHub/GitLab Actions) |

@@ -1,5 +1,5 @@
-from exa_agent import config
-from exa_agent.tools import docs
+from skipper import config
+from skipper.tools import docs
 
 
 def _setup_docs(tmp_path, monkeypatch):

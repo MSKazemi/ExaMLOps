@@ -57,14 +57,17 @@ import asyncio
 import logging
 import os
 import signal
+import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
 import mlflow
 import mlflow.pyfunc
 import ray
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from ray import serve
 from ray.util.metrics import Counter, Gauge, Histogram
@@ -91,6 +94,23 @@ PRELOAD_ALIASES = [
 ]
 VERSION_CACHE_SIZE = int(os.getenv("RAY_VERSION_CACHE_SIZE", "8"))
 RELOAD_POLL_SECONDS = int(os.getenv("RAY_RELOAD_POLL_SECONDS", "60"))
+
+# ── Fault tolerance ────────────────────────────────────────────────────────────
+# Bound every MLflow REST call. MLflow reads these env vars natively (a requests-
+# level connect/read timeout + retry with backoff), so a hung or unreachable
+# tracking server can no longer block replica startup, the poller, or the request
+# path indefinitely. setdefault ⇒ operator overrides win.
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", os.getenv("RAY_MLFLOW_TIMEOUT", "10"))
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", os.getenv("RAY_MLFLOW_MAX_RETRIES", "3"))
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR", "0.5")
+
+# Hard ceiling on a single model.predict() so a pathological/hung model can't pin
+# a replica worker forever (num_cpus=1 ⇒ a hang otherwise saturates the deployment).
+PREDICT_TIMEOUT = float(os.getenv("RAY_PREDICT_TIMEOUT", "30"))
+
+# Retry the startup hot-set scan so a transient MLflow blip at boot doesn't leave
+# the replica permanently empty until the next poll cycle.
+from examlops.resilience import is_transient_network, retry_call  # noqa: E402
 
 _REGISTRY_ENTRIES: list | None = None
 
@@ -233,9 +253,33 @@ _app = FastAPI(
 )
 
 
+def _is_mlflow_unreachable(exc: BaseException) -> bool:
+    """True when *exc* indicates MLflow is down/unreachable (vs. a genuine 404).
+
+    Distinguishes a transport failure (→ surface HTTP 503) from a real
+    "alias/version does not exist" (→ 404). Walks the exception chain and matches
+    connection/timeout markers rather than MLflow's RESOURCE_DOES_NOT_EXIST code.
+    """
+    seen = 0
+    cur: BaseException | None = exc
+    while cur is not None and seen < 8:
+        if isinstance(cur, (ConnectionError, TimeoutError)):
+            return True
+        text = f"{type(cur).__name__}: {cur}".lower()
+        if any(
+            marker in text
+            for marker in ("connection", "timed out", "timeout", "max retries", "refused", "unreachable")
+        ):
+            return True
+        cur = cur.__cause__ or cur.__context__
+        seen += 1
+    return False
+
+
 @serve.deployment(
     num_replicas=NUM_REPLICAS,
     ray_actor_options={"num_cpus": 1},
+    max_ongoing_requests=int(os.getenv("RAY_MAX_ONGOING_REQUESTS", "100")),
 )
 @serve.ingress(_app)
 class MultiModelServer:
@@ -259,6 +303,16 @@ class MultiModelServer:
         self._preload_aliases: list[str] = list(PRELOAD_ALIASES)
 
         self._poll_task: asyncio.Task[None] | None = None
+        self._poller_alive = False
+        # Bounded pool used to run model.predict() under a hard timeout so one hung
+        # inference can't pin the (num_cpus=1) replica worker forever. Stored on the
+        # instance (like _version_cache_size) so tests can override — the
+        # @serve.ingress wrapper freezes module globals inside decorated methods.
+        self._predict_pool = ThreadPoolExecutor(
+            max_workers=int(os.getenv("RAY_PREDICT_WORKERS", "4")),
+            thread_name_prefix="predict",
+        )
+        self._predict_timeout = PREDICT_TIMEOUT
 
         import os as _os
 
@@ -303,7 +357,15 @@ class MultiModelServer:
         """Scan MLflow for every (model, alias) in PRELOAD_ALIASES and load it."""
         client = mlflow.MlflowClient()
         try:
-            registered = client.search_registered_models()
+            # Retry a transient MLflow blip at boot so a momentary outage doesn't
+            # leave this replica permanently empty until the next poll cycle.
+            registered = retry_call(
+                client.search_registered_models,
+                retries=2,
+                base_delay=0.5,
+                retry_on=lambda e: is_transient_network(e) or _is_mlflow_unreachable(e),
+                label="mlflow search_registered_models",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Cannot reach MLflow at %s: %s", MLFLOW_TRACKING_URI, exc)
             return
@@ -390,17 +452,40 @@ class MultiModelServer:
         return reloaded
 
     def _start_poller(self) -> None:
-        """Launch the background MLflow poller (no-op when RELOAD_POLL_SECONDS=0)."""
+        """Launch the background MLflow poller (no-op when RELOAD_POLL_SECONDS=0).
+
+        Prefers the replica's running event loop; if ``__init__`` runs outside one
+        (the old ``get_event_loop()`` path silently created a loop that never ran,
+        so the poller never fired), falls back to a dedicated daemon thread with its
+        own loop. Either way ``_poller_alive`` is set so ``/health`` can surface a
+        dead poller as a watchdog signal.
+        """
         if RELOAD_POLL_SECONDS <= 0:
             logger.info("RAY_RELOAD_POLL_SECONDS=0 — polling disabled.")
             return
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            self._poll_task = loop.create_task(self._poll_loop())
+            self._poller_alive = True
+            logger.info("MLflow alias poller started on running loop (interval=%ss)", RELOAD_POLL_SECONDS)
+            return
         except RuntimeError:
+            pass
+
+        def _run_loop() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        self._poll_task = loop.create_task(self._poll_loop())
-        logger.info("MLflow alias poller started (interval=%ss)", RELOAD_POLL_SECONDS)
+            self._poller_alive = True
+            try:
+                loop.run_until_complete(self._poll_loop())
+            finally:
+                self._poller_alive = False
+                loop.close()
+
+        threading.Thread(target=_run_loop, name="mlflow-poller", daemon=True).start()
+        logger.info(
+            "MLflow alias poller started on dedicated thread (interval=%ss)", RELOAD_POLL_SECONDS
+        )
 
     async def _poll_loop(self) -> None:
         """Refresh any (model, alias) entry whose MLflow version changed."""
@@ -474,6 +559,11 @@ class MultiModelServer:
                 self._hot[(model_name, alias)] = entry
                 return {**entry, "alias": alias}
             except Exception as exc:  # noqa: BLE001
+                if _is_mlflow_unreachable(exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"MLflow unreachable while resolving '{model_name}'@{alias}: {exc}",
+                    ) from exc
                 raise HTTPException(
                     status_code=404,
                     detail=f"Alias '{alias}' not found for model '{model_name}': {exc}",
@@ -496,6 +586,11 @@ class MultiModelServer:
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if _is_mlflow_unreachable(exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"MLflow unreachable while resolving '{model_name}' v{version}: {exc}",
+                    ) from exc
                 raise HTTPException(
                     status_code=404,
                     detail=f"Version '{version}' not found for model '{model_name}': {exc}",
@@ -525,13 +620,32 @@ class MultiModelServer:
 
     # ── Routes ────────────────────────────────────────────────────────────────
 
+    @_app.get("/ready")
+    def ready(self) -> dict:
+        """Liveness — the process is up and event loop responsive. Always 200.
+
+        Container/orchestrator health checks should target this so a transient
+        MLflow outage (empty hot set) does NOT trigger a restart loop; use
+        ``/health`` for readiness/routing decisions.
+        """
+        return {"status": "alive", "poller_alive": self._poller_alive}
+
     @_app.get("/health")
-    def health(self) -> dict:
-        """Liveness + readiness — reports every (model, alias) currently held."""
+    def health(self, response: Response) -> dict:
+        """Readiness — reports every (model, alias) held. HTTP 503 when degraded.
+
+        Degraded = empty hot set (MLflow unreachable at boot or all loads failed),
+        so load balancers / monitoring stop routing to a replica that cannot serve.
+        """
+        degraded = not self._hot
+        if degraded:
+            response.status_code = 503
         return {
-            "status": "ok" if self._hot else "degraded",
+            "status": "degraded" if degraded else "ok",
             "models_loaded": len(self._hot),
             "version_cache_size": len(self._version_cache),
+            "poller_alive": self._poller_alive,
+            "poll_interval_s": RELOAD_POLL_SECONDS,
             "models": [
                 {
                     "model_name": name,
@@ -589,10 +703,35 @@ class MultiModelServer:
                 else:
                     row.append(v)
             input_array = np.array([row], dtype=float)
-            raw = model.predict(input_array)
+            # Run under a hard timeout so a hung model can't pin the replica worker.
+            raw = self._predict_pool.submit(model.predict, input_array).result(
+                timeout=self._predict_timeout
+            )
             prediction: Any = raw.tolist() if hasattr(raw, "tolist") else raw
             if isinstance(prediction, list) and len(prediction) == 1:
                 prediction = prediction[0]
+        except FuturesTimeoutError as exc:
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "version": version or "",
+                    "alias": alias or "",
+                    "status": "timeout",
+                }
+            )
+            self._latency_hist.observe(
+                time.time() - _t0,
+                tags={"model_name": model_name, "version": version or ""},
+            )
+            logger.error(
+                "Prediction TIMEOUT (>%ss) for '%s' v%s",
+                self._predict_timeout,
+                model_name,
+                version,
+            )
+            raise HTTPException(
+                status_code=504, detail=f"Prediction timed out after {self._predict_timeout}s"
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             self._req_counter.inc(
                 tags={

@@ -1,11 +1,11 @@
-"""Self-contained HTML/CSS/JS for the ExaMLOps Agent chat interface."""
+"""Self-contained HTML/CSS/JS for the Skipper (ExaMLOps agent) chat interface."""
 
 CHAT_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ExaMLOps Agent</title>
+<title>Skipper · ExaMLOps</title>
 <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
@@ -564,7 +564,7 @@ body { background: var(--bg); color: var(--text); height: 100vh; overflow: hidde
   <!-- Sidebar -->
   <aside id="sidebar">
     <div id="sidebar-header">
-      <h2>ExaMLOps Agent</h2>
+      <h2>Skipper</h2>
       <div id="model-badge">Loading...</div>
     </div>
     <button id="new-thread-btn" onclick="newThread()">+ New Chat</button>

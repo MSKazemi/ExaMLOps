@@ -8,11 +8,11 @@ OpenAI-compatible bridge on the agent server, so one `kq` binary can drive
 ExaMLOps, KubeIntellect, or any other agentic backend by URL/profile.
 
 ```
-kq  ──HTTP + SSE──▶  exa_agent /v1/chat/completions  ──▶  LangGraph + ExaMLOps tools
+kq  ──HTTP + SSE──▶  skipper /v1/chat/completions  ──▶  LangGraph + ExaMLOps tools
 ```
 
-The bridge lives in `exa_agent/oai_compat.py` and is mounted by the agent server
-(`make agent-server`, port 18004). It implements exactly what kube-q's default
+The bridge lives in `skipper/oai_compat.py` and is mounted by the agent server
+(`make skipper-server`, port 18004). It implements exactly what kube-q's default
 `kube-q` backend expects: `POST /v1/chat/completions` (SSE / JSON) and
 `GET /healthz`, with conversation state keyed by the `X-Session-ID` header →
 LangGraph `thread_id`.
@@ -21,10 +21,10 @@ LangGraph `thread_id`.
 
 ```bash
 # Terminal 1 — run the agent server (web UI + OpenAI/kube-q bridge)
-make agent-server
+make skipper-server
 
 # Terminal 2 — chat via kq
-make agent-chat
+make skipper-chat
 #   ≡  kq --url http://localhost:18004
 ```
 
@@ -44,7 +44,7 @@ approval panel and switches its prompt to `HITL>`. Type `/approve` to proceed or
 
 Set `AGENT_API_KEY` on the server to require a bearer token; pass the same value
 to `kq --api-key <key>` (or `KUBE_Q_API_KEY`). Unset ⇒ the bridge is open (local
-dev default). `make agent-chat` forwards `AGENT_API_KEY` automatically when set.
+dev default). `make skipper-chat` forwards `AGENT_API_KEY` automatically when set.
 
 ## Profile (optional convenience)
 

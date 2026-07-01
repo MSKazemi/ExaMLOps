@@ -639,3 +639,88 @@ def test_db_retry_raises_after_all_attempts_exhausted(cp, monkeypatch):
     monkeypatch.setattr("sqlite3.connect", _always_fail)
     with pytest.raises(sqlite3.OperationalError, match="DB unavailable"):
         cp._get_db()
+
+
+# ─── Approval race: atomic claim before Prefect ──────────────────────────────
+
+
+def _insert_pending(cp, row_id: str, model_id: str = "JPCP", status: str = "pending"):
+    from datetime import datetime
+
+    with cp._DB_LOCK:
+        conn = cp._get_db()
+        try:
+            conn.execute(
+                "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
+                "VALUES (?, ?, ?, ?)",
+                (row_id, model_id, status, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _status_of(cp, row_id: str) -> str:
+    conn = cp._get_db()
+    row = conn.execute("SELECT status FROM pending_approvals WHERE id=?", (row_id,)).fetchone()
+    conn.close()
+    return row[0]
+
+
+def test_approve_claims_and_creates_flow_run(cp, monkeypatch):
+    """A normal approval claims the row and marks it approved with a flow_run_id."""
+    _insert_pending(cp, "ap-1")
+    monkeypatch.setattr(cp, "_get_registry", lambda: {"JPCP": ["PM100Dataset"]})
+    monkeypatch.setattr(cp._get_gateway(), "find_deployment_id", lambda *_a, **_k: "dep-1")
+    monkeypatch.setattr(cp._get_gateway(), "create_flow_run", lambda *_a, **_k: "run-1")
+
+    resp = TestClient(cp.app).post("/approve/JPCP", headers=_auth())
+    assert resp.status_code == 200
+    assert resp.json()["flow_run_id"] == "run-1"
+    assert _status_of(cp, "ap-1") == "approved"
+
+
+def test_approve_in_progress_returns_409(cp, monkeypatch):
+    """A model whose approval is already 'approving' (claimed) must return 409, not double-fire."""
+    _insert_pending(cp, "ap-2", status="approving")  # already claimed by a concurrent request
+    monkeypatch.setattr(cp, "_get_registry", lambda: {"JPCP": ["PM100Dataset"]})
+
+    called = {"n": 0}
+
+    def _should_not_fire(*_a, **_k):
+        called["n"] += 1
+        return "run-x"
+
+    monkeypatch.setattr(cp._get_gateway(), "find_deployment_id", lambda *_a, **_k: "dep-1")
+    monkeypatch.setattr(cp._get_gateway(), "create_flow_run", _should_not_fire)
+
+    resp = TestClient(cp.app).post("/approve/JPCP", headers=_auth())
+    # No pending row (only an in-flight one) → 404; Prefect must NOT be called.
+    assert resp.status_code in (404, 409)
+    assert called["n"] == 0
+
+
+def test_approve_reverts_claim_on_prefect_error(cp, monkeypatch):
+    """If Prefect fails after the claim, the row must revert to 'pending' for retry."""
+    _insert_pending(cp, "ap-3")
+    monkeypatch.setattr(cp, "_get_registry", lambda: {"JPCP": ["PM100Dataset"]})
+
+    def _boom(*_a, **_k):
+        raise Exception("prefect down")
+
+    monkeypatch.setattr(cp._get_gateway(), "find_deployment_id", _boom)
+
+    resp = TestClient(cp.app, raise_server_exceptions=False).post("/approve/JPCP", headers=_auth())
+    assert resp.status_code in (500, 502)
+    assert _status_of(cp, "ap-3") == "pending"  # claim released → retryable
+
+
+def test_webhook_gitlab_malformed_json_returns_400(cp, monkeypatch):
+    """A malformed GitLab webhook body must be a clean 400, not a 500."""
+    monkeypatch.setattr(cp, "MODELZOO_WEBHOOK_SECRET", "s3cret")
+    resp = TestClient(cp.app, raise_server_exceptions=False).post(
+        "/webhooks/modelzoo/gitlab",
+        headers={"X-Gitlab-Token": "s3cret", "Content-Type": "application/json"},
+        content=b"{not json",
+    )
+    assert resp.status_code == 400

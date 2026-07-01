@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from exa_agent import config
+from skipper import config
 
 _HOWTO = {
     "add a model": (

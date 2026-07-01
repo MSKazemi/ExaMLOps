@@ -1,7 +1,7 @@
 import httpx
 import respx
-from exa_agent import confirm
-from exa_agent.tools import modelzoo
+from skipper import confirm
+from skipper.tools import modelzoo
 
 
 @respx.mock

@@ -33,7 +33,7 @@ def _interrupt_task(summary="delete model jpcp"):
 @pytest.fixture()
 def make_client():
     """Return a factory that builds a TestClient wired to a given fake graph."""
-    from exa_agent import server as srv
+    from skipper import server as srv
 
     def _factory(graph):
         srv._graph = None
@@ -170,7 +170,7 @@ def test_non_stream_returns_message(make_client):
 
 
 def test_auth_gate_rejects_without_key(make_client):
-    from exa_agent import config
+    from skipper import config
 
     graph = _fake_graph(stream_items=[(AIMessageChunk(content="x"), {})])
     client = make_client(graph)
@@ -183,7 +183,7 @@ def test_auth_gate_rejects_without_key(make_client):
 
 
 def test_auth_gate_accepts_with_key(make_client):
-    from exa_agent import config
+    from skipper import config
 
     graph = _fake_graph(stream_items=[(AIMessageChunk(content="ok"), {})])
     client = make_client(graph)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# exa_agent/config.py → parents: [0]=exa_agent [1]=agent [2]=services [3]=platform [4]=repo
+# skipper/config.py → parents: [0]=skipper [1]=agent [2]=services [3]=platform [4]=repo
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # Azure OpenAI / AI Foundry backend (preferred when configured).
@@ -56,3 +56,9 @@ AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
 CLAUDE_MD = os.getenv("AGENT_CLAUDE_MD", str(_REPO_ROOT / "CLAUDE.md"))
 
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
+
+# Fault tolerance: abort a graph run whose backend/tool has produced no output for
+# this many seconds (a hung LLM/tool must not hang the chat stream forever).
+AGENT_STREAM_IDLE_TIMEOUT = float(os.getenv("AGENT_STREAM_IDLE_TIMEOUT", "120.0"))
+# Overall ceiling for a non-streaming graph run.
+AGENT_GRAPH_TIMEOUT = float(os.getenv("AGENT_GRAPH_TIMEOUT", "300.0"))

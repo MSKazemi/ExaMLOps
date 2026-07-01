@@ -55,6 +55,8 @@ sys.path.insert(0, os.path.abspath(_CLI_SRC))
 try:
     from examlops.platform_db import (
         init_db as _init_platform_db,
+    )
+    from examlops.platform_db import (
         write_audit_event,
         write_drift_snapshot,
         write_input_snapshot,
@@ -66,6 +68,12 @@ except Exception:
     def write_drift_snapshot(*a, **k): pass  # type: ignore[misc]
     def write_audit_event(*a, **k): pass  # type: ignore[misc]
     def write_input_snapshot(*a, **k): pass  # type: ignore[misc]
+
+try:
+    from examlops.resilience import httpx_timeout as _httpx_timeout
+except Exception:
+    def _httpx_timeout(read=None, connect=None):  # type: ignore[misc]
+        return httpx.Timeout(10.0)
 
 from model_schema_registry import ModelSchemaRegistry  # noqa: E402
 from seanerbus_client import Connection  # noqa: E402
@@ -268,14 +276,25 @@ class DriftTracker:
         self.cooldown = cooldown
         self._results: dict[str, list[bool]] = {}
         self._last_retrain: dict[str, float] = {}
+        # Keep strong references to fire-and-forget trigger tasks so the event loop
+        # can't garbage-collect them mid-flight (a silently-dropped retrain trigger).
+        self._tasks: set[asyncio.Task] = set()
 
     def record(self, model: str, success: bool) -> None:
+        """Record a genuine model-inference outcome.
+
+        IMPORTANT: only feed *model-quality* signals here. Infrastructure/transport
+        failures (Ray Serve down, timeouts, connection errors) must NOT be recorded —
+        otherwise an outage inflates the error rate and spuriously triggers retrains.
+        """
         bucket = self._results.setdefault(model, [])
         bucket.append(success)
         if len(bucket) > self.window:
             del bucket[0]
         if len(bucket) >= self.window and self._error_rate(bucket) >= self.threshold:
-            asyncio.create_task(self._maybe_trigger(model, self._error_rate(bucket)))
+            task = asyncio.create_task(self._maybe_trigger(model, self._error_rate(bucket)))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     def _error_rate(self, bucket: list[bool]) -> float:
         return sum(1 for s in bucket if not s) / len(bucket)
@@ -290,7 +309,7 @@ class DriftTracker:
         if CONTROL_PLANE_TOKEN:
             headers["Authorization"] = f"Bearer {CONTROL_PLANE_TOKEN}"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
                 r = await client.post(
                     f"{CONTROL_PLANE_URL}/retrain",
                     json={
@@ -330,7 +349,7 @@ async def _call_pipeline(job: HpcJobV1, override_model: str | None = None) -> tu
     )
 
     t0 = time.perf_counter()
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
         resp = await client.post(
             f"{RAY_SERVE_URL}/infer-pipeline/infer",
             json={
@@ -400,10 +419,15 @@ async def _run_pubsub(conn: Connection) -> None:
 
         try:
             prediction, run_id, version = await _call_pipeline(job)
-            _drift_tracker.record(model, True)
+            # Drift is a MODEL-quality signal: a served response with no prediction
+            # is a genuine inference failure (record False); a real prediction is a
+            # success. Transport failures below never reach the tracker.
+            _drift_tracker.record(model, prediction is not None)
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
+            if prediction is None:
+                m["errors"] += 1
         except ValueError as exc:
             # Schema misconfiguration — do NOT feed into drift tracker
             _ERRORS.labels(model=model).inc()
@@ -414,19 +438,21 @@ async def _run_pubsub(conn: Connection) -> None:
             m["inferences"] += 1
             m["errors"] += 1
         except httpx.HTTPError as exc:
+            # Infrastructure/transport failure (Ray Serve down, timeout, 5xx) — count
+            # as an error but do NOT feed the drift tracker, else an outage would
+            # masquerade as model drift and spuriously trigger retrains.
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
-            log.error("Ray Serve error for job %s: %s", job.job_id, exc)
-            _drift_tracker.record(model, False)
+            log.error("Ray Serve transport error for job %s: %s", job.job_id, exc)
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
             m["errors"] += 1
         except Exception as exc:  # noqa: BLE001
+            # Unexpected/infrastructure failure — likewise excluded from drift.
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
             log.error("Unexpected error handling pubsub job %s: %s", job.job_id, exc)
-            _drift_tracker.record(model, False)
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -456,10 +482,13 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
 
     try:
         prediction, run_id, version = await _call_pipeline(req, override_model=model)
-        _drift_tracker.record(model, True)
+        # Model-quality signal only: no prediction on a served response = failure.
+        _drift_tracker.record(model, prediction is not None)
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
+        if prediction is None:
+            m["errors"] += 1
         return HpcInferenceResV1(
             job_id=req.job_id,
             model_name=model,
@@ -478,18 +507,18 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         m["errors"] += 1
         return HpcInferenceResV1(job_id=req.job_id, model_name=model, error_msg=str(exc))
     except httpx.HTTPError as exc:
+        # Infrastructure/transport failure — excluded from drift (see _run_pubsub).
         _ERRORS.labels(model=model).inc()
-        log.error("Ray Serve error in req/res inference handler: %s", exc)
-        _drift_tracker.record(model, False)
+        log.error("Ray Serve transport error in req/res inference handler: %s", exc)
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
         m["errors"] += 1
         return HpcInferenceResV1(job_id=req.job_id, model_name=model, error_msg=str(exc))
     except Exception as exc:  # noqa: BLE001
+        # Unexpected/infrastructure failure — likewise excluded from drift.
         _ERRORS.labels(model=model).inc()
         log.error("Unexpected error in req/res inference handler: %s", exc)
-        _drift_tracker.record(model, False)
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -520,7 +549,7 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
         headers["Authorization"] = f"Bearer {CONTROL_PLANE_TOKEN}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
             r = await client.post(
                 f"{CONTROL_PLANE_URL}/retrain",
                 json={
@@ -551,7 +580,7 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
 
 async def _handle_vector(req: VectorReqV1) -> VectorResV1:
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
             resp = await client.post(
                 f"{RAY_SERVE_URL}/predict/{DEFAULT_MODEL}",
                 json={"features": {"embedding": list(req.values)}, "alias": DEFAULT_ALIAS},

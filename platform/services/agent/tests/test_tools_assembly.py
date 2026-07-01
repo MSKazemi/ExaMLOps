@@ -1,5 +1,5 @@
 def test_tools_assembled():
-    from exa_agent.tools import TOOLS
+    from skipper.tools import TOOLS
 
     names = {t.name for t in TOOLS}
     for expected in [
@@ -18,7 +18,7 @@ def test_tools_assembled():
 
 
 def test_write_tools_registered():
-    from exa_agent import (
+    from skipper import (
         confirm,
         tools,  # noqa: F401  (import triggers tool module loading)
     )
@@ -34,7 +34,7 @@ def test_write_tools_registered():
 
 
 def test_memory_persists(tmp_path):
-    from exa_agent.memory import build_checkpointer
+    from skipper.memory import build_checkpointer
 
     db = str(tmp_path / "mem.db")
     saver = build_checkpointer(db)

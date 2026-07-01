@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from langgraph.prebuilt import create_react_agent
 
-from exa_agent.llm import build_llm
-from exa_agent.memory import build_checkpointer
-from exa_agent.prompts import SYSTEM_PROMPT
-from exa_agent.tools import TOOLS
+from skipper.llm import build_llm
+from skipper.memory import build_checkpointer
+from skipper.prompts import SYSTEM_PROMPT
+from skipper.tools import TOOLS
 
 
 def build_graph(model: str | None = None, db_path: str | None = None):

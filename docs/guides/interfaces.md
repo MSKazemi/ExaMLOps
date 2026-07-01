@@ -285,7 +285,7 @@ From a JupyterLab session you can reach MLflow, MinIO, Ray Serve, and the Contro
 A conversational interface backed by LangGraph's ReAct loop. The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**.
 
 ```bash
-make agent                                   # interactive CLI REPL
+make skipper                                   # interactive CLI REPL
 python platform/services/agent/agent_server.py   # HTTP/WebSocket chat + web UI on :18004
 ```
 

@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import httpx
 from langchain_core.tools import tool
 
-from exa_agent import config
-from exa_agent.tools import _http
+from skipper import config
+from skipper.tools import _http
 
 
 @tool
@@ -62,8 +62,8 @@ def platform_health() -> str:
 @tool
 def generate_report() -> str:
     """Generate a timestamped Markdown platform status report (models + health + metrics)."""
-    from exa_agent.tools.approvals import list_pending_approvals
-    from exa_agent.tools.registry import list_models
+    from skipper.tools.approvals import list_pending_approvals
+    from skipper.tools.registry import list_models
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     models = list_models.invoke({"model_name": ""})

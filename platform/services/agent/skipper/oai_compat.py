@@ -27,6 +27,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import uuid
 from typing import Any
@@ -36,8 +37,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from exa_agent import config
-from exa_agent.confirm import _is_affirmative
+from skipper import config
+from skipper.confirm import _is_affirmative
 
 router = APIRouter()
 
@@ -53,7 +54,8 @@ def _check_auth(authorization: str | None) -> None:
     if not config.AGENT_API_KEY:
         return
     expected = f"Bearer {config.AGENT_API_KEY}"
-    if authorization != expected:
+    # Constant-time compare to avoid leaking the key via response timing.
+    if not (authorization and hmac.compare_digest(authorization, expected)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -113,7 +115,7 @@ def _norm_usage(usage_metadata: dict | None) -> dict | None:
 
 
 def _graph_and_extract():
-    from exa_agent.server import _extract_text, _get_graph
+    from skipper.server import _extract_text, _get_graph
 
     return _get_graph(), _extract_text
 
@@ -189,8 +191,18 @@ async def _stream_completion(session_id: str, text: str, model: str):
 
     usage: dict | None = None
     errored: str | None = None
+    timed_out = False
     while True:
-        event = await queue.get()
+        try:
+            event = await asyncio.wait_for(
+                queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT
+            )
+        except TimeoutError:
+            # No token/tool for the idle window — a hung LLM or tool. Abort the
+            # stream cleanly rather than blocking the client indefinitely.
+            errored = f"agent produced no output for {config.AGENT_STREAM_IDLE_TIMEOUT}s"
+            timed_out = True
+            break
         if event is None:
             break
         kind, payload = event
@@ -204,7 +216,8 @@ async def _stream_completion(session_id: str, text: str, model: str):
             usage = payload
         elif kind == "error":
             errored = payload
-    await fut
+    if not timed_out:
+        await fut  # on timeout the worker thread may still be blocked; don't join it
 
     if errored is not None:
         yield _sse({"ki_event": {"type": "error", "message": errored}})
@@ -252,7 +265,12 @@ async def chat_completions(
     authorization: str | None = Header(default=None),
 ):
     _check_auth(authorization)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     session_id = x_session_id or body.get("user") or f"kq-{uuid.uuid4().hex[:8]}"
     model = body.get("model") or "examlops-agent"
     messages = body.get("messages") or []
