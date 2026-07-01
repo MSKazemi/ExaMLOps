@@ -372,17 +372,19 @@ exa --json approvals list | jq '.[] | select(.status == "pending")'
 | Command | Description |
 |---|---|
 | `make agent` | Start the ExaMLOps management agent REPL (terminal) — reads `ANTHROPIC_API_KEY` / `AGENT_OLLAMA_URL` / `AGENT_MODEL` from `.env` |
-| `make agent-server` | Start the web chat UI server on port 18004 — open `http://localhost:18004` in a browser |
+| `make agent-server` | Start the web chat UI + OpenAI/kube-q bridge on port 18004 — open `http://localhost:18004` in a browser |
+| `make agent-chat` | Chat with the agent via the kube-q (`kq`) terminal client (needs `agent-server` running; installs `kube-q` if missing) |
 | `make agent-test` | Run the agent's unit test suite (`platform/services/agent/tests/`) |
 
-The agent is a packaged LangGraph ReAct agent (`exa_agent/`) exposing ~40 tools across 10 groups for natural-language operations and Q&A.
+The agent is a packaged LangGraph ReAct agent (`exa_agent/`) exposing **45 tools across 10 groups** for natural-language operations and Q&A.
 
-### LLM backend (dual)
+### LLM backend (triple)
 
-The agent prefers **Claude API** when `ANTHROPIC_API_KEY` is set; falls back to **Ollama** otherwise.
+The agent selects a backend by which keys are set, in order: **Azure Foundry → Claude → Ollama**.
 
-| Backend | Env var | Default model | Notes |
+| Backend | Trigger env var(s) | Default model | Notes |
 |---|---|---|---|
+| Azure OpenAI / AI Foundry | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | `gpt-5.4-mini` (override: `AZURE_OPENAI_DEPLOYMENT`) | Preferred when configured; OpenAI-compatible Foundry v1 endpoint |
 | Claude (Anthropic) | `ANTHROPIC_API_KEY` | `claude-opus-4-8` (override: `ANTHROPIC_MODEL`) | Adaptive thinking enabled; streaming; best results |
 | Ollama | `AGENT_OLLAMA_URL` | `llama3.1:8b` (override: `AGENT_MODEL`) | Local inference; requires `ollama-tunnel` or local `ollama serve` |
 

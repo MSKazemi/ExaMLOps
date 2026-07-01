@@ -528,11 +528,11 @@ selfheal: ## Run the container self-healer once against the local stack
 ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + smoke
 	@printf "$(BOLD)CI · modelzoo (poetry)$(RESET)\n"
 	@cd $(MODELZOO_DIR) && \
-	  (command -v poetry >/dev/null 2>&1 || pip install --quiet poetry) && \
-	  poetry config virtualenvs.create false && \
+	  (command -v poetry >/dev/null 2>&1 || pipx install poetry >/dev/null 2>&1 || pip install --quiet poetry) && \
+	  { poetry env use "$(CURDIR)/$(PYTHON)" >/dev/null 2>&1 || poetry env use python3.12 >/dev/null 2>&1 || true; } && \
 	  poetry install --no-interaction --with dev,ci -q && \
-	  ruff check seanergys_modelzoo ci tests && \
-	  pytest tests/unit/ tests/smoke/ -v --tb=short
+	  poetry run ruff check seanergys_modelzoo ci tests && \
+	  poetry run pytest tests/unit/ tests/smoke/ -v --tb=short
 	@printf "$(GREEN)CI · modelzoo passed.$(RESET)\n"
 
 alerts-check: ## Validate Prometheus alert rules with promtool
@@ -612,10 +612,16 @@ agent-test:  ## Run the management-agent unit tests
 	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
 
-agent-server: install ## Start the ExaMLOps agent web chat UI (port 18004)
+agent-server: install ## Start the ExaMLOps agent web + OpenAI/kube-q bridge (port 18004)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	printf "$(BOLD)ExaMLOps Agent Chat$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
 	$(PYTHON) platform/services/agent/agent_server.py
+
+agent-chat: ## Chat with the agent via the kube-q `kq` terminal client (needs agent-server running)
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	$(VENV)/bin/kq --version >/dev/null 2>&1 || $(UV) pip install -q kube-q; \
+	printf "$(GREEN)Connecting kube-q → ExaMLOps agent$(RESET)  (http://localhost:$${AGENT_SERVER_PORT:-18004})\n"; \
+	$(VENV)/bin/kq --url http://localhost:$${AGENT_SERVER_PORT:-18004} $${AGENT_API_KEY:+--api-key $$AGENT_API_KEY}
 
 # =============================================================================
 ##@ Convenience

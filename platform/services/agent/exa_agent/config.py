@@ -47,6 +47,10 @@ CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
 DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")
 
+# Optional bearer token gating the OpenAI-compatible chat bridge (/v1/chat/completions,
+# consumed by the kube-q `kq` client). Unset ⇒ the bridge is open (local dev default).
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
 AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
 CLAUDE_MD = os.getenv("AGENT_CLAUDE_MD", str(_REPO_ROOT / "CLAUDE.md"))
