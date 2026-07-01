@@ -44,7 +44,7 @@ def request_json(service: str, method: str, url: str, *, retries: int = 2, **kwa
             last_exc = exc
             if attempt < retries:
                 time.sleep(_REQUEST_RETRY_DELAY * (2**attempt))
-    return None, _format_error(service, url, last_exc)
+    return None, _format_error(service, url, last_exc or RuntimeError("unknown error"))
 
 
 class DashboardClient:

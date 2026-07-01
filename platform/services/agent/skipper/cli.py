@@ -280,7 +280,7 @@ def run_turn(graph, state: CliState, user_input: str) -> None:
                 if isinstance(msg, AIMessageChunk):
                     # Feature 5: capture token usage from final chunk
                     if getattr(msg, "usage_metadata", None):
-                        last_usage = msg.usage_metadata
+                        last_usage = dict(msg.usage_metadata or {})
                     text = _extract_text(msg.content)
                     if text:
                         if not in_ai_block:

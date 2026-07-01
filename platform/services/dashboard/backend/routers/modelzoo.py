@@ -382,7 +382,7 @@ async def trigger_pipeline(
             resp = await http.post(
                 f"{gitlab_url}/api/v4/projects/{encoded_project_id}/pipeline",
                 json={"ref": branch},
-                headers={"PRIVATE-TOKEN": settings.gitlab_token},
+                headers={"PRIVATE-TOKEN": settings.gitlab_token or ""},
             )
         else:
             resp = await http.post(

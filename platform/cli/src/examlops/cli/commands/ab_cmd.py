@@ -240,7 +240,9 @@ def ab_analyze(
             (model,),
         ).fetchone()
         if test_row is None:
-            _output.error(f"No A/B test found for {model}. Start one with: exa serve ab start {model}")
+            _output.error(
+                f"No A/B test found for {model}. Start one with: exa serve ab start {model}"
+            )
         test_id = test_row["id"]
         variant_a, variant_b = test_row["variant_a"], test_row["variant_b"]
         rows = conn.execute(
@@ -292,5 +294,9 @@ def ab_analyze(
         os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli",
         "ab_test_analyzed",
         model,
-        {"p_value": result["p_value"], "winner": winner_label, "significant": result["significant"]},
+        {
+            "p_value": result["p_value"],
+            "winner": winner_label,
+            "significant": result["significant"],
+        },
     )

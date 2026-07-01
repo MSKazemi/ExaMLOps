@@ -558,7 +558,8 @@ class MultiModelServer:
             # Alias not in the hot set — try a one-shot load.
             try:
                 client = mlflow.MlflowClient()
-                mv = client.get_model_version_by_alias(model_name, alias)
+                # Any: reused below for the raw-version path where it may be None.
+                mv: Any = client.get_model_version_by_alias(model_name, alias)
                 model = self._load_by_flavour(model_name, alias, mv)
                 entry = {
                     "model": model,
