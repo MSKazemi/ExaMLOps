@@ -31,7 +31,12 @@ Env vars:
     RAY_SERVE_PORT              default: 8001
 """
 
-from __future__ import annotations
+# NOTE: deliberately NOT using `from __future__ import annotations`.
+# PEP 563 stringifies all annotations, and Ray Serve's `@serve.ingress` wrapper
+# with recent FastAPI/Starlette/pydantic fails to resolve the postponed string
+# annotations on endpoint body parameters — demoting a Pydantic-model body
+# param to a query param (HTTP 422) or failing to build its TypeAdapter (500).
+# Keeping annotations as real objects lets FastAPI introspect request bodies.
 
 import sys as _sys
 from pathlib import Path as _Path

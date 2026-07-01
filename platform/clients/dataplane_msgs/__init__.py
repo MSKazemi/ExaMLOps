@@ -2,8 +2,12 @@
 ExaMLOps DataPlane message types.
 
 Defines Cap'n'Proto message wrappers for HPC job inference and retrain
-requests. The payloadType integers match the agreed dataplane MessageTypes
-enum (5-10) without requiring any changes to the dataplane repository.
+requests. The payloadType integers match the dataplane MessageTypes enum
+(0-indexed Cap'n Proto enum) without requiring any changes to the dataplane
+repository. The JPCP inference req/res use the dedicated jpcpInferenceReqV1
+(@19) / jpcpInferenceResV1 (@20) message types of the current dataplane
+protocol; their Cap'n Proto struct layout is wire-identical to the legacy
+HpcJobV1 / HpcInferenceResV1 structs kept here.
 """
 
 from __future__ import annotations
@@ -16,13 +20,18 @@ import capnp
 capnp.remove_import_hook()
 _schema = capnp.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "msg.capnp"))
 
-# payloadType integer constants — must match the dataplane MessageTypes enum ordering.
+# payloadType integer constants — must match the dataplane MessageTypes enum
+# ordering (Cap'n Proto enum, 0-indexed). Current dataplane protocol:
+#   vectorReqV1 @5, vectorResV1 @6, jpcpInferenceReqV1 @19, jpcpInferenceResV1 @20.
+# NOTE: retrain has no dedicated message type in the current protocol; the
+# RETRAIN_* values below are legacy and inert (no retrain traffic flows over
+# the bus — retrains are driven via the control-plane HTTP API).
 TYPE_VECTOR_REQ_V1        = 5
 TYPE_VECTOR_RES_V1        = 6
-TYPE_HPC_JOB_V1           = 7
-TYPE_HPC_INFERENCE_RES_V1 = 8
-TYPE_RETRAIN_REQ_V1       = 9
-TYPE_RETRAIN_RES_V1       = 10
+TYPE_HPC_JOB_V1           = 19  # jpcpInferenceReqV1 (was 7 in the legacy numbering)
+TYPE_HPC_INFERENCE_RES_V1 = 20  # jpcpInferenceResV1 (was 8 in the legacy numbering)
+TYPE_RETRAIN_REQ_V1       = 9   # legacy/inert — see note above
+TYPE_RETRAIN_RES_V1       = 10  # legacy/inert — see note above
 
 
 class VectorReqV1:
@@ -30,7 +39,7 @@ class VectorReqV1:
         self.values = values
 
     @staticmethod
-    def from_capnp(msg) -> "VectorReqV1":
+    def from_capnp(msg) -> VectorReqV1:
         if msg.payloadType != TYPE_VECTOR_REQ_V1:
             raise RuntimeError(f"Expected VectorReqV1 (type {TYPE_VECTOR_REQ_V1}), got {msg.payloadType}")
         with _schema.VectorReqV1.from_bytes(msg.payload) as raw:
@@ -49,7 +58,7 @@ class VectorResV1:
         self.results = results
 
     @staticmethod
-    def from_capnp(msg) -> "VectorResV1":
+    def from_capnp(msg) -> VectorResV1:
         if msg.payloadType != TYPE_VECTOR_RES_V1:
             raise RuntimeError(f"Expected VectorResV1 (type {TYPE_VECTOR_RES_V1}), got {msg.payloadType}")
         with _schema.VectorResV1.from_bytes(msg.payload) as raw:
@@ -89,7 +98,7 @@ class HpcJobV1:
         self.alias = alias
 
     @staticmethod
-    def from_capnp(msg) -> "HpcJobV1":
+    def from_capnp(msg) -> HpcJobV1:
         if msg.payloadType != TYPE_HPC_JOB_V1:
             raise RuntimeError(f"Expected HpcJobV1 (type {TYPE_HPC_JOB_V1}), got {msg.payloadType}")
         with _schema.HpcJobV1.from_bytes(msg.payload) as raw:
@@ -145,7 +154,7 @@ class HpcInferenceResV1:
         self.run_id = run_id
 
     @staticmethod
-    def from_capnp(msg) -> "HpcInferenceResV1":
+    def from_capnp(msg) -> HpcInferenceResV1:
         if msg.payloadType != TYPE_HPC_INFERENCE_RES_V1:
             raise RuntimeError(
                 f"Expected HpcInferenceResV1 (type {TYPE_HPC_INFERENCE_RES_V1}), got {msg.payloadType}"
@@ -189,7 +198,7 @@ class RetrainReqV1:
         self.is_dummy = is_dummy
 
     @staticmethod
-    def from_capnp(msg) -> "RetrainReqV1":
+    def from_capnp(msg) -> RetrainReqV1:
         if msg.payloadType != TYPE_RETRAIN_REQ_V1:
             raise RuntimeError(f"Expected RetrainReqV1 (type {TYPE_RETRAIN_REQ_V1}), got {msg.payloadType}")
         with _schema.RetrainReqV1.from_bytes(msg.payload) as raw:
@@ -221,7 +230,7 @@ class RetrainResV1:
         self.error_msg = error_msg
 
     @staticmethod
-    def from_capnp(msg) -> "RetrainResV1":
+    def from_capnp(msg) -> RetrainResV1:
         if msg.payloadType != TYPE_RETRAIN_RES_V1:
             raise RuntimeError(f"Expected RetrainResV1 (type {TYPE_RETRAIN_RES_V1}), got {msg.payloadType}")
         with _schema.RetrainResV1.from_bytes(msg.payload) as raw:

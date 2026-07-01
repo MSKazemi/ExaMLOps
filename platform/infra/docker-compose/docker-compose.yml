@@ -114,9 +114,15 @@ services:
     environment:
       PREFECT_UI_API_URL: /api
       PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      # Persist Prefect metadata in Postgres (shares the postgres_data volume)
+      # instead of the default ephemeral SQLite inside the container.
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://mlops:mlops@postgres/prefect
     ports:
       - "14200:4200"
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
       interval: 10s

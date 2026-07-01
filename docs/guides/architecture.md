@@ -95,8 +95,8 @@ graph TB
     CP -- "metrics" --> Prom
     Prom --> Grafana
 
-    subgraph Agent["Management Agent (CLI · exa_agent, ~40 tools / 10 groups)"]
-        AgentCLI["LangGraph ReAct Agent\n(make agent · Ollama LLM)\nconfirm-before-write · SQLite memory"]
+    subgraph Agent["Management Agent (CLI + HTTP · exa_agent, 45 tools / 10 groups)"]
+        AgentCLI["LangGraph ReAct Agent\n(make agent · Azure/Claude/Ollama LLM)\nconfirm-before-write · SQLite memory"]
     end
 
     AgentCLI -- "registry tools\n/ajax-api/2.0/mlflow/..." --> MLflow

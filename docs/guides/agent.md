@@ -1,6 +1,44 @@
 # ExaMLOps Management Agent
 
-The ExaMLOps Management Agent is a conversational CLI that lets operators manage, monitor, and control the ExaMLOps platform through natural language. Built on LangGraph's ReAct loop with a local Ollama LLM backend, it can query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, requiring no additional services beyond Ollama.
+The ExaMLOps Management Agent (**ExaAgent**) lets operators manage, monitor, and control the ExaMLOps platform through natural language. It is built on **LangGraph's ReAct loop** (`langgraph.prebuilt.create_react_agent`) and exposes **45 tools across 10 groups** that query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, inspect drift and audit history, set traffic splits, promote versions, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, plus the shared `platform_db` SQLite store, requiring no additional services of its own.
+
+It runs in two modes:
+
+- **CLI** — an interactive REPL (`make agent`) with slash-commands, write-confirmation prompts, and persistent conversation threads.
+- **HTTP server** — a FastAPI service (`agent_server.py`, default port **18004**) serving a streaming WebSocket chat at `/ws/chat/{thread_id}`, a REST history/info API at `/api/*`, and an embedded HTML chat UI at `/`.
+
+## Architecture
+
+```
+exa_agent/
+├── graph.py        ReAct graph: create_react_agent(llm, tools=TOOLS, prompt=SYSTEM_PROMPT, checkpointer)
+├── llm.py          Backend selection: Azure Foundry → Claude → Ollama (build_llm / check_backend)
+├── memory.py       SqliteSaver checkpointer (persistent threads, keyed by thread_id)
+├── prompts.py      SYSTEM_PROMPT — tool groups, reasoning rules, write-protection policy
+├── confirm.py      @confirmed_write decorator → LangGraph interrupt() human-in-the-loop gate
+├── config.py       Env-var resolution (backends, service URLs, paths)
+├── cli.py          Interactive REPL + slash commands
+├── server.py       FastAPI WebSocket chat + REST + HTML UI
+├── chat_html.py    Embedded web chat interface
+└── tools/          45 @tool functions in 10 modules, aggregated into TOOLS
+    ├── _http.py    request_json() (retry + backoff) + DashboardClient (lazy JWT, auto-reauth)
+    ├── registry.py inference.py metrics.py training.py approvals.py
+    └── modelzoo.py services.py pipelines.py docs.py platform_ops.py
+```
+
+The graph is the standard ReAct cycle — the LLM reasons, emits tool calls, the tools execute against platform HTTP APIs (and `platform_db`), results are fed back, and the model synthesizes a Markdown answer. Conversation state persists across turns via a SQLite `SqliteSaver` checkpointer keyed by `thread_id`. Write tools pause mid-graph for operator confirmation using LangGraph's `interrupt()` mechanism.
+
+## LLM Backends
+
+`build_llm()` selects a backend at startup by which environment variables are set, in this preference order:
+
+| Order | Backend | Trigger vars | Default model | Notes |
+|---|---|---|---|---|
+| 1 | **Azure OpenAI / AI Foundry** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | `gpt-5.4-mini` (`AZURE_OPENAI_DEPLOYMENT`) | Driven via `langchain-openai` `ChatOpenAI` against the OpenAI-compatible Foundry **v1** endpoint (`base_url` + `api_key`, deployment name as model id). Temperature left unset — gpt-5.x reasoning models reject overrides. |
+| 2 | **Claude API** | `ANTHROPIC_API_KEY` | `claude-opus-4-8` (`ANTHROPIC_MODEL`) | `ChatAnthropic` with **adaptive thinking** (`thinking={"type": "adaptive"}`), `max_tokens=16000`. |
+| 3 | **Ollama** (fallback) | none required | `llama3.1:8b` (`AGENT_MODEL`) | `ChatOllama` at `AGENT_OLLAMA_URL`, `temperature=0`, with `keep_alive` / `reasoning` tuning for CPU-only servers. |
+
+`check_backend()` reports the live backend as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set the Azure or Claude vars in `.env` to switch.
 
 ## Prerequisites
 
@@ -220,7 +258,7 @@ AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.1 make agent
 
 ## Available Tools
 
-The agent exposes 34 tools across 9 groups. The LLM selects the appropriate tool(s) automatically based on your prompt.
+The agent exposes **45 tools across 10 groups**. The LLM selects the appropriate tool(s) automatically based on your prompt.
 
 | Group | Tools | Description |
 |---|---|---|
@@ -233,6 +271,7 @@ The agent exposes 34 tools across 9 groups. The LLM selects the appropriate tool
 | **services** | `list_services`, `service_logs`, `start_service`, `stop_service`, `restart_service` | List running platform services with their status; tail container logs; start, stop, or restart a service via the dashboard's Docker-socket controls. Start/stop/restart are write tools requiring confirmation. |
 | **pipelines** | `list_deployments`, `list_runs`, `scaffold_preview`, `scaffold_create` | List Prefect deployments and recent flow runs; preview or create a new model scaffold (`exa scaffold` equivalent). `scaffold_create` is a write tool requiring confirmation; use `scaffold_preview` first. |
 | **docs/knowledge** | `search_docs`, `read_doc`, `list_docs`, `get_howto` | Search the repo's `docs/` directory by keyword, read a specific doc file, list all available docs, or look up a how-to answer grounded in the documentation. |
+| **platform_ops** | `compare_model_versions`, `get_model_lineage`, `get_drift_status`, `get_input_drift_status`, `query_audit_log`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `validate_model_serving`, `get_platform_summary`, `diagnose_platform` | Operational observability and lifecycle control (Phase 19/21/22). Compare metric/param deltas between versions; trace the pipeline→dataset→model lineage; read prediction-drift and input-embedding-drift status (CRITICAL/WARNING/OK); query the platform audit log; set per-alias traffic percentages; metric-gate a promotion; fire drift-based auto-retrains (cooldown-aware); smoke-test a model against a latency SLA; and produce a quick `get_platform_summary` or a full prioritized `diagnose_platform` report. `set_traffic_split`, `promote_model`, and `trigger_auto_retrain` are write tools requiring confirmation. |
 
 ## Slash Commands
 
@@ -245,9 +284,13 @@ Type a slash command at the `ExaMLOps Agent >` prompt instead of a question:
 | `/new` | Start a fresh conversation thread (new `thread_id`) |
 | `/resume <id>` | Resume a previously saved thread by its `thread_id` |
 | `/threads` | List all saved thread IDs in the SQLite checkpoint store |
-| `/model <name>` | Switch the Ollama model for the current session |
+| `/history [n]` | Show the last `n` messages in the current thread (default 10) |
+| `/export [file]` | Export the current thread to a Markdown file |
+| `/grep <pattern>` | Search conversation history for matching text |
+| `/watch <secs> <query>` | Repeat a query every N seconds until `Ctrl+C` (polling loop) |
+| `/model <name>` | Switch the LLM model for the current session (rebuilds the graph immediately) |
 | `/report` | Ask the agent to generate a full platform status report |
-| `/exit` | Quit the agent REPL |
+| `/exit` (or `/quit`) | Quit the agent REPL |
 
 ## Write Confirmation
 
@@ -258,9 +301,9 @@ Write and destructive tools pause before acting. When the agent is about to perf
 Proceed? [y/N]
 ```
 
-Type `y` or `yes` to proceed; anything else cancels and returns `Cancelled — no action taken.`. The confirmation gate is implemented via LangGraph's `interrupt()` mechanism and the SQLite checkpointer, so the same gate will work transparently for future API or UI callers that implement the LangGraph interrupt protocol.
+Type `y` or `yes` to proceed (accepted: `y/yes/ok/okay/approve/confirm/true/1`); anything else cancels and returns `Cancelled — no action taken.`. The confirmation gate is implemented via LangGraph's `interrupt()` mechanism and the SQLite checkpointer, so the same gate works transparently for the WebSocket server (it emits an `{"type": "interrupt", "payload": ...}` event and resumes with a `Command`) and for any future API or UI caller that implements the LangGraph interrupt protocol.
 
-Write tools: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`.
+The **13 write tools**: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`.
 
 ## Persistent Memory
 
@@ -270,12 +313,64 @@ Conversations are stored in a SQLite database (`AGENT_DB`, default `./agent_memo
 - List all saved sessions: `/threads`
 - Start fresh: `/new` (old sessions remain on disk)
 
+## HTTP Server & Web UI
+
+Besides the CLI, the agent ships a FastAPI server (`agent_server.py`) that serves the same ReAct graph over HTTP — useful for embedding the agent in a browser or driving it programmatically.
+
+```bash
+python platform/services/agent/agent_server.py     # binds 0.0.0.0:18004 (AGENT_SERVER_PORT)
+# or:
+uvicorn exa_agent.server:app --port 18004
+```
+
+| Surface | Path | Description |
+|---|---|---|
+| Web chat UI | `GET /` | Embedded HTML chat interface (`chat_html.py`). |
+| Backend info | `GET /api/info` | Live backend `{ok, type, model}` from `check_backend()`. |
+| Thread list | `GET /api/threads` | All saved thread IDs in the checkpoint store. |
+| Thread history | `GET /api/threads/{thread_id}/history` | Messages for a given thread. |
+| Streaming chat | `WS /ws/chat/{thread_id}` | WebSocket chat. Server streams `{"type": "token"}` chunks, `{"type": "tool", "name": ...}` events, `{"type": "interrupt", "payload": ...}` for the write-confirmation gate, and `{"type": "done"}` to end a turn. |
+| Chat completions | `POST /v1/chat/completions` | OpenAI-compatible bridge (SSE when `stream=true`, JSON otherwise) consumed by the [kube-q](https://github.com/MSKazemi/kube_q) `kq` client. Conversation state is keyed by the `X-Session-ID` header → LangGraph `thread_id`. |
+| Health | `GET /healthz` | Liveness probe for the bridge (`{"status": "ok"}`). |
+
+The WebSocket honours the same write-confirmation gate as the CLI: on an `interrupt` event the client replies with an affirmative/negative decision, which the server feeds back into the graph as a LangGraph `Command` to resume or cancel the pending write.
+
+### kube-q (`kq`) terminal client
+
+The `POST /v1/chat/completions` + `GET /healthz` bridge lets the general-purpose
+[kube-q](https://github.com/MSKazemi/kube_q) client (`kq`) drive the ExaMLOps
+agent — bringing session history, full-text search, conversation branching,
+token/cost tracking, and HITL approvals to the terminal, **without forking**.
+
+```bash
+make agent-server          # run the agent + bridge (port 18004)
+make agent-chat            # launch kq against it (installs kube-q if needed)
+# or directly:
+kq --url http://localhost:18004
+kq --url http://localhost:18004 --query "which models are in production?" --output plain
+```
+
+HITL: write tools trip a LangGraph `interrupt()`; `kq` shows an approval panel and
+switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph as
+`Command(resume=…)`. Set `AGENT_API_KEY` on the server to require a bearer token
+(pass it to `kq --api-key` / `KUBE_Q_API_KEY`). See
+`platform/services/agent/kube-q/README.md` for the profile and full workflow.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name. Must support tool/function calling. Set in `.env`. |
+| `AZURE_OPENAI_API_KEY` | unset | API key for the Azure OpenAI / AI Foundry backend. When set together with `AZURE_OPENAI_ENDPOINT`, this backend is preferred over Claude and Ollama. |
+| `AZURE_OPENAI_ENDPOINT` | unset | Foundry **v1** project endpoint base URL, e.g. `https://<resource>.services.ai.azure.com/openai/v1/` (OpenAI-compatible). |
+| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4-mini` | Deployment name shown in Foundry, used as the model id. |
+| `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when Azure is not configured. |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking enabled, `max_tokens=16000`). |
+| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback backend). Must support tool/function calling. Set in `.env`. |
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel <OLLAMA_HOST>; `11434` for local `ollama serve`. |
+| `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids 30–60 s reloads on CPU-only servers). |
+| `AGENT_OLLAMA_REASONING` | `false` | `false` disables thinking models' extra reasoning tokens (snappier); `true` forces it on; `default`/`none` leaves the model default. |
+| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
+| `AGENT_API_KEY` | unset | Optional bearer token gating `POST /v1/chat/completions` (the kube-q bridge). Unset ⇒ open (local dev). When set, clients must send `Authorization: Bearer <key>` (e.g. `kq --api-key <key>`). |
 | `AGENT_DB` | `./agent_memory.db` | Path to the SQLite file used by the LangGraph `SqliteSaver` checkpointer for persistent conversation threads. |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs tools (`search_docs`, `read_doc`, `list_docs`, `get_howto`) search. Defaults to the `docs/` folder at repo root. |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | Shared with the rest of the stack — controls where registry tools query MLflow. |

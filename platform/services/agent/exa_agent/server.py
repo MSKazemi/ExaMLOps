@@ -23,6 +23,13 @@ app = FastAPI(title="ExaMLOps Agent Chat", docs_url=None, redoc_url=None)
 _graph: Any = None
 _backend_info: dict = {}
 
+# OpenAI-compatible bridge (/v1/chat/completions + /healthz) consumed by the
+# kube-q `kq` terminal client. Imported after `app` so its lazy imports of
+# `_get_graph`/`_extract_text` resolve without a circular import.
+from exa_agent.oai_compat import router as oai_router  # noqa: E402
+
+app.include_router(oai_router)
+
 
 def _get_graph():
     global _graph, _backend_info

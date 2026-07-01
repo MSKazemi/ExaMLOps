@@ -451,9 +451,8 @@ firewall-fix-logs: ## Tail the firewall-fix sidecar (shows each rule (re-)apply)
 ##@ Agent  (LangGraph + Ollama management CLI)
 # =============================================================================
 
-agent: install ## Start the ExaMLOps management agent CLI (requires Ollama running locally)
+agent: install ## Start the ExaMLOps management agent CLI (backend: Azure/Claude API or Ollama)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
-	printf "$(BOLD)ExaMLOps Agent$(RESET)  →  model: $${AGENT_MODEL:-llama3.2}  ·  ollama: $${AGENT_OLLAMA_URL:-http://localhost:11434}\n"; \
 	$(PYTHON) platform/services/agent/agent.py
 
 # =============================================================================
@@ -529,11 +528,11 @@ selfheal: ## Run the container self-healer once against the local stack
 ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + smoke
 	@printf "$(BOLD)CI · modelzoo (poetry)$(RESET)\n"
 	@cd $(MODELZOO_DIR) && \
-	  (command -v poetry >/dev/null 2>&1 || pip install --quiet poetry) && \
-	  poetry config virtualenvs.create false && \
+	  (command -v poetry >/dev/null 2>&1 || pipx install poetry >/dev/null 2>&1 || pip install --quiet poetry) && \
+	  { poetry env use "$(CURDIR)/$(PYTHON)" >/dev/null 2>&1 || poetry env use python3.12 >/dev/null 2>&1 || true; } && \
 	  poetry install --no-interaction --with dev,ci -q && \
-	  ruff check modelzoo ci tests && \
-	  pytest tests/unit/ tests/smoke/ -v --tb=short
+	  poetry run ruff check modelzoo ci tests && \
+	  poetry run pytest tests/unit/ tests/smoke/ -v --tb=short
 	@printf "$(GREEN)CI · modelzoo passed.$(RESET)\n"
 
 alerts-check: ## Validate Prometheus alert rules with promtool
@@ -558,6 +557,29 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
 	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
+
+preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
+	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
+	@printf "$(BOLD)1/7 sanity: python syntax$(RESET)\n"
+	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" -print0 \
+	  | xargs -0 -r $(VENV)/bin/python -m py_compile
+	@printf "$(BOLD)2/7 ruff check$(RESET)\n"
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@printf "$(BOLD)3/7 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@printf "$(BOLD)4/7 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+	@printf "$(BOLD)5/7 unit tests$(RESET)\n"
+	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
+	@printf "$(BOLD)6/7 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
+	@printf "$(BOLD)7/7 dashboard backend$(RESET)\n"
+	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
+	@cd platform/services/dashboard/backend && \
+	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q --ignore=tests/test_storage.py
+	@$(MAKE) ci-infra
+	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
+	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"
 
 # =============================================================================
 ##@ Documentation  (MkDocs)
@@ -590,10 +612,16 @@ agent-test:  ## Run the management-agent unit tests
 	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
 
-agent-server: install ## Start the ExaMLOps agent web chat UI (port 18004)
+agent-server: install ## Start the ExaMLOps agent web + OpenAI/kube-q bridge (port 18004)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	printf "$(BOLD)ExaMLOps Agent Chat$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
 	$(PYTHON) platform/services/agent/agent_server.py
+
+agent-chat: ## Chat with the agent via the kube-q `kq` terminal client (needs agent-server running)
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	$(VENV)/bin/kq --version >/dev/null 2>&1 || $(UV) pip install -q kube-q; \
+	printf "$(GREEN)Connecting kube-q → ExaMLOps agent$(RESET)  (http://localhost:$${AGENT_SERVER_PORT:-18004})\n"; \
+	$(VENV)/bin/kq --url http://localhost:$${AGENT_SERVER_PORT:-18004} $${AGENT_API_KEY:+--api-key $$AGENT_API_KEY}
 
 # =============================================================================
 ##@ Convenience

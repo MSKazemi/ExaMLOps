@@ -78,7 +78,11 @@ class CliState:
     thread_id: str = field(default_factory=lambda: f"cli-{uuid.uuid4().hex[:8]}")
     model: str = field(
         default_factory=lambda: (
-            config.ANTHROPIC_MODEL if config.ANTHROPIC_API_KEY else config.AGENT_MODEL
+            config.AZURE_OPENAI_DEPLOYMENT
+            if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT
+            else config.ANTHROPIC_MODEL
+            if config.ANTHROPIC_API_KEY
+            else config.AGENT_MODEL
         )
     )
 
@@ -357,7 +361,8 @@ def main() -> None:
     if not info["ok"]:
         print(
             f"Error: Ollama not reachable at {config.AGENT_OLLAMA_URL}. "
-            "Start it (ollama-tunnel start) or set ANTHROPIC_API_KEY."
+            "Start it (ollama-tunnel start), or set AZURE_OPENAI_API_KEY + "
+            "AZURE_OPENAI_ENDPOINT, or set ANTHROPIC_API_KEY."
         )
         sys.exit(1)
 
@@ -366,6 +371,8 @@ def main() -> None:
 
     if info["type"] == "claude":
         backend_label = f"claude · {state.model}"
+    elif info["type"] == "azure":
+        backend_label = f"azure · {state.model}  ·  {config.AZURE_OPENAI_ENDPOINT}"
     else:
         backend_label = f"ollama · {state.model}  ·  {config.AGENT_OLLAMA_URL}"
 

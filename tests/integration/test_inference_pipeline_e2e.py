@@ -144,7 +144,9 @@ _MOCK_PREDICTION: dict = {
 def test_valid_job_returns_prediction(pipeline_url: str) -> None:
     with _responses_lock:
         _responses.clear()
-        _responses["/predict/JPCP"] = (_MOCK_PREDICTION, 200)
+        # ModelRouter._resolve lowercases model_name (MLflow registry uses
+        # lowercase names), so the pipeline requests /predict/jpcp, not /JPCP.
+        _responses["/predict/jpcp"] = (_MOCK_PREDICTION, 200)
 
     r = httpx.post(f"{pipeline_url}/infer", json=_GOOD_BODY, timeout=30)
 
