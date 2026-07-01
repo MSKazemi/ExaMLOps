@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from examlops.resilience import db as _rdb
 
 
 def _db_path() -> str:
@@ -15,14 +17,31 @@ def _db_path() -> str:
 
 @contextmanager
 def get_db() -> Generator[sqlite3.Connection, None, None]:
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Open a hardened connection to the shared platform SQLite DB.
+
+    Uses the shared :mod:`examlops.resilience.db` helper so every one of the ~170
+    call sites (and the 3 concurrent long-lived writers: CLI, agent service,
+    dataplane bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
+    waits out lock contention instead of raising ``database is locked`` immediately,
+    plus ``check_same_thread=False`` for the threaded services.
+    """
+    conn = _rdb.connect(_db_path())
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def write_retry[T](fn: Callable[[], T]) -> T:
+    """Run a DB write, retrying the whole transaction if it loses a lock race.
+
+    Belt-and-suspenders on top of the connection ``busy_timeout`` for the highest-
+    frequency writers (e.g. the per-inference bridge snapshots). Example::
+
+        write_retry(lambda: write_drift_snapshot(model, alias, pred, job_id))
+    """
+    return _rdb.write_retry(fn)
 
 
 def init_db() -> None:

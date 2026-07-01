@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from exa_agent.tools import (
+from skipper.tools import (
     approvals,
     docs,
     inference,

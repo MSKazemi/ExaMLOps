@@ -50,6 +50,17 @@ import pandas as pd
 from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 
+# ── Fault-tolerance defaults for pipeline tasks (env-overridable) ────────────────
+# Network/IO tasks (dataset download, MLflow logging, result fetch, promotion) get
+# retries with exponential backoff and a wall-clock timeout so a transient
+# Zenodo/MinIO/MLflow blip or a hung call can't fail or freeze the whole flow.
+_IO_RETRIES = int(os.getenv("EXAMLOPS_TASK_IO_RETRIES", "3"))
+_IO_RETRY_DELAYS = [5, 15, 30]  # per-attempt backoff seconds
+_DATA_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_DATA_TIMEOUT_S", "1800"))
+_MLFLOW_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_MLFLOW_TIMEOUT_S", "600"))
+_FETCH_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_FETCH_TIMEOUT_S", "300"))
+_SUBMIT_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_SUBMIT_TIMEOUT_S", "300"))
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODELZOO = _REPO_ROOT / "modelzoo"
 _PLATFORM = _REPO_ROOT / "platform"
@@ -577,7 +588,13 @@ def apply_yaml_registry(
 # All are generic (model-agnostic) and look up MODEL_REGISTRY internally.
 
 
-@task(name="data_extraction", cache_policy=NO_CACHE)
+@task(
+    name="data_extraction",
+    cache_policy=NO_CACHE,
+    retries=_IO_RETRIES,
+    retry_delay_seconds=_IO_RETRY_DELAYS,
+    timeout_seconds=_DATA_TIMEOUT_S,
+)
 def data_extraction_task(
     model_name: str,
     dataset_cls_name: str,
@@ -601,7 +618,13 @@ def data_extraction_task(
     return model_init, train_loader
 
 
-@task(name="slurm_submit", retries=1, cache_policy=NO_CACHE)
+@task(
+    name="slurm_submit",
+    retries=2,
+    retry_delay_seconds=[10, 30],
+    timeout_seconds=_SUBMIT_TIMEOUT_S,
+    cache_policy=NO_CACHE,
+)
 def slurm_submit_task(
     model: Any,
     loader: Any,
@@ -714,7 +737,13 @@ def slurm_wait_task(
     return state, derived_path
 
 
-@task(name="result_fetch", cache_policy=NO_CACHE)
+@task(
+    name="result_fetch",
+    cache_policy=NO_CACHE,
+    retries=2,
+    retry_delay_seconds=[5, 15],
+    timeout_seconds=_FETCH_TIMEOUT_S,
+)
 def result_fetch_task(
     state: str,
     artifact_path: str,
@@ -752,7 +781,13 @@ def result_fetch_task(
     return model_init
 
 
-@task(name="evaluate", cache_policy=NO_CACHE)
+@task(
+    name="evaluate",
+    cache_policy=NO_CACHE,
+    retries=2,
+    retry_delay_seconds=[10, 30],
+    timeout_seconds=_DATA_TIMEOUT_S,
+)
 def evaluate_task(
     model: Any,
     model_name: str,
@@ -797,7 +832,13 @@ def evaluate_task(
 # ── Infrastructure tasks (model-agnostic) ──────────────────────────────────────
 
 
-@task(name="log_mlflow", cache_policy=NO_CACHE)
+@task(
+    name="log_mlflow",
+    cache_policy=NO_CACHE,
+    retries=_IO_RETRIES,
+    retry_delay_seconds=_IO_RETRY_DELAYS,
+    timeout_seconds=_MLFLOW_TIMEOUT_S,
+)
 def log_mlflow_task(
     model: Any,
     metrics: dict,
@@ -904,7 +945,12 @@ def _notify_ray_serve(model_id: str) -> None:
         print(f"[pipeline] Ray Serve webhook to {url} failed (poller will catch up): {exc}")
 
 
-@task(name="promote")
+@task(
+    name="promote",
+    retries=_IO_RETRIES,
+    retry_delay_seconds=_IO_RETRY_DELAYS,
+    timeout_seconds=_FETCH_TIMEOUT_S,
+)
 def promote_task(
     model_name: str,
     registration: dict,

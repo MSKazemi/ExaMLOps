@@ -1,7 +1,7 @@
 import httpx
 import respx
-from exa_agent import confirm
-from exa_agent.tools import _http, pipelines
+from skipper import confirm
+from skipper.tools import _http, pipelines
 
 
 def _patch_dashboard(monkeypatch):

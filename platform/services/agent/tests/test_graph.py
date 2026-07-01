@@ -1,14 +1,14 @@
 from typing import Annotated, TypedDict
 
-from exa_agent import confirm
-from exa_agent.memory import build_checkpointer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
+from skipper import confirm
+from skipper.memory import build_checkpointer
 
 
 def test_build_graph_binds_tools_and_checkpointer(tmp_path, monkeypatch):
-    from exa_agent import config, graph
+    from skipper import config, graph
 
     monkeypatch.setattr(config, "AGENT_DB", str(tmp_path / "g.db"))
     g = graph.build_graph(model="llama3.1:8b")

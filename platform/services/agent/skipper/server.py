@@ -1,12 +1,13 @@
 """FastAPI chat server for the ExaMLOps agent.
 
 Serves a streaming WebSocket chat interface at / and a REST API at /api/*.
-Start with:  uvicorn exa_agent.server:app --port 18004
+Start with:  uvicorn skipper.server:app --port 18004
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,28 +15,34 @@ from fastapi.responses import HTMLResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from exa_agent.confirm import _is_affirmative
-from exa_agent.graph import build_graph
-from exa_agent.llm import check_backend
+from skipper import config
+from skipper.confirm import _is_affirmative
+from skipper.graph import build_graph
+from skipper.llm import check_backend
 
-app = FastAPI(title="ExaMLOps Agent Chat", docs_url=None, redoc_url=None)
+app = FastAPI(title="Skipper (ExaMLOps agent)", docs_url=None, redoc_url=None)
 
 _graph: Any = None
 _backend_info: dict = {}
+_graph_lock = threading.Lock()
 
 # OpenAI-compatible bridge (/v1/chat/completions + /healthz) consumed by the
 # kube-q `kq` terminal client. Imported after `app` so its lazy imports of
 # `_get_graph`/`_extract_text` resolve without a circular import.
-from exa_agent.oai_compat import router as oai_router  # noqa: E402
+from skipper.oai_compat import router as oai_router  # noqa: E402
 
 app.include_router(oai_router)
 
 
 def _get_graph():
     global _graph, _backend_info
+    # Double-checked locking: concurrent first-hit requests must not each build a
+    # graph (which opens the checkpointer DB + LLM client) and clobber the singleton.
     if _graph is None:
-        _backend_info = check_backend()
-        _graph = build_graph(model=_backend_info.get("model"))
+        with _graph_lock:
+            if _graph is None:
+                _backend_info = check_backend()
+                _graph = build_graph(model=_backend_info.get("model"))
     return _graph
 
 
@@ -156,13 +163,29 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
 
     fut = loop.run_in_executor(None, _run)
 
+    timed_out = False
     while True:
-        event = await queue.get()
+        try:
+            event = await asyncio.wait_for(
+                queue.get(), timeout=config.AGENT_STREAM_IDLE_TIMEOUT
+            )
+        except TimeoutError:
+            # Hung LLM/tool — no output for the idle window. Tell the client and stop
+            # rather than blocking the socket forever.
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": f"agent produced no output for {config.AGENT_STREAM_IDLE_TIMEOUT}s",
+                }
+            )
+            timed_out = True
+            break
         if event is None:
             break
         await websocket.send_json(event)
 
-    await fut
+    if not timed_out:
+        await fut  # on timeout the worker thread may still be blocked; don't join it
 
     # Check for pending interrupt
     try:
@@ -182,6 +205,6 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    from exa_agent.chat_html import CHAT_HTML
+    from skipper.chat_html import CHAT_HTML
 
     return CHAT_HTML

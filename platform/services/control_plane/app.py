@@ -638,7 +638,8 @@ def _require_token(authorization: str | None = Header(default=None)) -> None:
         )
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
-    if authorization.removeprefix("Bearer ").strip() != CONTROL_PLANE_TOKEN:
+    # Constant-time compare — avoid leaking the token via response timing.
+    if not _hmac.compare_digest(authorization.removeprefix("Bearer ").strip(), CONTROL_PLANE_TOKEN):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid bearer token")
 
 
@@ -657,7 +658,8 @@ def _check_rate_limit() -> None:
 def _verify_gitlab_token(x_gitlab_token: str | None) -> None:
     if not MODELZOO_WEBHOOK_SECRET:
         raise HTTPException(503, "MODELZOO_WEBHOOK_SECRET not configured")
-    if not x_gitlab_token or x_gitlab_token != MODELZOO_WEBHOOK_SECRET:
+    # Constant-time compare (matches the GitHub HMAC path).
+    if not x_gitlab_token or not _hmac.compare_digest(x_gitlab_token, MODELZOO_WEBHOOK_SECRET):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid X-Gitlab-Token")
 
 
@@ -1264,7 +1266,12 @@ async def webhook_gitlab(
     x_gitlab_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     _verify_gitlab_token(x_gitlab_token)
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be a JSON object")
     ref = payload.get("ref", "")
     if not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
         return {"skipped": True, "reason": f"branch {ref!r} is not {MODELZOO_WATCH_BRANCH!r}"}
@@ -1284,7 +1291,12 @@ async def webhook_gitlab(
 async def webhook_github(request: Request) -> dict[str, Any]:
     raw_body = await request.body()
     _verify_github_signature(raw_body, request.headers.get("x-hub-signature-256"))
-    payload = json.loads(raw_body)
+    try:
+        payload = json.loads(raw_body)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be a JSON object")
     ref = payload.get("ref", "")
     if not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
         return {"skipped": True, "reason": f"branch {ref!r} is not {MODELZOO_WATCH_BRANCH!r}"}
@@ -1455,6 +1467,19 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
     return entries
 
 
+def _set_approval_status(row_id: str, new_status: str) -> None:
+    """Best-effort status transition used to release a claim on a failed approval."""
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            conn.execute(
+                "UPDATE pending_approvals SET status = ? WHERE id = ?", (new_status, row_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 @app.post(
     "/approve/{model_id}",
     dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
@@ -1463,6 +1488,10 @@ def approve_model(model_id: str) -> dict[str, Any]:
     # Improvement 16: reject expired entries before approving
     _expire_old_approvals()
 
+    # Atomically CLAIM the latest pending approval (pending → approving) BEFORE
+    # calling Prefect, so two concurrent approvals for the same model can't each
+    # create a flow run. The conditional UPDATE is the real cross-process guard
+    # (SQLite serializes writes); the loser sees rowcount 0 → 409.
     with _DB_LOCK:
         conn = _get_db()
         try:
@@ -1471,16 +1500,25 @@ def approve_model(model_id: str) -> dict[str, Any]:
                 "ORDER BY requested_at DESC LIMIT 1",
                 (model_id,),
             ).fetchone()
+            if not row:
+                raise HTTPException(404, f"No pending approval found for model {model_id!r}")
+            row_id = row[0]
+            claimed = conn.execute(
+                "UPDATE pending_approvals SET status = 'approving' "
+                "WHERE id = ? AND status = 'pending'",
+                (row_id,),
+            ).rowcount
+            conn.commit()
         finally:
             conn.close()
 
-    if not row:
-        raise HTTPException(404, f"No pending approval found for model {model_id!r}")
-    row_id: str = row[0]
+    if not claimed:
+        raise HTTPException(409, f"Approval for model {model_id!r} is already in progress")
 
     registry = _get_registry()
     datasets = registry.get(model_id, [])
     if not datasets:
+        _set_approval_status(row_id, "pending")  # release the claim
         raise HTTPException(400, f"Model {model_id!r} has no registered datasets")
     dataset_name = datasets[0]
 
@@ -1492,8 +1530,12 @@ def approve_model(model_id: str) -> dict[str, Any]:
     }
 
     gateway = _get_gateway()
-    deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
-    flow_run_id: str = gateway.create_flow_run(deployment_id, parameters)
+    try:
+        deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
+        flow_run_id: str = gateway.create_flow_run(deployment_id, parameters)
+    except Exception:
+        _set_approval_status(row_id, "pending")  # release claim so it can be retried
+        raise
 
     pending_count = 0
     with _DB_LOCK:

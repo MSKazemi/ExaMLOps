@@ -1,16 +1,16 @@
-# ExaMLOps Management Agent
+# Skipper — the ExaMLOps management agent
 
-The ExaMLOps Management Agent (**ExaAgent**) lets operators manage, monitor, and control the ExaMLOps platform through natural language. It is built on **LangGraph's ReAct loop** (`langgraph.prebuilt.create_react_agent`) and exposes **45 tools across 10 groups** that query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, inspect drift and audit history, set traffic splits, promote versions, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, plus the shared `platform_db` SQLite store, requiring no additional services of its own.
+Skipper — the ExaMLOps management agent — lets operators manage, monitor, and control the ExaMLOps platform through natural language. It is built on **LangGraph's ReAct loop** (`langgraph.prebuilt.create_react_agent`) and exposes **45 tools across 10 groups** that query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, inspect drift and audit history, set traffic splits, promote versions, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, plus the shared `platform_db` SQLite store, requiring no additional services of its own.
 
 It runs in two modes:
 
-- **CLI** — an interactive REPL (`make agent`) with slash-commands, write-confirmation prompts, and persistent conversation threads.
+- **CLI** — an interactive REPL (`make skipper`) with slash-commands, write-confirmation prompts, and persistent conversation threads.
 - **HTTP server** — a FastAPI service (`agent_server.py`, default port **18004**) serving a streaming WebSocket chat at `/ws/chat/{thread_id}`, a REST history/info API at `/api/*`, and an embedded HTML chat UI at `/`.
 
 ## Architecture
 
 ```
-exa_agent/
+skipper/
 ├── graph.py        ReAct graph: create_react_agent(llm, tools=TOOLS, prompt=SYSTEM_PROMPT, checkpointer)
 ├── llm.py          Backend selection: Azure Foundry → Claude → Ollama (build_llm / check_backend)
 ├── memory.py       SqliteSaver checkpointer (persistent threads, keyed by thread_id)
@@ -49,12 +49,12 @@ ollama-tunnel start          # starts <OLLAMA_HOST> tunnel → localhost:11436 (
 ollama-tunnel status         # verify: shows models + connection state
 ```
 
-`AGENT_OLLAMA_URL` and `AGENT_MODEL` are set in `.env`, so `make agent` picks them up automatically.
+`AGENT_OLLAMA_URL` and `AGENT_MODEL` are set in `.env`, so `make skipper` picks them up automatically.
 
 **Local Ollama:**
 If you are running a local Ollama instance, override the URL and model:
 ```bash
-AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.2 make agent
+AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.2 make skipper
 ```
 
 At least one ExaMLOps service must be running. The agent gracefully reports when a service is unreachable:
@@ -66,16 +66,16 @@ At least one ExaMLOps service must be running. The agent gracefully reports when
 
 ```bash
 ollama-tunnel start   # ensure <OLLAMA_HOST> tunnel is up (if using tunnel; skip for local ollama)
-make agent            # reads AGENT_OLLAMA_URL + AGENT_MODEL from .env automatically
+make skipper            # reads AGENT_OLLAMA_URL + AGENT_MODEL from .env automatically
 ```
 
 The agent prints its startup banner and drops into a REPL:
 
 ```
-ExaMLOps Agent  (model: llama3.1:8b  ·  ollama: http://localhost:11436)
+Skipper · ExaMLOps agent  (model: llama3.1:8b  ·  ollama: http://localhost:11436)
 Type your question, or 'exit' to quit.
 
-ExaMLOps Agent >
+skipper >
 ```
 
 Type any question in plain English. The agent will select and call the appropriate tools, printing `[tool: <name>]` for each tool invocation, then return a formatted answer. Type `exit` or press `Ctrl+C` to quit.
@@ -85,7 +85,7 @@ Type any question in plain English. The agent will select and call the appropria
 ### 1. Querying model status
 
 ```
-ExaMLOps Agent > What models are registered and which versions are in Production?
+skipper > What models are registered and which versions are in Production?
 
   [tool: list_models]
 
@@ -97,7 +97,7 @@ The MLflow registry contains the following models:
 
 JPCP v3 and MCBound v2 are currently in Production. MACK has only reached Staging.
 
-ExaMLOps Agent > Show me only the JPCP model.
+skipper > Show me only the JPCP model.
 
   [tool: list_models]
 
@@ -109,7 +109,7 @@ JPCP has three promoted versions. v3 is live in Production, v2 is in Canary (par
 ### 2. Running inference
 
 ```
-ExaMLOps Agent > Run a prediction for JPCP using features [1.2, 0.8, 3.4, 0.5, 2.1].
+skipper > Run a prediction for JPCP using features [1.2, 0.8, 3.4, 0.5, 2.1].
 
   [tool: predict]
 
@@ -119,7 +119,7 @@ The JPCP Production model returned:
 - **model version**: v3
 - **alias**: Production
 
-ExaMLOps Agent > Run the same input against the Canary version.
+skipper > Run the same input against the Canary version.
 
   [tool: predict]
 
@@ -135,7 +135,7 @@ The Canary model predicts ~3% lower power consumption for this feature vector. B
 ### 3. Checking metrics
 
 ```
-ExaMLOps Agent > How many inference requests have each model received?
+skipper > How many inference requests have each model received?
 
   [tool: get_metrics]
 
@@ -148,7 +148,7 @@ Request counts from Prometheus:
 
 JPCP has served the most traffic. The 3 errors on JPCP are worth investigating — check Ray Serve logs for details.
 
-ExaMLOps Agent > What is the average prediction latency over the last 5 minutes?
+skipper > What is the average prediction latency over the last 5 minutes?
 
   [tool: get_metrics]
 
@@ -164,7 +164,7 @@ All three models are well within acceptable latency bounds. MACK's higher latenc
 ### 4. Triggering a retrain
 
 ```
-ExaMLOps Agent > Retrain the JPCP model on PM100Dataset using dummy data.
+skipper > Retrain the JPCP model on PM100Dataset using dummy data.
 
   [tool: trigger_retrain]
 
@@ -177,7 +177,7 @@ Retraining has been triggered:
 
 You can poll the run state at: GET http://localhost:18002/retrain/<UUID>
 
-ExaMLOps Agent > What happens if I retrain with real Zenodo data?
+skipper > What happens if I retrain with real Zenodo data?
 
 To use real data, I would call trigger_retrain with is_dummy=False. That causes the pipeline to download the full PM100 dataset from Zenodo (several hundred MB) rather than generating a small synthetic array. Use it for production retrains; keep is_dummy=True for smoke tests and CI.
 ```
@@ -190,7 +190,7 @@ Error: CONTROL_PLANE_TOKEN is not set. Cannot trigger retraining.
 ### 5. Generating a full report
 
 ```
-ExaMLOps Agent > Generate a full platform status report.
+skipper > Generate a full platform status report.
 
   [tool: generate_report]
 
@@ -237,23 +237,23 @@ The following models are available on the **<OLLAMA_HOST>** tunnel (port 11436) 
 Switch model via the env var (no need to edit `.env`):
 
 ```bash
-AGENT_MODEL=hermes3:70b make agent      # best tool calling
-AGENT_MODEL=llama3.1:70b make agent     # best Llama quality
-AGENT_MODEL=qwen3-coder:30b make agent  # strong reasoning
+AGENT_MODEL=hermes3:70b make skipper      # best tool calling
+AGENT_MODEL=llama3.1:70b make skipper     # best Llama quality
+AGENT_MODEL=qwen3-coder:30b make skipper  # strong reasoning
 ```
 
 To use the **<OLLAMA_HOST>** tunnel instead (16 models, via Monte Cimone SSH, port 11437):
 
 ```bash
 ollama-tunnel start <ollama-host>
-AGENT_OLLAMA_URL=http://localhost:11437 make agent
+AGENT_OLLAMA_URL=http://localhost:11437 make skipper
 ```
 
 **Local Ollama (laptop):** pull the model first, then override the URL:
 
 ```bash
 ollama pull llama3.1
-AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.1 make agent
+AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.1 make skipper
 ```
 
 ## Available Tools
@@ -275,7 +275,7 @@ The agent exposes **45 tools across 10 groups**. The LLM selects the appropriate
 
 ## Slash Commands
 
-Type a slash command at the `ExaMLOps Agent >` prompt instead of a question:
+Type a slash command at the `skipper >` prompt instead of a question:
 
 | Command | Description |
 |---|---|
@@ -320,7 +320,7 @@ Besides the CLI, the agent ships a FastAPI server (`agent_server.py`) that serve
 ```bash
 python platform/services/agent/agent_server.py     # binds 0.0.0.0:18004 (AGENT_SERVER_PORT)
 # or:
-uvicorn exa_agent.server:app --port 18004
+uvicorn skipper.server:app --port 18004
 ```
 
 | Surface | Path | Description |
@@ -343,8 +343,8 @@ agent — bringing session history, full-text search, conversation branching,
 token/cost tracking, and HITL approvals to the terminal, **without forking**.
 
 ```bash
-make agent-server          # run the agent + bridge (port 18004)
-make agent-chat            # launch kq against it (installs kube-q if needed)
+make skipper-server          # run the agent + bridge (port 18004)
+make skipper-chat            # launch kq against it (installs kube-q if needed)
 # or directly:
 kq --url http://localhost:18004
 kq --url http://localhost:18004 --query "which models are in production?" --output plain
@@ -388,10 +388,10 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Error: Ollama is not running at http://localhost:11436` at startup | <OLLAMA_HOST> tunnel is not active | Run `ollama-tunnel start` and verify with `ollama-tunnel status`. |
-| `Error: Ollama is not running at http://localhost:11434` | Using local Ollama URL but `ollama serve` is not running | Run `ollama serve`, or switch to the tunnel: `AGENT_OLLAMA_URL=http://localhost:11436 make agent`. |
+| `Error: Ollama is not running at http://localhost:11434` | Using local Ollama URL but `ollama serve` is not running | Run `ollama serve`, or switch to the tunnel: `AGENT_OLLAMA_URL=http://localhost:11436 make skipper`. |
 | `Error: Cannot reach MLflow at http://localhost:15000 — ...` in a tool response | MLflow container not running | Run `make stack-up` or `exa status` to check which services are up. |
 | `Error: Cannot reach Ray Serve at http://localhost:18001 — ...` | Ray Serve not started | Run `make stack-up` or `exa stack up --service ray-serving`. |
-| `Error: CONTROL_PLANE_TOKEN is not set. Cannot trigger retraining.` | `CONTROL_PLANE_TOKEN` env var is absent | Add `CONTROL_PLANE_TOKEN=<token>` to `.env`, then re-run `make agent`. |
+| `Error: CONTROL_PLANE_TOKEN is not set. Cannot trigger retraining.` | `CONTROL_PLANE_TOKEN` env var is absent | Add `CONTROL_PLANE_TOKEN=<token>` to `.env`, then re-run `make skipper`. |
 | Agent answers questions without calling tools | Chosen model does not support tool calling well | Use `llama3.1:8b` (default) or `hermes3:8b`. Avoid embedding-only models like `nomic-embed-text`. |
 | Agent calls a tool but returns confusing output | LLM hallucinated an argument (e.g. wrong feature count) | Rephrase with explicit values: `"run inference on JPCP with features [1.2, 0.8, 3.4, 0.5, 2.1]"`. |
 | `httpx.ReadTimeout` in tool output | Service is slow to respond (e.g. MLflow cold start) | Wait for the service to become healthy (`exa status`). The tool timeout is 10 s. |

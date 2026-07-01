@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from exa_agent import cli
 from langchain_core.messages import AIMessage, HumanMessage
+from skipper import cli
 
 # ── Original tests (updated for tuple return) ─────────────────────────────────
 
@@ -129,14 +129,14 @@ def test_export_writes_markdown(tmp_path):
     cli.handle_slash(f"/export {out_file}", state=state, graph=graph)
     content = Path(out_file).read_text()
     assert "Ask" in content and "Answer" in content
-    assert "ExaMLOps Thread" in content
+    assert "Skipper thread" in content
 
 
 def test_export_default_filename(tmp_path, capsys):
     graph = _make_fake_graph([])
     state = cli.CliState(thread_id="tX")
     # Export with no arg — should write to exa-tX.md in cwd; just check no crash
-    with patch("exa_agent.cli.Path") as MockPath:
+    with patch("skipper.cli.Path") as MockPath:
         MockPath.return_value.write_text = MagicMock()
         cli.handle_slash("/export", state=state, graph=graph)
     out = capsys.readouterr().out
@@ -204,7 +204,7 @@ def test_watch_missing_query(capsys):
 
 
 def test_startup_brief_prints_services(capsys):
-    with patch("exa_agent.cli.httpx.Client") as MockClient:
+    with patch("skipper.cli.httpx.Client") as MockClient:
         resp = MagicMock()
         resp.is_success = True
         MockClient.return_value.__enter__.return_value.get.return_value = resp

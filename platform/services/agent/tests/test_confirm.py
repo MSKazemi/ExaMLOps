@@ -1,4 +1,4 @@
-from exa_agent import confirm
+from skipper import confirm
 
 
 def _make_tool():

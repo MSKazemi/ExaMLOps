@@ -396,3 +396,44 @@ async def test_make_inference_handler_binds_model_name(mock_http_client):
     )
     assert isinstance(result, _HpcInferenceResV1)
     assert result.model_name == "MACK"
+
+
+# ─── Phase 1 fault-injection: transport errors must NOT feed the drift tracker ──
+# Regression guard for the spurious-retrain bug: a Ray Serve outage used to be
+# recorded as model drift, which could trip the drift threshold and fire a retrain.
+
+
+@pytest.mark.asyncio
+async def test_transport_error_does_not_feed_drift(mock_http_client):
+    """A transport failure in _call_inference must leave the drift bucket unchanged."""
+    model = "JPCP"
+    before = list(bridge._drift_tracker._results.get(model, []))
+
+    mock_http_client.post = AsyncMock(side_effect=Exception("connection refused"))
+    job = _make_hpc_job(model_name=model)
+    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        result = await bridge._call_inference(job)
+
+    after = list(bridge._drift_tracker._results.get(model, []))
+    assert after == before, "transport errors must not be recorded as model drift"
+    assert result.error_msg != ""
+
+
+@pytest.mark.asyncio
+async def test_successful_inference_records_drift_success(mock_http_client):
+    """A real prediction records a True (success) sample in the drift tracker."""
+    model = "JPCP"
+    before = len(bridge._drift_tracker._results.get(model, []))
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"prediction": 42.0, "run_id": "r", "model_version": "1"}
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    job = _make_hpc_job(model_name=model)
+    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        await bridge._call_inference(job)
+
+    bucket = bridge._drift_tracker._results.get(model, [])
+    assert len(bucket) == before + 1
+    assert bucket[-1] is True

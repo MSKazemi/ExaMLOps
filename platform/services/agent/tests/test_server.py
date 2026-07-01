@@ -27,14 +27,14 @@ def _fake_graph():
 
 @pytest.fixture()
 def client():
-    from exa_agent import server as srv
+    from skipper import server as srv
 
     # Reset shared graph state so each test starts clean
     srv._graph = None
     srv._backend_info = {}
     with patch.object(srv, "_get_graph", return_value=_fake_graph()):
         with patch(
-            "exa_agent.server.check_backend",
+            "skipper.server.check_backend",
             return_value={"type": "claude", "model": "claude-opus-4-8", "ok": True},
         ):
             yield TestClient(srv.app)
@@ -79,7 +79,7 @@ def test_api_threads_empty(client):
 
 
 def test_api_threads_lists_saved(client):
-    from exa_agent import server as srv
+    from skipper import server as srv
 
     fake = _fake_graph()
     t1 = MagicMock()
@@ -104,7 +104,7 @@ def test_thread_history_returns_messages(client):
 
 
 def test_thread_history_empty_on_error(client):
-    from exa_agent import server as srv
+    from skipper import server as srv
 
     bad_graph = _fake_graph()
     bad_graph.get_state.side_effect = RuntimeError("no state")
@@ -118,7 +118,7 @@ def test_thread_history_empty_on_error(client):
 
 
 def test_websocket_receives_done_on_empty_stream(client):
-    from exa_agent import server as srv
+    from skipper import server as srv
 
     fake = _fake_graph()
     # graph.stream returns nothing (empty)
@@ -143,8 +143,8 @@ def test_websocket_receives_done_on_empty_stream(client):
 
 
 def test_websocket_streams_tokens(client):
-    from exa_agent import server as srv
     from langchain_core.messages import AIMessageChunk
+    from skipper import server as srv
 
     chunk = AIMessageChunk(content="Hello world")
     fake = _fake_graph()
@@ -168,8 +168,8 @@ def test_websocket_streams_tokens(client):
 
 
 def test_websocket_emits_tool_event(client):
-    from exa_agent import server as srv
     from langchain_core.messages import ToolMessage
+    from skipper import server as srv
 
     tool_msg = ToolMessage(content="result", name="get_drift_status", tool_call_id="t1")
     fake = _fake_graph()

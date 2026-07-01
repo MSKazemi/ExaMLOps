@@ -1,6 +1,6 @@
 # ExaMLOps
 
-End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a DataPlane HPC message bridge, a LangGraph management agent, and the `exa` platform CLI for operator use.
+End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a DataPlane HPC message bridge, **Skipper** (a LangGraph management agent with a kube-q chat frontend), and the `exa` platform CLI for operator use.
 
 ## Quick Start
 
@@ -98,7 +98,7 @@ exa approvals approve JPCP
 exa approvals reject JPCP --reason "x"
 
 # Management agent
-make agent                  # start LangGraph management agent (platform/services/agent/)
+make skipper                  # start LangGraph management agent (platform/services/agent/)
 
 # exa CLI (primary operator interface)
 # Install once: uv pip install -e ".[dev]"  then use exa from anywhere
@@ -184,7 +184,7 @@ ExaMLOps/
     │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / dataplane / dev)
     │   └── slurm-adapter/      # HPC/Slurm integration (mock + real)
     ├── services/
-    │   ├── agent/              # LangGraph management agent + exa_agent/ package
+    │   ├── agent/              # LangGraph management agent + skipper/ package
     │   ├── control_plane/      # FastAPI retrain API :18002
     │   └── dashboard/          # React 19 + FastAPI dashboard :18099
     └── cli/                    # Installable `examlops` dist (uv pip install -e ".[dev]")

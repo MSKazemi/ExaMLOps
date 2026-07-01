@@ -448,12 +448,14 @@ firewall-fix-logs: ## Tail the firewall-fix sidecar (shows each rule (re-)apply)
 	@cd $(FIREWALL_FIX_DIR) && docker compose logs -f
 
 # =============================================================================
-##@ Agent  (LangGraph + Ollama management CLI)
+##@ Skipper  (LangGraph management agent — CLI, web, kube-q bridge)
 # =============================================================================
 
-agent: install ## Start the ExaMLOps management agent CLI (backend: Azure/Claude API or Ollama)
+skipper: install ## Start Skipper, the ExaMLOps management agent CLI (backend: Azure/Claude API or Ollama)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	$(PYTHON) platform/services/agent/agent.py
+
+agent: skipper ## Alias for `skipper` (backward compatibility)
 
 # =============================================================================
 ##@ Python Environment
@@ -608,20 +610,26 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@cd $(MODELZOO_DIR) && python -m pytest tests/smoke/ tests/unit/ -v --tb=short
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
-agent-test:  ## Run the management-agent unit tests
+skipper-test:  ## Run the Skipper agent unit tests
 	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
 
-agent-server: install ## Start the ExaMLOps agent web + OpenAI/kube-q bridge (port 18004)
+agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)
+
+skipper-server: install ## Start Skipper's web UI + OpenAI/kube-q bridge (port 18004)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
-	printf "$(BOLD)ExaMLOps Agent Chat$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
+	printf "$(BOLD)Skipper (ExaMLOps agent)$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
 	$(PYTHON) platform/services/agent/agent_server.py
 
-agent-chat: ## Chat with the agent via the kube-q `kq` terminal client (needs agent-server running)
+agent-server: skipper-server ## Alias for `skipper-server` (backward compatibility)
+
+skipper-chat: ## Chat with Skipper via the kube-q `kq` terminal client (needs skipper-server running)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	$(VENV)/bin/kq --version >/dev/null 2>&1 || $(UV) pip install -q kube-q; \
-	printf "$(GREEN)Connecting kube-q → ExaMLOps agent$(RESET)  (http://localhost:$${AGENT_SERVER_PORT:-18004})\n"; \
+	printf "$(GREEN)Connecting kube-q → Skipper$(RESET)  (http://localhost:$${AGENT_SERVER_PORT:-18004})\n"; \
 	$(VENV)/bin/kq --url http://localhost:$${AGENT_SERVER_PORT:-18004} $${AGENT_API_KEY:+--api-key $$AGENT_API_KEY}
+
+agent-chat: skipper-chat ## Alias for `skipper-chat` (backward compatibility)
 
 # =============================================================================
 ##@ Convenience
