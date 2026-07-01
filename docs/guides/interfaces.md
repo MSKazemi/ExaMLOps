@@ -280,16 +280,16 @@ From a JupyterLab session you can reach MLflow, MinIO, Ray Serve, and the Contro
 
 ---
 
-## Management Agent (CLI)
+## Management Agent (CLI + HTTP)
 
-A conversational terminal interface backed by LangGraph + a local Ollama LLM.
+A conversational interface backed by LangGraph's ReAct loop. The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**.
 
 ```bash
-ollama serve          # prerequisite — run in a separate terminal
-make agent
+make agent                                   # interactive CLI REPL
+python platform/services/agent/agent_server.py   # HTTP/WebSocket chat + web UI on :18004
 ```
 
-The agent (Phase 18–19) exposes ~40 tools across 10 groups — registry, inference, metrics/health, training, approvals, modelzoo, services, pipelines, docs/knowledge, and platform_ops (drift status, audit log, traffic split, model promotion, version diff, lineage). Use natural language to inspect the platform, kick off operations, or ask how things work; mutating actions pause for a `Proceed? [y/N]` confirmation, and conversations persist across sessions (resume with `/resume <id>`). See [the agent guide](agent.md) for the full tool list and slash-commands.
+The agent exposes **45 tools across 10 groups** — registry, inference, metrics/health, training, approvals, modelzoo, services, pipelines, docs/knowledge, and platform_ops (version diff, lineage, prediction + input-embedding drift, audit log, traffic split, metric-gated promotion, auto-retrain trigger, serving smoke-test, platform summary/diagnosis). Use natural language to inspect the platform, kick off operations, or ask how things work; the 13 mutating tools pause for a `Proceed? [y/N]` confirmation, and conversations persist across sessions (resume with `/resume <id>`). See [the agent guide](agent.md) for the full tool list, backends, slash-commands, and the HTTP/WebSocket API.
 
 Example prompts:
 - *"What is the current production version of JPCP?"*

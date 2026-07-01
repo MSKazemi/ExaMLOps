@@ -127,13 +127,21 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 
 ## Management Agent
 
-The LangGraph ReAct CLI agent (`platform/services/agent/`) launched via `make agent`. When using `ollama-tunnel`
-(Omega server, port 11436), start the tunnel first. Both vars are set in `.env` and sourced automatically.
+The LangGraph ReAct agent (`platform/services/agent/`) launched via `make agent` (CLI) or `agent_server.py` (HTTP/WebSocket, port 18004). The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using `ollama-tunnel` (Omega server, port 11436), start the tunnel first. Vars are set in `.env` and sourced automatically.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name. Via ollama-tunnel: any model from the Omega/Kapa list. Must support tool calling. |
+| `AZURE_OPENAI_API_KEY` | unset | Azure OpenAI / AI Foundry key. With `AZURE_OPENAI_ENDPOINT` set, this backend is preferred over Claude/Ollama. |
+| `AZURE_OPENAI_ENDPOINT` | unset | Foundry v1 endpoint base URL (`https://<resource>.services.ai.azure.com/openai/v1/`, OpenAI-compatible). |
+| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4-mini` | Foundry deployment name, used as the model id. |
+| `ANTHROPIC_API_KEY` | unset | Claude backend key. Used when Azure is not configured. |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking, `max_tokens=16000`). |
+| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback). Via ollama-tunnel: any model from the Omega/Kapa list. Must support tool calling. |
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. Omega tunnel default. Use `localhost:11434` for a local `ollama serve`. |
+| `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids reload latency on CPU-only servers). |
+| `AGENT_OLLAMA_REASONING` | `false` | Disable (`false`) / force (`true`) / leave-default (`default`) thinking models' extra reasoning tokens. |
+| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
+| `AGENT_API_KEY` | unset | Optional bearer token gating the OpenAI-compatible `POST /v1/chat/completions` bridge consumed by the kube-q (`kq`) client. Unset ⇒ open (local dev); when set, send `Authorization: Bearer <key>` (e.g. `kq --api-key <key>` / `KUBE_Q_API_KEY`). |
 | `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve endpoint for the `predict` / inference tools |
 | `AGENT_DB` | `./agent_memory.db` | SQLite file backing the LangGraph checkpointer — conversations persist here and are resumable by thread id (`/resume`) |
@@ -142,7 +150,7 @@ The LangGraph ReAct CLI agent (`platform/services/agent/`) launched via `make ag
 | `DASHBOARD_URL` | `http://localhost:18099` | Dashboard base URL used by the service-control and pipeline/scaffold tools |
 | `DASHBOARD_ADMIN_PASSWORD` | unset | Admin password the agent's `DashboardClient` logs in with; unset ⇒ the dashboard-backed tools (service control, pipelines, scaffold) return an actionable error and the rest of the agent is unaffected |
 
-`MLFLOW_TRACKING_URI`, `CONTROL_PLANE_URL`, and `CONTROL_PLANE_TOKEN` are shared with the pipeline / control plane sections above — set them once and the agent picks them up automatically. Write/destructive tools pause for operator confirmation (`Proceed? [y/N]`) before acting.
+`MLFLOW_TRACKING_URI`, `CONTROL_PLANE_URL`, and `CONTROL_PLANE_TOKEN` are shared with the pipeline / control plane sections above — set them once and the agent picks them up automatically. The agent exposes 45 tools across 10 groups; the 13 write/destructive tools pause for operator confirmation (`Proceed? [y/N]`) before acting.
 
 ---
 
