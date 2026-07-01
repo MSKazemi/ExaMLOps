@@ -4,7 +4,7 @@ import time
 
 import httpx
 
-from exa_agent import config
+from skipper import config
 
 # Feature 6: delay between retries — override in tests by patching this symbol
 _REQUEST_RETRY_DELAY = 0.1

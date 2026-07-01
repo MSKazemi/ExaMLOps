@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import httpx
 import respx
-from exa_agent.tools import _http
+from skipper.tools import _http
 
 
 @respx.mock

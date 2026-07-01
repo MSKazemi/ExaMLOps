@@ -1,4 +1,4 @@
-from exa_agent import config, llm
+from skipper import config, llm
 
 
 def _clear_backends(monkeypatch):

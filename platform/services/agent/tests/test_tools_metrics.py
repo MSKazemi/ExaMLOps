@@ -1,6 +1,6 @@
 import httpx
 import respx
-from exa_agent.tools import metrics
+from skipper.tools import metrics
 
 
 @respx.mock

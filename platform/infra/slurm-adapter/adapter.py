@@ -49,6 +49,26 @@ _RESOURCE_FLAGS: dict[str, str] = {
 
 _TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
 
+# Wall-clock ceiling on any scheduler CLI call so a hung sbatch/squeue/sacct can't
+# freeze the Prefect worker. Overridable via env.
+_CMD_TIMEOUT = int(os.getenv("EXAMLOPS_SLURM_CMD_TIMEOUT", "30"))
+# Absolute ceiling on wait_until_complete so a stuck/lost job can't poll forever.
+_MAX_WAIT_S = int(os.getenv("EXAMLOPS_SLURM_MAX_WAIT_S", "86400"))  # 24h default
+# Consecutive UNKNOWN/errored polls tolerated before declaring the job lost.
+_MAX_UNKNOWN_POLLS = int(os.getenv("EXAMLOPS_SLURM_MAX_UNKNOWN_POLLS", "5"))
+
+
+class JobTimeoutError(SlurmAdapterError):
+    """A scheduler CLI call or the overall wait exceeded its time budget."""
+
+
+def _run_scheduler_cmd(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run a scheduler CLI with a hard timeout; convert hangs into JobTimeoutError."""
+    try:
+        return subprocess.run(cmd, timeout=_CMD_TIMEOUT, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise JobTimeoutError(f"{cmd[0]} timed out after {_CMD_TIMEOUT}s") from exc
+
 
 class RealSlurmAdapter:
     """Real Slurm adapter — calls sbatch/squeue/sacct on an HPC cluster."""
@@ -84,7 +104,9 @@ class RealSlurmAdapter:
 
         cmd.append(str(script))
 
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(script.parent))
+        result = _run_scheduler_cmd(
+            cmd, capture_output=True, text=True, cwd=str(script.parent)
+        )
         if result.returncode != 0:
             raise JobSubmissionError(f"sbatch failed: {result.stderr.strip()}")
 
@@ -95,7 +117,7 @@ class RealSlurmAdapter:
 
     def get_job_status(self, job_id: str) -> dict:
         """Return status dict. Tries squeue (active jobs) then sacct (history)."""
-        sq = subprocess.run(
+        sq = _run_scheduler_cmd(
             ["squeue", "-j", job_id, "-h", "-o", "%T|%S|%e"],
             capture_output=True, text=True,
         )
@@ -109,7 +131,7 @@ class RealSlurmAdapter:
                 "end_time":   parts[2] if len(parts) > 2 and parts[2] != "N/A" else None,
             }
 
-        sa = subprocess.run(
+        sa = _run_scheduler_cmd(
             ["sacct", "-j", job_id, "--format=State,ExitCode,Start,End", "--noheader", "-P"],
             capture_output=True, text=True,
         )
@@ -136,7 +158,7 @@ class RealSlurmAdapter:
             return default_log.read_text()
 
         # Ask sacct where Slurm wrote the log file
-        sa = subprocess.run(
+        sa = _run_scheduler_cmd(
             ["sacct", "-j", job_id, "--format=StdOut", "--noheader", "-P"],
             capture_output=True, text=True,
         )
@@ -147,17 +169,52 @@ class RealSlurmAdapter:
 
         return f"[SlurmAdapter] No log found for job {job_id}"
 
-    def wait_until_complete(self, job_id: str, poll_interval: int = 10) -> str:
-        """Poll until job reaches a terminal state. Returns log path."""
+    def wait_until_complete(
+        self,
+        job_id: str,
+        poll_interval: int = 10,
+        max_wait_s: int | None = None,
+    ) -> str:
+        """Poll until the job reaches a terminal state. Returns the log path.
+
+        Hardened against three failure modes the old ``while True`` loop had:
+          * **No ceiling** → now bounded by ``max_wait_s`` (env ``_MAX_WAIT_S``);
+            exceeding it raises :class:`JobTimeoutError` instead of hanging forever.
+          * **UNKNOWN treated as terminal** → a transient ``squeue``/``sacct`` hiccup
+            (or a job momentarily absent from both) no longer ends the wait early;
+            UNKNOWN/errored polls are tolerated up to ``_MAX_UNKNOWN_POLLS`` in a row
+            before the job is declared lost (:class:`JobNotFoundError`).
+          * **CLI hang** → each poll uses the timeout-bounded scheduler helper.
+        """
+        deadline = time.monotonic() + (max_wait_s if max_wait_s is not None else _MAX_WAIT_S)
+        unknown_streak = 0
+
         while True:
+            if time.monotonic() > deadline:
+                raise JobTimeoutError(
+                    f"Job {job_id} did not reach a terminal state within the wait budget"
+                )
             try:
                 status = self.get_job_status(job_id)
+                state = status.get("state", "UNKNOWN")
             except JobNotFoundError:
-                break
-            state = status.get("state", "UNKNOWN")
+                state = "UNKNOWN"
+            except JobTimeoutError:
+                # A single slow scheduler call — treat like an UNKNOWN poll, keep waiting.
+                state = "UNKNOWN"
+
             print(f"[Slurm] job {job_id} → {state}", flush=True)
-            if state in _TERMINAL_STATES or state == "UNKNOWN":
+
+            if state in _TERMINAL_STATES:
                 break
+            if state == "UNKNOWN":
+                unknown_streak += 1
+                if unknown_streak >= _MAX_UNKNOWN_POLLS:
+                    raise JobNotFoundError(
+                        f"Job {job_id} not observable after {unknown_streak} consecutive polls"
+                    )
+            else:
+                unknown_streak = 0
             time.sleep(poll_interval)
 
         return str(self.working_dir / f"{job_id}.out")

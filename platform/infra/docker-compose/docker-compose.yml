@@ -11,6 +11,7 @@ services:
       dockerfile: Dockerfile.postgres
     image: examlops-postgres
     container_name: examlops-postgres
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
     environment:
       POSTGRES_USER: mlops
       POSTGRES_PASSWORD: mlops
@@ -72,6 +73,7 @@ services:
       dockerfile: Dockerfile.mlflow
       network: host
     container_name: examlops-mlflow
+    mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
     command: >
       mlflow server
       --backend-store-uri postgresql://mlops:mlops@postgres/mlflow
@@ -110,6 +112,7 @@ services:
       dockerfile: Dockerfile.orchestrator
     image: examlops-orchestrator
     container_name: examlops-orchestrator
+    mem_limit: ${ORCHESTRATOR_MEM_LIMIT:-2g}
     command: prefect server start --host 0.0.0.0
     environment:
       PREFECT_UI_API_URL: /api
@@ -162,10 +165,22 @@ services:
       - "18265:8265"   # Ray dashboard
       - "18080:8080"   # Prometheus metrics (Ray)
     shm_size: '2gb'
+    mem_limit: ${RAY_MEM_LIMIT:-6g}
+    cpus: ${RAY_CPUS:-2.0}
     depends_on:
       mlflow:
         condition: service_healthy
     restart: unless-stopped
+    # Liveness probe on /ready (always 200 while the process is up). Deliberately
+    # NOT /health — /health returns 503 when the hot set is empty (MLflow briefly
+    # down), which would otherwise trigger a restart loop. Consumers that need
+    # readiness use /health directly.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/ready')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
 
   # ── Control plane — retraining trigger API (Phase 4) ────────────────────────
   # Sits in front of Prefect so clients/dataplane can POST /retrain without
@@ -177,6 +192,7 @@ services:
       network: host
     image: examlops-control-plane
     container_name: examlops-control-plane
+    mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
     environment:
       CONTROL_PLANE_PORT: "8002"
       CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-changeme}
@@ -329,6 +345,7 @@ services:
       network: host
     image: examlops-dashboard
     container_name: examlops-dashboard
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}
     environment:
       MLFLOW_URL: http://mlflow:5000
       PREFECT_URL: http://orchestrator:4200
@@ -377,7 +394,7 @@ services:
       postgres:
         condition: service_healthy
       control-plane:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -398,6 +415,7 @@ services:
       network: host
     image: examlops-jupyterhub
     container_name: examlops-jupyterhub
+    mem_limit: ${JUPYTERHUB_MEM_LIMIT:-2g}
     profiles: [jupyter]
     ports:
       - "18888:8000"
@@ -429,6 +447,7 @@ services:
       context: ../../../..
       dockerfile: ai-productions/platform/infra/docker-compose/Dockerfile.bridge
     container_name: examlops-seanerbus-bridge
+    mem_limit: ${BRIDGE_MEM_LIMIT:-1g}
     networks:
       - default
       - seanerbus-net     # shared with seanerbus repo — allows direct container-to-container connection
@@ -458,10 +477,12 @@ services:
       - seanerbus
     depends_on:
       ray-serving:
-        condition: service_started
+        condition: service_healthy
       control-plane:
         condition: service_healthy
-    restart: on-failure
+    # unless-stopped (was on-failure) so the bridge is restarted after any exit,
+    # matching its long-lived peers; its own reconnect backoff handles transients.
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
       interval: 10s

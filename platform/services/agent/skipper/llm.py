@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from exa_agent import config
+from skipper import config
 
 
 def build_llm(model: str | None = None):
@@ -43,18 +43,42 @@ def build_llm(model: str | None = None):
     )
 
 
-def check_backend() -> dict:
-    """Return backend info dict: {ok, type, model}."""
-    if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT:
-        return {"ok": True, "type": "azure", "model": config.AZURE_OPENAI_DEPLOYMENT}
-    if config.ANTHROPIC_API_KEY:
-        return {"ok": True, "type": "claude", "model": config.ANTHROPIC_MODEL}
+def _endpoint_reachable(url: str, *, timeout: float = 5.0, headers: dict | None = None) -> bool:
+    """True if *url* answers any HTTP status (even 401/404) within *timeout*.
+
+    Any HTTP response proves the endpoint is up and routable; only a transport
+    error (DNS/connect/timeout) means it is genuinely unreachable. This lets a
+    down Azure/Claude endpoint be reported unhealthy instead of assumed-OK.
+    """
     try:
-        with httpx.Client(timeout=5.0) as client:
-            client.get(f"{config.AGENT_OLLAMA_URL}/api/tags")
-        return {"ok": True, "type": "ollama", "model": config.AGENT_MODEL}
+        with httpx.Client(timeout=timeout) as client:
+            client.get(url, headers=headers or {})
+        return True
     except httpx.RequestError:
-        return {"ok": False, "type": "ollama", "model": config.AGENT_MODEL}
+        return False
+
+
+def check_backend() -> dict:
+    """Return backend info dict: {ok, type, model}.
+
+    Every backend is now actively probed for reachability. Previously Azure/Claude
+    were assumed healthy from mere env-var presence, so a dead endpoint reported
+    ``ok:True`` and masked the outage.
+    """
+    if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT:
+        ok = _endpoint_reachable(config.AZURE_OPENAI_ENDPOINT)
+        return {"ok": ok, "type": "azure", "model": config.AZURE_OPENAI_DEPLOYMENT}
+    if config.ANTHROPIC_API_KEY:
+        ok = _endpoint_reachable(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": config.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        return {"ok": ok, "type": "claude", "model": config.ANTHROPIC_MODEL}
+    ok = _endpoint_reachable(f"{config.AGENT_OLLAMA_URL}/api/tags")
+    return {"ok": ok, "type": "ollama", "model": config.AGENT_MODEL}
 
 
 def check_ollama() -> bool:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from exa_agent.confirm import confirmed_write
-from exa_agent.tools import _http
+from skipper.confirm import confirmed_write
+from skipper.tools import _http
 
 
 @tool

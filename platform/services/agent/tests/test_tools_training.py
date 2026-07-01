@@ -1,7 +1,7 @@
 import httpx
 import respx
-from exa_agent import config, confirm
-from exa_agent.tools import training
+from skipper import config, confirm
+from skipper.tools import training
 
 
 @respx.mock

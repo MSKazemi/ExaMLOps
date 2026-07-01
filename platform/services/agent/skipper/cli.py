@@ -11,10 +11,10 @@ import httpx
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from exa_agent import config
-from exa_agent.confirm import _is_affirmative
-from exa_agent.graph import build_graph
-from exa_agent.llm import check_backend
+from skipper import config
+from skipper.confirm import _is_affirmative
+from skipper.graph import build_graph
+from skipper.llm import check_backend
 
 # ── Feature 7: ANSI colours (disabled for non-tty or NO_COLOR) ────────────────
 
@@ -125,7 +125,7 @@ def _print_history(messages: list, n: int, thread_id: str) -> None:
 
 
 def _export_thread(messages: list, path: str, thread_id: str) -> None:
-    lines = [f"# ExaMLOps Thread: {thread_id}\n\n"]
+    lines = [f"# Skipper thread ({thread_id})\n\n"]
     for msg in messages:
         role = type(msg).__name__.replace("Message", "")
         name = getattr(msg, "name", None)
@@ -156,7 +156,7 @@ def handle_slash(text: str, state: CliState, graph=None) -> tuple[bool, object]:
             print(f"  {name:<30} {desc}")
 
     elif cmd == "/tools":
-        from exa_agent.tools import TOOLS
+        from skipper.tools import TOOLS
 
         for t in TOOLS:
             print(f"  {t.name}")
@@ -376,13 +376,13 @@ def main() -> None:
     else:
         backend_label = f"ollama · {state.model}  ·  {config.AGENT_OLLAMA_URL}"
 
-    print(f"ExaMLOps Agent  ({backend_label})")
+    print(f"Skipper · ExaMLOps agent  ({backend_label})")
     print("Type a question, or /help for commands.\n")
     _startup_brief()  # Feature 10
 
     while True:
         try:
-            text = input("ExaMLOps Agent > ").strip()
+            text = input("skipper > ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye.")
             break

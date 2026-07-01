@@ -1,6 +1,6 @@
 import httpx
 import respx
-from exa_agent.tools import registry
+from skipper.tools import registry
 
 
 @respx.mock
