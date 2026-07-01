@@ -31,7 +31,7 @@ _BODY = {
 def _mock_script(exists: bool) -> MagicMock:
     m = MagicMock()
     m.exists.return_value = exists
-    m.__str__ = lambda self: "/app/tools/scaffold_model.py"
+    m.__str__ = lambda self: "/app/tools/scaffold_model.py"  # type: ignore[method-assign,assignment,misc]
     return m
 
 

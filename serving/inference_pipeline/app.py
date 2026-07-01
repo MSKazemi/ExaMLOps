@@ -182,8 +182,8 @@ class InferencePipelineIngress:
         """Liveness for the inference-pipeline ingress (process + loop responsive)."""
         return {"status": "alive", "ray_serve_url": _RAY_SERVE_URL}
 
-    @_ingress_app.post("/traffic-rules/{model}")
-    async def set_traffic(self, model: str, body: dict[str, Any]) -> dict[str, Any]:
+    @_ingress_app.post("/traffic-rules/{model}", response_model=None)
+    async def set_traffic(self, model: str, body: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         try:
             rules = {k: int(v) for k, v in body.items()}
         except (TypeError, ValueError) as exc:

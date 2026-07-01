@@ -429,7 +429,9 @@ def _tag_mlflow_version(
 def cost(
     model: str = typer.Argument(..., help="Registered model name (e.g. JPCP)"),
     record: bool = typer.Option(
-        False, "--record", help="Fetch latest scheduler data (Slurm/Flux), record to DB and tag MLflow"
+        False,
+        "--record",
+        help="Fetch latest scheduler data (Slurm/Flux), record to DB and tag MLflow",
     ),
 ):
     """Show HPC cost history for a model.  Use --record to ingest new data."""

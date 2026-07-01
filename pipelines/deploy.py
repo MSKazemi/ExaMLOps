@@ -103,7 +103,7 @@ def deploy(
         target_flow = _targeted
         name = f"examlops-{model.lower()}-{dataset.lower()}"
     else:
-        target_flow = scheduled_training_flow
+        target_flow = scheduled_training_flow  # type: ignore[assignment]
         name = deployment_name
 
     schedule = Cron(cron) if cron else None
@@ -182,7 +182,7 @@ def deploy_from_registry(
         print(f"[deploy] queued '{p['deployment_name']}' for {model_name} (cron={p['cron']!r})")
 
     if deployments:
-        prefect_serve(*deployments)
+        prefect_serve(*deployments)  # type: ignore[arg-type]
     else:
         print("[deploy] No enabled models in registry — nothing to deploy.")
 

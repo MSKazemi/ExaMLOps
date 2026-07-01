@@ -55,7 +55,7 @@ from prefect.cache_policies import NO_CACHE
 # retries with exponential backoff and a wall-clock timeout so a transient
 # Zenodo/MinIO/MLflow blip or a hung call can't fail or freeze the whole flow.
 _IO_RETRIES = int(os.getenv("EXAMLOPS_TASK_IO_RETRIES", "3"))
-_IO_RETRY_DELAYS = [5, 15, 30]  # per-attempt backoff seconds
+_IO_RETRY_DELAYS = [5.0, 15.0, 30.0]  # per-attempt backoff seconds
 _DATA_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_DATA_TIMEOUT_S", "1800"))
 _MLFLOW_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_MLFLOW_TIMEOUT_S", "600"))
 _FETCH_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_FETCH_TIMEOUT_S", "300"))
@@ -88,7 +88,8 @@ from pipelines.registry_loader import export_registry, load_registry, resolve_en
 
 MODEL_REGISTRY: dict[
     str,
-    tuple[type[SeanergysModel], type[SeanergysModelConfiguration], dict[str, Any]],
+    # middle slot holds either a config *class* or a YAMLBackedConfig *instance*
+    tuple[type[SeanergysModel], Any, dict[str, Any]],
 ] = {}
 
 
@@ -171,7 +172,7 @@ def register_model(
 
 def _build_model_tasks(
     model_cls: type[SeanergysModel],
-    config_cls: type[SeanergysModelConfiguration],
+    config_cls: Any,  # config class or YAMLBackedConfig instance
 ) -> dict[str, Any]:
     """
     Scan model_cls for @pipeline_step methods and return a dict of
@@ -482,7 +483,7 @@ def _build_dataset_lookup() -> dict[str, type]:
 
 
 def _make_yaml_override_config(
-    base_config_cls: type,
+    base_config_cls: Any,  # a SeanergysModelConfiguration subclass (classmethods called below)
     entry: Any,
     dataset_classes: list[type],
 ) -> type:

@@ -18,15 +18,19 @@ def build_llm(model: str | None = None):
         # The Foundry v1 endpoint is OpenAI-compatible: base_url + api_key, with
         # the deployment name used as the model id. Temperature is left unset —
         # gpt-5.x reasoning models reject anything other than the default.
+        # api_key/model are accepted as plain str at runtime (pydantic coerces);
+        # the stub types api_key as SecretStr, hence the ignore.
         return ChatOpenAI(
             model=model or config.AZURE_OPENAI_DEPLOYMENT,
             base_url=config.AZURE_OPENAI_ENDPOINT,
-            api_key=config.AZURE_OPENAI_API_KEY,
+            api_key=config.AZURE_OPENAI_API_KEY,  # type: ignore[arg-type]
         )
     if config.ANTHROPIC_API_KEY:
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        # model/anthropic_api_key/max_tokens are valid ChatAnthropic pydantic
+        # fields at runtime; the shipped stub omits them from __init__.
+        return ChatAnthropic(  # type: ignore[call-arg]
             model=model or config.ANTHROPIC_MODEL,
             anthropic_api_key=config.ANTHROPIC_API_KEY,
             thinking={"type": "adaptive"},
