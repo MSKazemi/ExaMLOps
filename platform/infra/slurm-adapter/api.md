@@ -1,12 +1,27 @@
-# Slurm Adapter API
+# HPC Scheduler Adapter API
 
-Python interface for the Slurm adapter. Implements FR-HY-02, FR-HY-03, FR-HY-04.
+Python interface for the scheduler adapters. Implements FR-HY-02, FR-HY-03, FR-HY-04.
+
+Two orthogonal axes (see `../../../design/adr/0002-hpc-scheduler-abstraction.md`):
+scheduler backend (`mock`/`slurm`/`flux`) and transport (`local`/`ssh`).
 
 ## Implementation Status
 
+- **Contract:** `scheduler.py` — `SchedulerAdapter` Protocol, `JobStatus`, exceptions,
+  and `BasePollingAdapter` (shared hardened `wait_until_complete`).
+- **Transport:** `executor.py` — `RemoteExecutor` Protocol, `LocalExecutor`,
+  `SSHExecutor` (paramiko + SFTP), `get_executor()`.
 - **Mock:** `mock_slurm_adapter.py` — simulates jobs locally for dev/test.
-- **Slurm:** `adapter.py` → `RealSlurmAdapter` — real `sbatch`/`squeue` on HPC.
-- **Factory:** `get_slurm_adapter()` in `adapter.py` — selects mode via `EXAMLOPS_SLURM_MODE=mock|slurm`.
+- **Slurm:** `adapter.py` → `RealSlurmAdapter` — `sbatch`/`squeue`/`sacct` via an executor.
+- **Flux:** `flux_adapter.py` → `FluxAdapter` — `flux batch`/`flux jobs`/`flux job info`.
+- **Factory:** `get_scheduler_adapter()` in `adapter.py` — selects backend via
+  `EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux` (legacy `EXAMLOPS_SLURM_MODE` honored).
+  `get_slurm_adapter()` remains as an alias.
+
+All adapters implement the same 4 methods below. `submit_job` also accepts an optional
+`remote_dir` (per-run directory where the job writes `model.pkl`, fetched back via the
+executor). Exceptions: `SchedulerAdapterError` (alias `SlurmAdapterError`),
+`JobSubmissionError`, `JobNotFoundError`, `JobTimeoutError`.
 
 ---
 

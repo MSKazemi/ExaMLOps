@@ -25,7 +25,8 @@ from sklearn.ensemble import RandomForestRegressor
 class MockSlurmAdapter:
     """Simulates Slurm job submission and monitoring locally."""
 
-    def __init__(self, working_dir: str | None = None):
+    def __init__(self, working_dir: str | None = None, executor=None):
+        # ``executor`` is accepted for interface parity with the real adapters and ignored.
         if working_dir is None:
             working_dir = Path(__file__).parent / "mock_hpc_jobs"
         self.working_dir = Path(working_dir)
@@ -39,6 +40,7 @@ class MockSlurmAdapter:
         script_path: str | None = None,
         resources: dict | None = None,
         training_data: dict[str, Any] | None = None,
+        remote_dir: str | None = None,  # ignored; interface parity
     ) -> str:
         """
         Submit a job (simulated). Returns a UUID job ID immediately.
@@ -52,25 +54,37 @@ class MockSlurmAdapter:
         job_folder.mkdir(parents=True, exist_ok=True)
 
         self._jobs[job_id] = {
-            "state":         "PENDING",
-            "folder":        job_folder,
-            "script_path":   script_path,
+            "state": "PENDING",
+            "folder": job_folder,
+            "script_path": script_path,
             "training_data": training_data,
-            "resources":     resources or {},
-            "exit_code":     None,
-            "start_time":    None,
-            "end_time":      None,
-            "log_lines":     [],
+            "resources": resources or {},
+            "exit_code": None,
+            "start_time": None,
+            "end_time": None,
+            "log_lines": [],
         }
         print(f"[MockSlurm] Submitted job {job_id}", flush=True)
         return job_id
 
-    def wait_until_complete(self, job_id: str, sleep_time: int = 0) -> str:
+    def wait_until_complete(
+        self,
+        job_id: str,
+        poll_interval: int = 0,
+        max_wait_s: int | None = None,
+        sleep_time: int | None = None,
+    ) -> str:
         """
         Execute the job synchronously and return the path to the trained model (or log).
 
+        ``poll_interval`` (and the deprecated ``sleep_time`` alias) is used only as an
+        optional artificial delay for the no-op path. ``max_wait_s`` is accepted for
+        interface parity with the real adapters and ignored.
+
         Returns: path to trained_model.pkl if training succeeded, else path to stdout log.
         """
+        if sleep_time is not None:
+            poll_interval = sleep_time
         job = self._get_job(job_id)
         job["state"] = "RUNNING"
         job["start_time"] = _now()
@@ -89,8 +103,8 @@ class MockSlurmAdapter:
                 artifact_path = self._run_script(job["script_path"], job_folder, log_lines)
             else:
                 # Neither training_data nor script — produce a placeholder
-                if sleep_time:
-                    time.sleep(sleep_time)
+                if poll_interval:
+                    time.sleep(poll_interval)
                 log_lines.append("[MockSlurm] No-op job (no training_data or script_path)")
                 artifact_path = str(job_folder / "no_artifact")
 
@@ -116,10 +130,10 @@ class MockSlurmAdapter:
         if job is None:
             return {"state": "UNKNOWN", "exit_code": None, "start_time": None, "end_time": None}
         return {
-            "state":      job["state"],
-            "exit_code":  job["exit_code"],
+            "state": job["state"],
+            "exit_code": job["exit_code"],
             "start_time": job["start_time"],
-            "end_time":   job["end_time"],
+            "end_time": job["end_time"],
         }
 
     def get_job_logs(self, job_id: str) -> str:
@@ -139,6 +153,7 @@ class MockSlurmAdapter:
 
     def _get_job(self, job_id: str) -> dict:
         from adapter import JobNotFoundError  # noqa: PLC0415
+
         if job_id not in self._jobs:
             raise JobNotFoundError(f"Unknown job_id: {job_id}")
         return self._jobs[job_id]

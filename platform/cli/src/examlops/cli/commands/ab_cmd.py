@@ -54,6 +54,12 @@ _EXAMPLES_RECORD = (
     "  exa serve ab record JPCP Production 0.92\n\n"
     "  exa serve ab record JPCP Canary 0.87"
 )
+_EXAMPLES_ANALYZE = (
+    "Examples:\n\n"
+    "  exa serve ab analyze JPCP\n\n"
+    "  exa serve ab analyze JPCP --lower-is-better   # e.g. RMSE / latency metrics\n\n"
+    "  exa serve ab analyze JPCP --alpha 0.01 --min-sample 100"
+)
 
 
 def _ensure_ab_tables() -> None:
@@ -204,3 +210,87 @@ def ab_record(
         )
 
     _output.ok(f"Recorded {value} for variant '{variant}' in A/B test #{test_id} ({model}).")
+
+
+@app.command("analyze", epilog=_EXAMPLES_ANALYZE)
+def ab_analyze(
+    model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
+    lower_is_better: bool = typer.Option(
+        False,
+        "--lower-is-better",
+        help="Metric where smaller wins (e.g. RMSE, latency); default higher-is-better",
+    ),
+    alpha: float = typer.Option(0.05, "--alpha", help="Significance level"),
+    min_sample: int = typer.Option(
+        30, "--min-sample", help="Minimum observations per variant before calling a winner"
+    ),
+) -> None:
+    """Run a statistical test on the recorded observations of a model's active A/B test.
+
+    Uses Welch's t-test (unequal variance) and reports whether the difference between the
+    two variants is significant, plus the winner given the metric's optimisation direction.
+    """
+    from examlops.analysis.ab_stats import analyze_ab
+
+    _ensure_ab_tables()
+    with get_db() as conn:
+        test_row = conn.execute(
+            "SELECT id, variant_a, variant_b FROM ab_tests WHERE model=? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (model,),
+        ).fetchone()
+        if test_row is None:
+            _output.error(f"No A/B test found for {model}. Start one with: exa serve ab start {model}")
+        test_id = test_row["id"]
+        variant_a, variant_b = test_row["variant_a"], test_row["variant_b"]
+        rows = conn.execute(
+            "SELECT variant, value FROM ab_results WHERE test_id=?", (test_id,)
+        ).fetchall()
+
+    values_a = [r["value"] for r in rows if r["variant"] == variant_a]
+    values_b = [r["value"] for r in rows if r["variant"] == variant_b]
+
+    result = analyze_ab(
+        values_a,
+        values_b,
+        lower_is_better=lower_is_better,
+        alpha=alpha,
+        min_sample=min_sample,
+    )
+
+    if _output.json_mode:
+        _output.print_json({"model": model, "test_id": test_id, **result})
+        return
+
+    if result["verdict"] == "insufficient_sample":
+        _output.warning(
+            f"Insufficient sample for {model}: {variant_a} n={result['n_a']}, "
+            f"{variant_b} n={result['n_b']} (need ≥ {result['min_sample']} each)."
+        )
+        return
+
+    winner_label = "—"
+    if result["winner"] == "a":
+        winner_label = variant_a
+    elif result["winner"] == "b":
+        winner_label = variant_b
+
+    _output.print_table(
+        f"A/B analysis — {model} (#{test_id})",
+        ["Field", "Value"],
+        [
+            [variant_a, f"mean={result['mean_a']:.4g}  n={result['n_a']}"],
+            [variant_b, f"mean={result['mean_b']:.4g}  n={result['n_b']}"],
+            ["t-stat", f"{result['t_stat']:.4f}"],
+            ["p-value", f"{result['p_value']:.4g}"],
+            ["significant", "yes" if result["significant"] else "no"],
+            ["winner", winner_label],
+        ],
+    )
+    write_audit_event(
+        "cli",
+        os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli",
+        "ab_test_analyzed",
+        model,
+        {"p_value": result["p_value"], "winner": winner_label, "significant": result["significant"]},
+    )

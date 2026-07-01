@@ -618,6 +618,99 @@ def data_extraction_task(
     return model_init, train_loader
 
 
+# ── HPC scheduler helpers ───────────────────────────────────────────────────────
+
+
+def _hpc_scheduler_name() -> str:
+    """Resolve the scheduler backend, honoring the legacy EXAMLOPS_SLURM_MODE."""
+    sched = os.getenv("EXAMLOPS_HPC_SCHEDULER", "").lower().strip()
+    if sched:
+        return sched
+    return (
+        "slurm" if os.getenv("EXAMLOPS_SLURM_MODE", "mock").lower().strip() == "slurm" else "mock"
+    )
+
+
+def _hpc_resources(model_name: str, dataset_cls_name: str) -> dict:
+    """Scheduler-neutral resource dict. EXAMLOPS_HPC_* wins; EXAMLOPS_SLURM_* is the fallback."""
+
+    def pick(*names: str, default: str | None = None) -> str | None:
+        for name in names:
+            val = os.getenv(name)
+            if val is not None:
+                return val
+        return default
+
+    raw = {
+        "partition": pick("EXAMLOPS_HPC_PARTITION", "EXAMLOPS_SLURM_PARTITION"),
+        "qos": os.getenv("EXAMLOPS_HPC_QOS"),
+        "account": os.getenv("EXAMLOPS_HPC_ACCOUNT"),
+        "constraint": os.getenv("EXAMLOPS_HPC_CONSTRAINT"),
+        "time": pick("EXAMLOPS_HPC_TIME", "EXAMLOPS_SLURM_TIME", default="2:00:00"),
+        "nodes": pick("EXAMLOPS_HPC_NODES", "EXAMLOPS_SLURM_NODES", default="1"),
+        "ntasks": os.getenv("EXAMLOPS_HPC_NTASKS", "1"),
+        "cpus_per_task": pick("EXAMLOPS_HPC_CPUS", "EXAMLOPS_SLURM_CPUS", default="4"),
+        "mem": pick("EXAMLOPS_HPC_MEM", "EXAMLOPS_SLURM_MEM", default="16G"),
+        "gpus": os.getenv("EXAMLOPS_HPC_GPUS"),
+        "job_name": f"examlops_{model_name.lower()}_{dataset_cls_name.lower()}",
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
+def _int_or_none(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _current_flow_run_id() -> str | None:
+    try:
+        from prefect.runtime import flow_run  # noqa: PLC0415
+
+        return flow_run.get_id()
+    except Exception:  # noqa: BLE001 - not always inside a flow-run context
+        return None
+
+
+def _record_hpc_job_safe(
+    job_id: str, scheduler: str, model: str, dataset: str, resources: dict
+) -> None:
+    """Best-effort insert of an hpc_jobs tracking row (never breaks the flow)."""
+    try:
+        from examlops.platform_db import record_hpc_job  # noqa: PLC0415
+
+        record_hpc_job(
+            job_id=job_id,
+            scheduler=scheduler,
+            flow_run_id=_current_flow_run_id(),
+            model=model,
+            dataset=dataset,
+            nodes=_int_or_none(resources.get("nodes")),
+            gpus=_int_or_none(resources.get("gpus")),
+            cpus=_int_or_none(resources.get("cpus_per_task")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[hpc] record_hpc_job skipped: {exc}")
+
+
+def _update_hpc_job_safe(job_id: str, scheduler: str, status: dict) -> None:
+    """Best-effort update of an hpc_jobs row with terminal status."""
+    try:
+        from examlops.platform_db import update_hpc_job  # noqa: PLC0415
+
+        update_hpc_job(
+            job_id=job_id,
+            scheduler=scheduler,
+            state=status.get("state"),
+            start_time=status.get("start_time"),
+            end_time=status.get("end_time"),
+            exit_code=status.get("exit_code"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[hpc] update_hpc_job skipped: {exc}")
+
+
 @task(
     name="slurm_submit",
     retries=2,
@@ -638,13 +731,13 @@ def slurm_submit_task(
         Runs model.train_step(loader) inline, saves estimator to a temp pkl,
         returns (job_id, artifact_path).
 
-    EXAMLOPS_SLURM_MODE=slurm:
-        Submits an sbatch job via RealSlurmAdapter,
-        returns (job_id, None) — artifact path resolved after job completes.
+    EXAMLOPS_HPC_SCHEDULER=slurm|flux:
+        Submits a batch job via the scheduler adapter (over SSH when configured),
+        returns (job_id, remote_model_path) — fetched back after the job completes.
     """
-    mode = os.getenv("EXAMLOPS_SLURM_MODE", "mock").lower().strip()
+    scheduler = _hpc_scheduler_name()
 
-    if mode == "mock":
+    if scheduler == "mock":
         print(f"[slurm_submit] mock — training {model_name} on {dataset_cls_name} inline")
         model.train_step(loader)
 
@@ -656,50 +749,46 @@ def slurm_submit_task(
         print(f"[slurm_submit] job_id={job_id}  artifact={artifact_path}")
         return job_id, str(artifact_path)
 
-    # Real Slurm — generate a bash script and submit via sbatch
-    from adapter import RealSlurmAdapter  # noqa: PLC0415
+    # Real HPC (slurm | flux) — generate a portable bash wrapper and submit via the
+    # scheduler adapter. All resource directives flow through CLI flags (not #SBATCH
+    # comments), so the same script works for sbatch and flux batch.
+    from adapter import get_scheduler_adapter  # noqa: PLC0415
 
-    adapter = RealSlurmAdapter()
+    adapter = get_scheduler_adapter()
 
-    job_id_placeholder = uuid.uuid4().hex[:12]
-    job_dir = Path(adapter.working_dir) / job_id_placeholder
-    job_dir.mkdir(parents=True, exist_ok=True)
+    run_uuid = uuid.uuid4().hex[:12]
+    remote_base = os.getenv("EXAMLOPS_HPC_REMOTE_WORKDIR", str(adapter.working_dir))
+    remote_dir = f"{remote_base}/{run_uuid}"
+    remote_model = f"{remote_dir}/model.pkl"
 
     mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
-    venv_python = str(_REPO_ROOT / ".venv" / "bin" / "python")
-    train_script = str(_REPO_ROOT / "pipelines" / "slurm_train_script.py")
+    remote_repo = os.getenv("EXAMLOPS_HPC_REMOTE_REPO", str(_REPO_ROOT))
+    remote_python = os.getenv(
+        "EXAMLOPS_HPC_REMOTE_PYTHON", str(Path(remote_repo) / ".venv" / "bin" / "python")
+    )
+    train_script = f"{remote_repo}/pipelines/slurm_train_script.py"
 
-    bash_script = job_dir / "run.sh"
+    local_job_dir = Path(adapter.working_dir) / run_uuid
+    local_job_dir.mkdir(parents=True, exist_ok=True)
+    bash_script = local_job_dir / "run.sh"
     bash_script.write_text(
         "#!/bin/bash\n"
-        f"#SBATCH --job-name=examlops_{model_name.lower()}_{dataset_cls_name.lower()}\n"
-        f"#SBATCH --output={adapter.working_dir}/$SLURM_JOB_ID.out\n"
-        f"#SBATCH --error={adapter.working_dir}/$SLURM_JOB_ID.err\n"
-        "\n"
-        f"mkdir -p {adapter.working_dir}/$SLURM_JOB_ID\n"
-        f"{venv_python} {train_script} \\\n"
+        f"mkdir -p {remote_dir}\n"
+        f"{remote_python} {train_script} \\\n"
         f"  --model {model_name} \\\n"
         f"  --dataset {dataset_cls_name} \\\n"
-        f"  --output {adapter.working_dir}/$SLURM_JOB_ID/model.pkl \\\n"
+        f"  --output {remote_model} \\\n"
         f"  --mlflow-uri {mlflow_uri}\n"
     )
     bash_script.chmod(0o755)
 
-    resources = {
-        k: v
-        for k, v in {
-            "partition": os.getenv("EXAMLOPS_SLURM_PARTITION"),
-            "time": os.getenv("EXAMLOPS_SLURM_TIME", "2:00:00"),
-            "nodes": os.getenv("EXAMLOPS_SLURM_NODES", "1"),
-            "mem": os.getenv("EXAMLOPS_SLURM_MEM", "16G"),
-            "cpus_per_task": os.getenv("EXAMLOPS_SLURM_CPUS", "4"),
-        }.items()
-        if v is not None
-    }
-
-    job_id = adapter.submit_job(script_path=str(bash_script), resources=resources)
-    print(f"[slurm_submit] sbatch job_id={job_id}  script={bash_script}")
-    return job_id, None
+    resources = _hpc_resources(model_name, dataset_cls_name)
+    job_id = adapter.submit_job(
+        script_path=str(bash_script), resources=resources, remote_dir=remote_dir
+    )
+    _record_hpc_job_safe(job_id, scheduler, model_name, dataset_cls_name, resources)
+    print(f"[slurm_submit] {scheduler} job_id={job_id}  remote_dir={remote_dir}")
+    return job_id, remote_model
 
 
 @task(name="slurm_wait", cache_policy=NO_CACHE)
@@ -710,31 +799,36 @@ def slurm_wait_task(
     """
     Wait for the HPC job to reach a terminal state.
 
-    Mock mode: artifact_path is already set — returns immediately.
-    Real Slurm: polls squeue/sacct until COMPLETED/FAILED/CANCELLED.
+    Mock mode: artifact_path is a local pkl — returns immediately.
+    Real HPC: polls the scheduler until terminal, then fetches the remote model back.
     """
-    if artifact_path is not None:
+    scheduler = _hpc_scheduler_name()
+
+    if scheduler == "mock":
         # Mock: training already finished in slurm_submit_task
         print(f"[slurm_wait] {job_id} → COMPLETED (mock)")
-        return "COMPLETED", artifact_path
+        return "COMPLETED", artifact_path or ""
 
-    # Real Slurm
-    from adapter import RealSlurmAdapter  # noqa: PLC0415
+    # Real HPC (slurm | flux)
+    from adapter import get_scheduler_adapter  # noqa: PLC0415
 
-    adapter = RealSlurmAdapter()
+    adapter = get_scheduler_adapter()
     adapter.wait_until_complete(job_id)
     status = adapter.get_job_status(job_id)
     state = status.get("state", "UNKNOWN")
+    _update_hpc_job_safe(job_id, scheduler, status)
     print(f"[slurm_wait] {job_id} → {state}")
 
     if state != "COMPLETED":
-        raise RuntimeError(
-            f"Slurm job {job_id} ended with state '{state}'. "
-            f"Check logs in {adapter.working_dir}/{job_id}.out"
-        )
+        raise RuntimeError(f"HPC job {job_id} ended with state '{state}'. Check scheduler logs.")
 
-    derived_path = str(Path(adapter.working_dir) / job_id / "model.pkl")
-    return state, derived_path
+    # Fetch the trained estimator back from the (possibly remote) cluster. For the
+    # local/shared-FS case executor.get is a plain copy, so this is a no-op move.
+    remote_model = artifact_path or f"{adapter.remote_jobdir(job_id)}/model.pkl"
+    local_dir = Path(tempfile.mkdtemp(prefix="examlops_hpc_"))
+    local_model = local_dir / "model.pkl"
+    adapter.executor.get(remote_model, str(local_model))
+    return state, str(local_model)
 
 
 @task(
@@ -844,6 +938,8 @@ def log_mlflow_task(
     metrics: dict,
     model_name: str,
     dataset_name: str,
+    job_id: str | None = None,
+    scheduler: str | None = None,
 ) -> dict:
     """Log model + metrics to MLflow. Returns registration dict."""
     _, config_cls, _ = MODEL_REGISTRY[model_name]
@@ -868,6 +964,12 @@ def log_mlflow_task(
         mlflow.log_param("dataset", dataset_name)
         mlflow.log_param("estimator", type(model.estimator).__name__)
         mlflow.log_param("framework", adapter.flavour)
+        # Tag the HPC job id so `exa models cost --record` can attribute GPU/CPU-hours
+        # back to this run. Scheduler-neutral tag + a legacy alias for older readers.
+        if job_id:
+            mlflow.set_tag("hpc_job_id", job_id)
+            mlflow.set_tag("hpc_scheduler", scheduler or "")
+            mlflow.set_tag("slurm_job_id", job_id)  # back-compat
         # Source-level model version (the demo "staleness knob"). Logged so
         # `exa models diff <id> <v1> <v2>` and the MLflow UI can show which
         # source revision produced each registered version. Models without a
@@ -1105,7 +1207,14 @@ def training_flow(
         state, artifact_path, model_name, dataset_cls_name, is_dummy, backend_name
     )
     metrics = evaluate_task(model, model_name, dataset_cls_name, is_dummy, backend_name)
-    registration = log_mlflow_task(model, metrics, model_name, dataset_cls_name)
+    registration = log_mlflow_task(
+        model,
+        metrics,
+        model_name,
+        dataset_cls_name,
+        job_id=job_id,
+        scheduler=_hpc_scheduler_name(),
+    )
     status = promote_task(model_name, registration, metrics)
 
     return {

@@ -33,17 +33,18 @@ from adapter import get_slurm_adapter  # noqa: E402
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Submit a Slurm (or mock) training job")
     p.add_argument("--script", required=True, help="Path to the job script (.sh or .py)")
-    p.add_argument("--partition",     default=None, help="Slurm partition")
-    p.add_argument("--nodes",         default=None, help="Number of nodes")
-    p.add_argument("--ntasks",        default=None, help="Number of tasks")
+    p.add_argument("--partition", default=None, help="Slurm partition")
+    p.add_argument("--nodes", default=None, help="Number of nodes")
+    p.add_argument("--ntasks", default=None, help="Number of tasks")
     p.add_argument("--cpus-per-task", default=None, dest="cpus_per_task", help="CPUs per task")
-    p.add_argument("--mem",           default=None, help="Memory per node (e.g. 16G)")
-    p.add_argument("--gpus",          default=None, help="GPUs (e.g. 1 or a100:2)")
-    p.add_argument("--time",          default=None, help="Wall-clock limit (e.g. 2:00:00)")
-    p.add_argument("--job-name",      default=None, dest="job_name", help="Job name")
-    p.add_argument("--account",       default=None, help="Slurm account/project")
+    p.add_argument("--mem", default=None, help="Memory per node (e.g. 16G)")
+    p.add_argument("--gpus", default=None, help="GPUs (e.g. 1 or a100:2)")
+    p.add_argument("--time", default=None, help="Wall-clock limit (e.g. 2:00:00)")
+    p.add_argument("--job-name", default=None, dest="job_name", help="Job name")
+    p.add_argument("--account", default=None, help="Slurm account/project")
     p.add_argument(
-        "--wait", action="store_true",
+        "--wait",
+        action="store_true",
         help="Block until job completes and print the log",
     )
     return p.parse_args()
@@ -53,16 +54,17 @@ def main() -> None:
     args = parse_args()
 
     resources = {
-        k: v for k, v in {
-            "partition":     args.partition,
-            "nodes":         args.nodes,
-            "ntasks":        args.ntasks,
+        k: v
+        for k, v in {
+            "partition": args.partition,
+            "nodes": args.nodes,
+            "ntasks": args.ntasks,
             "cpus_per_task": args.cpus_per_task,
-            "mem":           args.mem,
-            "gpus":          args.gpus,
-            "time":          args.time,
-            "job_name":      args.job_name,
-            "account":       args.account,
+            "mem": args.mem,
+            "gpus": args.gpus,
+            "time": args.time,
+            "job_name": args.job_name,
+            "account": args.account,
         }.items()
         if v is not None
     }
