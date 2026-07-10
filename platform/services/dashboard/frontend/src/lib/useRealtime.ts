@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getToken } from './auth'
+import { getToken, clearAuth } from './auth'
 import {
   readEventStream,
   nextConnectionState,
@@ -41,6 +41,13 @@ export function useRealtime(
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           signal: controller.signal,
         })
+        // An expired/invalid token must log the user out (like apiFetch), not loop
+        // "reconnecting" forever against a stream that will keep 401ing.
+        if (res.status === 401 || res.status === 403) {
+          clearAuth()
+          window.location.reload()
+          return
+        }
         if (!res.ok || !res.body) throw new Error(`stream ${res.status}`)
         if (!cancelled) setState('live')
         await readEventStream(res.body, (e) => handler.current(e))

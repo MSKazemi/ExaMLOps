@@ -98,17 +98,23 @@ def _container_info(c) -> dict[str, Any]:
 @router.get("/containers")
 async def list_containers(_user=Depends(_viewer_dep)):
     client, project = _require_docker()
-    containers = client.containers.list(
-        all=True,
-        filters={"label": f"com.docker.compose.project={project}"},
-    )
-    return {
-        "containers": [
+
+    def _fetch() -> list[dict]:
+        # Runs in a worker thread — the Docker SDK is blocking, so keeping it on
+        # the event loop would freeze every other dashboard request on a slow or
+        # hung Docker socket.
+        containers = client.containers.list(
+            all=True,
+            filters={"label": f"com.docker.compose.project={project}"},
+        )
+        return [
             _container_info(c)
             for c in containers
             if c.labels.get("com.docker.compose.service") not in _INIT_CONTAINERS
         ]
-    }
+
+    loop = asyncio.get_running_loop()
+    return {"containers": await loop.run_in_executor(None, _fetch)}
 
 
 @router.post("/containers/{service}/start")

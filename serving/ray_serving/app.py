@@ -297,6 +297,13 @@ class MultiModelServer:
         #   key = (model_name, alias) — alias in PRELOAD_ALIASES
         #   value = {"model": pyfunc, "version": "3", "run_id": "..."}
         self._hot: dict[tuple[str, str], dict[str, Any]] = {}
+        # Guards multi-step mutations/iterations of _hot and _version_cache. The
+        # background poller thread (_poll_loop → _reload_one_model) and request
+        # threads both touch these structures; without this, a snapshot iteration
+        # (health/list_models/alias-scan) can race the poller's evict/reassign and
+        # raise "dictionary changed size during iteration". Held only around the
+        # dict ops themselves — never around slow MLflow loads.
+        self._cache_lock = threading.RLock()
 
         # LRU cache for raw-version requests (e.g. {"version": "1"}):
         #   key = (model_name, version)
@@ -395,12 +402,14 @@ class MultiModelServer:
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Failed to load '%s'@%s: %s", rm.name, alias, exc)
 
-        self._hot = new_hot
-        self._models_gauge.set(len(self._hot), tags={"replica": self._replica_id})
+        with self._cache_lock:
+            self._hot = new_hot
+            hot_keys = list(self._hot.keys())
+        self._models_gauge.set(len(hot_keys), tags={"replica": self._replica_id})
         logger.info(
             "Hot set ready — %d entries: %s",
-            len(self._hot),
-            sorted(f"{n}@{a}" for (n, a) in self._hot),
+            len(hot_keys),
+            sorted(f"{n}@{a}" for (n, a) in hot_keys),
         )
 
     def _load_by_flavour(self, name: str, alias: str | None, mv: Any) -> Any:
@@ -437,24 +446,38 @@ class MultiModelServer:
         for alias in _get_serve_aliases_for(model_name):
             try:
                 mv = client.get_model_version_by_alias(model_name, alias)
-            except Exception:  # noqa: BLE001
-                self._hot.pop((model_name, alias), None)
+            except Exception as exc:  # noqa: BLE001
+                # Only evict when the alias is genuinely gone. A transient MLflow
+                # blip must NOT pull a healthy model out of rotation — keep serving
+                # the last-known-good entry until a later poll confirms the change.
+                if _is_mlflow_unreachable(exc):
+                    logger.warning(
+                        "Skipping reload of '%s'@%s — MLflow unreachable: %s",
+                        model_name,
+                        alias,
+                        exc,
+                    )
+                else:
+                    with self._cache_lock:
+                        self._hot.pop((model_name, alias), None)
                 continue
             try:
                 model = self._load_by_flavour(model_name, alias, mv)
-                self._hot[(model_name, alias)] = {
-                    "model": model,
-                    "version": str(mv.version),
-                    "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
-                }
+                with self._cache_lock:
+                    self._hot[(model_name, alias)] = {
+                        "model": model,
+                        "version": str(mv.version),
+                        "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
+                    }
                 reloaded += 1
                 logger.info("Reloaded '%s'@%s (v%s)", model_name, alias, mv.version)
             except Exception as exc:  # noqa: BLE001
                 logger.error("Reload of '%s'@%s failed: %s", model_name, alias, exc)
         # Drop any cached raw versions for this model so subsequent
         # version-pinned requests pick up the fresh artefact.
-        for k in [k for k in self._version_cache if k[0] == model_name]:
-            self._version_cache.pop(k, None)
+        with self._cache_lock:
+            for k in [k for k in self._version_cache if k[0] == model_name]:
+                self._version_cache.pop(k, None)
         self._models_gauge.set(len(self._hot), tags={"replica": self._replica_id})
         return reloaded
 
@@ -536,7 +559,9 @@ class MultiModelServer:
 
         changed: set[str] = set()
         # Versions that moved or aliases that disappeared.
-        for key, hot_entry in self._hot.items():
+        with self._cache_lock:
+            hot_snapshot = list(self._hot.items())
+        for key, hot_entry in hot_snapshot:
             if observed.get(key) != hot_entry["version"]:
                 changed.add(key[0])
         # Brand-new (model, alias) pairs that we haven't loaded yet.
@@ -545,6 +570,19 @@ class MultiModelServer:
                 changed.add(key[0])
         return changed
 
+    def _hot_get(self, model_name: str, alias: str) -> dict[str, Any] | None:
+        """Look up the hot set, tolerating model-name case.
+
+        The hot set is keyed on the MLflow registered-model name, which is lowercase
+        by convention (``jpcp``). A direct client may POST the canonical uppercase
+        name (``JPCP``); try the exact key first, then the lowercase key, so such a
+        request doesn't 404 a model that is in fact loaded.
+        """
+        entry = self._hot.get((model_name, alias))
+        if entry is None and model_name != model_name.lower():
+            entry = self._hot.get((model_name.lower(), alias))
+        return entry
+
     def _resolve(self, model_name: str, alias: str | None, version: str | None) -> dict[str, Any]:
         """Return ``{"model", "version", "alias", "run_id"}`` for the request.
 
@@ -552,7 +590,7 @@ class MultiModelServer:
         """
         # 1. Alias takes precedence over raw version.
         if alias:
-            entry = self._hot.get((model_name, alias))
+            entry = self._hot_get(model_name, alias)
             if entry is not None:
                 return {**entry, "alias": alias}
             # Alias not in the hot set — try a one-shot load.
@@ -566,7 +604,8 @@ class MultiModelServer:
                     "version": str(mv.version),
                     "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
                 }
-                self._hot[(model_name, alias)] = entry
+                with self._cache_lock:
+                    self._hot[(model_name, alias)] = entry
                 return {**entry, "alias": alias}
             except Exception as exc:  # noqa: BLE001
                 if _is_mlflow_unreachable(exc):
@@ -582,9 +621,11 @@ class MultiModelServer:
         # 2. Raw version — LRU cache.
         if version:
             key = (model_name, str(version))
-            entry = self._version_cache.get(key)
+            with self._cache_lock:
+                entry = self._version_cache.get(key)
+                if entry is not None:
+                    self._version_cache.move_to_end(key)
             if entry is not None:
-                self._version_cache.move_to_end(key)
                 return {**entry, "alias": None}
             try:
                 client = mlflow.MlflowClient()
@@ -610,20 +651,23 @@ class MultiModelServer:
                 "version": str(version),
                 "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
             }
-            self._version_cache[key] = entry
-            self._version_cache.move_to_end(key)
-            while len(self._version_cache) > self._version_cache_size:
-                self._version_cache.popitem(last=False)
+            with self._cache_lock:
+                self._version_cache[key] = entry
+                self._version_cache.move_to_end(key)
+                while len(self._version_cache) > self._version_cache_size:
+                    self._version_cache.popitem(last=False)
             return {**entry, "alias": None}
 
         # 3. Default alias (MODEL_STAGE).
-        entry = self._hot.get((model_name, MODEL_STAGE))
+        entry = self._hot_get(model_name, MODEL_STAGE)
         if entry is None:
+            with self._cache_lock:
+                available = sorted({n for (n, _) in self._hot})
             raise HTTPException(
                 status_code=404,
                 detail=(
                     f"Model '{model_name}' has no '{MODEL_STAGE}' alias loaded. "
-                    f"Available: {sorted(set(n for (n, _) in self._hot))}"
+                    f"Available: {available}"
                 ),
             )
         return {**entry, "alias": MODEL_STAGE}
@@ -647,13 +691,16 @@ class MultiModelServer:
         Degraded = empty hot set (MLflow unreachable at boot or all loads failed),
         so load balancers / monitoring stop routing to a replica that cannot serve.
         """
-        degraded = not self._hot
+        with self._cache_lock:
+            hot_items = list(self._hot.items())
+            version_cache_size = len(self._version_cache)
+        degraded = not hot_items
         if degraded:
             response.status_code = 503
         return {
             "status": "degraded" if degraded else "ok",
-            "models_loaded": len(self._hot),
-            "version_cache_size": len(self._version_cache),
+            "models_loaded": len(hot_items),
+            "version_cache_size": version_cache_size,
             "poller_alive": self._poller_alive,
             "poll_interval_s": RELOAD_POLL_SECONDS,
             "models": [
@@ -664,13 +711,15 @@ class MultiModelServer:
                     "run_id": entry["run_id"],
                     "status": "ok",
                 }
-                for (name, alias), entry in self._hot.items()
+                for (name, alias), entry in hot_items
             ],
         }
 
     @_app.get("/models", response_model=list[ModelInfo])
     def list_models(self) -> list[ModelInfo]:
         """Every (model, alias) pair currently in the hot set."""
+        with self._cache_lock:
+            hot_items = list(self._hot.items())
         return [
             ModelInfo(
                 model_name=name,
@@ -679,7 +728,7 @@ class MultiModelServer:
                 run_id=entry["run_id"],
                 status="ok",
             )
-            for (name, alias), entry in self._hot.items()
+            for (name, alias), entry in hot_items
         ]
 
     @_app.post("/predict/{model_name}", response_model=PredictResponse)
@@ -702,17 +751,32 @@ class MultiModelServer:
         version = resolved["version"]
         alias = resolved["alias"]
 
+        import numpy as np
+
+        # Build + validate the feature vector *before* timing/predicting so a
+        # non-numeric feature is a clean 422 (client error), not an opaque 500
+        # that also pollutes the error-rate metric.
+        row: list = []
+        for v in request.features.values():
+            if isinstance(v, list):
+                row.extend(v)
+            else:
+                row.append(v)
+        try:
+            input_array = np.array([row], dtype=float)
+        except (ValueError, TypeError) as exc:
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "version": version or "",
+                    "alias": alias or "",
+                    "status": "invalid",
+                }
+            )
+            raise HTTPException(status_code=422, detail=f"features must be numeric: {exc}") from exc
+
         _t0 = time.time()
         try:
-            import numpy as np
-
-            row: list = []
-            for v in request.features.values():
-                if isinstance(v, list):
-                    row.extend(v)
-                else:
-                    row.append(v)
-            input_array = np.array([row], dtype=float)
             # Run under a hard timeout so a hung model can't pin the replica worker.
             raw = self._predict_pool.submit(model.predict, input_array).result(
                 timeout=self._predict_timeout
@@ -794,7 +858,8 @@ class MultiModelServer:
         """Hot-reload every model in the hot set from MLflow."""
         try:
             self._load_hot_aliases()
-            self._version_cache.clear()
+            with self._cache_lock:
+                self._version_cache.clear()
             self._reload_counter.inc(
                 tags={"status": "success", "scope": "all", "replica": self._replica_id}
             )
@@ -803,9 +868,11 @@ class MultiModelServer:
                 tags={"status": "error", "scope": "all", "replica": self._replica_id}
             )
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        with self._cache_lock:
+            hot_keys = list(self._hot.keys())
         return {
-            "reloaded": sorted(f"{n}@{a}" for (n, a) in self._hot),
-            "count": len(self._hot),
+            "reloaded": sorted(f"{n}@{a}" for (n, a) in hot_keys),
+            "count": len(hot_keys),
         }
 
     @_app.post("/reload/{model_name}")

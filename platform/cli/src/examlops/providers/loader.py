@@ -24,6 +24,9 @@ from .registry import get_provider
 
 CONFIG_DIR = Path.home() / ".config" / "examlops"
 FINOPS_YAML = CONFIG_DIR / "finops.yaml"
+# Platform (non-finops) domains — placement, drift, promotion, … — read here so finops.yaml keeps
+# its existing home unchanged (ADR 0077, backward-compat invariant).
+PROVIDERS_YAML = CONFIG_DIR / "providers.yaml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -39,17 +42,28 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_domain_config(domain: str, group: str = "finops") -> dict[str, Any]:
-    """Return the config block for ``group.domain`` from ``finops.yaml`` (if present).
+    """Return the config block for a domain from its config file (if present).
 
-    Shape: ``{<group>: {<domain>: {provider: ..., coefficients: {...}, formulas: {...}}}}``.
+    Two layouts, one function (ADR 0077):
+
+    * ``group == "finops"`` — nested ``{finops: {<domain>: {...}}}`` in ``finops.yaml`` (unchanged, so
+      existing finops users are unaffected).
+    * any other group — a flat top-level ``{<domain>: {...}}`` block in ``providers.yaml`` (the home
+      for platform domains: ``placement``, ``drift``, ``promotion``, …).
+
+    A block carries ``{provider: ..., coefficients: {...}, formulas: {...}}``.
     """
-    data = _load_yaml(FINOPS_YAML)
-    block = data.get(group, {})
-    if isinstance(block, Mapping):
-        domain_block = block.get(domain, {})
-        if isinstance(domain_block, Mapping):
-            return dict(domain_block)
-    return {}
+    if group == "finops":
+        data = _load_yaml(FINOPS_YAML)
+        block = data.get(group, {})
+        if isinstance(block, Mapping):
+            domain_block = block.get(domain, {})
+            if isinstance(domain_block, Mapping):
+                return dict(domain_block)
+        return {}
+    data = _load_yaml(PROVIDERS_YAML)
+    domain_block = data.get(domain, {})
+    return dict(domain_block) if isinstance(domain_block, Mapping) else {}
 
 
 def resolve_provider(

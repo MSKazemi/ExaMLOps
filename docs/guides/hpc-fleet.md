@@ -92,10 +92,10 @@ Re-probing an already-approved cluster refreshes its capabilities but never sile
 de-authorizes it. SSH keys are referenced by path (and fingerprinted for the audit trail),
 never inlined.
 
-**Dashboard.** The Facility console shows a **Fleet** panel with every cluster and its
-state; admins get inline **Approve** / **Reject** actions
-(`POST /api/v1/facility/fleet/{name}/approve|reject`, admin-gated, audited). Viewers see the
-list read-only.
+**Dashboard.** The Facility console shows a **Fleet** panel with every cluster, its state,
+and live capacity (idle/total GPUs, utilization %, GPU-hours used); admins get inline
+**Approve** / **Reject** actions (`POST /api/v1/facility/fleet/{name}/approve|reject`,
+admin-gated, audited). Viewers see the list read-only.
 
 Once a cluster is `ACTIVE`, exaMLOps resolves it into the `EXAMLOPS_HPC_*` environment the
 scheduler adapter already reads — so `exa pipeline run --cluster lxp` (Phase 35c) targets it

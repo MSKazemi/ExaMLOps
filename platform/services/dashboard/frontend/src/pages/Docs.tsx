@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { sanitizeMarkdown } from '@/lib/sanitize'
+import { sanitizeMarkdown, safeUrl } from '@/lib/sanitize'
 import { BookOpen, ChevronDown, ChevronRight, Search, FileText, ArrowUp, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -151,10 +151,11 @@ const mdComponents = {
     <td className="px-4 py-2.5 text-foreground/85">{children}</td>
   ),
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
-    const isExternal = href?.startsWith('http')
+    const safeHref = safeUrl(href ?? '')
+    const isExternal = safeHref.startsWith('http')
     return (
       <a
-        href={href}
+        href={safeHref}
         target={isExternal ? '_blank' : undefined}
         rel={isExternal ? 'noopener noreferrer' : undefined}
         className="font-medium text-primary underline underline-offset-4 decoration-primary/40 hover:decoration-primary transition-all inline-flex items-center gap-0.5"
@@ -173,7 +174,7 @@ const mdComponents = {
   ),
   img: ({ src, alt }: { src?: string; alt?: string }) => (
     <img
-      src={src}
+      src={safeUrl(src ?? '')}
       alt={alt ?? ''}
       className="rounded-xl border border-border max-w-full my-4 shadow-sm"
     />

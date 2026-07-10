@@ -35,8 +35,10 @@ from examlops.cli.commands import (
     namespace_cmd,
     pipeline,
     plugins_cmd,
+    policy_cmd,
     predict,
     production,
+    providers_cmd,
     quality_cmd,
     retrain,
     rollback_cmd,
@@ -204,6 +206,12 @@ app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
 app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
 app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
 app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
+app.add_typer(
+    providers_cmd.app, name="providers", help="Pluggable calculation providers (all domains)"
+)
+app.add_typer(
+    policy_cmd.app, name="policy", help="Policy-as-code — declarative governance for mutations"
+)
 
 app.command("ask", epilog=ask_cmd._EXAMPLES)(ask_cmd.ask)
 app.command("explain", epilog=explain_command._EXAMPLES)(explain_command.explain)

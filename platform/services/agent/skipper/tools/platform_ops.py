@@ -174,8 +174,10 @@ def get_drift_status(model_name: str = "") -> str:
         mean = sum(preds) / n
         std = math.sqrt(sum((p - mean) ** 2 for p in preds) / n)
         baseline = get_drift_baseline(model)
-        if baseline and baseline["std"] > 0:
-            z = abs(mean - baseline["mean"]) / baseline["std"]
+        b_std = (baseline or {}).get("std")
+        b_mean = (baseline or {}).get("mean")
+        if baseline and b_std and b_mean is not None:
+            z = abs(mean - b_mean) / b_std
             status = "CRITICAL" if z >= 3.0 else "WARNING" if z >= 2.0 else "OK"
         else:
             z, status = 0.0, "OK (no baseline)"
@@ -476,7 +478,7 @@ def trigger_auto_retrain(model_name: str = "") -> str:
         n = len(preds)
         mean = sum(preds) / n
         baseline = get_drift_baseline(mdl)
-        if baseline is None or baseline.get("std", 0) == 0:
+        if baseline is None or not baseline.get("std") or baseline.get("mean") is None:
             skipped.append(f"{mdl}: no baseline")
             continue
         z = abs(mean - baseline["mean"]) / baseline["std"]
@@ -485,7 +487,12 @@ def trigger_auto_retrain(model_name: str = "") -> str:
             continue
         if ar["last_triggered"]:
             last = datetime.datetime.fromisoformat(ar["last_triggered"])
-            elapsed = (datetime.datetime.utcnow() - last).total_seconds()
+            now = datetime.datetime.now(datetime.UTC)
+            # last_triggered may be naive (SQLite CURRENT_TIMESTAMP, UTC) or aware
+            # (an ISO string with offset) — normalise so the subtraction never raises.
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=datetime.UTC)
+            elapsed = (now - last).total_seconds()
             if elapsed < ar["cooldown_s"]:
                 skipped.append(f"{mdl}: cooldown {elapsed:.0f}/{ar['cooldown_s']}s")
                 continue
@@ -655,8 +662,10 @@ def diagnose_platform() -> str:
                 n = len(preds)
                 mean = sum(preds) / n
                 baseline = get_drift_baseline(model)
-                if baseline and baseline["std"] > 0:
-                    z = abs(mean - baseline["mean"]) / baseline["std"]
+                b_std = (baseline or {}).get("std")
+                b_mean = (baseline or {}).get("mean")
+                if baseline and b_std and b_mean is not None:
+                    z = abs(mean - b_mean) / b_std
                     if z >= 3.0:
                         findings.append(f"CRITICAL: {model} prediction drift z={z:.2f} (≥3σ)")
                     elif z >= 2.0:

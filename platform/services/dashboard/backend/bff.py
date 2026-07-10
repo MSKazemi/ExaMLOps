@@ -12,7 +12,7 @@ the same resilient behaviour by composing ``aggregate()``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 # A source is a zero-arg async callable returning its view fragment.
@@ -22,7 +22,7 @@ DEFAULT_TIMEOUT = 5.0
 
 
 async def aggregate(
-    sources: dict[str, Source], *, timeout: float = DEFAULT_TIMEOUT
+    sources: Mapping[str, Source], *, timeout: float = DEFAULT_TIMEOUT
 ) -> dict[str, Any]:
     """Run every source concurrently and merge results into one payload.
 

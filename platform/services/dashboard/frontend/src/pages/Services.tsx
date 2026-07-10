@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useContainers, useContainerAction, useMe, useConfig } from '@/lib/api'
+import { getToken } from '@/lib/auth'
 import { ContainerCard } from '@/components/ContainerCard'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { ContainerInfo, RestartSelfResponse } from '@/lib/containers'
@@ -49,9 +50,10 @@ function rewriteHost(url: string, requestHost: string): string {
 export function Services() {
   const { data: me } = useMe()
   const role = me?.role ?? "viewer"
-  const token = typeof window !== "undefined"
-    ? localStorage.getItem("auth_token")
-    : null
+  // Auth is stored as a JSON blob under `dashboard_auth` — read it via getToken()
+  // (the old direct `localStorage.getItem("auth_token")` was always null, so live
+  // container-log streaming went out unauthenticated and silently 401'd).
+  const token = getToken()
 
   const { data: configData } = useConfig()
   const config = configData ?? {}
@@ -63,19 +65,29 @@ export function Services() {
   const { mutate: triggerAction } = useContainerAction()
   const [reconnecting, setReconnecting] = useState(false)
 
+  // Track the reconnect poll interval so it's always torn down on unmount — the
+  // callback calls window.location.reload()/setState and must not run afterwards.
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => () => {
+    if (pollRef.current !== null) clearInterval(pollRef.current)
+  }, [])
+
   function pollUntilBack() {
+    if (pollRef.current !== null) clearInterval(pollRef.current)
     let attempts = 0
-    const iv = setInterval(async () => {
+    pollRef.current = setInterval(async () => {
       attempts += 1
       if (attempts > 30) {
-        clearInterval(iv)
+        if (pollRef.current !== null) clearInterval(pollRef.current)
+        pollRef.current = null
         setReconnecting(false)
         return
       }
       try {
         const r = await fetch("/api/health")
         if (r.ok) {
-          clearInterval(iv)
+          if (pollRef.current !== null) clearInterval(pollRef.current)
+          pollRef.current = null
           window.location.reload()
         }
       } catch {

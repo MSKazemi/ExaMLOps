@@ -92,6 +92,10 @@ export interface FleetCluster {
   requestedBy: string | null
   reason: string | null
   capabilities: { total_gpus?: number; total_nodes?: number; version?: string } | null
+  totalGpus: number
+  idleGpus: number
+  utilizationPct: number
+  gpuHoursUsed: number
   updatedAt: string | null
 }
 

@@ -148,6 +148,12 @@ def traffic(
     if staging is not None:
         rules["Staging"] = staging
 
+    negative = {alias: pct for alias, pct in rules.items() if pct < 0}
+    if negative:
+        bad = "  ".join(f"{alias}: {pct}" for alias, pct in negative.items())
+        _output.error(f"Traffic weights must be non-negative — got {bad}.")
+        raise typer.Exit(1)
+
     total = sum(rules.values())
     if total != 100:
         _output.error(

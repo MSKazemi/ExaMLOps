@@ -176,6 +176,36 @@ async def test_fleet_lists_clusters(client, fleet_db):
     c = body["clusters"][0]
     assert c["name"] == "lxp" and c["state"] == "PENDING"
     assert c["capabilities"]["total_gpus"] == 8
+    # No node snapshot → capacity falls back to declared capabilities (idle == total).
+    assert c["totalGpus"] == 8 and c["idleGpus"] == 8 and c["utilizationPct"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_fleet_capacity_from_node_snapshot_and_jobs(client, fleet_db):
+    # Seed a live node snapshot (half the GPUs allocated) + a completed GPU job.
+    conn = sqlite3.connect(fleet_db)
+    conn.executescript(
+        """
+        CREATE TABLE hpc_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, cluster TEXT, scheduler TEXT, node TEXT,
+            cpus INTEGER, memory_mb INTEGER, gpus INTEGER, gpu_model TEXT, state TEXT,
+            partition TEXT, captured_at TEXT
+        );
+        INSERT INTO hpc_nodes (cluster, scheduler, node, gpus, state) VALUES
+            ('lxp', 'flux', 'n1', 4, 'idle'),
+            ('lxp', 'flux', 'n2', 4, 'allocated');
+        UPDATE hpc_jobs SET run_seconds = 3600 WHERE scheduler = 'flux' AND gpus = 8;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/facility/fleet", headers={"Authorization": f"Bearer {token}"})
+    c = r.json()["clusters"][0]
+    assert c["totalGpus"] == 8 and c["idleGpus"] == 4  # from the snapshot, not capabilities
+    assert c["utilizationPct"] == 50.0
+    assert c["gpuHoursUsed"] == 8.0  # 8 GPUs × 3600s / 3600
 
 
 @pytest.mark.asyncio

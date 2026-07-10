@@ -1143,18 +1143,39 @@ def promote_task(
             f"({rule['metric']}={metric_val:.4f}, threshold={rule['threshold']})"
         )
 
-    # Roll the previous Production version into Archived (only when we
-    # actually replaced it, and only when it isn't the version we just promoted).
+    # Roll the previous Production version into Archived (only when we actually
+    # replaced it, only when it isn't the version we just promoted, and only when
+    # no other live alias (Canary/Staging) still points at it — otherwise the same
+    # version would carry both e.g. @Canary and @Archived, an inconsistent state
+    # that alias-based serving would still route as Canary.
     if (
         "Production" in set_aliases
         and previous_production is not None
         and previous_production != str(version)
     ):
+        still_referenced = False
         try:
-            client.set_registered_model_alias(model_id, "Archived", previous_production)
-            print(f"[pipeline] Archived previous {model_id} v{previous_production}")
+            rm = client.get_registered_model(model_id)
+            aliases_map = getattr(rm, "aliases", None) or {}
+            if isinstance(aliases_map, dict):
+                still_referenced = any(
+                    str(v) == previous_production and a != "Archived"
+                    for a, v in aliases_map.items()
+                )
         except Exception as exc:  # noqa: BLE001
-            print(f"[pipeline] Could not set @Archived on v{previous_production}: {exc}")
+            print(f"[pipeline] Could not check aliases before archiving: {exc}")
+
+        if still_referenced:
+            print(
+                f"[pipeline] Not archiving {model_id} v{previous_production} — "
+                "still referenced by another alias."
+            )
+        else:
+            try:
+                client.set_registered_model_alias(model_id, "Archived", previous_production)
+                print(f"[pipeline] Archived previous {model_id} v{previous_production}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[pipeline] Could not set @Archived on v{previous_production}: {exc}")
 
     if "Production" in set_aliases:
         _notify_ray_serve(model_id)

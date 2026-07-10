@@ -5,8 +5,15 @@ from datetime import UTC
 from auth import check_password, issue_token, require_role
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
+from security import RateLimiter, rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Brute-force gate on the one credential-checking endpoint (F16 R7). Per-client,
+# fixed-window; failed attempts count too, since the dependency runs before the
+# handler. Tests reset this between cases via the ``client`` fixture.
+LOGIN_LIMITER = RateLimiter(limit=10, window_seconds=60.0)
+_login_rate = rate_limit(LOGIN_LIMITER)
 
 
 class LoginRequest(BaseModel):
@@ -33,7 +40,7 @@ class MeResponse(BaseModel):
     description="Constant-time compare against viewer then admin password. "
     "Same 401 response shape on miss/empty to avoid timing/oracle hints.",
 )
-async def login(body: LoginRequest) -> LoginResponse:
+async def login(body: LoginRequest, _: None = Depends(_login_rate)) -> LoginResponse:
     role = check_password(body.password)
     if role is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password")

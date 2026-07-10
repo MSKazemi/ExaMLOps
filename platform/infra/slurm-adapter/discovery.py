@@ -182,7 +182,9 @@ def _to_mb(value: str) -> int | None:
     num = float(m.group(1))
     unit = m.group(2).upper()
     factor = {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}[unit]
-    return int(num * factor)
+    # Round (not truncate) so KB-reported memory doesn't collapse to 0/1 MB
+    # (e.g. ``2000K`` → 2 MB, not 1).
+    return round(num * factor)
 
 
 def expand_hostlist(spec: str) -> list[str]:
@@ -217,14 +219,22 @@ def expand_hostlist(spec: str) -> list[str]:
             hosts.append(part)
             continue
         prefix, ranges, suffix = m.group(1), m.group(2), m.group(3)
+        # A suffix may hold a second bracket group (multi-dimensional hostlists like
+        # ``rack[1-2]node[3-4]``). Recurse on each generated candidate so both
+        # dimensions expand instead of the second bracket surviving verbatim.
+        recurse = "[" in suffix
+
+        def _emit(name: str) -> None:
+            hosts.extend(expand_hostlist(name) if recurse else [name])
+
         for rng in ranges.split(","):
             if "-" in rng:
                 lo_s, hi_s = rng.split("-", 1)
                 width = len(lo_s)
                 for n in range(int(lo_s), int(hi_s) + 1):
-                    hosts.append(f"{prefix}{str(n).zfill(width)}{suffix}")
+                    _emit(f"{prefix}{str(n).zfill(width)}{suffix}")
             else:
-                hosts.append(f"{prefix}{rng}{suffix}")
+                _emit(f"{prefix}{rng}{suffix}")
     return hosts
 
 
@@ -329,7 +339,12 @@ class FluxProbe:
             except ValueError:
                 continue
             nodelist = fields[4] if len(fields) > 4 else ""
-            names = expand_hostlist(nodelist) or [f"{fields[0]}-group"] * max(nnodes, 0)
+            # When Flux reports a count but no nodelist, synthesise *distinct* names —
+            # identical names collide on the ``hpc_nodes`` primary key and make N nodes
+            # look like one, undercounting capacity/GPU headroom for placement.
+            names = expand_hostlist(nodelist) or [
+                f"{fields[0]}-group-{i}" for i in range(max(nnodes, 0))
+            ]
             per_cpu = ncores // len(names) if names else ncores
             per_gpu = ngpus // len(names) if names else ngpus
             for nm in names:
@@ -602,9 +617,11 @@ def queue_jobs(executor: RemoteExecutor, scheduler: str) -> list[dict]:
     Read-only. ``scheduler`` is ``flux`` or ``slurm``; anything else yields ``[]``.
     """
     if scheduler == "flux":
+        # Use a ``|`` delimiter (like squeue) so job names containing spaces don't
+        # shift every subsequent field and corrupt the parsed state/node count.
         res = _run(
             executor,
-            ["flux", "jobs", "-a", "--no-header", "-o", "{id} {name} {username} {state} {nnodes}"],
+            ["flux", "jobs", "-a", "--no-header", "-o", "{id}|{name}|{username}|{state}|{nnodes}"],
         )
         state_map = _FLUX_QUEUE_STATE
     elif scheduler == "slurm":
@@ -617,10 +634,13 @@ def queue_jobs(executor: RemoteExecutor, scheduler: str) -> list[dict]:
 
     jobs: list[dict] = []
     for line in _out(res).splitlines():
-        fields = line.split("|") if scheduler == "slurm" else line.split()
+        # Split from the right so a name containing ``|`` (rare) still leaves the
+        # trailing four fixed fields intact.
+        fields = line.rsplit("|", 4)
         if len(fields) < 5:
             continue
         job_id, name, user, state, nnodes = fields[:5]
+        nnodes = nnodes.strip()
         jobs.append(
             {
                 "job_id": job_id,

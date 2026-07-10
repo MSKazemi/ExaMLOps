@@ -100,6 +100,8 @@ def test_expand_hostlist():
     assert discovery.expand_hostlist("(null)") == []
     assert discovery.expand_hostlist("foo") == ["foo"]
     assert discovery.expand_hostlist("n[08-10],m5") == ["n08", "n09", "n10", "m5"]
+    # multi-dimensional hostlist: both bracket groups expand (not just the first).
+    assert discovery.expand_hostlist("r[1-2]n[3-4]") == ["r1n3", "r1n4", "r2n3", "r2n4"]
 
 
 def test_parse_slurm_gres():
@@ -114,6 +116,8 @@ def test_to_mb():
     assert discovery._to_mb("64G") == 64 * 1024
     assert discovery._to_mb("512000M") == 512000
     assert discovery._to_mb("bogus") is None
+    # KB memory rounds instead of truncating toward zero (2000K → 2 MB, not 1).
+    assert discovery._to_mb("2000K") == 2
 
 
 # ── Flux probe ───────────────────────────────────────────────────────────────────
@@ -246,11 +250,13 @@ def test_registered_probes_present():
 
 
 def test_queue_jobs_flux():
+    # queue_jobs asks flux for a ``|``-delimited format so names with spaces
+    # (e.g. "train JPCP") don't shift the state/node columns.
     ex = FakeExecutor(
         [
             (
                 ("flux", "jobs"),
-                _cc(0, "ƒAbC job1 alice RUN 2\nƒDeF job2 bob SCHED 1"),
+                _cc(0, "ƒAbC|job1|alice|RUN|2\nƒDeF|train JPCP|bob|SCHED|1"),
             )
         ]
     )
@@ -262,7 +268,10 @@ def test_queue_jobs_flux():
         "state": "RUNNING",
         "nodes": 2,
     }
+    # name with a space is parsed intact, and the trailing fields stay aligned.
+    assert jobs[1]["name"] == "train JPCP"
     assert jobs[1]["state"] == "PENDING"
+    assert jobs[1]["nodes"] == 1
 
 
 def test_queue_jobs_slurm():
