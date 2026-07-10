@@ -23,11 +23,8 @@ class Metrics:
     """Process-local counters + a bounded latency window for the dashboard's own requests."""
 
     def __init__(self, latency_window: int = 200):
-        self.requests = 0
-        self.errors = 0  # 5xx
-        self.client_errors = 0  # 4xx
-        self.rate_limit_hits = 0  # 429
-        self._latencies: deque[float] = deque(maxlen=latency_window)
+        self._latency_window = latency_window
+        self.reset()
 
     def record(self, status_code: int, latency_ms: float) -> None:
         self.requests += 1
@@ -54,7 +51,11 @@ class Metrics:
         }
 
     def reset(self) -> None:
-        self.__init__()
+        self.requests = 0
+        self.errors = 0  # 5xx
+        self.client_errors = 0  # 4xx
+        self.rate_limit_hits = 0  # 429
+        self._latencies: deque[float] = deque(maxlen=self._latency_window)
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float | None:

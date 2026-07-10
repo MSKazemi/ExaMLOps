@@ -41,7 +41,9 @@ function Fleet() {
             <th className="px-3 py-2 font-medium">Cluster</th>
             <th className="px-3 py-2 font-medium">Scheduler</th>
             <th className="px-3 py-2 font-medium">Host</th>
-            <th className="px-3 py-2 font-medium">GPUs</th>
+            <th className="px-3 py-2 font-medium">GPUs (idle/total)</th>
+            <th className="px-3 py-2 font-medium">Util %</th>
+            <th className="px-3 py-2 font-medium">GPU-hrs</th>
             <th className="px-3 py-2 font-medium">State</th>
             {admin && <th className="px-3 py-2 font-medium">Actions</th>}
           </tr>
@@ -52,7 +54,13 @@ function Fleet() {
               <td className="px-3 py-2 font-medium">{c.name}</td>
               <td className="px-3 py-2 text-muted-foreground">{c.scheduler ?? '—'}</td>
               <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{c.host ?? '—'}</td>
-              <td className="px-3 py-2 text-muted-foreground">{c.capabilities?.total_gpus ?? '—'}</td>
+              <td className="px-3 py-2 text-muted-foreground">
+                {c.totalGpus > 0 ? `${c.idleGpus}/${c.totalGpus}` : '—'}
+              </td>
+              <td className="px-3 py-2 text-muted-foreground">
+                {c.totalGpus > 0 ? `${c.utilizationPct}%` : '—'}
+              </td>
+              <td className="px-3 py-2 text-muted-foreground">{c.gpuHoursUsed || '—'}</td>
               <td className="px-3 py-2">
                 <StatusPill status={clusterStateTone(c.state)} label={c.state} />
               </td>

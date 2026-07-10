@@ -56,7 +56,12 @@ async def list_approvals(
             ) from exc
 
     if not resp.is_success:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        # Don't forward the raw upstream body to the client — surface a generic
+        # message and log the detail server-side instead of leaking internals.
+        log.warning(
+            "Control Plane /approvals returned %s: %s", resp.status_code, resp.text[:500]
+        )
+        raise HTTPException(status_code=resp.status_code, detail="Control Plane returned an error")
     return resp.json()
 
 

@@ -108,8 +108,11 @@ def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
     target = cluster
     if cluster == "auto":
         from examlops.hpc_placement import ResourceAsk, choose_cluster
+        from examlops.hpc_placement_providers import resolve_placement_score_fn
 
-        result = choose_cluster(ResourceAsk(gpus=gpus), active_clusters_with_inventory())
+        result = choose_cluster(
+            ResourceAsk(gpus=gpus), active_clusters_with_inventory(), resolve_placement_score_fn()
+        )
         if result.cluster is None:
             _output.error(f"Auto-placement found no cluster: {result.reason}")
             return False
@@ -416,10 +419,27 @@ def promote(
         if isinstance(metrics_list, list)
         else metrics_list
     )
-    metric_val = metrics.get(metric)
-    if metric_val is None:
+    raw_metric_val = metrics.get(metric)
+    if raw_metric_val is None:
         _output.error(
             f"Metric '{metric}' not found in run {run_id}. Available: {list(metrics.keys())}"
+        )
+        return
+
+    # MLflow serialises special values as the JSON strings "NaN"/"Infinity"; coerce to
+    # float so comparison and formatting don't raise on a non-numeric metric value.
+    try:
+        metric_val = float(raw_metric_val)
+    except (TypeError, ValueError):
+        _output.error(
+            f"Metric '{metric}' has a non-numeric value {raw_metric_val!r} in run {run_id}; "
+            "cannot evaluate the promotion threshold."
+        )
+        return
+    if metric_val != metric_val or metric_val in (float("inf"), float("-inf")):  # NaN/Inf
+        _output.error(
+            f"Metric '{metric}' is {raw_metric_val} (NaN/Inf) in run {run_id}; "
+            "refusing to promote on a degenerate metric."
         )
         return
 
@@ -435,6 +455,12 @@ def promote(
 
     if not passes:
         _output.ok(f"Not promoted: {model} v{version}: {status_str}  (threshold not met)")
+        return
+
+    if not _output.confirm(
+        f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
+    ):
+        _output.info("Cancelled.")
         return
 
     try:

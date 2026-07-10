@@ -603,6 +603,8 @@ exa --json pipeline validate-model JPCP                       # machine-readable
 
 Promote a model alias when a metric threshold passes (metric-gated gate). Use `--if-<metric>-<op> <value>` to specify the threshold. Supported operators: `lt`, `gt`, `lte`, `gte`.
 
+Because it writes the live `Production` alias, `promote` prompts for confirmation before the change (auto-confirmed under `--yes`, `--json`, or a non-interactive/CI stdin), writes an audit event, and refuses to promote on a degenerate (`NaN`/`Infinity`) metric value.
+
 ```bash
 exa pipeline promote jpcp --if-rmse-lt 5.0                     # promote Staging → Production if RMSE < 5.0
 exa pipeline promote jpcp --if-rmse-lt 5.0 --dry-run           # show outcome without promoting

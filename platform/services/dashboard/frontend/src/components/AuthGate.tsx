@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Zap, KeyRound } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
 import seanergysLogo from '@/assets/seanergys.jpg'
@@ -9,6 +9,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // Proactively log the user out when the token expires, even on a pure-realtime
+  // page that never fires an apiFetch. getAuth() drops the expired blob, so
+  // re-reading it returns null and the gate falls back to the login screen.
+  useEffect(() => {
+    if (!auth) return
+    const msLeft = new Date(auth.expiresAt).getTime() - Date.now()
+    const t = setTimeout(() => setAuthState(getAuth()), Math.max(0, msLeft))
+    return () => clearTimeout(t)
+  }, [auth])
 
   if (auth) return <>{children}</>
 

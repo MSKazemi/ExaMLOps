@@ -14,7 +14,13 @@ replace :func:`headroom_score` without touching the selection loop.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+
+# A scorer maps (ask, capacity-dict) → a float; higher = better placement. The built-in default is
+# :func:`headroom_score`; a pluggable provider can supply another (ADR 0077) without editing this
+# module, which stays pure/offline (the caller resolves the provider and injects the callable).
+ScoreFn = Callable[["ResourceAsk", dict], float]
 
 
 @dataclass
@@ -47,15 +53,23 @@ def node_capacity(nodes: list[dict]) -> dict:
 
 
 def _effective_capacity(cluster: dict) -> dict:
-    """Capacity from the node snapshot, falling back to declared capabilities."""
+    """Capacity from the node snapshot, falling back to declared capabilities.
+
+    Also passes through any *extra scalar* capability fields (e.g. ``carbon_intensity``,
+    ``cost_per_gpu_hour``) that aren't part of the standard capacity keys, so a pluggable placement
+    formula (ADR 0077) can score on them — carbon-/cost-aware placement with no core change.
+    """
+    caps = cluster.get("capabilities") or {}
     cap = node_capacity(cluster.get("nodes") or [])
-    if cap["total_nodes"] == 0 and cluster.get("capabilities"):
-        caps = cluster["capabilities"]
+    if cap["total_nodes"] == 0 and caps:
         cap["total_gpus"] = caps.get("total_gpus", 0) or 0
         cap["total_nodes"] = caps.get("total_nodes", 0) or 0
         # No live state — assume declared capacity is available.
         cap["idle_gpus"] = cap["total_gpus"]
         cap["idle_nodes"] = cap["total_nodes"]
+    for key, value in caps.items():
+        if key not in cap and isinstance(value, (int, float)) and not isinstance(value, bool):
+            cap[key] = value
     return cap
 
 
@@ -73,13 +87,19 @@ def headroom_score(ask: ResourceAsk, cap: dict) -> float:
     return (cap["idle_gpus"] - ask.gpus) * 100 + (cap["idle_nodes"] - ask.nodes)
 
 
-def choose_cluster(ask: ResourceAsk, clusters: list[dict]) -> PlacementResult:
-    """Choose the least-loaded ACTIVE cluster that can satisfy ``ask``.
+def choose_cluster(
+    ask: ResourceAsk, clusters: list[dict], score_fn: ScoreFn | None = None
+) -> PlacementResult:
+    """Choose the best ACTIVE cluster that can satisfy ``ask`` under a scoring policy.
 
     ``clusters`` items: ``{name, scheduler, capabilities: {...}|None, nodes: [ {...} ]}``.
-    Returns a :class:`PlacementResult` with the chosen cluster (or ``None``) plus a scored,
-    human-readable candidate list for transparency.
+    ``score_fn`` is the placement policy: it maps ``(ask, capacity)`` → a float (higher = better).
+    When ``None`` it defaults to :func:`headroom_score` (least-loaded), so behaviour is unchanged
+    unless a caller injects a pluggable provider's scorer (ADR 0077). Returns a
+    :class:`PlacementResult` with the chosen cluster (or ``None``) plus a scored, human-readable
+    candidate list for transparency.
     """
+    score = score_fn or headroom_score
     candidates: list[dict] = []
     for c in clusters:
         cap = _effective_capacity(c)
@@ -89,7 +109,7 @@ def choose_cluster(ask: ResourceAsk, clusters: list[dict]) -> PlacementResult:
                 "name": c["name"],
                 "scheduler": c.get("scheduler"),
                 "fits": fits,
-                "score": headroom_score(ask, cap) if fits else float("-inf"),
+                "score": score(ask, cap) if fits else float("-inf"),
                 "idle_gpus": cap["idle_gpus"],
                 "total_gpus": cap["total_gpus"],
                 "idle_nodes": cap["idle_nodes"],

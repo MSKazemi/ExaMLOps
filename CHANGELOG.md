@@ -7,6 +7,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **Programmable MLOps — least-privilege agent writes (INC-4; ADR 0082 layer 2).** Beyond the coarse
+  `EXAMLOPS_MCP_ALLOW_WRITES` switch, every mutating MCP tool (`trigger_retrain`, `hpc_approve_cluster`)
+  now passes the `agent_write` policy (ADR 0079) via `_agent_write_gate(action_kind, context)` before
+  acting — so an operator can author "agents may retrain, nothing else" as a `policy.yaml` rule.
+  `require_approval` is treated as *disallowed for an agent* (no human at the tool-call boundary); a
+  `deny` is refused before any control-plane call. Policy unavailable never blocks (the write-gate has
+  already applied). Backward compatible: no policy ⇒ allow.
+- **Programmable MLOps — policy-as-code decision point (INC-3; ADR 0079).** Governance is now
+  declarative: author rules in `~/.config/examlops/policy.yaml` (`action` + optional `when` condition
+  + `effect` = `allow`/`deny`/`require_approval`) and every mutating op consults
+  `examlops.policy.decide(action, context)` before acting. `exa retrain` is the first gate — a `deny`
+  rule blocks it, a `require_approval` rule forces the confirmation. Conditions are evaluated with the
+  **sandboxed** `simpleeval` tier (trust tier T2, ADR 0081 — no `eval`/`exec` of config; attribute/
+  dunder access rejected). Every decision is written to `audit_events` (EU AI Act Art. 12 alignment),
+  and audit failure never blocks the op. New `exa policy list` / `exa policy test <action> --set k=v`
+  to inspect and dry-run rules. **Backward compatible:** no policy file (or no matching rule) ⇒
+  `allow`, so existing Phase-29 confirms and the approval gate are unchanged; policies are additive
+  constraints. Guide `docs/guides/programmable-mlops.md`.
+- **Programmable MLOps — stable `examlops` Python SDK facade (INC-2; ADR 0078).** A small, typed,
+  semver'd public surface (`examlops.status()`, `examlops.place()`, `examlops.list_providers()`,
+  `examlops.resolve_provider()`, `examlops.__version__`, `examlops.api_version()`) that wraps existing
+  internals so the CLI, MCP tools, and third-party code drive **one** code path. `exa status` and
+  `exa hpc place` now render *through* the SDK (no duplicated logic). Returns typed objects
+  (`PlatformStatus`/`ServiceHealth`/`PlacementResult`), not bare dicts; all heavy imports are lazy (no
+  import cycle). Side benefit: `sdk.status()` degrades gracefully on any transport failure (socket
+  reset/timeout), so `exa status` no longer crashes when the control plane is unreachable. Anything not
+  exported is `_private` (SemVer + ≥1-minor deprecation window; Hyrum's-Law hygiene — small surface).
+- **Programmable MLOps — pluggable fleet placement (INC-1 of the programmable-MLOps program; ADR 0077).**
+  Placement scoring is now a **provider**, generalizing the finops provider substrate (ADR 0074) to its
+  first non-finops domain — proving one uniform extension model. Change *how the fleet places jobs*
+  (carbon-aware, cost-aware, fair-share) with **zero core edits**: a declarative formula in
+  `~/.config/examlops/providers.yaml` (`placement:` block, sandboxed via `simpleeval`), a `pip`-installed
+  plugin under the `exa.providers.placement` entry-point group, or the built-in **`least-loaded`** default
+  (byte-identical to the legacy `headroom_score`). `choose_cluster` gains an optional injected scorer
+  (`hpc_placement_providers.resolve_placement_score_fn`), wired into `exa hpc place --placement-provider`,
+  `exa pipeline run --cluster auto`, and the `hpc_place` MCP tool. New `exa providers list [--domain]`
+  surfaces every domain's providers (builtin/plugin/config + load status). A cluster's declared scalar
+  `capabilities` (e.g. `carbon_intensity`) pass through to formulas. Graceful degradation: a broken
+  provider falls back to `least-loaded`. Guide: `docs/guides/programmable-mlops.md`; design:
+  `design/adr/0076`–`0082`, `design/vision/{ideas,library,futures,specs}/`; plan:
+  `.claude/plans/programmable-mlops/`.
+
 - **HPC fleet discovery — auto-detect the scheduler and enumerate resources (Phase 35a, read-only).**
   New `exa hpc` command group answers "which scheduler runs here, what nodes/GPUs does it have, and are
   they online" *without connecting a workload*: `exa hpc detect [host]` probes a candidate login node with
@@ -83,6 +125,88 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `exa models cost --record` computes cost via the active provider; select a rate card with `[finops.cost]`
   in `finops.yaml` / `EXAMLOPS_COST_PROVIDER` / an `exa.providers.cost` plugin / an inline formula. New
   `exa finops cost providers`. Same substrate, no substrate change — carbon and cost share it.
+
+### Fixed
+
+- **Platform-wide feature audit — correctness, safety and CI-gate fixes.** A systematic audit of the
+  shipped features surfaced and fixed the following:
+  - **Dashboard type-checking (CI gate):** `bff.aggregate()` now accepts `Mapping` (covariant) instead of
+    `dict` so view-source registries type-check, and `selfobs.Metrics.reset()` resets fields explicitly
+    instead of the unsound `self.__init__()` call. `make typecheck`/CI mypy is green again.
+  - **Dashboard storage tests (CI gate):** `test_storage.py` (the MinIO/S3 gallery layer) failed under the
+    current `moto`/`aiobotocore` versions (`'MockRawResponse' object has no attribute 'raw_headers'`). A
+    scoped `moto`→`aiobotocore` compatibility shim in the dashboard test conftest adapts moto's sync stubber
+    output to the async `AioAWSResponse` shape, restoring real coverage; the `--ignore=tests/test_storage.py`
+    workaround was removed from `make preflight`.
+  - **Dashboard SSE cross-tenant leak:** `/api/v1/stream` derived the caller's tenant with
+    `getattr(claims_dict, "tenant")`, which on a dict always returns `None` and silently disabled the
+    per-tenant event filter. Now reads `claims.get("tenant")`.
+  - **`exa mcp` `list_models`:** picked the "latest" version by lexicographic string compare (reporting
+    `"9"` as newer than `"10"`); now compares numerically. Also hardened against missing keys per the
+    module's structured-envelope contract.
+  - **`exa pipeline promote`:** crashed with a `ValueError` when a run logged a `NaN`/`Infinity` metric
+    (MLflow serialises these as strings); now coerces to float and refuses to promote on a degenerate
+    metric. Added a confirmation prompt before the live Production-alias write (auto-yes under
+    `--yes`/`--json`/CI), matching the Phase-29 safety pattern its peers already follow.
+  - **`exa mcp trigger_retrain`:** agent-initiated retrains now write a `retrain_triggered` audit event,
+    closing the audit gap versus `exa retrain` and `hpc_approve_cluster`.
+  - **`exa serve traffic`:** rejects negative weights (previously `--production 150 --canary -50` passed the
+    sum-to-100 check and persisted a nonsensical rule).
+  - **`exa config set` (fallback TOML writer):** escapes `"`/`\`/control chars so tokens or paths containing
+    them round-trip through `tomllib` instead of writing an unparseable config (only the no-`tomli_w` path).
+  - **`exa docs --out`:** creates missing parent directories and reports write errors cleanly instead of an
+    unhandled `FileNotFoundError`.
+  - **`exa approvals reject`:** sends `{"reason": ""}` instead of `{"reason": null}` when `--reason` is
+    omitted, consistent with the audit record.
+  - **Dashboard `/auth/login` brute-force gate:** the one credential-checking endpoint now enforces a
+    per-client rate limit (10/min → 429 with `Retry-After`), reusing the existing F16 `RateLimiter`.
+  - **Control-plane webhooks:** a non-string `ref` in a GitLab/GitHub push webhook body (e.g. `{"ref": null}`)
+    crashed the handler with an uncaught 500 (`AttributeError` on `ref.endswith`); it now returns a clean skip.
+  - **Ray Serve routing:** `POST /predict/JPCP` (canonical uppercase name) 404'd because the hot set is keyed
+    on the lowercase MLflow name; lookups are now case-tolerant. Non-numeric features now return `422` (client
+    error) instead of an opaque `500` that also polluted the error-rate metric.
+  - **Ray Serve auto-reload:** a transient MLflow blip during a background poll no longer evicts a healthy
+    model from rotation — the last-known-good entry is kept unless the alias is genuinely gone.
+  - **HPC Flux adapter:** completed jobs whose eventlog serialises `"status": 0` (valid JSON, with a space)
+    were misclassified `FAILED`; the eventlog is now parsed as JSON. Flux queue parsing uses a `|` delimiter
+    so job names with spaces don't shift the state/node columns, and `list_nodes` synthesises *distinct* node
+    names when Flux reports a count but no nodelist (identical names collided on the `hpc_nodes` key).
+  - **HPC discovery parsing:** `expand_hostlist` now expands multi-dimensional hostlists (`rack[1-2]node[3-4]`)
+    instead of leaving the second bracket literal; `_to_mb` rounds KB memory instead of truncating to 0/1 MB.
+  - **Skipper `platform_ops`:** drift-baseline access is guarded (missing `std`/`mean` keys no longer raise
+    `KeyError`), and the auto-retrain cooldown subtraction is timezone-robust (handles naive + aware
+    timestamps) rather than latently crashing on a format mismatch.
+  - **Skipper `memory_admin`:** `main()` now closes the SQLite connection it opens (was leaked every run).
+  - **Ray Serve hot-set data race:** the background reload poller and request threads both mutate/iterate
+    `_hot`/`_version_cache`; a `threading.RLock` now guards the multi-step sequences (snapshot-before-iterate
+    in `/health`/`/models`/alias-scan, the LRU eviction loop, reload swaps) so a poll can no longer trigger
+    `RuntimeError: dictionary changed size during iteration`. Slow MLflow loads stay outside the lock.
+  - **Dashboard frontend — live container logs never authenticated:** `Services` read the JWT from a
+    non-existent `localStorage` key (`auth_token`) so every log stream went out unauthenticated and silently
+    401'd; it now uses `getToken()` (the `dashboard_auth` blob). The reconnect poll interval is also tracked in
+    a ref and cleared on unmount (was leaking + could `reload()` from an unmounted component).
+  - **Dashboard frontend — expired session never cleared on realtime pages:** a 401/403 on the SSE stream
+    (`useRealtime`) looped "reconnecting" forever; it now clears auth and reloads like `apiFetch`. `AuthGate`
+    also proactively logs out on token expiry via a timer instead of only reacting to the next API 401.
+  - **Dashboard frontend — pipeline poll timeout could never fire:** the `Datasets` status-poll effect listed
+    `pipelineStatus` in its deps and set it inside the interval, so every status transition reset the
+    `count >= 60` 5-minute cap; it's now keyed on `pipelineId` only.
+  - **Dashboard frontend — URL-sanitiser reliability + coverage:** `safeUrl` no longer shares a `g`-flagged
+    regex with `sanitizeMarkdown` (a stateful `.test()` could skip a match); the Docs markdown link/image
+    renderers now route `href`/`src` through `safeUrl`. Announcer timer is cleared on unmount.
+  - **Blocking I/O off the event loop:** several `async` handlers ran blocking work directly on the loop
+    thread, so one slow dependency could freeze the whole process. `list_containers` now offloads the blocking
+    Docker SDK call to an executor; the control-plane GitLab/GitHub webhooks run `_record_push_event` (blocking
+    SQLite + optional CI-trigger/auto-retrain HTTP) via `asyncio.to_thread`; and the dashboard BFF DB sources
+    run their `sqlite3` queries via `asyncio.to_thread` so `aggregate()`'s per-source timeout is actually
+    effective under a slow/locked `platform.db`.
+  - **Promotion lifecycle consistency:** `promote_task` no longer archives the previous Production version
+    when another live alias (Canary/Staging) still points at it — that produced a version carrying both
+    `@Canary` and `@Archived`, which alias-based serving would still route as Canary.
+  - **Control-plane `/status` hardening:** each concurrent service ping's `Future.result()` now has a hard
+    deadline (a ping that hangs below the socket layer can no longer pin a worker thread past its budget).
+  - **Dashboard approvals proxy:** the list endpoint no longer forwards the raw Control-Plane error body to
+    the client (logged server-side instead), avoiding upstream-internals disclosure.
 
 ## [0.28.1] — 2026-07-10
 

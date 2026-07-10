@@ -41,6 +41,7 @@ Env vars (all existing + new):
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import hmac as _hmac
@@ -53,6 +54,7 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -1144,10 +1146,19 @@ def platform_status() -> dict[str, Any]:
         f_prefect = pool.submit(_ping, f"{PREFECT_API_URL}/health")
         f_ray = pool.submit(_ping_json, f"{RAY_SERVE_URL}/models")
         f_dashboard = pool.submit(_ping, f"{DASHBOARD_URL}/api/health", 12.0)
-        mlflow_ok = f_mlflow.result()
-        prefect_ok = f_prefect.result()
-        ray_ok, ray_data = f_ray.result()
-        dashboard_ok = f_dashboard.result()
+
+        # Hard deadline on each result so a ping that hangs below the socket layer
+        # (connect never returns) can't pin a worker thread past the ping budget.
+        def _resolve(fut, default, deadline=15.0):
+            try:
+                return fut.result(timeout=deadline)
+            except FuturesTimeoutError:
+                return default
+
+        mlflow_ok = _resolve(f_mlflow, False)
+        prefect_ok = _resolve(f_prefect, False)
+        ray_ok, ray_data = _resolve(f_ray, (False, None))
+        dashboard_ok = _resolve(f_dashboard, False)
 
     ray_models: list[str] = (
         [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])] if ray_ok else []
@@ -1273,7 +1284,7 @@ async def webhook_gitlab(
     if not isinstance(payload, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be a JSON object")
     ref = payload.get("ref", "")
-    if not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
+    if not isinstance(ref, str) or not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
         return {"skipped": True, "reason": f"branch {ref!r} is not {MODELZOO_WATCH_BRANCH!r}"}
     commits = payload.get("commits", [])
     commit_sha = commits[0]["id"] if commits else payload.get("after", "")
@@ -1282,8 +1293,15 @@ async def webhook_gitlab(
     pushed_by = payload.get("user_name") or (
         commits[0].get("author", {}).get("name") if commits else "unknown"
     )
-    return _record_push_event(
-        commit_sha, MODELZOO_WATCH_BRANCH, pushed_by or "unknown", json.dumps(payload)
+    # _record_push_event does blocking SQLite writes and may fire a CI trigger /
+    # auto-retrain (blocking HTTP with retries) — run it off the event loop so a
+    # slow GitLab/Prefect call can't freeze the whole control plane.
+    return await asyncio.to_thread(
+        _record_push_event,
+        commit_sha,
+        MODELZOO_WATCH_BRANCH,
+        pushed_by or "unknown",
+        json.dumps(payload),
     )
 
 
@@ -1298,13 +1316,14 @@ async def webhook_github(request: Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body must be a JSON object")
     ref = payload.get("ref", "")
-    if not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
+    if not isinstance(ref, str) or not ref.endswith(f"/{MODELZOO_WATCH_BRANCH}"):
         return {"skipped": True, "reason": f"branch {ref!r} is not {MODELZOO_WATCH_BRANCH!r}"}
     head = payload.get("head_commit") or {}
     commit_sha = head.get("id", payload.get("after", ""))
     if not commit_sha:
         return {"skipped": True, "reason": "no commit SHA in payload"}
-    return _record_push_event(
+    return await asyncio.to_thread(
+        _record_push_event,
         commit_sha,
         MODELZOO_WATCH_BRANCH,
         (payload.get("pusher") or {}).get("name", "unknown"),

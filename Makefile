@@ -584,7 +584,7 @@ preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — 
 	@printf "$(BOLD)7/7 dashboard backend$(RESET)\n"
 	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
 	@cd platform/services/dashboard/backend && \
-	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q --ignore=tests/test_storage.py
+	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q
 	@$(MAKE) ci-infra
 	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
 	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"

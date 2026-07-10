@@ -44,18 +44,23 @@ async def _meta_source() -> dict[str, Any]:
     return {"service": "dashboard-bff", "api": "v1"}
 
 
+# sqlite3 is blocking; run each query in a worker thread so a slow/locked
+# platform.db can't stall the event loop (and defeat aggregate()'s per-source
+# timeout, which cannot interrupt sync code running on the loop thread).
 async def _traffic_source() -> dict[str, Any]:
-    row = _query_one("SELECT COUNT(*) AS c FROM traffic_rules")
+    row = await asyncio.to_thread(_query_one, "SELECT COUNT(*) AS c FROM traffic_rules")
     return {"models_with_rules": row["c"] if row else 0}
 
 
 async def _drift_source() -> dict[str, Any]:
-    row = _query_one("SELECT COUNT(DISTINCT model) AS c FROM drift_snapshots")
+    row = await asyncio.to_thread(
+        _query_one, "SELECT COUNT(DISTINCT model) AS c FROM drift_snapshots"
+    )
     return {"models_tracked": row["c"] if row else 0}
 
 
 async def _audit_source() -> dict[str, Any]:
-    row = _query_one("SELECT COUNT(*) AS c FROM audit_events")
+    row = await asyncio.to_thread(_query_one, "SELECT COUNT(*) AS c FROM audit_events")
     return {"total_events": row["c"] if row else 0}
 
 
@@ -94,7 +99,10 @@ async def stream(request: Request, channels: str = "*", user=Depends(_viewer)) -
     idle, and reports how many events were dropped under backpressure on disconnect.
     """
     patterns = _parse_channels(channels)
-    tenant = getattr(user, "tenant", None)
+    # ``user`` is the JWT claims dict from require_role — use .get(), not getattr
+    # (getattr on a dict always returns the default, silently disabling the
+    # per-tenant event filter and leaking every tenant's events onto the stream).
+    tenant = user.get("tenant") if isinstance(user, dict) else getattr(user, "tenant", None)
     sub = bus.subscribe(patterns, tenant=tenant)
 
     async def gen():

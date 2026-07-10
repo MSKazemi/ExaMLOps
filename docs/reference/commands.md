@@ -126,7 +126,7 @@ Live charts are visible in the Grafana **SeanerBUS Bridge** dashboard (`http://l
 | `exa pipeline run --env prod` | Run all pipelines using YAML registry with env overlay (`dev`/`staging`/`prod`) |
 | `exa pipeline run --env dev --dummy` | Run with dev overlay (loose thresholds, dummy data) |
 | `exa pipeline deploy --env prod` | Deploy one Prefect flow per model in the YAML registry, with env overlay |
-| `exa pipeline promote jpcp --if-rmse-lt 5.0` | Promote Staging → Production if RMSE < 5.0 (metric-gated) |
+| `exa pipeline promote jpcp --if-rmse-lt 5.0` | Promote Staging → Production if RMSE < 5.0 (metric-gated; confirms; audited) |
 | `exa pipeline promote --list` | List saved promotion rules |
 | `exa pipeline validate-model JPCP` | Latency smoke-test Staging alias (exit 1 on failure — CI gate) |
 | `exa pipeline validate-model JPCP --max-latency 0.5 --n 5` | Strict 500ms SLA, 5 requests |
@@ -262,6 +262,38 @@ sustainability reporting.
 table (the same GPU-hours `exa models cost` records) joined through `namespace_models`. Carbon
 is estimated as `kWh = gpu_hours × (TDP/1000) × PUE` and `gCO₂e = kWh × grid_intensity`, with
 documented, overridable defaults (400 W, PUE 1.5, 300 gCO₂e/kWh).
+
+## HPC Fleet
+
+Fleet layer over the scheduler abstraction: **discover** what a cluster offers, **connect** it
+under sysadmin approval, then **place**/schedule jobs on it. Discovery is read-only (it only
+*proposes* a config); no job runs on a cluster until a sysadmin approves it. See the guide at
+[`docs/guides/hpc-fleet.md`](../guides/hpc-fleet.md).
+
+| Command | Description |
+|---|---|
+| `exa hpc detect lxp-login` | Auto-detect the scheduler on a host (Flux/Slurm/unmanaged) and suggest a config — read-only |
+| `exa hpc nodes --host lxp-login` | List compute nodes with CPUs/memory/GPUs and normalized state |
+| `exa hpc nodes --save --cluster lxp` | Persist the node inventory snapshot to `hpc_nodes` |
+| `exa hpc gpus --host lxp-gpu01` | List GPU devices (model, memory, utilization, online) via `nvidia-smi` |
+| `exa hpc connect lxp-login --name lxp` | Probe + register a cluster as `PENDING` (cannot run jobs until approved) |
+| `exa hpc clusters` | List registered clusters and their approval state |
+| `exa hpc approve lxp` | Sysadmin: approve a cluster so jobs may be scheduled on it (audited) |
+| `exa hpc reject lxp --reason "wrong account"` | Sysadmin: reject a cluster (blocks scheduling; audited) |
+| `exa hpc place --gpus 4` | Show which ACTIVE cluster placement would choose for a resource ask |
+| `exa hpc queue --cluster lxp` | Live scheduler queue (`squeue` / `flux jobs`, normalized) |
+| `exa hpc jobs --model JPCP` | Tracked HPC submissions from `hpc_jobs` |
+| `exa hpc preflight lxp --gpus 4` | Fail-fast pre-submit checks (exit 1 on any failure — safe as a CI gate) |
+| `exa hpc capacity` | Per-cluster GPU capacity, utilization %, GPU-hours used and cost |
+| `exa pipeline run --model JPCP --dataset PM100Dataset --cluster lxp` | Run training on an approved cluster (refuses non-ACTIVE) |
+| `exa pipeline run --cluster auto --gpus 4 ...` | Let placement choose the cluster automatically |
+
+**How it works:** `clusters.yaml` (default `~/.config/examlops/clusters.yaml`, override
+`EXAMLOPS_HPC_REGISTRY`) holds the human-editable connection definition; the `hpc_clusters` table
+holds governance state (`PENDING`/`ACTIVE`/`REJECTED`) + audit. An ACTIVE cluster is resolved into
+the `EXAMLOPS_HPC_*` environment the scheduler adapter reads. Discovery is pluggable (a
+`SchedulerProbe` registry), so new backends (PBS/LSF/cloud) drop in without CLI changes. Fleet
+status, capacity, and admin approve/reject are also on the dashboard **Facility console**.
 
 ## `exa` CLI
 
@@ -582,6 +614,31 @@ myteam = "my_pkg.cli:app"
 ```
 
 Once the package is installed, its commands appear under `exa myteam …`. List discovered plugins and their load status with `exa plugins` (`--json` for machine output). Plugin loading is resilient — a broken plugin is reported but never crashes the CLI.
+
+## Programmable MLOps — providers & policy
+
+Swap *how the platform calculates and decides* things without editing core code (ADRs 0076–0082; guide `docs/guides/programmable-mlops.md`).
+
+**Calculation providers** — a swappable strategy per domain (cost, carbon, **placement**, later drift/promotion), authored as a built-in, an `exa.providers.<domain>` entry-point plugin, or a declarative formula in `~/.config/examlops/providers.yaml`:
+
+| Command | Description |
+|---|---|
+| `exa providers list` | List providers across every domain (builtin / entry-point / config + load status) |
+| `exa providers list --domain placement` | Just one domain |
+| `exa --json providers list` | Machine-readable (agents/scripts) |
+| `exa hpc place --gpus 4 --placement-provider expression` | Choose a cluster using a pluggable placement scorer |
+
+Set the active placement policy without touching code — a formula in `providers.yaml` (`placement:` block, e.g. `score: "idle_gpus*100 - carbon_intensity"`) or `EXAMLOPS_PLACEMENT_PROVIDER`.
+
+**Policy-as-code** — declarative governance for mutating operations (`~/.config/examlops/policy.yaml`; conditions run in a sandbox; every decision audited):
+
+| Command | Description |
+|---|---|
+| `exa policy list` | Show the policy rules currently loaded (action · condition · effect) |
+| `exa policy test retrain --set model=JPCP --set env=dev` | Dry-run the decision for an action + context (not audited) |
+| `exa policy test promote --set rmse_new=4.1 --set rmse_prod=5.0 --set env=dev` | Test a conditional rule |
+
+A rule is `{action, when?: <sandboxed expression>, effect: allow|deny|require_approval}`. With no policy file the effect is `allow` (backward compatible). `exa retrain` and the mutating MCP tools consult the policy before acting.
 
 ## Config contexts (multi-environment)
 

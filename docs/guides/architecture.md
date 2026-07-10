@@ -353,6 +353,13 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 
 **Framework extensibility** — `SeanergysFrameworkAdapter` abstracts the four operations (`fit`, `predict`, `save`, `load`, `log_mlflow`) so the pipeline + Ray Serve dispatch on `framework=<flavour>` (sklearn / pytorch / huggingface) without per-model special-casing. New frameworks plug in via `register_adapter()`.
 
+**Programmable MLOps — one uniform extension model (Phase 37, ADRs 0076–0082)** — every capability is extensible/governable as code or config, sharing the design DNA of `examlops.providers` (stable interface · builtin/entry-point/declarative sources · graceful degradation · two trust tiers). Five surfaces:
+- **Typed SDK** (`examlops/sdk/`) — a small, semver'd public facade (`examlops.status/place/list_providers/resolve_provider` + `__version__`/`api_version()`); the CLI and MCP tools call *through* it, so there is one code path. Anything not exported is `_private`.
+- **Extension registry** (`examlops.providers`, ADR 0077) — a swappable calculation provider per *domain* (cost, carbon, **placement**; drift/promotion next), authored as a built-in, an `exa.providers.<domain>` entry-point plugin, or a sandboxed `providers.yaml` formula. Placement (`hpc_placement_providers.py`) injects a resolved scorer into `choose_cluster`; default `least-loaded` is byte-identical to the legacy `headroom_score`.
+- **Policy-as-code** (`examlops/policy/`, ADR 0079) — declarative `policy.yaml` rules (`action` + optional sandboxed `when` + `effect`) evaluated by `policy.decide()` before every mutation; each decision audited to `audit_events`. `exa retrain` and the mutating MCP tools consult it; no file ⇒ `allow` (backward compatible).
+- **Agent-callable** (`examlops.mcp`, ADR 0082) — the MCP tools reuse the SDK code paths; mutating tools pass the `agent_write` policy (least privilege) beyond the `EXAMLOPS_MCP_ALLOW_WRITES` switch.
+- **Trust tiers** (ADR 0081) — T1 trusted plugin (arbitrary code, install-time trust) · T2 sandboxed `simpleeval` expression (no imports/attrs/I/O) · T3 gated mutation (read-only default + policy + audit). Full design in `design/adr/0076`–`0082`; guide `docs/guides/programmable-mlops.md`.
+
 **Control plane sits in front of Prefect** — clients and the dataplane never hold Prefect credentials directly. The control plane validates the request against `MODEL_REGISTRY` before scheduling a flow run, and the bearer-token gate on `POST /retrain` fails closed (503) when no token is configured.
 
 **Centralized logs** — Promtail tails Docker stdout for every container in the `examlops` compose project; Loki indexes by compose service name. No code change in any service.

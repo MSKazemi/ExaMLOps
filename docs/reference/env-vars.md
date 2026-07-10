@@ -56,6 +56,20 @@ The `exa` CLI also honours the standard endpoint/token vars (`CONTROL_PLANE_URL`
 
 ---
 
+## Programmable MLOps — providers & policy (Phase 37)
+
+Select which calculation provider a domain uses without editing code (ADR 0077). The generic pattern is `EXAMLOPS_<DOMAIN>_PROVIDER`, resolved as: `--provider`/`--placement-provider` flag → this env var → config `provider:` → registered default.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_PLACEMENT_PROVIDER` | `least-loaded` | Placement scoring provider (`least-loaded`, `expression`, or an `exa.providers.placement` plugin). Formula/coefficients read from `~/.config/examlops/providers.yaml` (`placement:` block). |
+| `EXAMLOPS_COST_PROVIDER` | `flat-rate` | Cost calculation provider (finops); config in `~/.config/examlops/finops.yaml`. |
+| `EXAMLOPS_CARBON_PROVIDER` | `green-ai-default` | Carbon calculation provider (finops); config in `finops.yaml`. |
+
+Governance is declarative via `~/.config/examlops/policy.yaml` (no env var — file presence is the switch). Rules gate mutating operations (`retrain`, `promote`, `connect_cluster`, `agent_write`); with no file the effect is `allow`. See `docs/guides/programmable-mlops.md`.
+
+---
+
 ## Pipeline
 
 | Variable | Default | Purpose |
@@ -91,6 +105,8 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_CONSTRAINT` | unset | Node constraint (`--constraint` / `--requires`) |
 | `EXAMLOPS_HPC_NTASKS` | `1` | Tasks per job |
 | `EXAMLOPS_HPC_PARTITION` / `_TIME` / `_NODES` / `_MEM` / `_CPUS` | fall back to `EXAMLOPS_SLURM_*` | Scheduler-neutral resource mirrors |
+| `EXAMLOPS_HPC_REGISTRY` | `~/.config/examlops/clusters.yaml` | HPC Fleet cluster-definition registry file (Phase 36) |
+| `EXAMLOPS_HPC_CLUSTER` | unset | Default fleet cluster for commands taking `--cluster` (Phase 36) |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | MLflow server endpoint for logging and model loading |
 | `MLFLOW_S3_ENDPOINT_URL` | `http://localhost:19000` | MinIO S3-compatible endpoint for MLflow artifact storage |
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |

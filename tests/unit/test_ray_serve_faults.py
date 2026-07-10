@@ -8,6 +8,7 @@ classifier; and the predict hard-timeout (504).
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -27,6 +28,7 @@ from serving.ray_serving import app as rs_app  # noqa: E402
 def _make_server() -> rs_app.MultiModelServer:
     cls = rs_app.MultiModelServer.func_or_class
     server = object.__new__(cls)
+    server._cache_lock = threading.RLock()
     server._hot = {}
     server._version_cache = OrderedDict()
     server._version_cache_size = 8

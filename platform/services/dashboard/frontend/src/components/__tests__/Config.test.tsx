@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Config } from '../../pages/Config'
 import { setAuth } from '@/lib/auth'
+
+/** Sections are collapsible and default collapsed; expand one by its header before querying. */
+async function expandSection(name: RegExp) {
+  fireEvent.click(await screen.findByRole('button', { name }))
+}
 
 const renderConfig = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -83,17 +88,21 @@ describe('Config page', () => {
     expect(screen.queryByRole('button', { name: /save/i })).toBeNull()
   })
 
-  it('renders password input for grafana_api_key with placeholder ********', async () => {
+  it('renders a masked password input for a stored secret (never exposes the value)', async () => {
     setAuth({ token: 't', role: 'admin', expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     renderConfig()
+    await expandSection(/credentials/i)
     const input = await screen.findByLabelText(/grafana api key/i) as HTMLInputElement
     expect(input.type).toBe('password')
-    expect(input.placeholder).toBe('********')
+    // A stored secret shows a "value is set" placeholder, not the secret itself.
+    expect(input.placeholder).toMatch(/stored/i)
+    expect(input.value).toBe('')
   })
 
   it('renders Not set placeholder for unset secrets', async () => {
     setAuth({ token: 't', role: 'admin', expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     renderConfig()
+    await expandSection(/credentials/i)
     const input = await screen.findByLabelText(/minio access key/i) as HTMLInputElement
     expect(input.placeholder).toBe('Not set')
   })
@@ -101,6 +110,7 @@ describe('Config page', () => {
   it('includes a minio_url field in the Endpoints section', async () => {
     setAuth({ token: 't', role: 'admin', expiresAt: new Date(Date.now() + 3600_000).toISOString() })
     renderConfig()
+    await expandSection(/service endpoints/i)
     expect(await screen.findByLabelText(/minio s3 api url/i)).toBeInTheDocument()
   })
 })

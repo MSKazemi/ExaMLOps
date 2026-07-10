@@ -287,6 +287,97 @@ HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'
 
 List the available cost providers (rate cards) — built-ins + entry-point plugins.
 
+## `exa hpc`
+
+HPC fleet — discover schedulers, nodes, and GPUs
+
+### `exa hpc approve`
+
+Sysadmin: approve a cluster so exaMLOps may schedule jobs on it.
+
+### `exa hpc capacity`
+
+Per-cluster GPU capacity, utilization, GPU-hours used and cost (ACTIVE clusters).
+
+### `exa hpc clusters`
+
+List registered clusters and their approval state.
+
+### `exa hpc connect`
+
+Probe a host and register it as a PENDING cluster (requires approval to use).
+
+- `--name, -n` — Cluster name (default: host)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force scheduler; default auto
+
+### `exa hpc detect`
+
+Auto-detect the scheduler on a host and suggest a configuration (read-only).
+
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+
+### `exa hpc gpus`
+
+List GPU devices — model, memory, utilization, online status (read-only).
+
+- `--host, -H` — Host to probe (omit = local)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force a probe; default auto
+
+### `exa hpc jobs`
+
+List tracked HPC submissions from platform.db (hpc_jobs).
+
+- `--model, -m` — Filter by model
+- `--limit, -n` — Max rows
+
+### `exa hpc nodes`
+
+List compute nodes with CPUs/memory/GPUs and normalized state (read-only).
+
+- `--host, -H` — Login-node host (omit = local)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force a probe (flux|slurm|nvidia-smi); default auto
+- `--save` — Persist the inventory snapshot to platform.db
+- `--cluster, -c` — Cluster name for --save
+
+### `exa hpc place`
+
+Show which ACTIVE cluster placement would choose for a resource ask.
+
+- `--gpus, -g` — GPUs the job needs
+- `--cpus` — CPUs the job needs
+- `--nodes, -N` — Nodes the job needs
+- `--placement-provider` — Placement scoring provider (default: least-loaded)
+
+### `exa hpc preflight`
+
+Fail-fast pre-submit checks against a cluster (exit 1 on any failure).
+
+- `--gpus, -g` — GPUs the job will request
+- `--nodes, -N` — Nodes the job will request
+
+### `exa hpc queue`
+
+Show the live scheduler queue for an ACTIVE cluster (read-only).
+
+- `--cluster, -c` — ACTIVE cluster to query
+
+### `exa hpc reject`
+
+Sysadmin: reject a cluster (blocks scheduling; auditable).
+
+- `--reason, -r` — Why the cluster is rejected
+
 ## `exa mcp`
 
 MCP server + Agent-to-Agent (A2A) surface
@@ -535,6 +626,8 @@ Run training pipeline(s) locally via Prefect.
 - `--backend, -b` — Dataset storage backend
 - `--env` — YAML registry env overlay
 - `--registry` — Path to model_registry.yaml
+- `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
+- `--gpus, -g` — GPUs to request (for --cluster auto placement)
 
 ### `exa pipeline validate`
 
@@ -553,6 +646,20 @@ Returns exit code 0 on PASS, 1 on FAIL. Safe to use as a gate before promotion.
 ## `exa plugins`
 
 List installed exa CLI plugins and whether each loaded successfully.
+
+## `exa policy`
+
+Policy-as-code — declarative governance for mutations
+
+### `exa policy list`
+
+List the policy rules currently loaded from policy.yaml.
+
+### `exa policy test`
+
+Evaluate the policy decision for an action + context (not audited).
+
+- `--set, -s` — Context key=value (repeatable), e.g. --set env=dev
 
 ## `exa predict`
 
@@ -584,6 +691,16 @@ Plan/execute production deploys, or inspect deploy history/status.
 ### `exa production verify`
 
 Verify production service health without changing state.
+
+## `exa providers`
+
+Pluggable calculation providers (all domains)
+
+### `exa providers list`
+
+List calculation providers across every domain (built-ins + entry-point plugins + config).
+
+- `--domain, -d` — Only this domain (default: all known domains)
 
 ## `exa retrain`
 

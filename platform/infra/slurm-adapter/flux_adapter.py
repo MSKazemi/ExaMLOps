@@ -19,6 +19,7 @@ Resource mapping (scheduler-neutral dict → flux flags):
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -188,8 +189,45 @@ class FluxAdapter(BasePollingAdapter):
         text = r.stdout
         if not text.strip():
             raise JobNotFoundError(f"Job {job_id} not found in flux jobs or eventlog")
+
+        # The Flux eventlog is JSONL — parse it rather than substring-matching, so a
+        # standard-spaced ``"status": 0`` (valid JSON) isn't mistaken for a failure.
+        saw_terminal = False
+        finish_status: int | None = None
+        exit_code: int | None = None
+        parsed_any = False
+        for raw_line in text.splitlines():
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                ev = json.loads(raw_line)
+            except ValueError:
+                continue
+            parsed_any = True
+            name = ev.get("name")
+            ctx = ev.get("context", {}) if isinstance(ev.get("context"), dict) else {}
+            if name in ("finish", "clean"):
+                saw_terminal = True
+            if name == "finish":
+                status_val = ctx.get("status")
+                if isinstance(status_val, (int, float)):
+                    finish_status = int(status_val)
+                    # Flux encodes a wait(2)-style status: exit code is the high byte.
+                    exit_code = finish_status >> 8 if finish_status >= 256 else finish_status
+
+        if parsed_any:
+            if not saw_terminal:
+                state = "RUNNING"
+            elif finish_status is None or finish_status == 0:
+                # No terminal-failure signal → treat as completed (don't invent failures).
+                state = "COMPLETED"
+            else:
+                state = "FAILED"
+            return {"state": state, "exit_code": exit_code, "start_time": None, "end_time": None}
+
+        # Fallback: no JSON parsed — keep the original coarse substring heuristic.
         state = "COMPLETED" if "clean" in text or "finish" in text else "RUNNING"
-        # A non-zero "finish" status word signals failure.
         if "finish" in text and '"status":0' not in text and "status=0" not in text:
             state = "FAILED"
         return {"state": state, "exit_code": None, "start_time": None, "end_time": None}

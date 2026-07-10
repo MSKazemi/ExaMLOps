@@ -152,13 +152,32 @@ def _write_raw(data: dict) -> None:
         CONFIG_PATH.write_text(_dumps_toml(data))
 
 
+def _toml_value(val: object) -> str:
+    """Serialise a scalar as a valid TOML value (fallback path only)."""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, (int, float)):
+        return str(val)
+    # TOML basic string: escape backslash and double-quote (and control chars)
+    # so tokens/paths/regexes containing " or \ round-trip through tomllib.
+    s = str(val)
+    escaped = (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
 def _dumps_toml(data: dict, prefix: str = "") -> str:
     """Minimal TOML writer (fallback when tomli_w is unavailable)."""
     lines: list[str] = []
     scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
     tables = {k: v for k, v in data.items() if isinstance(v, dict)}
     for key, val in scalars.items():
-        lines.append(f'{key} = "{val}"')
+        lines.append(f"{key} = {_toml_value(val)}")
     if scalars:
         lines.append("")
     for key, val in tables.items():

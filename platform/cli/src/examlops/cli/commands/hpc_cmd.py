@@ -430,13 +430,14 @@ def place(
     gpus: int = typer.Option(0, "--gpus", "-g", help="GPUs the job needs"),
     cpus: int = typer.Option(0, "--cpus", help="CPUs the job needs"),
     nodes: int = typer.Option(1, "--nodes", "-N", help="Nodes the job needs"),
+    provider: str | None = typer.Option(
+        None, "--placement-provider", help="Placement scoring provider (default: least-loaded)"
+    ),
 ):
     """Show which ACTIVE cluster placement would choose for a resource ask."""
-    from examlops.hpc_placement import ResourceAsk, choose_cluster
-    from examlops.hpc_registry import active_clusters_with_inventory
+    from examlops import sdk
 
-    ask = ResourceAsk(gpus=gpus, cpus=cpus, nodes=nodes)
-    result = choose_cluster(ask, active_clusters_with_inventory())
+    result = sdk.place(gpus=gpus, cpus=cpus, nodes=nodes, provider=provider)
     if _output.json_mode:
         _output.print_json(result.to_dict())
         return

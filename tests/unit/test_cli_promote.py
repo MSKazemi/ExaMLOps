@@ -49,6 +49,7 @@ def test_promote_passes_threshold():
         result = runner.invoke(
             app,
             [
+                "--yes",  # auto-confirm the promotion prompt
                 "pipeline",
                 "promote",
                 "jpcp",
@@ -97,6 +98,40 @@ def test_promote_dry_run_does_not_call_post():
         )
     assert result.exit_code == 0, result.output
     assert "dry" in result.output.lower()
+    mock_post.assert_not_called()
+
+
+def test_promote_confirm_declined_does_not_call_post():
+    # Without --yes and a "n" answer, the promotion must be cancelled (no alias write).
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post") as mock_post,
+    ):
+        result = runner.invoke(
+            app,
+            ["pipeline", "promote", "jpcp", "--if-rmse-lt", "5.0"],
+            input="n\n",
+        )
+    assert result.exit_code == 0, result.output
+    assert "cancel" in result.output.lower()
+    mock_post.assert_not_called()
+
+
+def test_promote_non_numeric_metric_errors_cleanly():
+    # A NaN/Infinity metric value must produce a clean error, not a formatting crash.
+    nan_run = {"run": {"data": {"metrics": {"rmse": "NaN"}, "params": {}, "tags": []}}}
+
+    def _get(url, **kwargs):
+        if "runs/get" in url:
+            return nan_run
+        return _patched_get(url, **kwargs)
+
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_get),
+        patch("examlops.cli.commands.pipeline._client.post") as mock_post,
+    ):
+        result = runner.invoke(app, ["--yes", "pipeline", "promote", "jpcp", "--if-rmse-lt", "5.0"])
+    assert result.exit_code != 0 or "nan" in result.output.lower()
     mock_post.assert_not_called()
 
 
