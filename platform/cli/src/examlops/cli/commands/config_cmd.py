@@ -3,7 +3,13 @@ from __future__ import annotations
 import typer
 
 from examlops.cli import _output
-from examlops.cli._config import CONFIG_PATH, load_config, write_config
+from examlops.cli._config import (
+    CONFIG_PATH,
+    list_contexts,
+    load_config,
+    set_active_context,
+    write_config,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -71,7 +77,46 @@ def set_config(
         ..., help="Config key (e.g. control_plane, ray_serve, control_plane_token)"
     ),
     value: str = typer.Argument(..., help="New value"),
+    context: str = typer.Option(
+        "", "--context", "-c", help="Write into a named context instead of the default"
+    ),
 ):
     """Set a single config key in ~/.config/examlops/config.toml."""
-    write_config({key: value})
-    _output.ok(f"Set {key} = {value}")
+    write_config({key: value}, context=context or None)
+    where = f" (context: {context})" if context else ""
+    _output.ok(f"Set {key} = {value}{where}")
+
+
+_EXAMPLES_CONTEXTS = "Examples:\n\n  exa config contexts\n\n  exa --json config contexts"
+_EXAMPLES_USE = (
+    "Examples:\n\n"
+    "  [dim]# Point config at a named environment[/dim]\n"
+    "  exa config use remote\n\n"
+    "  [dim]# Create + populate a context, then switch to it[/dim]\n"
+    "  exa config set control_plane http://<DATAPLANE_HOST>:18002 --context remote\n"
+    "  exa config use remote"
+)
+
+
+@app.command(epilog=_EXAMPLES_CONTEXTS)
+def contexts():
+    """List configured contexts (environments) and show the active one."""
+    names, active = list_contexts()
+    if _output.json_mode:
+        _output.print_json({"contexts": names, "active": active})
+        return
+    if not names:
+        _output.info(
+            "No named contexts. Create one with: exa config set <key> <val> --context <name>"
+        )
+        return
+    rows = [[("→ " if n == active else "  ") + n, "active" if n == active else ""] for n in names]
+    _output.print_table("Contexts", ["Name", ""], rows)
+
+
+@app.command(epilog=_EXAMPLES_USE)
+def use(name: str = typer.Argument(..., help="Context name to activate")):
+    """Switch the active context (environment)."""
+    set_active_context(name)
+    _output.ok(f"Active context is now [bold]{name}[/bold]")
+    _output.hint("Verify effective settings with: exa env")

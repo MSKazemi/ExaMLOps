@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -13,15 +13,74 @@ console = Console()
 err_console = Console(stderr=True)
 
 # Set by main.py callback flags
-json_mode: bool = False
+json_mode: bool = False  # True for any structured (non-table) format — gates existing branches
 yes_mode: bool = False  # --yes/-y skips confirmation prompts
+quiet_mode: bool = False  # --quiet/-q suppresses non-essential chatter (info/hint/detail)
+verbose_mode: bool = False  # --verbose/-v enables extra detail() output
+output_format: str = "table"  # one of: table | json | yaml | csv
 
 
 # ── Core output primitives ────────────────────────────────────────────────────
 
 
 def print_json(data: Any) -> None:
-    typer.echo(json.dumps(data, indent=2, default=str))
+    """Emit structured data in the active machine-readable format (json/yaml/csv).
+
+    Named ``print_json`` for historical reasons — it now dispatches on ``output_format``.
+    The whole CLI reaches structured output through this one function, so json/yaml/csv
+    support is uniform without touching individual commands.
+    """
+    if output_format == "yaml":
+        typer.echo(_to_yaml(data))
+    elif output_format == "csv":
+        typer.echo(_to_csv(data))
+    else:
+        typer.echo(json.dumps(data, indent=2, default=str))
+
+
+def _to_yaml(data: Any) -> str:
+    try:
+        import yaml
+
+        return yaml.safe_dump(
+            data, sort_keys=False, default_flow_style=False, allow_unicode=True
+        ).rstrip("\n")
+    except Exception:
+        # Fall back to JSON if PyYAML is unavailable or the data isn't representable.
+        return json.dumps(data, indent=2, default=str)
+
+
+def _to_csv(data: Any) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    if isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
+        fields: list[str] = []
+        for row in data:
+            for k in row:
+                if k not in fields:
+                    fields.append(k)
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for row in data:
+            writer.writerow({k: _scalar(v) for k, v in row.items()})
+    elif isinstance(data, dict):
+        row_writer = csv.writer(buf)
+        row_writer.writerow(["key", "value"])
+        for k, v in data.items():
+            row_writer.writerow([k, _scalar(v)])
+    else:
+        # Not tabular — degrade to JSON so no data is silently lost.
+        return json.dumps(data, default=str)
+    return buf.getvalue().rstrip("\n")
+
+
+def _scalar(value: Any) -> Any:
+    """Flatten nested values so CSV cells stay single-line."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, default=str)
+    return value
 
 
 def ok(message: str) -> None:
@@ -53,17 +112,24 @@ def warning(message: str) -> None:
 
 
 def info(message: str) -> None:
-    """Informational message — skipped in JSON mode."""
-    if json_mode:
+    """Informational message — skipped in JSON or quiet mode."""
+    if json_mode or quiet_mode:
         return
     console.print(f"[dim]{message}[/dim]")
 
 
 def hint(message: str) -> None:
-    """Suggest a next action — skipped in JSON mode."""
-    if json_mode:
+    """Suggest a next action — skipped in JSON or quiet mode."""
+    if json_mode or quiet_mode:
         return
     console.print(f"[dim italic]  → {message}[/dim italic]")
+
+
+def detail(message: str) -> None:
+    """Extra diagnostic detail — shown only under --verbose (never in JSON/quiet)."""
+    if json_mode or quiet_mode or not verbose_mode:
+        return
+    console.print(f"[dim]· {message}[/dim]")
 
 
 # ── Structured output ─────────────────────────────────────────────────────────
@@ -112,3 +178,57 @@ def spinner(message: str) -> Generator[None, None, None]:
         return
     with console.status(f"[bold blue]{message}[/bold blue]"):
         yield
+
+
+# ── Live / watch ───────────────────────────────────────────────────────────
+
+
+def watch_loop(render: Callable[[], None], interval: int) -> None:
+    """Re-run ``render`` every ``interval`` seconds, clearing the screen between frames.
+
+    Exits cleanly on Ctrl-C. No-op guard: callers should skip this in JSON mode.
+    """
+    import time
+
+    interval = max(1, int(interval))
+    try:
+        while True:
+            console.clear()
+            console.print(
+                f"[dim]● live — refreshing every {interval}s — press Ctrl-C to exit[/dim]"
+            )
+            render()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]stopped watching.[/dim]")
+
+
+# ── Visual primitives (graphics) ─────────────────────────────────────────────
+
+_SPARK_TICKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: Sequence[float]) -> str:
+    """Render a compact unicode sparkline from a numeric series (empty string if <2 points)."""
+    nums = [float(v) for v in values if v is not None]
+    if len(nums) < 2:
+        return ""
+    lo, hi = min(nums), max(nums)
+    span = hi - lo
+    if span == 0:
+        return _SPARK_TICKS[0] * len(nums)
+    out = []
+    last = len(_SPARK_TICKS) - 1
+    for n in nums:
+        idx = int((n - lo) / span * last)
+        out.append(_SPARK_TICKS[min(last, max(0, idx))])
+    return "".join(out)
+
+
+def bar(value: float, maximum: float, width: int = 20) -> str:
+    """Render a horizontal bar (``value`` of ``maximum``) using block characters."""
+    if maximum <= 0:
+        return "░" * width
+    frac = max(0.0, min(1.0, value / maximum))
+    filled = round(frac * width)
+    return "█" * filled + "░" * (width - filled)

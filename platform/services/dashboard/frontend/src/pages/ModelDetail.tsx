@@ -8,6 +8,8 @@ import {
   ChevronDown, Clock, Layers,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useQuery } from '@tanstack/react-query'
 import {
   apiFetch, useModelDetail, useUpdateDescription, useRevertDescription,
@@ -15,7 +17,10 @@ import {
   useModelVersions, useSetAlias, useDeleteAlias, type ModelVersion,
 } from '@/lib/api'
 import { rewriteImageUrls } from '@/lib/markdown'
+import { sanitizeMarkdown } from '@/lib/sanitize'
 import { isAdmin } from '@/lib/auth'
+import { CommentThread } from '@/components/CommentThread'
+import { ShareSnapshotButton } from '@/components/ShareSnapshotButton'
 import MDEditor from '@uiw/react-md-editor'
 import '@uiw/react-md-editor/markdown-editor.css'
 
@@ -108,9 +113,15 @@ function VersionsTab({ modelName, admin }: { modelName: string; admin: boolean }
   const [mutationError, setMutationError] = useState<string | null>(null)
   const mutatingRef = useRef(false)
 
-  if (isLoading) return <p className="text-sm text-muted-foreground p-4">Loading versions…</p>
+  if (isLoading) return (
+    <div className="space-y-2 p-4" aria-label="Loading versions">
+      {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+    </div>
+  )
   if (isError)   return <p className="text-sm text-red-500 p-4">Failed to load versions.</p>
-  if (!versions?.length) return <p className="text-sm text-muted-foreground p-4">No versions registered yet.</p>
+  if (!versions?.length) return (
+    <EmptyState icon={Layers} title="No versions registered yet" description="Trained versions of this model will appear here." />
+  )
 
   const handleConfirm = async () => {
     if (!confirmAction || mutatingRef.current) return
@@ -405,7 +416,7 @@ export function ModelDetail() {
 
   const fm = data.frontmatter
   const statusColors = fm.status ? STATUS_COLORS[fm.status] : null
-  const rewrittenBody = rewriteImageUrls(data.description.body, data.images)
+  const rewrittenBody = sanitizeMarkdown(rewriteImageUrls(data.description.body, data.images))
   const uploadedImages = data.images.filter(i => i.source === 'uploaded' && i.id)
 
   return (
@@ -807,6 +818,14 @@ export function ModelDetail() {
       </div>
 
       <CostHistory modelName={name ?? ''} />
+
+      {/* Collaboration: entity discussion + shareable snapshot (F22) */}
+      <div className="mt-6 flex items-center justify-end">
+        <ShareSnapshotButton />
+      </div>
+      <div className="mt-2">
+        <CommentThread entityType="models" entityId={name ?? ''} />
+      </div>
       </>}
     </div>
   )

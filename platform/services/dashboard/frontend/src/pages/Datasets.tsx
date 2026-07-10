@@ -3,6 +3,8 @@ import { ExternalLink, Database, AlertCircle, Settings2, Box, RefreshCw, Play } 
 import { useQueryClient } from '@tanstack/react-query'
 import { useModelzooDatasets, useModelzooStats, useModelRegistry, triggerPipeline, getPipelineStatus } from '@/lib/api'
 import type { ModelzooDataset } from '@/lib/api'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Link } from 'react-router-dom'
 import { isAdmin } from '@/lib/auth'
 
@@ -364,13 +366,9 @@ export function Datasets() {
 
       {/* ── Skeleton ── */}
       {isLoading && !notConfigured && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Loading datasets">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-32 rounded-xl animate-pulse"
-              style={{ background: 'var(--surface-1)', border: '1px solid var(--border-sm)' }}
-            />
+            <Skeleton key={i} className="h-32 w-full" />
           ))}
         </div>
       )}
@@ -413,13 +411,11 @@ export function Datasets() {
 
       {/* ── Empty ── */}
       {!isLoading && datasets?.length === 0 && stats?.configured && (
-        <div
-          className="rounded-xl p-8 text-center"
-          style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}
-        >
-          <Database className="w-8 h-8 text-muted-foreground/40 mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">No dataset files found in the repository.</p>
-        </div>
+        <EmptyState
+          icon={Database}
+          title="No datasets found"
+          description="No dataset files were discovered in the repository."
+        />
       )}
     </div>
   )

@@ -50,6 +50,29 @@ def test_drift_status_ok_within_threshold():
     assert "OK" in result.output
 
 
+def test_drift_status_json_includes_recent_series():
+    # The `recent` series backs the Trend sparkline and is useful to JSON consumers too.
+    _insert_snapshots([89.0 + i * 0.1 for i in range(30)])
+    result = runner.invoke(app, ["--json", "drift", "status", "JPCP"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert rows and "recent" in rows[0]
+    assert isinstance(rows[0]["recent"], list) and len(rows[0]["recent"]) > 1
+
+
+def test_drift_status_table_has_trend_column():
+    _insert_snapshots([89.0 + i * 0.1 for i in range(30)])
+    result = runner.invoke(app, ["drift", "status", "JPCP"])
+    assert result.exit_code == 0, result.output
+    assert "Trend" in result.output
+
+
+def test_drift_status_has_watch_option():
+    result = runner.invoke(app, ["drift", "status", "--help"])
+    assert result.exit_code == 0
+    assert "--watch" in result.output
+
+
 def test_drift_status_warning_beyond_2sigma():
     # Use a non-zero std baseline so z-score can be computed
     import random
@@ -77,17 +100,58 @@ def test_drift_baseline_stores_stats():
     assert "std" in b
 
 
-def test_drift_reset_clears_snapshots():
-    _insert_snapshots([89.0] * 10)
-    result = runner.invoke(app, ["drift", "reset", "JPCP"])
-    assert result.exit_code == 0, result.output
+def _snapshot_count(model="JPCP"):
     from examlops.platform_db import get_db
 
     with get_db() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM drift_snapshots WHERE model='JPCP'").fetchone()[
-            0
-        ]
-    assert count == 0
+        return conn.execute(
+            "SELECT COUNT(*) FROM drift_snapshots WHERE model=?", (model,)
+        ).fetchone()[0]
+
+
+def test_drift_reset_clears_snapshots():
+    _insert_snapshots([89.0] * 10)
+    # reset now guards a destructive delete behind a confirmation prompt.
+    result = runner.invoke(app, ["--yes", "drift", "reset", "JPCP"])
+    assert result.exit_code == 0, result.output
+    assert _snapshot_count() == 0
+
+
+def test_drift_reset_dry_run_deletes_nothing():
+    _insert_snapshots([89.0] * 10)
+    result = runner.invoke(app, ["drift", "reset", "JPCP", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "would clear 10" in result.output.lower()
+    assert _snapshot_count() == 10  # unchanged
+
+
+def test_drift_reset_abort_on_decline_keeps_snapshots():
+    _insert_snapshots([89.0] * 10)
+    result = runner.invoke(app, ["drift", "reset", "JPCP"], input="n\n")
+    assert result.exit_code == 0
+    assert "aborted" in result.output.lower()
+    assert _snapshot_count() == 10
+
+
+def test_drift_reset_writes_audit_event():
+    _insert_snapshots([89.0] * 10)
+    runner.invoke(app, ["--yes", "drift", "reset", "JPCP"])
+    from examlops.platform_db import get_db
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT action FROM audit_events WHERE action='drift_reset' AND target='JPCP'"
+        ).fetchone()
+    assert row is not None
+
+
+def test_drift_baseline_dry_run_writes_nothing():
+    _insert_snapshots([89.0 + i * 0.1 for i in range(20)])
+    result = runner.invoke(app, ["drift", "baseline", "JPCP", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    from examlops.platform_db import get_drift_baseline
+
+    assert get_drift_baseline("JPCP") is None  # nothing written
 
 
 def test_drift_status_json_mode():

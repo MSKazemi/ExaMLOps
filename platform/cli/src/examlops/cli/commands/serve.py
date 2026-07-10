@@ -121,6 +121,9 @@ def traffic(
     ),
     canary: int | None = typer.Option(None, "--canary", help="% traffic to Canary alias"),
     staging: int | None = typer.Option(None, "--staging", help="% traffic to Staging alias"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the split that would be applied without changing routing"
+    ),
 ):
     """Show or set traffic split across model aliases (must sum to 100)."""
     init_db()
@@ -153,6 +156,14 @@ def traffic(
         raise typer.Exit(1)
 
     split_str = "  ".join(f"{alias}: {pct}%" for alias, pct in rules.items())
+
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "model": model, "would_apply": rules})
+        else:
+            _output.info(f"Dry run — traffic split for {model} would be set to: {split_str}")
+        return
+
     if not _output.confirm(f"Apply traffic split for [bold]{model}[/bold]? ({split_str})"):
         _output.info("Cancelled.")
         return
@@ -236,8 +247,20 @@ _EXAMPLES_TRAFFIC_LIST = "Examples:\n\n  exa serve traffic-list\n\n  exa --json 
 
 
 @app.command("traffic-list", epilog=_EXAMPLES_TRAFFIC_LIST)
-def traffic_list():
+def traffic_list(
+    watch: bool = typer.Option(
+        False, "--watch", "-w", help="Live auto-refreshing view (Ctrl-C to exit)"
+    ),
+    interval: int = typer.Option(5, "--interval", help="Refresh interval in seconds for --watch"),
+):
     """Show traffic split configuration for all models."""
+    if watch and not _output.json_mode:
+        _output.watch_loop(_render_traffic_list, interval)
+        return
+    _render_traffic_list()
+
+
+def _render_traffic_list() -> None:
     import json as _json
 
     from examlops.platform_db import get_db as _get_db

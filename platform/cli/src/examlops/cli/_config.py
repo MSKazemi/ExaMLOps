@@ -7,15 +7,22 @@ from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".config" / "examlops" / "config.toml"
 
-_DEFAULTS = {
-    "control_plane_url": "http://localhost:18002",
-    "ray_serve_url": "http://localhost:18001",
-    "mlflow_url": "http://localhost:15000",
-    "prefect_url": "http://localhost:14200",
-    "dashboard_url": "http://localhost:18099",
-    "control_plane_token": "",
-    "dashboard_token": "",
-}
+# field name, TOML key, env var, default, is_secret
+_FIELDS: list[tuple[str, str, str, str, bool]] = [
+    ("control_plane_url", "control_plane", "CONTROL_PLANE_URL", "http://localhost:18002", False),
+    ("ray_serve_url", "ray_serve", "RAY_SERVE_URL", "http://localhost:18001", False),
+    ("mlflow_url", "mlflow", "MLFLOW_TRACKING_URI", "http://localhost:15000", False),
+    ("prefect_url", "prefect", "PREFECT_API_URL", "http://localhost:14200", False),
+    ("dashboard_url", "dashboard", "DASHBOARD_URL", "http://localhost:18099", False),
+    ("agent_url", "agent", "AGENT_URL", "http://localhost:18004", False),
+    ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
+    ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
+]
+
+_URL_KEYS = {"control_plane", "ray_serve", "mlflow", "prefect", "dashboard", "agent"}
+
+# Kept for backward compatibility with callers importing _DEFAULTS.
+_DEFAULTS = {toml_key: default for _, toml_key, _, default, _ in _FIELDS}
 
 
 @dataclass
@@ -25,62 +32,140 @@ class Config:
     mlflow_url: str = "http://localhost:15000"
     prefect_url: str = "http://localhost:14200"
     dashboard_url: str = "http://localhost:18099"
+    agent_url: str = "http://localhost:18004"
     control_plane_token: str = ""
     dashboard_token: str = ""
 
 
-def load_config() -> Config:
+def _read_raw() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    with open(CONFIG_PATH, "rb") as f:
+        return tomllib.load(f)
+
+
+def active_context(raw: dict | None = None) -> str | None:
+    """The active context name: ``EXAMLOPS_CONTEXT`` env wins, else the TOML pointer."""
+    env = os.getenv("EXAMLOPS_CONTEXT")
+    if env:
+        return env
+    if raw is None:
+        raw = _read_raw()
+    return raw.get("active_context")
+
+
+def _merged_file_data(raw: dict) -> dict:
+    """Merge legacy top-level [urls]/[auth] with the active context overlay."""
     data: dict = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "rb") as f:
-            raw = tomllib.load(f)
-        data.update(raw.get("urls", {}))
-        data.update(raw.get("auth", {}))
-
-    def _r(toml_key: str, env_key: str, default: str) -> str:
-        return os.getenv(env_key) or data.get(toml_key) or default
-
-    return Config(
-        control_plane_url=_r("control_plane", "CONTROL_PLANE_URL", _DEFAULTS["control_plane_url"]),
-        ray_serve_url=_r("ray_serve", "RAY_SERVE_URL", _DEFAULTS["ray_serve_url"]),
-        mlflow_url=_r("mlflow", "MLFLOW_TRACKING_URI", _DEFAULTS["mlflow_url"]),
-        prefect_url=_r("prefect", "PREFECT_API_URL", _DEFAULTS["prefect_url"]),
-        dashboard_url=_r("dashboard", "DASHBOARD_URL", _DEFAULTS["dashboard_url"]),
-        control_plane_token=_r(
-            "control_plane_token", "CONTROL_PLANE_TOKEN", _DEFAULTS["control_plane_token"]
-        ),
-        dashboard_token=_r("dashboard_token", "DASHBOARD_TOKEN", _DEFAULTS["dashboard_token"]),
-    )
+    data.update(raw.get("urls", {}))
+    data.update(raw.get("auth", {}))
+    ctx = active_context(raw)
+    if ctx:
+        section = raw.get("contexts", {}).get(ctx, {})
+        data.update(section.get("urls", {}))
+        data.update(section.get("auth", {}))
+    return data
 
 
-def write_config(updates: dict) -> None:
-    """Merge updates into the config TOML file."""
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing: dict = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "rb") as f:
-            existing = tomllib.load(f)
+def load_config() -> Config:
+    data = _merged_file_data(_read_raw())
+    values: dict[str, str] = {}
+    for field, toml_key, env_key, default, _ in _FIELDS:
+        values[field] = os.getenv(env_key) or data.get(toml_key) or default
+    return Config(**values)
 
-    _URL_KEYS = {"control_plane", "ray_serve", "mlflow", "prefect", "dashboard"}
-    urls = existing.get("urls", {})
-    auth = existing.get("auth", {})
+
+def resolve_with_provenance() -> list[dict]:
+    """Return each config field with its resolved value and where it came from.
+
+    Source is one of ``env:<VAR>``, ``context:<name>``, ``file``, or ``default``.
+    Secret values are redacted.
+    """
+    raw = _read_raw()
+    ctx = active_context(raw)
+    legacy = {**raw.get("urls", {}), **raw.get("auth", {})}
+    ctx_section = raw.get("contexts", {}).get(ctx, {}) if ctx else {}
+    ctx_data = {**ctx_section.get("urls", {}), **ctx_section.get("auth", {})}
+
+    out = []
+    for field, toml_key, env_key, default, is_secret in _FIELDS:
+        env_val = os.getenv(env_key)
+        if env_val:
+            value, source = env_val, f"env:{env_key}"
+        elif toml_key in ctx_data:
+            value, source = ctx_data[toml_key], f"context:{ctx}"
+        elif toml_key in legacy:
+            value, source = legacy[toml_key], "file"
+        else:
+            value, source = default, "default"
+        display = ("***" if value else "(unset)") if is_secret else (value or "(unset)")
+        out.append({"key": field, "value": display, "source": source})
+    return out
+
+
+def list_contexts() -> tuple[list[str], str | None]:
+    raw = _read_raw()
+    return sorted(raw.get("contexts", {}).keys()), active_context(raw)
+
+
+def set_active_context(name: str) -> None:
+    """Point ``active_context`` at ``name`` (creating an empty context if new)."""
+    existing = _read_raw()
+    existing.setdefault("contexts", {}).setdefault(name, {})
+    existing["active_context"] = name
+    _write_raw(existing)
+
+
+def write_config(updates: dict, context: str | None = None) -> None:
+    """Merge updates into the config TOML file.
+
+    When ``context`` is given, updates are written into ``[contexts.<name>.urls|auth]``;
+    otherwise into the legacy top-level ``[urls]``/``[auth]`` sections.
+    """
+    existing = _read_raw()
+
+    if context:
+        contexts = existing.setdefault("contexts", {})
+        target = contexts.setdefault(context, {})
+    else:
+        target = existing
+
+    urls = target.get("urls", {})
+    auth = target.get("auth", {})
     for k, v in updates.items():
         if k in _URL_KEYS:
             urls[k] = v
         else:
             auth[k] = v
-    existing["urls"] = urls
-    existing["auth"] = auth
+    target["urls"] = urls
+    target["auth"] = auth
+    _write_raw(existing)
 
+
+def _write_raw(data: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         import tomli_w
 
-        CONFIG_PATH.write_text(tomli_w.dumps(existing))
+        CONFIG_PATH.write_text(tomli_w.dumps(data))
     except ImportError:
-        lines = []
-        for section, d in existing.items():
+        CONFIG_PATH.write_text(_dumps_toml(data))
+
+
+def _dumps_toml(data: dict, prefix: str = "") -> str:
+    """Minimal TOML writer (fallback when tomli_w is unavailable)."""
+    lines: list[str] = []
+    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
+    tables = {k: v for k, v in data.items() if isinstance(v, dict)}
+    for key, val in scalars.items():
+        lines.append(f'{key} = "{val}"')
+    if scalars:
+        lines.append("")
+    for key, val in tables.items():
+        section = f"{prefix}{key}"
+        body = _dumps_toml(val, prefix=f"{section}.")
+        # Only emit a [section] header for tables that hold scalars directly.
+        if any(not isinstance(v, dict) for v in val.values()):
             lines.append(f"[{section}]")
-            for key, val in d.items():
-                lines.append(f'{key} = "{val}"')
-            lines.append("")
-        CONFIG_PATH.write_text("\n".join(lines))
+        lines.append(body)
+    return "\n".join(lines)

@@ -303,15 +303,51 @@ Proceed? [y/N]
 
 Type `y` or `yes` to proceed (accepted: `y/yes/ok/okay/approve/confirm/true/1`); anything else cancels and returns `Cancelled — no action taken.`. The confirmation gate is implemented via LangGraph's `interrupt()` mechanism and the SQLite checkpointer, so the same gate works transparently for the WebSocket server (it emits an `{"type": "interrupt", "payload": ...}` event and resumes with a `Command`) and for any future API or UI caller that implements the LangGraph interrupt protocol.
 
-The **13 write tools**: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`.
+The **14 write tools**: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `record_procedure` (durable memory write).
 
-## Persistent Memory
+## Short-Term Memory (conversations)
 
 Conversations are stored in a SQLite database (`AGENT_DB`, default `./agent_memory.db`) using LangGraph's `SqliteSaver` checkpointer. Each session is identified by a `thread_id` (auto-generated as `cli-<8 hex chars>` on startup).
 
 - Resume a past session: `/resume <id>`
 - List all saved sessions: `/threads`
 - Start fresh: `/new` (old sessions remain on disk)
+
+## Long-Term Memory (Phase 25)
+
+Beyond per-conversation history, Skipper has **cross-session long-term memory** — it learns operational procedures, remembers past incidents, and retains operator preferences. It is LangGraph-native, fully self-hosted, and **additive**: if the store or the embedding backend is unavailable, the agent simply runs with short-term memory only. See ADR 0033 / 0034 and `design/architecture-skipper-memory.md`.
+
+**How it works**
+
+- A LangGraph `SqliteStore` (backed by `sqlite-vec`) in its own `skipper_memory.db` (separate from `platform.db` and the checkpointer), with **local embeddings** — Ollama `nomic-embed-text` by default, or `sentence-transformers` fully offline. No cloud, no external service.
+- Four memory kinds by namespace: **procedural** (`proc` — reusable ops procedures, the highest-value kind), **episodic** (`episode` — past incidents), **preference** (`pref` — per-operator), **KB** (`kb` — stable tribal knowledge).
+- Memory holds the agent's *experience* + preferences + stable facts only. Current platform state (model versions, drift, cost, approvals, audit rows) is **always queried live and pointed to, never copied** — memory can go stale; the platform DB is the source of truth. Incidents store foreign-key ids into `platform_db`, not row copies.
+
+**Tools** (present only when the store is enabled)
+
+| Tool | Purpose | Gated? |
+|---|---|---|
+| `recall_memory(query, kind)` | Semantic search over a memory kind before planning | no |
+| `remember_preference(topic, value)` | Save an operator preference | no (low-risk) |
+| `record_procedure(task_class, steps, ...)` | Save a reusable procedure learned from a successful run | **yes** (confirmation) |
+
+**Governance (SM3, ADR 0034)**
+
+- Every memory mutation is written to `platform_db.audit_events` (`source=agent-memory`, actor, action, digest) — inspect with `exa audit --source agent-memory`.
+- Durable procedure writes are **confirmation-gated** (HITL) unless `AGENT_MEMORY_REQUIRE_CONFIRM=false`.
+- A red-team invariant guarantees a poisoned memory cannot cause an unsafe action: every dangerous tool stays confirmation-gated regardless of memory content.
+- **Enumerate / export / erase** memory (GDPR) — deletions cascade and are audited; the immutable audit log is a separate store, untouched by erasure:
+
+```bash
+make skipper-memory ARGS=stats                 # counts per kind
+make skipper-memory ARGS="list proc"           # list procedures
+make skipper-memory ARGS=export                 # dump all memory as JSON
+make skipper-memory ARGS="delete pref --scope alice"   # erase alice's preferences (audited)
+# equivalently, from platform/services/agent/:
+python -m skipper.memory_admin stats
+```
+
+**Tutorial:** `docs/tutorials/skipper-memory.md`. **Env vars:** see the memory rows in `docs/reference/env-vars.md`.
 
 ## HTTP Server & Web UI
 

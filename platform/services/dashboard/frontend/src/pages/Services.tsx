@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useContainers, useContainerAction, useMe, useConfig } from '@/lib/api'
 import { ContainerCard } from '@/components/ContainerCard'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { ContainerInfo, RestartSelfResponse } from '@/lib/containers'
 
 // Containers that have external UIs — maps service name → config key for URL
@@ -77,7 +78,9 @@ export function Services() {
           clearInterval(iv)
           window.location.reload()
         }
-      } catch {}
+      } catch {
+        // backend still restarting — keep polling until /api/health responds
+      }
     }, 2000)
   }
 
@@ -123,7 +126,11 @@ export function Services() {
       {/* External services with UIs */}
       <h2 className="text-sm font-medium text-muted-foreground mb-2">External Services</h2>
       {externalContainers.length === 0 && !isError && (
-        <p style={{ color: "#555", fontSize: 12 }}>Loading…</p>
+        <div className="space-y-2" aria-label="Loading services">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-16 w-full" />
+          ))}
+        </div>
       )}
       {externalContainers.map((c) => (
         <ContainerCard

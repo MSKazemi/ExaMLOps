@@ -2,6 +2,23 @@ import { useState } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
+
+/** Shared loading placeholder for the drift tables (F3 Skeleton convention). */
+function TableSkeleton() {
+  return (
+    <div
+      className="space-y-2 rounded-xl p-4"
+      style={{ border: '1px solid var(--border)' }}
+      aria-label="Loading"
+    >
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-8 w-full" />
+      ))}
+    </div>
+  )
+}
 
 interface DriftStatus {
   model: string
@@ -66,16 +83,14 @@ function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <TableSkeleton />}
 
       {!isLoading && !error && rows.length === 0 && (
-        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
-          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
-          <p className="text-sm font-medium text-muted-foreground">No drift snapshots yet.</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift baseline {'<MODEL>'}</code> to set a baseline.
-          </p>
-        </div>
+        <EmptyState
+          icon={Activity}
+          title="No drift snapshots yet"
+          description="Run `exa drift baseline <MODEL>` to set a baseline."
+        />
       )}
 
       {rows.length > 0 && (
@@ -142,16 +157,14 @@ function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <TableSkeleton />}
 
       {!isLoading && !error && rows.length === 0 && (
-        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
-          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
-          <p className="text-sm font-medium text-muted-foreground">No input drift snapshots yet.</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift input baseline {'<MODEL>'}</code> to set a baseline.
-          </p>
-        </div>
+        <EmptyState
+          icon={Activity}
+          title="No input drift snapshots yet"
+          description="Run `exa drift input baseline <MODEL>` to set a baseline."
+        />
       )}
 
       {rows.length > 0 && (
@@ -216,16 +229,14 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <TableSkeleton />}
 
       {!isLoading && !error && rows.length === 0 && (
-        <div className="rounded-xl p-8 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
-          <Activity className="w-8 h-8 mx-auto mb-3 text-muted-foreground opacity-40" />
-          <p className="text-sm font-medium text-muted-foreground">No auto-retrain rules configured.</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Run <code className="px-1 py-0.5 rounded text-xs" style={{ background: 'var(--surface-1)' }}>exa drift auto-retrain enable {'<MODEL>'} --dataset {'<DATASET>'}</code> to enable.
-          </p>
-        </div>
+        <EmptyState
+          icon={Activity}
+          title="No auto-retrain rules configured"
+          description="Run `exa drift auto-retrain enable <MODEL> --dataset <DATASET>` to enable."
+        />
       )}
 
       {rows.length > 0 && (

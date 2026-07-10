@@ -534,6 +534,12 @@ def cost(
         rows,
     )
 
+    # Visual trend of GPU-hours across versions (oldest → newest).
+    gpu_series = [r["gpu_hours"] for r in rows_data if r["gpu_hours"] is not None]
+    spark = _output.sparkline(gpu_series)
+    if spark:
+        _output.console.print(f"  [dim]GPU-hours trend:[/dim] [cyan]{spark}[/cyan]")
+
 
 _EXAMPLES_COST_LIST = "Examples:\n\n  exa models cost-list\n\n  exa --json models cost-list"
 

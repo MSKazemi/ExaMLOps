@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ExaMLOps fast pre-push gate — mirrors the BLOCKING GitLab CI checks that are
+# instant to run, so a formatting/lint/syntax break can never reach a pushed
+# commit again (the v0.26.x pipelines died on `ruff format --check`).
+#
+# Fast by design (~2s): only the hard, sub-second gates. The full CI mirror
+# (unit + integration + dashboard + compose) lives in `make preflight`; run that
+# before a release.
+#
+# Bypass for a genuine emergency:  git push --no-verify
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Paths that gate CI:
+#   test:examlops       → ruff check + ruff format --check on these
+#   test:infra:slurm-lint → ruff check on the slurm-adapter dir
+FMT_PATHS=(platform/cli/src/ tests/ pipelines/ serving/ platform/services/)
+CHECK_PATHS=("${FMT_PATHS[@]}" platform/infra/slurm-adapter/)
+
+# Locate ruff: prefer the repo venv, fall back to PATH.
+if [ -x ".venv/bin/ruff" ]; then
+  RUFF=".venv/bin/ruff"
+elif command -v ruff >/dev/null 2>&1; then
+  RUFF="ruff"
+else
+  echo "⚠️  pre-push: ruff not found (.venv/bin/ruff or PATH) — skipping gate."
+  echo "   Install dev deps (make install-dev) so this gate can run."
+  exit 0
+fi
+
+PY="${REPO_ROOT}/.venv/bin/python"
+[ -x "$PY" ] || PY="python3"
+
+fail() {
+  echo ""
+  echo "❌ pre-push blocked: $1"
+  echo "   Fix, then re-push.  Emergency bypass: git push --no-verify"
+  exit 1
+}
+
+echo "── pre-push gate (fast CI mirror) ─────────────────────────"
+
+echo "1/3 python syntax (py_compile)…"
+# Only changed/tracked .py under the gated dirs — keeps it fast.
+mapfile -t PYFILES < <(git ls-files -- 'platform/*.py' 'pipelines/*.py' 'serving/*.py' 'tests/*.py' 'tools/*.py' 2>/dev/null)
+if [ "${#PYFILES[@]}" -gt 0 ]; then
+  printf '%s\0' "${PYFILES[@]}" | xargs -0 -r "$PY" -m py_compile \
+    || fail "python syntax error (see above)"
+fi
+
+echo "2/3 ruff check…"
+"$RUFF" check "${CHECK_PATHS[@]}" || fail "ruff check found lint errors"
+
+echo "3/3 ruff format --check  (HARD failure in CI)…"
+"$RUFF" format --check "${FMT_PATHS[@]}" \
+  || fail "ruff format --check — run: $RUFF format ${FMT_PATHS[*]}"
+
+echo "✅ pre-push gate passed — pushing."

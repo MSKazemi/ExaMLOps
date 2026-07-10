@@ -89,3 +89,25 @@ def test_traffic_json_mode():
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["Production"] == 100
+
+
+def test_traffic_dry_run_changes_nothing():
+    from examlops.platform_db import get_traffic_rules
+
+    result = runner.invoke(
+        app, ["serve", "traffic", "JPCP", "--production", "70", "--canary", "30", "--dry-run"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "dry run" in result.output.lower()
+    assert get_traffic_rules("JPCP") is None  # nothing persisted
+
+
+def test_traffic_list_renders_and_has_watch_option():
+    from examlops.platform_db import set_traffic_rules
+
+    set_traffic_rules("JPCP", {"Production": 90, "Canary": 10}, "bob")
+    result = runner.invoke(app, ["serve", "traffic-list"])
+    assert result.exit_code == 0, result.output
+    assert "JPCP" in result.output and "Canary" in result.output
+    help_result = runner.invoke(app, ["serve", "traffic-list", "--help"])
+    assert "--watch" in help_result.output

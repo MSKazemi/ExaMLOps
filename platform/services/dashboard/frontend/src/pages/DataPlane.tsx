@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { RefreshCw, Zap, Activity, RotateCcw, Server, Settings, Copy, Check, ScrollText } from 'lucide-react'
 import { LogPanel } from '@/components/LogPanel'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useDataplaneConfig, useDataplaneStatus, useDataplaneModelUuids, useDataplaneGrafanaPanels } from '@/lib/api'
@@ -325,8 +326,12 @@ export default function DataPlane() {
               ))}
               {!modelUuids && (
                 <tr>
-                  <td colSpan={3} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--faint-text)', fontSize: '0.85rem' }}>
-                    Loading…
+                  <td colSpan={3} style={{ padding: '12px 16px' }}>
+                    <div className="space-y-2" aria-label="Loading UUIDs">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <Skeleton key={i} className="h-6 w-full" />
+                      ))}
+                    </div>
                   </td>
                 </tr>
               )}

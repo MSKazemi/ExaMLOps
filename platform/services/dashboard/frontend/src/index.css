@@ -296,3 +296,31 @@ html[data-theme="midnight"] {
     background: oklch(0 0 0 / 14%);
   }
 }
+
+/* Print: clean governance/finance reports — hide nav chrome and interactive controls, drop backgrounds,
+   let content flow full width (F20 / ADR 0069, R6). Mark chrome with `.no-print`. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
+
+/* Accessibility: honour prefers-reduced-motion (F18 / ADR 0068, R5) — disable animations/transitions
+   and smooth scrolling for users who request reduced motion, across the whole app. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

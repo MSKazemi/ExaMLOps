@@ -30,6 +30,7 @@ _SNAPSHOT_WINDOW = 100
 _BASELINE_WINDOW = 500
 _WARN_Z = 2.0
 _CRIT_Z = 3.0
+_TREND_POINTS = 24  # recent-prediction points rendered as a sparkline in `drift status`
 
 _EXAMPLES_STATUS = (
     "Examples:\n\n  exa drift status\n\n  exa drift status JPCP\n\n  exa --json drift status"
@@ -82,6 +83,8 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
                 status = "WARNING"
             else:
                 status = "OK"
+        # preds are newest-first; reverse to oldest→newest so the trend reads left-to-right.
+        recent = [round(float(p), 3) for p in reversed(preds)][-_TREND_POINTS:]
         results.append(
             {
                 "model": model,
@@ -91,6 +94,7 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
                 "z_score": round(z, 2),
                 "status": status,
                 "n_snapshots": len(preds),
+                "recent": recent,
             }
         )
     return results
@@ -99,8 +103,19 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
 @app.command(epilog=_EXAMPLES_STATUS)
 def status(
     model: str | None = typer.Argument(None, help="Model name filter (default: all models)"),
+    watch: bool = typer.Option(
+        False, "--watch", "-w", help="Live auto-refreshing view (Ctrl-C to exit)"
+    ),
+    interval: int = typer.Option(5, "--interval", help="Refresh interval in seconds for --watch"),
 ):
     """Show prediction drift status for all models (or one model)."""
+    if watch and not _output.json_mode:
+        _output.watch_loop(lambda: _render_drift_status(model), interval)
+        return
+    _render_drift_status(model)
+
+
+def _render_drift_status(model: str | None) -> None:
     rows = _drift_rows(model)
     if not rows:
         _output.ok("No data — run exa drift baseline <MODEL> after collecting some predictions")
@@ -108,16 +123,18 @@ def status(
     if _output.json_mode:
         _output.print_json(rows)
         return
-    cols = ["Model", "Live μ", "Live σ", "Baseline μ", "z-score", "Status", "Snapshots"]
+    # Live σ is intentionally omitted from the table (the Trend sparkline conveys variability)
+    # to keep it readable at 80 columns; the full value stays in `--json` output.
+    cols = ["Model", "Live μ", "Baseline μ", "z-score", "Status", "Snapshots", "Trend"]
     table_rows = [
         [
             r["model"],
             f"{r['live_mean']:.3f}",
-            f"{r['live_std']:.3f}",
             f"{r['baseline_mean']:.3f}" if r["baseline_mean"] is not None else "—",
             f"{r['z_score']:.2f}",
             r["status"],
             str(r["n_snapshots"]),
+            _output.sparkline(r["recent"]) or "—",
         ]
         for r in rows
     ]
@@ -127,6 +144,9 @@ def status(
 @app.command(epilog=_EXAMPLES_BASELINE)
 def baseline(
     model: str = typer.Argument(..., help="Model name to set baseline for"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the baseline that would be set without writing it"
+    ),
 ):
     """Store current rolling stats as the drift baseline for a model."""
     init_db()
@@ -141,6 +161,22 @@ def baseline(
         _output.error(f"Need at least 10 snapshots, have {len(preds)}. Run the bridge first.")
         return
     stats = _compute_stats(preds)
+
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "model": model, "would_set": stats})
+        else:
+            _output.info(f"Dry run — baseline for {model} would be set to:")
+            _output.print_record({k: round(v, 3) for k, v in stats.items()})
+        return
+
+    prev = get_drift_baseline(model)
+    if prev is not None and not _output.confirm(
+        f"Overwrite existing drift baseline for {model}?", default=True
+    ):
+        _output.warning("Aborted — baseline unchanged.")
+        raise typer.Exit(0)
+
     set_drift_baseline(model, stats)
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "drift_baseline_set", model, stats)
@@ -153,12 +189,38 @@ def baseline(
 @app.command(epilog=_EXAMPLES_RESET)
 def reset(
     model: str = typer.Argument(..., help="Model name to clear snapshots for"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show how many snapshots would be cleared without deleting them"
+    ),
 ):
     """Clear all drift snapshots for a model (keeps baseline)."""
     init_db()
     with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) AS c FROM drift_snapshots WHERE model=?", (model,)
+        ).fetchone()["c"]
+
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "model": model, "would_clear": n})
+        else:
+            _output.info(f"Dry run — would clear {n} drift snapshot(s) for {model}.")
+        return
+
+    if n == 0:
+        _output.ok(f"No drift snapshots to clear for {model}")
+        return
+    if not _output.confirm(
+        f"Delete {n} drift snapshot(s) for {model}? This cannot be undone.", default=False
+    ):
+        _output.warning("Aborted — snapshots unchanged.")
+        raise typer.Exit(0)
+
+    with get_db() as conn:
         conn.execute("DELETE FROM drift_snapshots WHERE model=?", (model,))
-    _output.ok(f"Cleared drift snapshots for {model}")
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+    write_audit_event("cli", actor, "drift_reset", model, {"cleared": n})
+    _output.ok(f"Cleared {n} drift snapshot(s) for {model}")
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +571,9 @@ def snapshots(
 @input_app.command("baseline", epilog=_EXAMPLES_INPUT_BASELINE)
 def input_baseline(
     model: str = typer.Argument(..., help="Model name to set input baseline for"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the input baseline that would be set without writing it"
+    ),
 ):
     """Store current rolling embedding statistics as the input drift baseline."""
     init_db()
@@ -546,6 +611,22 @@ def input_baseline(
         "std_mean_std": std_std,
         "n": float(len(snap_rows)),
     }
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "model": model, "would_set": stats})
+        else:
+            _output.info(
+                f"Dry run — input baseline for {model} would be: norm_μ={norm_mean:.3f}  "
+                f"emb_μ={mean_mean:.4f}  emb_σ={std_mean:.4f}  n={len(snap_rows)}"
+            )
+        return
+
+    if get_input_baseline(model) is not None and not _output.confirm(
+        f"Overwrite existing input drift baseline for {model}?", default=True
+    ):
+        _output.warning("Aborted — input baseline unchanged.")
+        raise typer.Exit(0)
+
     set_input_baseline(model, stats)
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "input_baseline_set", model, {"n": len(snap_rows)})
@@ -561,9 +642,35 @@ _EXAMPLES_INPUT_RESET = "Examples:\n\n  exa drift input reset JPCP"
 @input_app.command("reset", epilog=_EXAMPLES_INPUT_RESET)
 def input_reset(
     model: str = typer.Argument(..., help="Model name to clear input snapshots for"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show how many snapshots would be cleared without deleting them"
+    ),
 ):
     """Clear all input embedding snapshots for a model (keeps baseline)."""
     init_db()
     with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) AS c FROM input_snapshots WHERE model=?", (model,)
+        ).fetchone()["c"]
+
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "model": model, "would_clear": n})
+        else:
+            _output.info(f"Dry run — would clear {n} input snapshot(s) for {model}.")
+        return
+
+    if n == 0:
+        _output.ok(f"No input snapshots to clear for {model}")
+        return
+    if not _output.confirm(
+        f"Delete {n} input snapshot(s) for {model}? This cannot be undone.", default=False
+    ):
+        _output.warning("Aborted — snapshots unchanged.")
+        raise typer.Exit(0)
+
+    with get_db() as conn:
         conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
-    _output.ok(f"Cleared input snapshots for {model}")
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+    write_audit_event("cli", actor, "input_reset", model, {"cleared": n})
+    _output.ok(f"Cleared {n} input snapshot(s) for {model}")

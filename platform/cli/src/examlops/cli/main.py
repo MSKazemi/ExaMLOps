@@ -1,28 +1,39 @@
 from __future__ import annotations
 
+import difflib
 import importlib.metadata
+import os
+from enum import StrEnum
 
+import click
 import typer
 from rich.console import Console
+from typer.core import TyperGroup
 
-from examlops.cli import _output
+from examlops.cli import _output, _plugins
 from examlops.cli.commands import (
     ab_cmd,
     approvals,
+    ask_cmd,
     batch_cmd,
     cards_cmd,
     config_cmd,
+    docs_cmd,
     doctor,
     drift,
+    env_cmd,
     explain_cmd,
+    explain_command,
     features_cmd,
     feedback_cmd,
     finops_cmd,
     hpo_cmd,
+    mcp_cmd,
     models,
     modelzoo,
     namespace_cmd,
     pipeline,
+    plugins_cmd,
     predict,
     production,
     quality_cmd,
@@ -64,8 +75,33 @@ _QUICK_START = (
     "  exa --yes approvals reject JPCP --reason 'automated'"
 )
 
+
+class SuggestGroup(TyperGroup):
+    """Typer group that adds fuzzy 'Did you mean …' suggestions on unknown commands.
+
+    Modern Click (>=8.2) already suggests near-misses; this is a graceful fallback for
+    older Click and never doubles up Click's own suggestion.
+    """
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as exc:
+            message = exc.message or ""
+            if "did you mean" not in message.lower():
+                typed = args[0] if args else ""
+                matches = difflib.get_close_matches(typed, self.list_commands(ctx), n=3, cutoff=0.5)
+                if matches:
+                    hint = ", ".join(repr(m) for m in matches)
+                    exc.message = f"{message} Did you mean {hint}?"  # type: ignore[misc]
+            raise
+
+
 app = typer.Typer(
     name="exa",
+    cls=SuggestGroup,
     help="ExaMLOps platform CLI — manage models, training, inference, and services.",
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -80,10 +116,32 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+class OutputFormat(StrEnum):
+    table = "table"
+    json = "json"
+    yaml = "yaml"
+    csv = "csv"
+
+
 @app.callback()
 def main(
-    json: bool = typer.Option(False, "--json", help="Output raw JSON (for scripting)"),
+    output: OutputFormat = typer.Option(
+        OutputFormat.table,
+        "--output",
+        "-o",
+        help="Output format: table (human) | json | yaml | csv (for scripting/agents)",
+    ),
+    json: bool = typer.Option(
+        False, "--json", help="Shorthand for --output json (kept for compatibility)"
+    ),
+    context: str = typer.Option(
+        "", "--context", "-c", help="Use a named config context for this invocation"
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip all confirmation prompts"),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Suppress non-essential output (hints, info, progress detail)"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show extra diagnostic detail"),
     version: bool = typer.Option(  # noqa: FBT001
         False,
         "--version",
@@ -93,8 +151,16 @@ def main(
         help="Print version and exit",
     ),
 ) -> None:
-    _output.json_mode = json
+    fmt = "json" if json else output.value
+    _output.output_format = fmt
+    # json_mode gates every existing structured-output branch; true for any non-table format.
+    _output.json_mode = fmt != "table"
     _output.yes_mode = yes
+    _output.quiet_mode = quiet
+    _output.verbose_mode = verbose
+    # A one-off --context is exposed to load_config() via the same env var it already reads.
+    if context:
+        os.environ["EXAMLOPS_CONTEXT"] = context
     try:
         _init_platform_db()
     except Exception:
@@ -135,10 +201,22 @@ eval_app.add_typer(feedback_cmd.app, name="feedback", help="Ground-truth feedbac
 app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
 
 app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
+app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
 
+app.command("ask", epilog=ask_cmd._EXAMPLES)(ask_cmd.ask)
+app.command("explain", epilog=explain_command._EXAMPLES)(explain_command.explain)
+app.command("env", epilog=env_cmd._EXAMPLES)(env_cmd.env)
 app.command("retrain", epilog=retrain._EXAMPLES)(retrain.retrain)
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
 app.command("audit", epilog=audit_cmd._EXAMPLES)(audit_cmd.audit)
 app.command("doctor", epilog=doctor._EXAMPLES)(doctor.doctor)
+app.command("plugins", epilog=plugins_cmd._EXAMPLES)(plugins_cmd.plugins)
+app.command("docs", epilog=docs_cmd._EXAMPLES)(docs_cmd.docs)
+
+# Third-party subcommands via entry points (examlops.cli_plugins). Resilient to failures.
+try:
+    _plugins.register(app)
+except Exception:  # pragma: no cover - never let plugin discovery break the CLI
+    pass

@@ -2,14 +2,34 @@ from __future__ import annotations
 
 from langgraph.prebuilt import create_react_agent
 
+from skipper import config
 from skipper.llm import build_llm
-from skipper.memory import build_checkpointer
+from skipper.memory import build_checkpointer, build_store, build_summarization_hook
 from skipper.prompts import SYSTEM_PROMPT
 from skipper.tools import TOOLS
+from skipper.tools import memory as memory_tools
 
 
-def build_graph(model: str | None = None, db_path: str | None = None):
-    """Compile the ReAct agent graph with tools, system prompt, and SQLite checkpointer."""
+def build_graph(model: str | None = None, db_path: str | None = None, memory_db: str | None = None):
+    """Compile the ReAct agent graph.
+
+    Always binds the base tools, the system prompt, and the SQLite checkpointer
+    (short-term, per-thread memory). When a long-term memory store is available,
+    also binds the store + the store-backed memory tools (recall/remember/record);
+    and, if enabled, a context-trimming ``pre_model_hook``. All long-term additions
+    degrade gracefully — the agent keeps working with short-term memory and the base
+    tools only — so no LLM/embedding call is required to compile the graph.
+    """
     llm = build_llm(model)
     checkpointer = build_checkpointer(db_path)
-    return create_react_agent(llm, tools=TOOLS, prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
+    tools = list(TOOLS)
+    kwargs: dict = {}
+    store = build_store(memory_db)
+    if store is not None:
+        kwargs["store"] = store
+        tools += memory_tools.TOOLS  # memory tools need the injected store
+    if config.AGENT_SUMMARIZE_ENABLED:
+        kwargs["pre_model_hook"] = build_summarization_hook()
+    return create_react_agent(
+        llm, tools=tools, prompt=SYSTEM_PROMPT, checkpointer=checkpointer, **kwargs
+    )
