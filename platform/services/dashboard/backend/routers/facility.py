@@ -15,9 +15,11 @@ import facility
 from auth import require_role
 from bff import aggregate
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/v1/facility", tags=["facility"])
 _viewer = require_role("viewer")
+_admin = require_role("admin")
 
 
 def _platform_db_path() -> str:
@@ -54,3 +56,43 @@ async def job(job_id: str, _=Depends(_viewer)) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     return {"job": detail}
+
+
+# ── fleet registry: clusters + approval gate (Phase 35b) ─────────────────────
+
+
+class _RejectBody(BaseModel):
+    reason: str | None = None
+
+
+def _actor(claims: dict) -> str:
+    return claims.get("role", "admin") if isinstance(claims, dict) else "admin"
+
+
+@router.get("/fleet")
+async def fleet(_=Depends(_viewer)) -> dict[str, Any]:
+    """Registered clusters + approval state for the fleet panel."""
+    clusters = facility.fleet_clusters(_platform_db_path())
+    return {"clusters": clusters, "count": len(clusters)}
+
+
+@router.post("/fleet/{name}/approve")
+async def approve_cluster(name: str, claims: dict = Depends(_admin)) -> dict[str, Any]:
+    """Sysadmin: approve a cluster so jobs may be scheduled on it (admin only, audited)."""
+    ok = facility.set_cluster_state(_platform_db_path(), name, "ACTIVE", actor=_actor(claims))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"cluster {name} not found")
+    return {"name": name, "state": "ACTIVE"}
+
+
+@router.post("/fleet/{name}/reject")
+async def reject_cluster(
+    name: str, body: _RejectBody, claims: dict = Depends(_admin)
+) -> dict[str, Any]:
+    """Sysadmin: reject a cluster (blocks scheduling; admin only, audited)."""
+    ok = facility.set_cluster_state(
+        _platform_db_path(), name, "REJECTED", actor=_actor(claims), reason=body.reason
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"cluster {name} not found")
+    return {"name": name, "state": "REJECTED", "reason": body.reason}

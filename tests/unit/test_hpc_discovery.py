@@ -81,8 +81,10 @@ def _nvidia_executor(host="lxp-gpu01"):
     return FakeExecutor(
         [
             (("nvidia-smi", "-L"), _cc(0, "GPU 0: NVIDIA A16\nGPU 1: NVIDIA A16")),
-            (("nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,utilization.gpu"),
-             _cc(0, query)),
+            (
+                ("nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,utilization.gpu"),
+                _cc(0, query),
+            ),
             (("hostname",), _cc(0, host)),
         ]
     )
@@ -238,6 +240,72 @@ def test_discover_inventory_unknown_scheduler_raises():
 def test_registered_probes_present():
     names = set(discovery.registered_probes())
     assert {"flux", "slurm", "nvidia-smi"} <= names
+
+
+# ── live queue (Phase 35c) ────────────────────────────────────────────────────────
+
+
+def test_queue_jobs_flux():
+    ex = FakeExecutor(
+        [
+            (
+                ("flux", "jobs"),
+                _cc(0, "ƒAbC job1 alice RUN 2\nƒDeF job2 bob SCHED 1"),
+            )
+        ]
+    )
+    jobs = discovery.queue_jobs(ex, "flux")
+    assert jobs[0] == {
+        "job_id": "ƒAbC",
+        "name": "job1",
+        "user": "alice",
+        "state": "RUNNING",
+        "nodes": 2,
+    }
+    assert jobs[1]["state"] == "PENDING"
+
+
+def test_queue_jobs_slurm():
+    ex = FakeExecutor([(("squeue",), _cc(0, "123|train|carol|RUNNING|4\n124|eval|dan|PD|1"))])
+    jobs = discovery.queue_jobs(ex, "slurm")
+    assert jobs[0] == {
+        "job_id": "123",
+        "name": "train",
+        "user": "carol",
+        "state": "RUNNING",
+        "nodes": 4,
+    }
+    assert jobs[1]["state"] == "PENDING"
+
+
+def test_queue_jobs_unknown_scheduler():
+    assert discovery.queue_jobs(FakeExecutor([]), "pbs") == []
+
+
+# ── preflight (Phase 35c) ─────────────────────────────────────────────────────────
+
+
+def test_preflight_all_pass():
+    ex = _slurm_executor()  # sinfo/sacctmgr available, 8 GPUs total
+    ex.responses.insert(0, (("hostname",), _cc(0, "login01")))
+    checks = discovery.preflight(ex, "slurm", {"gpus": 4, "nodes": 2})
+    assert all(c["ok"] for c in checks)
+    assert {c["check"] for c in checks} >= {"transport", "scheduler", "gpus", "nodes"}
+
+
+def test_preflight_fails_when_gpus_exceed_capacity():
+    ex = _slurm_executor()
+    ex.responses.insert(0, (("hostname",), _cc(0, "login01")))
+    checks = discovery.preflight(ex, "slurm", {"gpus": 99})
+    gpu_check = next(c for c in checks if c["check"] == "gpus")
+    assert gpu_check["ok"] is False
+
+
+def test_preflight_short_circuits_on_unreachable_transport():
+    ex = FakeExecutor([])  # hostname returns rc 127
+    checks = discovery.preflight(ex, "flux", {"gpus": 1})
+    assert len(checks) == 1
+    assert checks[0]["check"] == "transport" and checks[0]["ok"] is False
 
 
 # ── node-snapshot persistence ────────────────────────────────────────────────────

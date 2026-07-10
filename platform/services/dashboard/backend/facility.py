@@ -15,6 +15,7 @@ renders an empty-but-valid console instead of a 500.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -56,6 +57,84 @@ def clusters(db_path: str) -> list[str]:
             r["scheduler"]
             for r in conn.execute("SELECT DISTINCT scheduler FROM hpc_jobs ORDER BY scheduler")
         ]
+    finally:
+        conn.close()
+
+
+# ── fleet registry: clusters + approval gate (Phase 35b) ─────────────────────
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def fleet_clusters(db_path: str) -> list[dict[str, Any]]:
+    """Registered clusters with their approval state (graceful if the table is absent)."""
+    conn = _connect(db_path)
+    try:
+        if not _has_table(conn, "hpc_clusters"):
+            return []
+        rows = conn.execute(
+            """SELECT name, scheduler, transport, host, state, approved_by, requested_by,
+                      reason, capabilities, updated_at
+                 FROM hpc_clusters ORDER BY name"""
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            caps = None
+            if r["capabilities"]:
+                try:
+                    caps = json.loads(r["capabilities"])
+                except (ValueError, TypeError):
+                    caps = None
+            out.append(
+                {
+                    "name": r["name"],
+                    "scheduler": r["scheduler"],
+                    "transport": r["transport"],
+                    "host": r["host"],
+                    "state": r["state"],
+                    "approvedBy": r["approved_by"],
+                    "requestedBy": r["requested_by"],
+                    "reason": r["reason"],
+                    "capabilities": caps,
+                    "updatedAt": r["updated_at"],
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def set_cluster_state(
+    db_path: str, name: str, state: str, *, actor: str, reason: str | None = None
+) -> bool:
+    """Transition a cluster's state and write an audit event. False if unknown/no table."""
+    conn = _connect(db_path)
+    try:
+        if not _has_table(conn, "hpc_clusters"):
+            return False
+        cur = conn.execute(
+            """UPDATE hpc_clusters
+                   SET state=?, approved_by=?, reason=COALESCE(?, reason),
+                       updated_at=CURRENT_TIMESTAMP
+                 WHERE name=?""",
+            (state, actor, reason, name),
+        )
+        if cur.rowcount == 0:
+            return False
+        action = "cluster_approved" if state == "ACTIVE" else "cluster_rejected"
+        if _has_table(conn, "audit_events"):
+            conn.execute(
+                "INSERT INTO audit_events (source, actor, action, target, details) "
+                "VALUES (?,?,?,?,?)",
+                ("dashboard", actor, action, name, json.dumps({"reason": reason})),
+            )
+        conn.commit()
+        return True
     finally:
         conn.close()
 

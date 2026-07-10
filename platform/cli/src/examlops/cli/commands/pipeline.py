@@ -93,6 +93,39 @@ def _run_pytest(args: list[str]) -> None:
         _output.error(f"pytest exited with code {e.returncode}")
 
 
+def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
+    """Resolve --cluster (name or 'auto') into EXAMLOPS_HPC_* env for the run subprocess.
+
+    Returns True on success (env applied), False if the cluster is unknown/not approved or
+    placement found no fit — in which case an error is printed and the run is aborted.
+    """
+    from examlops.hpc_registry import (
+        ClusterNotActiveError,
+        active_clusters_with_inventory,
+        resolve_env,
+    )
+
+    target = cluster
+    if cluster == "auto":
+        from examlops.hpc_placement import ResourceAsk, choose_cluster
+
+        result = choose_cluster(ResourceAsk(gpus=gpus), active_clusters_with_inventory())
+        if result.cluster is None:
+            _output.error(f"Auto-placement found no cluster: {result.reason}")
+            return False
+        _output.info(f"Auto-placement: {result.reason}")
+        target = result.cluster
+
+    try:
+        env = resolve_env(target)
+    except ClusterNotActiveError as exc:
+        _output.error(str(exc))
+        return False
+    os.environ.update(env)
+    _output.detail(f"  targeting cluster '{target}' → {env.get('EXAMLOPS_HPC_SCHEDULER')}")
+    return True
+
+
 @app.command("list", epilog=_EXAMPLES_LIST)
 def list_pipelines():
     """List all auto-discovered models and their supported datasets."""
@@ -111,8 +144,19 @@ def run(
     ),
     env: EnvOverlay | None = typer.Option(None, "--env", help="YAML registry env overlay"),
     registry: str | None = typer.Option(None, "--registry", help="Path to model_registry.yaml"),
+    cluster: str | None = typer.Option(
+        None,
+        "--cluster",
+        "-C",
+        help="Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose",
+    ),
+    gpus: int = typer.Option(
+        0, "--gpus", "-g", help="GPUs to request (for --cluster auto placement)"
+    ),
 ):
     """Run training pipeline(s) locally via Prefect."""
+    if cluster and not _resolve_cluster_env(cluster, gpus):
+        return  # resolution failed / not approved — message already printed
     args: list[str] = []
     if dummy:
         args.append("--dummy")
