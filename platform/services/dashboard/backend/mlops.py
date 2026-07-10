@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-
 # ── central name-casing (F9 R2) ──────────────────────────────────────────────
 
 

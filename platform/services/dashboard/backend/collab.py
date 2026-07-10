@@ -14,7 +14,7 @@ import json
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 _MENTION = re.compile(r"@([A-Za-z0-9._-]+)")
 _TAG = re.compile(r"<[^>]*>")
@@ -60,7 +60,9 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 
 
 def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, details: str) -> None:
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'").fetchone():
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
+    ).fetchone():
         conn.execute(
             "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
             ("dashboard-collab", actor, action, target, details),
@@ -81,7 +83,13 @@ def add_comment(
             "VALUES (?,?,?,?,?,?)",
             (entity_type, entity_id, tenant, author, clean, json.dumps(mentions)),
         )
-        _audit(conn, author, "comment_added", f"{entity_type}/{entity_id}", json.dumps({"mentions": mentions}))
+        _audit(
+            conn,
+            author,
+            "comment_added",
+            f"{entity_type}/{entity_id}",
+            json.dumps({"mentions": mentions}),
+        )
         conn.commit()
         row = conn.execute(
             "SELECT id, author, body, mentions, created_at FROM entity_comments WHERE id=?",
@@ -128,7 +136,9 @@ def entity_activity(db_path: str, entity_type: str, entity_id: str, tenant: str)
             (entity_type, entity_id, tenant),
         ).fetchall():
             items.append({"kind": "comment", "actor": r[0], "ts": r[1], "detail": "commented"})
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'").fetchone():
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
+        ).fetchone():
             for r in conn.execute(
                 "SELECT actor, action, ts FROM audit_events WHERE target IN (?, ?) ORDER BY ts",
                 (target, entity_id),
@@ -140,10 +150,12 @@ def entity_activity(db_path: str, entity_type: str, entity_id: str, tenant: str)
     return items
 
 
-def create_snapshot(db_path: str, tenant: str, view: dict, actor: str, ttl_hours: int = 168) -> dict:
+def create_snapshot(
+    db_path: str, tenant: str, view: dict, actor: str, ttl_hours: int = 168
+) -> dict:
     """Create a scoped, expiring, read-only shareable snapshot of a view (F22 R2). Returns the token."""
     token = secrets.token_urlsafe(16)
-    expires = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat()
+    expires = (datetime.now(UTC) + timedelta(hours=ttl_hours)).isoformat()
     conn = sqlite3.connect(db_path)
     try:
         _ensure_tables(conn)
@@ -170,6 +182,6 @@ def get_snapshot(db_path: str, token: str) -> dict | None:
         conn.close()
     if not row:
         return None
-    if row[2] and row[2] < datetime.now(timezone.utc).isoformat():
+    if row[2] and row[2] < datetime.now(UTC).isoformat():
         return None  # expired
     return {"tenant": row[0], "view": json.loads(row[1]), "expires_at": row[2], "read_only": True}

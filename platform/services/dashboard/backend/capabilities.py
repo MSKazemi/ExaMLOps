@@ -11,9 +11,8 @@ tenant's resources unless it is a cross-tenant admin.
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, status
-
 from auth import require_role
+from fastapi import Depends, HTTPException, status
 
 # ── capability catalogue ──────────────────────────────────────────────────────
 

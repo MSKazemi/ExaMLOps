@@ -26,12 +26,17 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
-def _alert(source: str, key: str, severity: str, title: str, labels: dict[str, str]) -> dict[str, Any]:
+def _alert(
+    source: str, key: str, severity: str, title: str, labels: dict[str, str]
+) -> dict[str, Any]:
     return {
         "id": f"{source}:{key}",
         "source": source,
@@ -74,9 +79,7 @@ def _drift_alerts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             sev = "warn"
         else:
             continue
-        out.append(
-            _drift_alert_row(r["model"], z, sev)
-        )
+        out.append(_drift_alert_row(r["model"], z, sev))
     return out
 
 

@@ -30,9 +30,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 # ── cost rollup (F13 R1) ──────────────────────────────────────────────────────
@@ -134,7 +137,11 @@ def carbon_summary(db_path: str) -> dict[str, Any]:
             ).fetchone()
             totals = {"kwh": round(r["kwh"], 3), "co2e_g": round(r["c"], 1), "records": r["n"]}
             by_model = [
-                {"model": m["model"], "kwh": round(m["kwh"] or 0.0, 3), "co2e_g": round(m["c"] or 0.0, 1)}
+                {
+                    "model": m["model"],
+                    "kwh": round(m["kwh"] or 0.0, 3),
+                    "co2e_g": round(m["c"] or 0.0, 1),
+                }
                 for m in conn.execute(
                     "SELECT model, SUM(kwh) AS kwh, SUM(co2e_g) AS c FROM carbon_records "
                     "GROUP BY model ORDER BY c DESC"

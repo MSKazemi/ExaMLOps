@@ -100,7 +100,9 @@ async def test_comments_endpoint_requires_auth(client, db):
 async def test_add_then_list_comment_via_api(client, db):
     token = await _login(client, VIEWER_PW)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/api/v1/collab/models/jpcp/comments", json={"body": "ping @carol"}, headers=h)
+    r = await client.post(
+        "/api/v1/collab/models/jpcp/comments", json={"body": "ping @carol"}, headers=h
+    )
     assert r.status_code == 200
     assert r.json()["mentions"] == ["carol"]
     r2 = await client.get("/api/v1/collab/models/jpcp/comments", headers=h)

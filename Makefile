@@ -554,8 +554,8 @@ ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
 	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile monitoring config --quiet
 	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile dev config --quiet
 	@$(MAKE) alerts-check
-	@command -v ruff >/dev/null 2>&1 || pip install --quiet ruff
-	@ruff check platform/infra/slurm-adapter/
+	@if [ -x $(VENV)/bin/ruff ]; then $(VENV)/bin/ruff check platform/infra/slurm-adapter/; \
+	  else ruff check platform/infra/slurm-adapter/; fi
 	@printf "$(GREEN)CI · infra passed.$(RESET)\n"
 
 ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + unit
@@ -568,7 +568,8 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
 	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
 	@printf "$(BOLD)1/7 sanity: python syntax$(RESET)\n"
-	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" -print0 \
+	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" \
+	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
 	@printf "$(BOLD)2/7 ruff check$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/

@@ -33,8 +33,12 @@ def platform_db(tmp_path, monkeypatch):
         "dtype, enabled) VALUES ('llama3', 'vllm', 'meta-llama/Llama-3-8B', 8192, 2, 'bfloat16', 1)"
     )
     # two runs for llama3; the newer (id 2) is the one summarized
-    conn.execute("INSERT INTO eval_runs (id, model, suite, status) VALUES (1, 'llama3', 'mmlu', 'complete')")
-    conn.execute("INSERT INTO eval_runs (id, model, suite, status) VALUES (2, 'llama3', 'mmlu', 'complete')")
+    conn.execute(
+        "INSERT INTO eval_runs (id, model, suite, status) VALUES (1, 'llama3', 'mmlu', 'complete')"
+    )
+    conn.execute(
+        "INSERT INTO eval_runs (id, model, suite, status) VALUES (2, 'llama3', 'mmlu', 'complete')"
+    )
     conn.executemany(
         "INSERT INTO eval_results (eval_run_id, metric, value, baseline, passed) VALUES (?,?,?,?,?)",
         [

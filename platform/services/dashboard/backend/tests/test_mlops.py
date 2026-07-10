@@ -7,7 +7,6 @@ import pytest
 
 from tests.conftest import VIEWER_PW
 
-
 # ── fixtures ─────────────────────────────────────────────────────────────────
 
 
@@ -176,9 +175,7 @@ async def test_promotion_endpoint_denies_with_reasons(client, platform_db):
 @pytest.mark.asyncio
 async def test_model_detail_endpoint(client, platform_db):
     token = await _login(client, VIEWER_PW)
-    r = await client.get(
-        "/api/v1/mlops/model/jpcp", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.get("/api/v1/mlops/model/jpcp", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     detail = r.json()["detail"]
     assert detail["name"] == "JPCP"

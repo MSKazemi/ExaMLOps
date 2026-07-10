@@ -52,9 +52,10 @@ def clusters(db_path: str) -> list[str]:
     try:
         if not _has_hpc_jobs(conn):
             return []
-        return [r["scheduler"] for r in conn.execute(
-            "SELECT DISTINCT scheduler FROM hpc_jobs ORDER BY scheduler"
-        )]
+        return [
+            r["scheduler"]
+            for r in conn.execute("SELECT DISTINCT scheduler FROM hpc_jobs ORDER BY scheduler")
+        ]
     finally:
         conn.close()
 

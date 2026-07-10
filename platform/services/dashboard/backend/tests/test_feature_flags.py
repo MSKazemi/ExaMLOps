@@ -7,7 +7,6 @@ import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
-
 # ── deterministic bucket (F25 R5) ────────────────────────────────────────────
 
 
@@ -45,7 +44,9 @@ def test_percentage_rollout_deterministic_and_admin_bypass():
     # a viewer's inclusion matches their bucket
     subject = "user-1"
     expected = ff.subject_bucket("x", subject) < 50
-    assert ff.evaluate(d, role="viewer", tenant="default", subject=subject, override=None) is expected
+    assert (
+        ff.evaluate(d, role="viewer", tenant="default", subject=subject, override=None) is expected
+    )
 
 
 def test_evaluate_all_returns_decisions(tmp_path, monkeypatch):

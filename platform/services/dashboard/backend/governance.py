@@ -20,9 +20,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 def _known_models(conn: sqlite3.Connection) -> set[str]:
@@ -169,14 +172,34 @@ def nist_posture(db_path: str) -> dict[str, Any]:
     card_cov = cov["coverage"]
 
     controls = [
-        _control("MANAGE-4.1", "Manage", "Change approval logged", "satisfied" if approval_n else "gap",
-                 [f"{approval_n} approval audit events"] if approval_n else ["no approval events found"]),
-        _control("MEASURE-2.1", "Measure", "Model documentation", _card_status(card_cov),
-                 [f"model-card coverage {int((card_cov or 0) * 100)}%"]),
-        _control("MAP-1.1", "Map", "Risk classification (EU AI Act)", "satisfied" if compliance_n else "gap",
-                 [f"{compliance_n} compliance records"] if compliance_n else ["no risk classifications"]),
-        _control("GOVERN-1.1", "Govern", "Audit trail present", "satisfied" if audit_n else "gap",
-                 [f"{audit_n} audit events"] if audit_n else ["no audit events"]),
+        _control(
+            "MANAGE-4.1",
+            "Manage",
+            "Change approval logged",
+            "satisfied" if approval_n else "gap",
+            [f"{approval_n} approval audit events"] if approval_n else ["no approval events found"],
+        ),
+        _control(
+            "MEASURE-2.1",
+            "Measure",
+            "Model documentation",
+            _card_status(card_cov),
+            [f"model-card coverage {int((card_cov or 0) * 100)}%"],
+        ),
+        _control(
+            "MAP-1.1",
+            "Map",
+            "Risk classification (EU AI Act)",
+            "satisfied" if compliance_n else "gap",
+            [f"{compliance_n} compliance records"] if compliance_n else ["no risk classifications"],
+        ),
+        _control(
+            "GOVERN-1.1",
+            "Govern",
+            "Audit trail present",
+            "satisfied" if audit_n else "gap",
+            [f"{audit_n} audit events"] if audit_n else ["no audit events"],
+        ),
     ]
     satisfied = sum(1 for c in controls if c["status"] == "satisfied")
     return {"controls": controls, "satisfied": satisfied, "total": len(controls)}
@@ -196,5 +219,13 @@ def _card_status(coverage: float | None) -> str:
     return "partial"
 
 
-def _control(control: str, function: str, title: str, status: str, evidence: list[str]) -> dict[str, Any]:
-    return {"control": control, "function": function, "title": title, "status": status, "evidence": evidence}
+def _control(
+    control: str, function: str, title: str, status: str, evidence: list[str]
+) -> dict[str, Any]:
+    return {
+        "control": control,
+        "function": function,
+        "title": title,
+        "status": status,
+        "evidence": evidence,
+    }
