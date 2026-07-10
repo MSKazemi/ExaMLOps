@@ -2,6 +2,19 @@ import { useState } from 'react'
 import { Play, RefreshCw, Clock, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react'
 import { useMe, usePipelineDeployments, usePipelineRuns, useTriggerRun,
          type PrefectDeployment, type PrefectRun } from '@/lib/api'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
+
+/** Shared loading placeholder (F3 Skeleton convention). */
+function ListSkeleton() {
+  return (
+    <div className="space-y-2" aria-label="Loading">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-9 w-full" />
+      ))}
+    </div>
+  )
+}
 
 function stateColor(stateType: string): string {
   switch (stateType.toUpperCase()) {
@@ -87,22 +100,19 @@ export function Pipelines() {
           Registered Deployments
         </h2>
         {depsLoading ? (
-          <p className="text-sm" style={{ color: 'var(--text-2)' }}>Loading…</p>
+          <ListSkeleton />
         ) : depsError ? (
-          <div className="rounded-xl p-6 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
-            <AlertCircle size={20} className="mx-auto mb-2" style={{ color: 'var(--error-text, #ef4444)' }} />
-            <p className="text-sm font-medium" style={{ color: 'var(--error-text, #ef4444)' }}>Prefect unreachable</p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-2)' }}>
-              Check that the Prefect orchestrator container is running.
-            </p>
-          </div>
+          <EmptyState
+            icon={AlertCircle}
+            title="Prefect unreachable"
+            description="Check that the Prefect orchestrator container is running."
+          />
         ) : deployments.length === 0 ? (
-          <div className="rounded-xl p-6 text-center" style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}>
-            <AlertCircle size={20} className="mx-auto mb-2" style={{ color: 'var(--text-2)' }} />
-            <p className="text-sm" style={{ color: 'var(--text-2)' }}>
-              No deployments found. Run <code className="text-xs px-1 py-0.5 rounded" style={{ background: 'var(--surface-1)' }}>exa pipeline deploy</code> first.
-            </p>
-          </div>
+          <EmptyState
+            icon={AlertCircle}
+            title="No deployments found"
+            description="Run `exa pipeline deploy` first."
+          />
         ) : (
           <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
             <table className="w-full text-sm">
@@ -180,11 +190,11 @@ export function Pipelines() {
           Recent Runs (last 30)
         </h2>
         {runsLoading ? (
-          <p className="text-sm" style={{ color: 'var(--text-2)' }}>Loading…</p>
+          <ListSkeleton />
         ) : runsError ? (
           <p className="text-sm" style={{ color: 'var(--error-text, #ef4444)' }}>Could not load runs — Prefect unreachable.</p>
         ) : runs.length === 0 ? (
-          <p className="text-sm" style={{ color: 'var(--text-2)' }}>No runs yet.</p>
+          <EmptyState icon={Clock} title="No runs yet" description="Triggered pipeline runs will appear here." />
         ) : (
           <div className="space-y-1.5">
             {runs.map(run => (

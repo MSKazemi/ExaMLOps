@@ -1,0 +1,158 @@
+# name: CI
+
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+
+# # Cancel superseded runs on the same ref to save runner minutes.
+# concurrency:
+#   group: ci-${{ github.ref }}
+#   cancel-in-progress: true
+
+# jobs:
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # ModelZoo — Poetry-based package: sklearn / framework-extensible model library
+#   # Mirrors the stages already defined in modelzoo/.gitlab-ci.yml.
+#   # ────────────────────────────────────────────────────────────────────────────
+#   modelzoo:
+#     name: modelzoo (poetry)
+#     runs-on: ubuntu-latest
+#     defaults:
+#       run:
+#         working-directory: modelzoo
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Set up Python 3.12
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.12"
+#           cache: pip
+
+#       - name: Install poetry
+#         run: pip install --quiet poetry
+
+#       - name: Install dependencies (dev + ci)
+#         run: |
+#           poetry config virtualenvs.create false
+#           poetry install --no-interaction --with dev,ci
+
+#       - name: Sanity — python syntax
+#         run: |
+#           find seanergys_modelzoo ci tests -name "*.py" -print0 \
+#             | xargs -0 -r python -m py_compile
+
+#       - name: Validate YAML/JSON
+#         run: python ci/validate_yaml.py
+
+#       - name: Lint (ruff)
+#         run: ruff check seanergys_modelzoo ci tests
+
+#       - name: Format check (ruff)
+#         run: ruff format --check seanergys_modelzoo ci tests
+#         continue-on-error: true
+
+#       - name: Type check (mypy)
+#         run: mypy seanergys_modelzoo ci tests --ignore-missing-imports --explicit-package-bases
+#         continue-on-error: true
+
+#       - name: Unit tests
+#         run: pytest tests/unit/ -v --tb=short
+
+#       - name: Smoke tests
+#         run: pytest tests/smoke/ -v --tb=short
+
+#       - name: Import check
+#         run: python -c "from seanergys_modelzoo.logger.seanergys_logger import SeanergysLogger; print('Import OK')"
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # Infra — docker-compose validation, Slurm adapter lint, infra-tagged tests.
+#   # ────────────────────────────────────────────────────────────────────────────
+#   infra:
+#     name: infra (compose + slurm)
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Set up Python 3.12
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.12"
+#           cache: pip
+
+#       - name: Validate docker-compose config
+#         run: docker compose -f platform/infra/docker-compose/docker-compose.yml config --quiet
+
+#       - name: Validate monitoring profile
+#         run: docker compose -f platform/infra/docker-compose/docker-compose.yml --profile monitoring config --quiet
+
+#       - name: Validate dev profile
+#         run: docker compose -f platform/infra/docker-compose/docker-compose.yml --profile dev config --quiet
+
+#       - name: Lint Slurm adapter
+#         run: |
+#           pip install --quiet ruff
+#           ruff check platform/infra/slurm-adapter/
+
+#       - name: Slurm adapter unit tests
+#         run: |
+#           pip install --quiet pytest
+#           pytest platform/infra/slurm-adapter/tests/ -v --tb=short || true
+
+#       - name: Infra-tagged integration tests
+#         run: |
+#           pip install --quiet pytest
+#           if [ -d tests/integration ]; then
+#             pytest tests/integration -k "infra or slurm" -v --tb=short || true
+#           fi
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # ExaMLOps — Python: pipelines, serving, platform/services, platform/cli.
+#   # Phase 10+: also notifies Control Plane of model changes on push to main.
+#   # ────────────────────────────────────────────────────────────────────────────
+#   examlops:
+#     name: examlops (uv)
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Install uv
+#         uses: astral-sh/setup-uv@v3
+#         with:
+#           version: "latest"
+
+#       - name: Set up Python
+#         run: uv python install 3.12
+
+#       - name: Create venv and install dev deps
+#         run: |
+#           uv venv .venv
+#           uv pip install -e ".[dev]"
+
+#       - name: Lint (ruff)
+#         run: .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+
+#       - name: Type check (mypy)
+#         run: .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
+
+#       - name: Unit tests
+#         run: .venv/bin/pytest tests/unit/ -v --tb=short
+
+#       - name: Dashboard backend tests
+#         run: |
+#           pip install -r platform/services/dashboard/backend/requirements.txt -q
+#           pytest platform/services/dashboard/backend/tests/ -v --tb=short
+
+#       - name: Notify Control Plane of model changes
+#         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#         env:
+#           CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+#           CONTROL_PLANE_TOKEN: ${{ secrets.CONTROL_PLANE_TOKEN }}
+#         run: |
+#           python platform/ci/notify_model_changes.py \
+#             --before "${{ github.event.before }}" \
+#             --after  "${{ github.sha }}" \
+#             --commit-msg "${{ github.event.head_commit.message }}"

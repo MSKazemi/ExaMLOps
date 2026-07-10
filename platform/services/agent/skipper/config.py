@@ -57,6 +57,41 @@ AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
 CLAUDE_MD = os.getenv("AGENT_CLAUDE_MD", str(_REPO_ROOT / "CLAUDE.md"))
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("true", "1", "yes", "on")
+
+
+# --- Long-term (cross-thread) memory — SM1 substrate (see design/adr/0033) ---
+# Additive: if the store or the embedding backend is unavailable, the agent runs
+# with short-term (per-thread checkpoint) memory only. The store lives in its OWN
+# sqlite file, separate from both platform.db and the checkpointer DB. Uses the
+# sync SqliteStore (sqlite-vec) to match the sync-graph-in-threadpool server.
+AGENT_MEMORY_ENABLED = _env_bool("AGENT_MEMORY_ENABLED", True)
+AGENT_MEMORY_DB = os.getenv("AGENT_MEMORY_DB", "./skipper_memory.db")
+# Local embeddings only (no cloud). "ollama" uses AGENT_OLLAMA_URL;
+# "sentence-transformers" runs fully in-process/offline. AGENT_EMBED_DIMS MUST
+# match the model: nomic-embed-text=768, bge-m3=1024, all-MiniLM-L6-v2=384.
+AGENT_EMBED_BACKEND = os.getenv("AGENT_EMBED_BACKEND", "ollama").strip().lower()
+AGENT_EMBED_MODEL = os.getenv("AGENT_EMBED_MODEL", "nomic-embed-text")
+AGENT_EMBED_DIMS = int(os.getenv("AGENT_EMBED_DIMS", "768"))
+# Context trimming for long threads. SM1 ships the plumbing (langchain-core
+# trim_messages, ephemeral via llm_input_messages); a full LangMem running-summary
+# is a follow-up. Off by default to leave the ReAct tool-loop boundaries untouched
+# until validated on the small local models.
+AGENT_SUMMARIZE_ENABLED = _env_bool("AGENT_SUMMARIZE_ENABLED", False)
+AGENT_MAX_CONTEXT_TOKENS = int(os.getenv("AGENT_MAX_CONTEXT_TOKENS", "12000"))
+# Actor written into preference memory + memory audit events. Mirrors the
+# platform's EXAMLOPS_ACTOR convention.
+AGENT_ACTOR = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "operator"
+# SM3 governance: gate durable procedure writes behind operator confirmation (HITL),
+# and audit every memory mutation to platform_db.audit_events. Both default on.
+AGENT_MEMORY_REQUIRE_CONFIRM = _env_bool("AGENT_MEMORY_REQUIRE_CONFIRM", True)
+AGENT_MEMORY_AUDIT = _env_bool("AGENT_MEMORY_AUDIT", True)
+
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 
 # Fault tolerance: abort a graph run whose backend/tool has produced no output for

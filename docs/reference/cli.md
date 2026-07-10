@@ -10,9 +10,32 @@ uv pip install -e ".[dev]"
 
 | Flag | Description |
 |---|---|
-| `--json` | Output raw JSON (for scripting and piping to `jq`) |
+| `--output`, `-o` | Output format: `table` (human) \| `json` \| `yaml` \| `csv` (for scripting/agents) |
+| `--json` | Shorthand for `--output json` (kept for compatibility) |
+| `--context`, `-c` | Use a named config context for this invocation (see `exa config contexts`) |
+| `--yes`, `-y` | Skip all confirmation prompts (non-interactive / CI) |
+| `--quiet`, `-q` | Suppress non-essential output (hints, info, progress detail) |
+| `--verbose`, `-v` | Show extra diagnostic detail |
+| `--version`, `-V` | Print version and exit |
 | `-h`, `--help` | Show help for any command or subcommand |
 | `--install-completion` | Install shell tab-completion (bash / zsh / fish) — also completes enum option values |
+
+## Exit-Code Contract
+
+`exa` follows a stable exit-code convention so scripts and CI can branch on results:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — the command completed (also used for a declined confirmation, which is a clean no-op). |
+| `1` | Runtime error — the operation failed (unreachable service, SLA breach, validation failure). Emitted by `exa`'s error path. |
+| `2` | Usage error — bad flag, unknown command, or missing argument (from the Typer/Click parser). |
+
+Mutating commands additionally support `--dry-run` (preview, exit `0`, change nothing) and a
+confirmation prompt (auto-confirmed under `--yes`, `--json`, or a non-interactive/CI stdin).
+
+> This table is kept in sync with the code by `tests/unit/test_cli_docs.py`. For the always-current,
+> auto-generated full command tree (every command, subcommand, and flag), run `exa docs` or see
+> [`cli-generated.md`](./cli-generated.md).
 
 ## Shell Completion & Enum Choices
 

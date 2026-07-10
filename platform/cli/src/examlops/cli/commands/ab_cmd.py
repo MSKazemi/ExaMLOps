@@ -230,7 +230,13 @@ def ab_analyze(
     Uses Welch's t-test (unequal variance) and reports whether the difference between the
     two variants is significant, plus the winner given the metric's optimisation direction.
     """
-    from examlops.analysis.ab_stats import analyze_ab
+    try:
+        from examlops.analysis.ab_stats import analyze_ab
+    except ModuleNotFoundError as exc:  # numpy/scipy are the optional `analysis` extra
+        _output.error(
+            f"A/B analysis needs the optional scientific stack ({exc.name}). "
+            "Install it with: uv pip install 'examlops[analysis]'"
+        )
 
     _ensure_ab_tables()
     with get_db() as conn:

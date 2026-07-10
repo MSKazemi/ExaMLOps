@@ -106,6 +106,350 @@ Aggregate health of all services. No authentication required.
 
 ---
 
+### `GET /api/v1/overview` (BFF, F8)
+
+View-shaped platform overview composed by the **Backend-for-Frontend** layer. Requires the
+`viewer` role. Sources are fetched concurrently with a per-source timeout; any source that fails
+or times out is **omitted** and listed under `_partial` (the response is still `200` — a partial
+view beats an error page). See [dashboard architecture](../dashboard/architecture.md#backend-for-frontend-bff-layer-f8).
+
+**Response 200:**
+```json
+{
+  "meta":    {"service": "dashboard-bff", "api": "v1"},
+  "traffic": {"models_with_rules": 3},
+  "drift":   {"models_tracked": 5},
+  "audit":   {"total_events": 128}
+}
+```
+
+**Response 200 (partial — the drift source was slow/down):**
+```json
+{
+  "meta":    {"service": "dashboard-bff", "api": "v1"},
+  "traffic": {"models_with_rules": 3},
+  "audit":   {"total_events": 128},
+  "_partial": ["drift"]
+}
+```
+
+---
+
+### `GET /api/v1/stream` (BFF realtime, F8)
+
+Multiplexed **Server-Sent-Events** stream of live platform events. Requires the `viewer` role.
+`Content-Type: text/event-stream`.
+
+**Query:** `channels` — comma-separated channel globs (default `*` = all). Namespaces:
+`job`, `drift`, `alert`, `deploy`, `approval`, `event`. A bare namespace (`job`) expands to `job.*`.
+
+Events are tenant-filtered (a client never sees another tenant's events) and backpressured (under a
+flood the oldest queued event is dropped; each frame carries a `_dropped` count).
+
+**Stream:**
+```
+event: hello
+data: {"channels": ["job.*", "drift.*"]}
+
+event: job.started
+data: {"model": "JPCP", "run_id": "abc123", "_dropped": 0}
+
+: keep-alive
+```
+
+Clients **should** fall back to polling the relevant `/api/v1/*` view endpoints when the stream is
+unavailable, and reconnect when it recovers.
+
+---
+
+### `GET /api/v1/mlops/registry` (MLOps console, F9)
+
+Registry grid rows for the MLOps console. Requires the `viewer` role. Composed through the F8 BFF
+substrate, so a slow/down source yields a `_partial`-tagged payload instead of a 500.
+
+**Response:**
+```json
+{
+  "registry": {
+    "count": 2,
+    "rows": [
+      {"name": "JPCP", "mlflowName": "jpcp", "version": 18, "stage": "Production",
+       "health": "ok", "freshness": "2026-07-02T12:00:00", "governed": true},
+      {"name": "DEMOAD", "mlflowName": "demoad", "version": null, "stage": "Staging",
+       "health": "warn", "freshness": "2026-07-01T09:00:00", "governed": false}
+    ]
+  }
+}
+```
+
+`health` is a colour-blind-safe token (`ok` / `warn` / `unknown`); `governed` is `true` when an
+enabled promotion policy exists. `name`/`mlflowName` carry the central uppercase↔lowercase mapping.
+
+### `GET /api/v1/mlops/model/{name}` (MLOps console, F9)
+
+Model-detail-2.0 tabs for one model (case-insensitive `name`). Requires `viewer`.
+
+**Response:** `{"detail": {"name", "mlflowName", "cost": {...}, "drift": {...}, "traffic": {...}, "promotion": {...}}}`
+— `cost` (runs/gpu_hours/cost_usd), `drift` (samples/mean_prediction/latest), `traffic`
+(configured/rules/updated_at), and the embedded `promotion` gate.
+
+### `GET /api/v1/mlops/promotion/{name}` (MLOps console, F9)
+
+Guided-promotion gate for one model. Requires `viewer`.
+
+**Response:**
+```json
+{
+  "promotion": {
+    "model": "DEMOAD", "mlflowName": "demoad",
+    "policy": {"allow": false, "reasons": ["no promotion policy configured"]},
+    "eval": {"pass": false, "metrics": {}},
+    "approval": {"required": true, "state": "pending"},
+    "allowed": false
+  }
+}
+```
+
+A promotion is `allowed` only when an **enabled** promotion policy exists; otherwise it is denied
+with an explicit `reasons` list (F9 R4). The phase-11 approval step is always flagged as required.
+
+---
+
+### `GET /api/v1/facility/overview` (Facility console, F6)
+
+Scheduler-neutral HPC facility KPIs. Requires `viewer`. BFF-composed (partial-failure safe).
+Optional `?cluster=<scheduler>` rescopes to one cluster (multi-cluster switcher, F6 R6).
+
+**Response:**
+```json
+{
+  "facility": {
+    "nodesAllocated": 6, "gpusAllocated": 12, "jobsRunning": 2, "queueDepth": 2,
+    "clusters": ["flux", "slurm"],
+    "partitions": [
+      {"name": "flux",  "running": 1, "queued": 0, "gpusAllocated": 8},
+      {"name": "slurm", "running": 1, "queued": 2, "gpusAllocated": 4}
+    ]
+  }
+}
+```
+
+Allocation sums the node/GPU asks of running jobs; queue depth counts waiting jobs. A missing
+`hpc_jobs` table / empty DB degrades to zeros (F6 R7), never an error.
+
+### `GET /api/v1/facility/queue` (Facility console, F6)
+
+Waiting jobs, longest-wait first (`queue_seconds` proxies priority/backfill). Requires `viewer`.
+Optional `?cluster=`.
+
+**Response:** `{"queue": {"count": 2, "jobs": [{"id", "cluster", "model", "dataset", "state", "waitSec", "nodes", "gpus", "submitTime"}]}}`
+
+### `GET /api/v1/facility/job/{job_id}` (Facility console, F6)
+
+Per-job detail. Requires `viewer`. `404` when the job is unknown.
+
+**Response:** `{"job": {"id", "cluster", "model", "dataset", "state", "resources": {"nodes","gpus","cpus"}, "timing": {"submit","start","end","queueSeconds","runSeconds"}, "exitCode", "flowRunId", "mlflowRunId"}}`
+— `mlflowRunId` is the cost link into `model_costs` / MLflow.
+
+---
+
+### `GET /api/v1/flags` (Feature flags, F25)
+
+Server-evaluated flag **decisions** for the caller's context (tenant/role/percentage). Requires
+`viewer`. Returns `{"flags": {"mlopsConsole": true, "incidentTimeline": false, …}}` — booleans, not
+rules. Percentage rollouts are deterministic per subject (admins bypass gating).
+
+### `GET /api/v1/flags/admin` (Feature flags, F25)
+
+Flag definitions + overrides + effective state for the admin UI. Requires **admin**.
+
+**Response:** `{"flags": [{"name","description","default","override","effective","targeting":{"tenants","roles","percentage"},"tags"}], "count": N}`
+
+### `POST /api/v1/flags/{name}` (Feature flags, F25)
+
+Set an admin on/off override. Requires **admin**. Body `{"enabled": false}`. Persists to
+`feature_flag_overrides`, audits to `platform_db` (D4), and publishes `event.flag_changed` on the F8
+channel. Returns `{"updated": true, "name": "...", "enabled": false}` (`updated: false` for an
+unknown flag).
+
+---
+
+### Collaboration (F22)
+
+All viewer-gated, tenant-scoped (F15), sanitized (F16), and audited (`source=dashboard-collab`, D4).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/collab/{type}/{id}/comments` | List comments on an entity (tenant-scoped) |
+| `POST /api/v1/collab/{type}/{id}/comments` | Add a comment `{"body": "…@user…"}` — sanitized; @-mentions publish `event.mention` (F12) |
+| `GET /api/v1/collab/{type}/{id}/activity` | Merged activity trail (comments + entity audit events) |
+| `POST /api/v1/collab/snapshot` | Create a shareable frozen-view snapshot `{"view": {...}, "ttl_hours": 168}` → `{"token","expires_at"}` |
+| `GET /api/v1/collab/snapshot/{token}` | Resolve a snapshot (read-only, expiry-checked) → `{"found": true, "view", "read_only": true}` or `{"found": false}` |
+
+A comment response is `{"id","author","body","mentions":[…],"created_at"}` (the body is stored sanitized).
+Snapshot tokens are scoped, read-only, and expiring — there is no write path and no cross-tenant read.
+
+---
+
+### `POST /api/v1/copilot/ask` (Embedded copilot, F11)
+
+Ask the grounded copilot a question; it proxies the existing Skipper agent bridge and returns an answer
+plus **propose-only** `exa` actions (never executed) and an agent trace. Requires `viewer`. Every query
+is audited (`source=dashboard-copilot`, D4).
+
+**Body:** `{"question": "why is jpcp drifting?", "context": {"page": "/models/jpcp", "entity": {...}, "filters": {...}}, "session": "dashboard-copilot"}`
+— page context is treated as **untrusted** data server-side (R6).
+
+**Response:** `{"answer": "…", "hitl_required": false, "proposals": [{"command": "exa retrain jpcp …", "requiresApproval": true}], "trace": [{"kind","name","detail"}]}`.
+When the agent is unreachable the same shape is returned with `"_partial": ["agent"]` (never a 500).
+Mutating proposals carry `requiresApproval: true` and must route through the normal approval flow — there
+is no execution endpoint.
+
+---
+
+### `GET /api/v1/alerts` (Alerting, F12)
+
+Unified alert inbox derived from drift / budget / eval signals. Requires `viewer`. BFF-composed.
+
+**Response:**
+```json
+{
+  "inbox": {
+    "count": 3,
+    "counts": {"critical": 1, "error": 1, "warn": 1},
+    "alerts": [
+      {"id":"drift:jpcp","source":"drift","severity":"critical","state":"firing",
+       "title":"Prediction drift on jpcp (8.0σ from baseline)","labels":{"model":"jpcp","zscore":"8.00"}}
+    ]
+  }
+}
+```
+
+Alerts are sorted most-severe first. Sources: `drift` (z-score vs baseline), `budget` (spend > budget),
+`eval` (a failed metric in the latest run).
+
+### `POST /api/v1/alerts/{alert_id}/ack` (Alerting, F12)
+
+Acknowledge an alert. Requires `viewer`. Audits the ack to `platform_db` (D4) and publishes
+`alert.acked` on the F8 realtime channel. Returns `{"acked": true, "audited": true}`.
+
+---
+
+### `GET /api/v1/llmops/overview` (LLMOps console, F10)
+
+LLM endpoint registry + continuous-eval scores. Requires `viewer`. BFF-composed (partial-failure
+safe); unavailable backends degrade to empty sections.
+
+**Response:**
+```json
+{
+  "endpoints": {"rows": [{"model":"llama3","engine":"vllm","hfModelId":"meta-llama/Llama-3-8B",
+                "maxModelLen":8192,"tensorParallel":2,"dtype":"bfloat16","enabled":true}], "count": 1},
+  "evals": {"models": [{"model":"llama3","suite":"mmlu","status":"complete",
+            "metrics":[{"metric":"accuracy","value":0.82,"baseline":0.80,"passed":true}],
+            "passRate":0.5}], "count": 1}
+}
+```
+
+`evals` reflects only each model's **latest** eval run. `passRate` is the fraction of metrics that
+passed (null when a run has no metric rows).
+
+---
+
+### `GET /api/v1/governance/overview` (Governance & compliance, F14)
+
+Governance overview: NIST posture + EU-AI-Act compliance + model-card coverage + audit integrity.
+Requires `viewer`. BFF-composed (partial-failure safe). Reports evidence coverage, not certification.
+
+**Response:**
+```json
+{
+  "posture": {"controls": [{"control":"MANAGE-4.1","function":"Manage","title":"Change approval logged",
+              "status":"satisfied","evidence":["1 approval audit events"]}], "satisfied": 3, "total": 4},
+  "compliance": {"rows": [{"model":"jpcp","version":18,"riskClass":"high","technicalFile":true,"provenance":true}],
+                 "count": 1},
+  "cards": {"withCard":["jpcp"], "withoutCard":["demo"], "coverage": 0.5, "total": 2},
+  "audit": {"count": 2, "headDigest": "9f2c…", "verified": true, "entries": [{"seq":1,"hash":"…","prevHash":"genesis"}]}
+}
+```
+
+`status` is `satisfied` / `partial` / `gap` (honest, no false green). `audit.headDigest` is a rolling
+SHA-256 hash-chain anchor — an external copy detects tampering of any past event.
+
+---
+
+### `GET /api/v1/selfobs/status` (Self-observability, F24)
+
+In-app status page payload: dependency health + dashboard self-metrics. Requires `viewer`.
+
+**Response:**
+```json
+{
+  "status": "up",
+  "dependencies": [
+    {"name": "bff", "status": "up"},
+    {"name": "platform_db", "status": "up", "latencyMs": 0.4}
+  ],
+  "metrics": {"requests": 128, "errors": 0, "clientErrors": 3, "rateLimitHits": 0,
+              "latencyMs": {"count": 128, "p50": 2.1, "p95": 18.7}}
+}
+```
+
+### `POST /api/v1/selfobs/action` (Self-observability, F24)
+
+Audit a UI action to `platform_db.audit_events` (D4). Requires `viewer`. Body:
+`{"action": "open_page", "target": "/mlops", "details": ""}` → `{"audited": true}` (false if the
+audit table is absent). The actor is the caller's role; details are PII-scrubbed client-side first.
+
+---
+
+### `GET /api/v1/finops/overview` (FinOps & Green-AI, F13)
+
+Cost + budget + carbon + unit-economics overview. Requires `viewer`. BFF-composed (partial-failure
+safe) over `model_costs` / `project_budgets` / `carbon_records`.
+
+**Response:**
+```json
+{
+  "cost":   {"rows": [{"dimension":"model","key":"jpcp","gpuHours":6.0,"costUsd":16.0,"runs":2}],
+             "total_gpu_hours": 7.0, "total_cost_usd": 20.0},
+  "budget": {"budgets": [{"project":"eu-hpc","period":"monthly","costRatio":1.33,"overBudget":true}],
+             "consumed_cost_usd": 20.0},
+  "carbon": {"totals": {"kwh": 15.0, "co2e_g": 4500.0}, "co2e_kg": 4.5,
+             "uncertainty": 0.3, "methodology": "Energy = GPU-hours × TDP × PUE; …"},
+  "unitEconomics": {"costPerTrainingRun": 6.67}
+}
+```
+
+Carbon figures always carry `uncertainty` + `methodology` (no false precision, F13 R3).
+
+---
+
+### `GET /api/v1/search` (Global search, F2)
+
+Federated global search across pages / models / HPC jobs / audit events. Requires `viewer`.
+BFF-composed (partial-failure safe). Query params: `q` (search string), `limit` (default 20).
+
+**Response:**
+```json
+{
+  "search": {
+    "query": "jpcp", "count": 3,
+    "results": [
+      {"kind": "model", "id": "jpcp", "label": "JPCP", "url": "/models/jpcp", "score": 100, "source": "mlflow"},
+      {"kind": "job",   "id": "slurm-42", "label": "slurm-42 · JPCP (RUNNING)", "url": "/facility", "score": 80, "source": "scheduler"},
+      {"kind": "audit", "id": "retrain_triggered JPCP", "label": "retrain_triggered JPCP", "url": "/audit", "score": 60, "source": "audit"}
+    ],
+    "groups": {"mlflow": ["…"], "scheduler": ["…"], "audit": ["…"]}
+  }
+}
+```
+
+Results are ranked (exact > prefix > word-boundary > substring > fuzzy subsequence) and grouped by
+`source`; each carries the F1 entity `url`. A blank `q` returns no results.
+
+---
+
 ### `GET /api/config`
 
 Get stored dashboard configuration.

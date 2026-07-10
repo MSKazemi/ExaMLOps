@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { sanitizeMarkdown } from '@/lib/sanitize'
 import { BookOpen, ChevronDown, ChevronRight, Search, FileText, ArrowUp, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useDocsTree, useDocContent } from '@/lib/api'
 import type { DocSection, DocFile } from '@/lib/api'
 
@@ -226,14 +228,14 @@ function WelcomeScreen({
 
 function SkeletonLoader() {
   return (
-    <div className="space-y-4 animate-pulse">
-      <div className="h-8 bg-muted rounded-md w-3/4" />
-      <div className="h-4 bg-muted rounded w-full" />
-      <div className="h-4 bg-muted rounded w-5/6" />
-      <div className="h-4 bg-muted rounded w-4/5" />
-      <div className="h-4 bg-muted rounded w-full mt-6" />
-      <div className="h-4 bg-muted rounded w-3/4" />
-      <div className="h-4 bg-muted rounded w-5/6" />
+    <div className="space-y-4" aria-label="Loading document">
+      <Skeleton className="h-8 w-3/4" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-4/5" />
+      <Skeleton className="h-4 w-full mt-6" />
+      <Skeleton className="h-4 w-3/4" />
+      <Skeleton className="h-4 w-5/6" />
     </div>
   )
 }
@@ -300,7 +302,9 @@ export function Docs() {
         {/* Nav tree */}
         <nav className="flex-1 overflow-y-auto p-2">
           {treeLoading ? (
-            <p className="px-2 py-4 text-sm text-muted-foreground">Loading…</p>
+            <div className="space-y-2 px-2 py-3" aria-label="Loading docs">
+              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-5 w-full" />)}
+            </div>
           ) : filteredSections?.length === 0 ? (
             <p className="px-2 py-4 text-sm text-muted-foreground">
               No results for &ldquo;{search}&rdquo;
@@ -344,7 +348,7 @@ export function Docs() {
           ) : content ? (
             <article className="min-w-0">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                {content}
+                {sanitizeMarkdown(content)}
               </ReactMarkdown>
             </article>
           ) : null}

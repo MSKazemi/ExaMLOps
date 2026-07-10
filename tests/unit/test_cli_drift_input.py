@@ -102,3 +102,50 @@ def test_input_status_json():
     data = json.loads(result.output)
     assert isinstance(data, list)
     assert data[0]["model"] == "JPCP"
+
+
+def _input_snapshot_count(model="JPCP"):
+    from examlops.platform_db import get_db
+
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM input_snapshots WHERE model=?", (model,)
+        ).fetchone()[0]
+
+
+def test_input_baseline_dry_run_writes_nothing():
+    _write_snapshots("JPCP", 50)
+    result = runner.invoke(app, ["drift", "input", "baseline", "JPCP", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "dry run" in result.output.lower()
+    assert get_input_baseline("JPCP") is None
+
+
+def test_input_reset_dry_run_deletes_nothing():
+    _write_snapshots("JPCP", 12)
+    result = runner.invoke(app, ["drift", "input", "reset", "JPCP", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "would clear 12" in result.output.lower()
+    assert _input_snapshot_count() == 12
+
+
+def test_input_reset_confirmed_clears_and_audits():
+    _write_snapshots("JPCP", 12)
+    result = runner.invoke(app, ["--yes", "drift", "input", "reset", "JPCP"])
+    assert result.exit_code == 0, result.output
+    assert _input_snapshot_count() == 0
+    from examlops.platform_db import get_db
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM audit_events WHERE action='input_reset' AND target='JPCP'"
+        ).fetchone()
+    assert row is not None
+
+
+def test_input_reset_abort_keeps_snapshots():
+    _write_snapshots("JPCP", 12)
+    result = runner.invoke(app, ["drift", "input", "reset", "JPCP"], input="n\n")
+    assert result.exit_code == 0
+    assert "aborted" in result.output.lower()
+    assert _input_snapshot_count() == 12

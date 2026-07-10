@@ -6,6 +6,7 @@ import {
   Box,
   Database,
   Settings2,
+  SlidersHorizontal,
   BookOpen,
   Zap,
   ShieldCheck,
@@ -13,6 +14,13 @@ import {
   GitBranch,
   NotebookPen,
   Activity,
+  Boxes,
+  Cpu,
+  DollarSign,
+  FileCheck,
+  Bot,
+  BellRing,
+  Flag,
   LogOut,
   Sun,
   Moon,
@@ -21,21 +29,37 @@ import {
 import uniboLogo from '@/assets/unibo.png'
 import seanergysLogo from '@/assets/seanergys.jpg'
 import { clearAuth, getRole } from '@/lib/auth'
+import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
 import { useApprovalsCount } from '@/lib/api'
+import { CommandPalette } from '@/components/CommandPalette'
+import { CopilotPanel } from '@/components/CopilotPanel'
+import { HelpDrawer } from '@/components/HelpDrawer'
+import { OnboardingTour } from '@/components/OnboardingTour'
+import { SkipLink } from '@/components/SkipLink'
+import { LocaleSwitcher } from '@/components/LocaleSwitcher'
 
 const BASE_NAV = [
   { path: '/',          label: 'Overview', icon: LayoutDashboard, adminOnly: false },
   { path: '/services',  label: 'Services', icon: Server,          adminOnly: false },
   { path: '/models',    label: 'Models',   icon: Box,             adminOnly: false },
+  { path: '/mlops',     label: 'MLOps',    icon: Boxes,           adminOnly: false },
+  { path: '/llmops',    label: 'LLMOps',   icon: Bot,             adminOnly: false },
   { path: '/datasets',   label: 'Datasets',  icon: Database,   adminOnly: false },
   { path: '/pipelines', label: 'Pipelines', icon: GitBranch,     adminOnly: false },
+  { path: '/facility',  label: 'Facility',  icon: Cpu,           adminOnly: false },
+  { path: '/finops',    label: 'FinOps',    icon: DollarSign,    adminOnly: false },
   { path: '/jupyter',   label: 'Jupyter',   icon: NotebookPen,   adminOnly: false },
   { path: '/seanerbus', label: 'SeanerBUS', icon: Zap,           adminOnly: false },
   { path: '/drift',     label: 'Drift',     icon: Activity,      adminOnly: false },
+  { path: '/alerts',    label: 'Alerts',    icon: BellRing,      adminOnly: false },
+  { path: '/preferences', label: 'Preferences', icon: SlidersHorizontal, adminOnly: false },
   { path: '/config',    label: 'Config',    icon: Settings2,  adminOnly: false },
   { path: '/audit',     label: 'Audit',    icon: ShieldCheck,     adminOnly: true  },
+  { path: '/governance', label: 'Governance', icon: FileCheck,   adminOnly: true  },
+  { path: '/flags',     label: 'Flags',     icon: Flag,          adminOnly: true  },
   { path: '/approvals', label: 'Approvals', icon: ClipboardCheck, adminOnly: true  },
+  { path: '/status',    label: 'Status',    icon: Activity,      adminOnly: false },
   { path: '/docs',      label: 'Docs',     icon: BookOpen,        adminOnly: false },
 ] as const
 
@@ -48,6 +72,7 @@ const THEMES: { value: Theme; icon: typeof Sun; label: string }[] = [
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation()
   const role = getRole()
+  const { tenant } = useCapabilities()
   const nav = BASE_NAV.filter(n => !n.adminOnly || role === 'admin')
   const { theme, setTheme } = useTheme()
   const { data: pendingApprovals } = useApprovalsCount()
@@ -60,8 +85,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
+      <SkipLink />
+      <CommandPalette />
       <aside
-        className="w-56 shrink-0 flex flex-col border-r border-border"
+        className="no-print w-56 shrink-0 flex flex-col border-r border-border"
         style={{ background: 'var(--sidebar)' }}
       >
         <div className="p-4 border-b border-border">
@@ -148,6 +175,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
             ))}
           </div>
 
+          {/* Locale switcher (F19) */}
+          <div className="flex items-center justify-center">
+            <LocaleSwitcher />
+          </div>
+
           {role && (
             <div className="flex items-center justify-between text-[11px]">
               <span
@@ -164,6 +196,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
               >
                 {role}
               </span>
+              {/* Tenant indicator (F15 R4) — shown once a non-default tenant is in scope. */}
+              {tenant && tenant !== 'default' && (
+                <span
+                  className="px-2 py-0.5 rounded-md font-medium tracking-wide text-muted-foreground"
+                  style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}
+                  title="Active tenant"
+                >
+                  {tenant}
+                </span>
+              )}
               <button
                 onClick={handleSignOut}
                 className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
@@ -179,7 +221,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-h-0 overflow-auto">{children}</main>
+      <main id="main" tabIndex={-1} className="flex-1 min-h-0 overflow-auto">{children}</main>
+      <CopilotPanel />
+      <HelpDrawer />
+      <OnboardingTour />
     </div>
   )
 }
