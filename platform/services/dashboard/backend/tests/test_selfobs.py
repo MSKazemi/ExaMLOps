@@ -7,7 +7,6 @@ import selfobs
 
 from tests.conftest import VIEWER_PW
 
-
 # ── metrics collector (F24 R4) ───────────────────────────────────────────────
 
 

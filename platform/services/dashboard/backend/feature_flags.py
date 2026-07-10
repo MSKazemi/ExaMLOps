@@ -76,7 +76,9 @@ def evaluate_all(db_path: str, *, role: str, tenant: str, subject: str) -> dict[
     """Evaluate every flag for a context → the decisions the client consumes (R2)."""
     overrides = _load_overrides(db_path)
     return {
-        name: evaluate(defn, role=role, tenant=tenant, subject=subject, override=overrides.get(name))
+        name: evaluate(
+            defn, role=role, tenant=tenant, subject=subject, override=overrides.get(name)
+        )
         for name, defn in FLAG_DEFS.items()
     }
 

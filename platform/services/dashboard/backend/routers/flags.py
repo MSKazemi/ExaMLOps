@@ -32,7 +32,11 @@ async def flags(claims: dict = Depends(_viewer)) -> dict[str, Any]:
     role = claims.get("role", "")
     tenant = claims.get("tenant", "default")
     subject = claims.get("sub", role or "anonymous")
-    return {"flags": feature_flags.evaluate_all(_platform_db_path(), role=role, tenant=tenant, subject=subject)}
+    return {
+        "flags": feature_flags.evaluate_all(
+            _platform_db_path(), role=role, tenant=tenant, subject=subject
+        )
+    }
 
 
 @router.get("/admin")

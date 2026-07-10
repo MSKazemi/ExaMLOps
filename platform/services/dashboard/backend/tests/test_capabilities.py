@@ -5,7 +5,6 @@ import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
-
 # ── capability catalogue (F15 R2/R3) ─────────────────────────────────────────
 
 

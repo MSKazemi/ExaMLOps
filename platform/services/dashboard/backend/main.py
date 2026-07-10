@@ -40,8 +40,8 @@ from routers import (
     quality,
     rollback,
     scaffold,
-    search,
     seanerbus,
+    search,
     selfobs,
     shadow,
 )

@@ -41,7 +41,7 @@ export function buildNocSlides(
     {
       id: 'carbon',
       title: 'Estimated carbon',
-      value: carbon ? carbonLabel(carbon.co2e_kg, carbon.uncertainty) : '—',
+      value: carbon ? carbonLabel(carbon.co2e_kg, carbon.uncertainty ?? 0) : '—',
       sub: 'Green-AI accounting',
     },
   ]

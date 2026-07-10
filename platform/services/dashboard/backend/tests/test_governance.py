@@ -37,7 +37,9 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.execute("INSERT INTO model_cards (model, output_path) VALUES ('jpcp', '/cards/jpcp.md')")
     # 'demo' has costs but no card → uncarded
-    conn.execute("INSERT INTO model_costs (model_name, version, gpu_hours, cost_usd) VALUES ('demo', 1, 1.0, 4.0)")
+    conn.execute(
+        "INSERT INTO model_costs (model_name, version, gpu_hours, cost_usd) VALUES ('demo', 1, 1.0, 4.0)"
+    )
     conn.executemany(
         "INSERT INTO audit_events (source, actor, action, target) VALUES (?,?,?,?)",
         [
@@ -105,7 +107,7 @@ def test_nist_posture_honest_grading(platform_db):
     out = governance.nist_posture(platform_db)
     by_control = {c["control"]: c for c in out["controls"]}
     assert by_control["MANAGE-4.1"]["status"] == "satisfied"  # has approval event
-    assert by_control["MAP-1.1"]["status"] == "satisfied"     # has compliance record
+    assert by_control["MAP-1.1"]["status"] == "satisfied"  # has compliance record
     # model-card coverage is partial (jpcp carded, demo not) → not false-green
     assert by_control["MEASURE-2.1"]["status"] == "partial"
     assert out["total"] == 4
@@ -132,7 +134,9 @@ async def test_governance_endpoint_requires_auth(client, platform_db):
 @pytest.mark.asyncio
 async def test_governance_endpoint_composes(client, platform_db):
     token = await _login(client, VIEWER_PW)
-    r = await client.get("/api/v1/governance/overview", headers={"Authorization": f"Bearer {token}"})
+    r = await client.get(
+        "/api/v1/governance/overview", headers={"Authorization": f"Bearer {token}"}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["compliance"]["rows"][0]["model"] == "jpcp"

@@ -33,7 +33,10 @@ def platform_db(tmp_path, monkeypatch):
         """
     )
     # drift: baseline mean 1.0 std 0.5; latest mean ~5 → z=8 → critical
-    conn.execute("INSERT INTO drift_baselines (model, stats) VALUES ('jpcp', ?)", (json.dumps({"mean": 1.0, "std": 0.5}),))
+    conn.execute(
+        "INSERT INTO drift_baselines (model, stats) VALUES ('jpcp', ?)",
+        (json.dumps({"mean": 1.0, "std": 0.5}),),
+    )
     conn.executemany(
         "INSERT INTO drift_snapshots (model, alias, prediction) VALUES (?,?,?)",
         [("jpcp", "Production", 5.0), ("jpcp", "Production", 5.0)],
@@ -42,7 +45,9 @@ def platform_db(tmp_path, monkeypatch):
     conn.execute("INSERT INTO project_budgets (project, cost_budget) VALUES ('eu-hpc', 15.0)")
     conn.execute("INSERT INTO model_costs (model_name, cost_usd) VALUES ('jpcp', 20.0)")
     # eval regression: latest run has a failed metric → warn
-    conn.execute("INSERT INTO eval_runs (id, model, suite, status) VALUES (1, 'llama3', 'mmlu', 'complete')")
+    conn.execute(
+        "INSERT INTO eval_runs (id, model, suite, status) VALUES (1, 'llama3', 'mmlu', 'complete')"
+    )
     conn.executemany(
         "INSERT INTO eval_results (eval_run_id, metric, value, baseline, passed) VALUES (?,?,?,?,?)",
         [(1, "accuracy", 0.7, 0.8, 0), (1, "latency", 0.1, 0.2, 1)],
@@ -78,7 +83,10 @@ def test_no_drift_alert_within_baseline(tmp_path, monkeypatch):
         "CREATE TABLE drift_snapshots (id INTEGER PRIMARY KEY, model TEXT, prediction REAL);"
         "CREATE TABLE drift_baselines (model TEXT PRIMARY KEY, stats TEXT);"
     )
-    conn.execute("INSERT INTO drift_baselines (model, stats) VALUES ('m', ?)", (json.dumps({"mean": 1.0, "std": 1.0}),))
+    conn.execute(
+        "INSERT INTO drift_baselines (model, stats) VALUES ('m', ?)",
+        (json.dumps({"mean": 1.0, "std": 1.0}),),
+    )
     conn.execute("INSERT INTO drift_snapshots (model, prediction) VALUES ('m', 1.2)")  # z=0.2
     conn.commit()
     conn.close()

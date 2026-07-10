@@ -9,5 +9,9 @@ Requires-Dist: tomli-w>=1.0
 Requires-Dist: prometheus-client>=0.20
 Requires-Dist: opentelemetry-sdk>=1.27.0
 Requires-Dist: opentelemetry-exporter-otlp-proto-grpc>=1.27.0
+Requires-Dist: httpx>=0.27
 Provides-Extra: mcp
 Requires-Dist: fastmcp>=3.4; extra == "mcp"
+Provides-Extra: analysis
+Requires-Dist: numpy>=1.26; extra == "analysis"
+Requires-Dist: scipy>=1.11; extra == "analysis"

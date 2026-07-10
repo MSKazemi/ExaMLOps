@@ -8,7 +8,6 @@ import pytest
 
 from tests.conftest import VIEWER_PW
 
-
 # ── context grounding (R2/R6) ────────────────────────────────────────────────
 
 
@@ -90,7 +89,10 @@ async def test_ask_copilot_success_via_mock_transport():
         return httpx.Response(200, json=_completion("Try `exa drift status`."))
 
     out = await copilot.ask_copilot(
-        "what's drifting?", {"page": "/drift"}, agent_url="http://agent", transport=httpx.MockTransport(handler)
+        "what's drifting?",
+        {"page": "/drift"},
+        agent_url="http://agent",
+        transport=httpx.MockTransport(handler),
     )
     assert "drift status" in out["answer"]
     assert out["proposals"][0]["requiresApproval"] is False
@@ -120,7 +122,12 @@ def test_audit_copilot_writes_event(tmp_path):
     )
     conn.commit()
     conn.close()
-    assert copilot.audit_copilot(str(db), "viewer", "why drift?", {"page": "/drift"}, [{"command": "exa retrain m"}]) is True
+    assert (
+        copilot.audit_copilot(
+            str(db), "viewer", "why drift?", {"page": "/drift"}, [{"command": "exa retrain m"}]
+        )
+        is True
+    )
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT source, action, target FROM audit_events").fetchone()
     conn.close()

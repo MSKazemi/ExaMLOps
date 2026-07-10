@@ -56,12 +56,12 @@ async def _login(client, password):
 
 
 def test_score_ordering():
-    assert search_lib.score("jpcp", "jpcp") == 100      # exact
-    assert search_lib.score("jp", "jpcp") == 80         # prefix
+    assert search_lib.score("jpcp", "jpcp") == 100  # exact
+    assert search_lib.score("jp", "jpcp") == 80  # prefix
     assert search_lib.score("cons", "MLOps Console") == 60  # word-boundary
     assert search_lib.score("lops", "MLOps Console") == 40  # substring
-    assert search_lib.score("jcp", "jpcp") == 20        # fuzzy subsequence
-    assert search_lib.score("zzz", "jpcp") == 0         # no match
+    assert search_lib.score("jcp", "jpcp") == 20  # fuzzy subsequence
+    assert search_lib.score("zzz", "jpcp") == 0  # no match
 
 
 # ── federated search ─────────────────────────────────────────────────────────
