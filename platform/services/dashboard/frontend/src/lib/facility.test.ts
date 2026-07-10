@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { waitLabel, partitionTone, type PartitionUtil } from './facility'
+import { waitLabel, partitionTone, clusterStateTone, type PartitionUtil } from './facility'
 
 describe('waitLabel', () => {
   it('formats seconds / minutes / hours', () => {
@@ -20,5 +20,13 @@ describe('partitionTone (F6 R1)', () => {
   })
   it('is ok when running keeps up with the queue', () => {
     expect(partitionTone({ ...base, running: 4, queued: 1 })).toBe('ok')
+  })
+})
+
+describe('clusterStateTone (F6 / Phase 35b)', () => {
+  it('maps approval states to colourblind-safe status tokens', () => {
+    expect(clusterStateTone('ACTIVE')).toBe('healthy')
+    expect(clusterStateTone('PENDING')).toBe('pending')
+    expect(clusterStateTone('REJECTED')).toBe('failed')
   })
 })

@@ -7,6 +7,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **HPC fleet discovery — auto-detect the scheduler and enumerate resources (Phase 35a, read-only).**
+  New `exa hpc` command group answers "which scheduler runs here, what nodes/GPUs does it have, and are
+  they online" *without connecting a workload*: `exa hpc detect [host]` probes a candidate login node with
+  side-effect-free commands and **suggests** a configuration (scheduler + transport + env), `exa hpc nodes`
+  lists nodes with CPUs/memory/GPUs and a normalized state (idle/allocated/mixed/down/drain), and
+  `exa hpc gpus` lists GPU devices (model/memory/utilization/online) — including the unmanaged `lxp-gpu01`
+  via `nvidia-smi`. Backed by a **pluggable** probe registry (`platform/infra/slurm-adapter/discovery.py`:
+  `FluxProbe`/`SlurmProbe`/`NvidiaSmiProbe` + `register_probe`) so new backends (PBS/LSF/k8s/cloud) drop in
+  without touching the CLI. Flux uses `flux resource list` (state-grouped, hostlist-expanded); Slurm uses
+  `sinfo`/GRES; a real scheduler reporting count-only GPUs is enriched with device detail from `nvidia-smi`.
+  `--save --cluster <name>` persists the inventory to the new additive `hpc_nodes` table
+  (`record_node_snapshot`/`get_node_snapshot`, latest-wins). Discovery only *proposes* — turning a cluster
+  into one exaMLOps will schedule on is the sysadmin-approval step (Phase 35b). Design/plan in
+  `.claude/plans/hpc-fleet-integration/`.
+- **HPC cluster registry + sysadmin-approval-gated connect (Phase 35b).** A discovered cluster is now
+  *registered* — never auto-connected. `exa hpc connect <host> --name <n>` probes the host and writes a
+  cluster to the registry in state **PENDING**; `exa hpc clusters` lists all clusters and their state; and
+  a sysadmin **approves** (`exa hpc approve <n>`) or **rejects** (`exa hpc reject <n> --reason ...`) before
+  any job may be scheduled on it. Two sources of truth by design (decision): **`clusters.yaml`** holds the
+  human-editable connection definition (scheduler/transport/host/ssh — keys referenced by path, never
+  inlined; default `~/.config/examlops/clusters.yaml`, override `EXAMLOPS_HPC_REGISTRY`), and the additive
+  **`hpc_clusters`** table holds governance state + who requested/approved + last capabilities. Re-probing
+  an approved cluster never silently de-authorizes it. Every connect/approve/reject writes an
+  `audit_events` row. `examlops.hpc_registry` resolves an ACTIVE cluster into the `EXAMLOPS_HPC_*` env the
+  Phase 23 adapter already reads (`resolve_env`) and refuses non-ACTIVE clusters (`require_active`).
+  **Dashboard (Facility console):** new `GET /api/v1/facility/fleet` (viewer) lists clusters + state, and
+  admin-only `POST .../fleet/{name}/approve|reject` flip state + audit — surfaced as an in-console Fleet
+  table with approve/reject actions for admins. New env: `EXAMLOPS_HPC_CLUSTER` (default target),
+  `EXAMLOPS_HPC_REGISTRY` (registry path).
+- **HPC placement, live queue & preflight (Phase 35c).** exaMLOps now *collaborates* with the schedulers
+  to place training runs: `exa hpc place --gpus N` scores every ACTIVE cluster by matching headroom
+  (filter to what *can* satisfy the ask → prefer most-idle) and explains the choice; `exa pipeline run
+  --cluster <name>` pins a cluster (refuses non-ACTIVE — the approval gate holds on the scheduling path)
+  and `--cluster auto --gpus N` lets placement choose, resolving the winner into the `EXAMLOPS_HPC_*` env
+  the Phase 23 adapter reads. `exa hpc queue --cluster <n>` shows the live scheduler queue (`squeue` /
+  `flux jobs`, normalized), `exa hpc jobs` lists tracked submissions from `hpc_jobs`, and `exa hpc
+  preflight <cluster> --gpus N` runs fail-fast pre-submit checks (transport reachable → scheduler responds
+  → requested resources exist), exiting 1 on any failure so it doubles as a CI gate. Placement lives in
+  the pure, offline-tested `examlops.hpc_placement` (`choose_cluster`/`ResourceAsk`) with a single
+  swappable scoring function; queue/preflight parsers extend the pluggable discovery probes.
+- **HPC capacity/cost + agent (MCP) surface (Phase 35d).** `exa hpc capacity` joins each ACTIVE cluster's
+  node inventory (`hpc_nodes`) with its consumed GPU-hours (`hpc_jobs`) to report total/idle GPUs,
+  utilization %, GPU-hours used, and cost (at `GPU_COST_PER_HOUR`) — carbon stays in `exa finops carbon`
+  (pure `examlops.hpc_capacity`). The fleet is now agent-callable via MCP: read-only tools `hpc_clusters`,
+  `hpc_nodes`, `hpc_place`, `hpc_jobs` (always exposed) plus the mutating, audited `hpc_approve_cluster`
+  (registered only under `EXAMLOPS_MCP_ALLOW_WRITES`) — so an agent can answer "which clusters are online,
+  how many free GPUs, where should this run?" while approval stays human-gated. **Phase 35 (HPC Fleet)
+  complete: discover → approve → place → account, across SLURM/Flux/unmanaged, pluggable for the future.**
+  Guide: `docs/guides/hpc-fleet.md`; design/impl log `.claude/plans/hpc-fleet-integration/`.
+
 - **Pluggable calculation providers — carbon & FinOps become swappable (ADR 0074).** A new general,
   reusable substrate `examlops.providers` (Strategy/Provider pattern + Python entry-point plugins +
   declarative YAML formulas) lets a user or sysadmin change *which formula and coefficients* the platform

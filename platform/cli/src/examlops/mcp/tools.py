@@ -227,6 +227,86 @@ def retrain_status(flow_run_id: str) -> dict[str, Any]:
 # ── registry ──────────────────────────────────────────────────────────────────
 
 
+# ── HPC fleet tools (Phase 35d) ───────────────────────────────────────────────
+
+
+def hpc_clusters() -> dict[str, Any]:
+    """List registered HPC clusters and their approval state (PENDING/ACTIVE/REJECTED).
+
+    Reads the fleet registry (clusters.yaml + hpc_clusters). Use before scheduling to see
+    which clusters a sysadmin has approved for training runs.
+    """
+    try:
+        from examlops.hpc_registry import list_clusters
+
+        return {"ok": True, "clusters": list_clusters()}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_nodes(cluster: str | None = None) -> dict[str, Any]:
+    """Return the latest discovered node inventory (CPUs/memory/GPUs/state) for a cluster.
+
+    Reads the ``hpc_nodes`` snapshot table. Refresh snapshots with
+    ``exa hpc nodes --save --cluster <name>``.
+    """
+    try:
+        from examlops.platform_db import get_node_snapshot, init_db
+
+        init_db()
+        return {"ok": True, "nodes": get_node_snapshot(cluster)}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_place(gpus: int = 0, nodes: int = 1) -> dict[str, Any]:
+    """Recommend which ACTIVE cluster should run a job needing ``gpus``/``nodes``.
+
+    Returns the chosen cluster, a human-readable reason, and the scored candidate list. Does
+    not submit anything — it only advises placement.
+    """
+    try:
+        from examlops.hpc_placement import ResourceAsk, choose_cluster
+        from examlops.hpc_registry import active_clusters_with_inventory
+
+        result = choose_cluster(
+            ResourceAsk(gpus=gpus, nodes=nodes), active_clusters_with_inventory()
+        )
+        return {"ok": True, **result.to_dict()}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_jobs(model: str | None = None) -> dict[str, Any]:
+    """List tracked HPC job submissions (from the ``hpc_jobs`` table), newest first."""
+    try:
+        from examlops.platform_db import get_hpc_jobs, init_db
+
+        init_db()
+        return {"ok": True, "jobs": get_hpc_jobs(model)[:50]}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_approve_cluster(name: str) -> dict[str, Any]:
+    """Approve a PENDING HPC cluster so exaMLOps may schedule jobs on it (mutating, audited).
+
+    This is the sysadmin approval gate. Only registered when writes are explicitly enabled.
+    """
+    try:
+        from examlops.hpc_registry import get_merged
+        from examlops.platform_db import set_cluster_state, write_audit_event
+
+        if get_merged(name) is None:
+            return _err(f"unknown cluster: {name}")
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        set_cluster_state(name, "ACTIVE", approved_by=actor)
+        write_audit_event("mcp", actor, "cluster_approved", name, {"via": "mcp"})
+        return {"ok": True, "cluster": name, "state": "ACTIVE"}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Metadata describing one agent-callable tool."""
@@ -256,6 +336,11 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(recent_audit_events, tags=("read", "governance")),
     ToolSpec(trigger_retrain, mutating=True, tags=("write", "training")),
     ToolSpec(retrain_status, tags=("read", "training")),
+    ToolSpec(hpc_clusters, tags=("read", "hpc")),
+    ToolSpec(hpc_nodes, tags=("read", "hpc")),
+    ToolSpec(hpc_place, tags=("read", "hpc")),
+    ToolSpec(hpc_jobs, tags=("read", "hpc")),
+    ToolSpec(hpc_approve_cluster, mutating=True, tags=("write", "hpc", "governance")),
 )
 
 

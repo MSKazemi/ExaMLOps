@@ -574,3 +574,106 @@ def discover_inventory(executor: RemoteExecutor, scheduler: str | None = None) -
         "nodes": [n.to_dict() for n in nodes],
         "gpus": [g.to_dict() for g in gpus],
     }
+
+
+# ── live queue (Phase 35c) ────────────────────────────────────────────────────────
+
+_FLUX_QUEUE_STATE = {
+    "RUN": "RUNNING",
+    "CLEANUP": "RUNNING",
+    "DEPEND": "PENDING",
+    "PRIORITY": "PENDING",
+    "SCHED": "PENDING",
+    "INACTIVE": "DONE",
+}
+_SLURM_QUEUE_STATE = {
+    "RUNNING": "RUNNING",
+    "R": "RUNNING",
+    "PENDING": "PENDING",
+    "PD": "PENDING",
+    "CONFIGURING": "PENDING",
+    "COMPLETING": "RUNNING",
+}
+
+
+def queue_jobs(executor: RemoteExecutor, scheduler: str) -> list[dict]:
+    """Return the live scheduler queue, normalized to id/name/user/state/nodes.
+
+    Read-only. ``scheduler`` is ``flux`` or ``slurm``; anything else yields ``[]``.
+    """
+    if scheduler == "flux":
+        res = _run(
+            executor,
+            ["flux", "jobs", "-a", "--no-header", "-o", "{id} {name} {username} {state} {nnodes}"],
+        )
+        state_map = _FLUX_QUEUE_STATE
+    elif scheduler == "slurm":
+        res = _run(executor, ["squeue", "-h", "-o", "%i|%j|%u|%T|%D"])
+        state_map = _SLURM_QUEUE_STATE
+    else:
+        return []
+    if not _ok(res):
+        return []
+
+    jobs: list[dict] = []
+    for line in _out(res).splitlines():
+        fields = line.split("|") if scheduler == "slurm" else line.split()
+        if len(fields) < 5:
+            continue
+        job_id, name, user, state, nnodes = fields[:5]
+        jobs.append(
+            {
+                "job_id": job_id,
+                "name": name,
+                "user": user,
+                "state": state_map.get(state.upper(), state.upper()),
+                "nodes": int(nnodes) if nnodes.isdigit() else None,
+            }
+        )
+    return jobs
+
+
+def preflight(executor: RemoteExecutor, scheduler: str, ask: dict | None = None) -> list[dict]:
+    """Fail-fast pre-submit checks. Returns a list of ``{check, ok, detail}`` results.
+
+    Read-only: it verifies the transport is reachable, the scheduler responds, and the
+    requested resources could exist — it never submits anything.
+    """
+    ask = ask or {}
+    checks: list[dict] = []
+
+    reachable = _ok(_run(executor, ["hostname"]))
+    checks.append({"check": "transport", "ok": reachable, "detail": "host reachable"})
+    if not reachable:
+        return checks  # nothing else is meaningful if we can't reach the host
+
+    probe = _PROBES.get(scheduler)
+    responds = bool(probe and probe.available(executor))
+    checks.append(
+        {"check": "scheduler", "ok": responds, "detail": f"{scheduler} responds to queries"}
+    )
+    if not responds:
+        return checks
+
+    caps = probe.capabilities(executor)
+    want_gpus = int(ask.get("gpus", 0) or 0)
+    if want_gpus > 0:
+        ok = caps.total_gpus >= want_gpus
+        checks.append(
+            {
+                "check": "gpus",
+                "ok": ok,
+                "detail": f"asked {want_gpus}, cluster has {caps.total_gpus}",
+            }
+        )
+    want_nodes = int(ask.get("nodes", 0) or 0)
+    if want_nodes > 0:
+        ok = caps.total_nodes >= want_nodes
+        checks.append(
+            {
+                "check": "nodes",
+                "ok": ok,
+                "detail": f"asked {want_nodes}, cluster has {caps.total_nodes}",
+            }
+        )
+    return checks

@@ -153,6 +153,23 @@ def init_db() -> None:
                 partition   TEXT,                   -- Slurm partition / Flux queue
                 captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS hpc_clusters (
+                name            TEXT PRIMARY KEY,
+                scheduler       TEXT NOT NULL,        -- flux|slurm|unmanaged|mock
+                transport       TEXT NOT NULL DEFAULT 'ssh',  -- ssh|local
+                host            TEXT,
+                ssh_user        TEXT,
+                ssh_port        INTEGER DEFAULT 22,
+                ssh_key         TEXT,
+                key_fingerprint TEXT,
+                state           TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|ACTIVE|REJECTED
+                capabilities    TEXT,                 -- JSON (discovery ClusterCaps)
+                requested_by    TEXT,
+                approved_by     TEXT,
+                reason          TEXT,
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS explain_logs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -872,9 +889,96 @@ def get_node_snapshot(cluster: str | None = None) -> list[dict[str, Any]]:
                 "SELECT * FROM hpc_nodes WHERE cluster=? ORDER BY node ASC", (cluster,)
             ).fetchall()
         else:
+            rows = conn.execute("SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_cluster(
+    name: str,
+    scheduler: str,
+    *,
+    transport: str = "ssh",
+    host: str | None = None,
+    ssh_user: str | None = None,
+    ssh_port: int | None = 22,
+    ssh_key: str | None = None,
+    key_fingerprint: str | None = None,
+    capabilities: dict[str, Any] | None = None,
+    requested_by: str | None = None,
+) -> None:
+    """Insert or update a cluster *definition* — state is never changed here.
+
+    A brand-new cluster starts ``PENDING`` (the table default). Re-running discovery on an
+    already-approved (or already-rejected) cluster refreshes its definition + capabilities
+    but leaves its ``state``/``approved_by`` intact, so re-probing can never silently
+    authorize or de-authorize a cluster. State transitions go through
+    :func:`set_cluster_state`.
+    """
+    caps = json.dumps(capabilities) if capabilities else None
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO hpc_clusters
+                   (name, scheduler, transport, host, ssh_user, ssh_port, ssh_key,
+                    key_fingerprint, capabilities, requested_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(name) DO UPDATE SET
+                   scheduler=excluded.scheduler,
+                   transport=excluded.transport,
+                   host=excluded.host,
+                   ssh_user=excluded.ssh_user,
+                   ssh_port=excluded.ssh_port,
+                   ssh_key=excluded.ssh_key,
+                   key_fingerprint=excluded.key_fingerprint,
+                   capabilities=excluded.capabilities,
+                   updated_at=CURRENT_TIMESTAMP""",
+            (
+                name,
+                scheduler,
+                transport,
+                host,
+                ssh_user,
+                ssh_port,
+                ssh_key,
+                key_fingerprint,
+                caps,
+                requested_by,
+            ),
+        )
+
+
+def set_cluster_state(
+    name: str,
+    state: str,
+    *,
+    approved_by: str | None = None,
+    reason: str | None = None,
+) -> bool:
+    """Transition a cluster's state (PENDING|ACTIVE|REJECTED). Returns False if unknown."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE hpc_clusters
+                   SET state=?, approved_by=COALESCE(?, approved_by),
+                       reason=COALESCE(?, reason), updated_at=CURRENT_TIMESTAMP
+                 WHERE name=?""",
+            (state, approved_by, reason, name),
+        )
+        return cur.rowcount > 0
+
+
+def get_cluster(name: str) -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM hpc_clusters WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        if state:
             rows = conn.execute(
-                "SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC"
+                "SELECT * FROM hpc_clusters WHERE state=? ORDER BY name ASC", (state,)
             ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM hpc_clusters ORDER BY name ASC").fetchall()
     return [dict(r) for r in rows]
 
 

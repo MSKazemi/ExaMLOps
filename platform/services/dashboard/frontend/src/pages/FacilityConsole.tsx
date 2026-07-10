@@ -1,16 +1,93 @@
 import { useState } from 'react'
-import { Cpu, Server, Layers, Clock } from 'lucide-react'
+import { Cpu, Server, Layers, Clock, Network } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
 import { KpiTile } from '@/components/viz'
+import { isAdmin } from '@/lib/auth'
 import {
   useFacilityOverview,
   useFacilityQueue,
+  useFleet,
+  useClusterDecision,
+  clusterStateTone,
   waitLabel,
   partitionTone,
   type FacilityOverview,
 } from '@/lib/facility'
+
+// ── fleet registry + approval gate (Phase 35b) ───────────────────────────────
+
+function Fleet() {
+  const { data, isLoading } = useFleet()
+  const decision = useClusterDecision()
+  const admin = isAdmin()
+  const clusters = data?.clusters ?? []
+
+  if (isLoading) return <Skeleton className="h-16 w-full" />
+  if (clusters.length === 0) {
+    return (
+      <EmptyState
+        title="No clusters registered"
+        description="Discover and register one with the CLI: exa hpc connect <host> --name <n>."
+      />
+    )
+  }
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground border-b border-border">
+            <th className="px-3 py-2 font-medium">Cluster</th>
+            <th className="px-3 py-2 font-medium">Scheduler</th>
+            <th className="px-3 py-2 font-medium">Host</th>
+            <th className="px-3 py-2 font-medium">GPUs</th>
+            <th className="px-3 py-2 font-medium">State</th>
+            {admin && <th className="px-3 py-2 font-medium">Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {clusters.map((c) => (
+            <tr key={c.name} className="border-b border-border/50">
+              <td className="px-3 py-2 font-medium">{c.name}</td>
+              <td className="px-3 py-2 text-muted-foreground">{c.scheduler ?? '—'}</td>
+              <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{c.host ?? '—'}</td>
+              <td className="px-3 py-2 text-muted-foreground">{c.capabilities?.total_gpus ?? '—'}</td>
+              <td className="px-3 py-2">
+                <StatusPill status={clusterStateTone(c.state)} label={c.state} />
+              </td>
+              {admin && (
+                <td className="px-3 py-2">
+                  {c.state !== 'ACTIVE' && (
+                    <button
+                      className="mr-2 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                      disabled={decision.isPending}
+                      onClick={() => decision.mutate({ name: c.name, decision: 'approve' })}
+                    >
+                      Approve
+                    </button>
+                  )}
+                  {c.state !== 'REJECTED' && (
+                    <button
+                      className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                      disabled={decision.isPending}
+                      onClick={() => {
+                        const reason = window.prompt(`Reject cluster '${c.name}'? Optional reason:`) ?? undefined
+                        decision.mutate({ name: c.name, decision: 'reject', reason })
+                      }}
+                    >
+                      Reject
+                    </button>
+                  )}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 // ── partitions ─────────────────────────────────────────────────────────────────
 
@@ -112,6 +189,14 @@ export function FacilityConsole() {
               threshold={{ warn: 5, crit: 20 }}
             />
           </div>
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-2">
+              <Network className="size-3.5" aria-hidden="true" />
+              Fleet — registered clusters
+            </h2>
+            <Fleet />
+          </section>
 
           <section className="space-y-3">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
