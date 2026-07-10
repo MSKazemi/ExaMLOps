@@ -5,6 +5,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable calculation providers — carbon & FinOps become swappable (ADR 0074).** A new general,
+  reusable substrate `examlops.providers` (Strategy/Provider pattern + Python entry-point plugins +
+  declarative YAML formulas) lets a user or sysadmin change *which formula and coefficients* the platform
+  uses for carbon accounting — **without editing core code** — three ways: (1) override coefficients in
+  `~/.config/examlops/finops.yaml`, (2) author an inline formula (`provider: expression`, evaluated safely
+  with `simpleeval`), or (3) `pip install` a Python plugin under the `exa.providers.carbon` entry-point
+  group. Ships three built-in carbon providers — `green-ai-default` (default; reproduces the original
+  math **byte-for-byte**, zero behaviour change), `codecarbon-like` (GPU+CPU+RAM component energy), and
+  `ccf-like` (Cloud Carbon Footprint shape). New CLI: `exa finops carbon providers` (list built-ins +
+  plugins with methodology/uncertainty/status, `-o json`), and `--provider`/`--pue`/`--gpu-tdp` on
+  `carbon estimate`/`record`. Resolution: `--provider` → `EXAMLOPS_CARBON_PROVIDER` → config → default;
+  bad plugin/config degrades to the default, never crashes. Two documented trust tiers (Python plugin =
+  trusted; YAML expression = sandboxed). Modelled on the Green Software Foundation Impact Framework.
+  `simpleeval` added as the optional `[finops]` extra (lazy). New guide `docs/guides/finops-providers.md`;
+  design in `.claude/plans/finops-plugins/`. The substrate is domain-agnostic — reused next for cost.
+  Provenance: `carbon_records` gains an additive `provider` column (migration-guarded); `exa finops carbon
+  record` persists which provider produced a figure, and the dashboard FinOps console reports the
+  provider(s) used and surfaces the active provider's own methodology + uncertainty. Example plugin under
+  `examples/exa-carbon-plugin/`; Makefile `finops-providers` / `finops-plugin-example` targets.
+- **Pluggable cost rate cards — the substrate's second consumer (proves generality).** HPC cost
+  (GPU/CPU-hours → USD) now runs through the same provider registry under a `cost` domain:
+  `flat-rate` (default; reproduces `gpu_hours × rate (+ cpu_hours × rate)` byte-for-byte with the existing
+  `GPU_COST_PER_HOUR`/`CPU_COST_PER_HOUR` env defaults) and a `tiered-example` volume-discount rate card.
+  `exa models cost --record` computes cost via the active provider; select a rate card with `[finops.cost]`
+  in `finops.yaml` / `EXAMLOPS_COST_PROVIDER` / an `exa.providers.cost` plugin / an inline formula. New
+  `exa finops cost providers`. Same substrate, no substrate change — carbon and cost share it.
+
 ## [0.28.1] — 2026-07-10
 
 ### Fixed

@@ -65,3 +65,41 @@ def budget_usage_ratio(consumed: float, budget: float | None) -> float | None:
     if budget == 0:
         return float("inf") if consumed > 0 else 0.0
     return consumed / budget
+
+
+def estimate_carbon_via_provider(
+    gpu_hours: float,
+    *,
+    provider: str | None = None,
+    config: dict | None = None,
+    **overrides: float,
+) -> dict:
+    """GPU-hours → carbon via the **pluggable provider registry** (#20 + FinOps-plugins).
+
+    Resolves the active ``carbon`` provider — an explicit ``provider`` name, else the
+    ``[finops.carbon]`` config / ``EXAMLOPS_CARBON_PROVIDER`` env, else the built-in
+    ``green-ai-default`` (which reproduces :func:`estimate_carbon` exactly). Configured
+    ``coefficients`` are layered *under* per-call ``overrides`` (e.g. ``pue=1.3``) so an explicit
+    argument always wins. Returns the provider's outputs plus provenance:
+    ``{kwh, co2e_g, provider, methodology, uncertainty}``.
+
+    Degrades gracefully: any resolution error falls back to the default provider so a calculation
+    never hard-fails on a bad plugin/config.
+    """
+    from ..providers import get_provider
+    from ..providers.loader import load_domain_config, resolve_provider
+    from . import carbon_providers  # noqa: F401 - importing registers the built-ins
+
+    block = dict(config) if config is not None else load_domain_config("carbon")
+    coeffs = dict(block.get("coefficients") or {})
+    inputs = {**coeffs, **overrides, "gpu_hours": gpu_hours}
+    try:
+        prov = resolve_provider("carbon", override=provider, config=block)
+    except Exception:
+        prov = get_provider("carbon", "green-ai-default")
+    result = dict(prov.compute(inputs))
+    meta = prov.metadata()
+    result["provider"] = prov.name
+    result["methodology"] = meta.methodology
+    result["uncertainty"] = meta.uncertainty
+    return result

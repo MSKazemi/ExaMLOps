@@ -8,7 +8,7 @@ from examlops.cli import _output
 from examlops.finops.carbon import (
     DEFAULT_GRID_INTENSITY_G_PER_KWH,
     budget_usage_ratio,
-    estimate_carbon,
+    estimate_carbon_via_provider,
 )
 from examlops.platform_db import (
     get_carbon_records,
@@ -40,8 +40,15 @@ carbon_app = typer.Typer(
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+cost_app = typer.Typer(
+    help="HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'.",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 app.add_typer(budget_app, name="budget")
 app.add_typer(carbon_app, name="carbon")
+app.add_typer(cost_app, name="cost")
 
 _EX_BUDGET_SET = (
     "Examples:\n\n"
@@ -52,15 +59,32 @@ _EX_BUDGET_STATUS = "Examples:\n\n  exa finops budget status\n\n  exa finops bud
 _EX_CARBON_EST = (
     "Examples:\n\n"
     "  exa finops carbon estimate --gpu-hours 12\n\n"
-    "  exa finops carbon estimate --gpu-hours 12 --grid-intensity 232"
+    "  exa finops carbon estimate --gpu-hours 12 --grid-intensity 232\n\n"
+    "  exa finops carbon estimate --gpu-hours 12 --provider ccf-like --pue 1.3"
 )
 _EX_CARBON_RECORD = (
     "Examples:\n\n"
     "  exa finops carbon record JPCP --gpu-hours 12\n\n"
-    "  exa finops carbon record JPCP --gpu-hours 12 --run-id abc123 --grid-intensity 232"
+    "  exa finops carbon record JPCP --gpu-hours 12 --run-id abc123 --grid-intensity 232\n\n"
+    "  exa finops carbon record JPCP --gpu-hours 12 --provider codecarbon-like"
 )
 _EX_CARBON_REPORT = (
     "Examples:\n\n  exa finops carbon report\n\n  exa finops carbon report --model JPCP"
+)
+_EX_CARBON_PROVIDERS = (
+    "Examples:\n\n"
+    "  exa finops carbon providers\n\n"
+    "  exa finops carbon providers --json\n\n"
+    "Add your own: ship a plugin under the 'exa.providers.carbon' entry-point group, or set a\n"
+    "declarative formula in ~/.config/examlops/finops.yaml (provider: expression). See\n"
+    "docs/guides/finops-providers.md."
+)
+_EX_COST_PROVIDERS = (
+    "Examples:\n\n"
+    "  exa finops cost providers\n\n"
+    "Cost estimation itself runs inside 'exa models cost --record'. Select a rate card with the\n"
+    "[finops.cost] block in ~/.config/examlops/finops.yaml or EXAMLOPS_COST_PROVIDER, or ship a\n"
+    "plugin under the 'exa.providers.cost' entry-point group. See docs/guides/finops-providers.md."
 )
 
 
@@ -145,19 +169,53 @@ def budget_status(
     )
 
 
+def _carbon_overrides(grid_intensity: float, pue: float | None, gpu_tdp: float | None) -> dict:
+    """Build the per-call coefficient overrides (only for flags the user set)."""
+    overrides: dict[str, float] = {"grid_intensity_g_per_kwh": grid_intensity}
+    if pue is not None:
+        overrides["pue"] = pue
+    if gpu_tdp is not None:
+        overrides["gpu_tdp_watts"] = gpu_tdp
+    return overrides
+
+
 @carbon_app.command("estimate", epilog=_EX_CARBON_EST)
 def carbon_estimate(
     gpu_hours: float = typer.Option(..., "--gpu-hours", help="GPU-hours to estimate"),
     grid_intensity: float = typer.Option(
         DEFAULT_GRID_INTENSITY_G_PER_KWH, "--grid-intensity", help="gCO2e per kWh"
     ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Carbon provider (default: green-ai-default). See: carbon providers",
+    ),
+    pue: float | None = typer.Option(None, "--pue", help="Override datacentre PUE"),
+    gpu_tdp: float | None = typer.Option(None, "--gpu-tdp", help="Override GPU TDP (watts)"),
 ) -> None:
-    """Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write)."""
-    est = estimate_carbon(gpu_hours, grid_intensity_g_per_kwh=grid_intensity)
+    """Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write).
+
+    The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or
+    a declarative YAML formula. Defaults reproduce the platform's original methodology exactly.
+    """
+    est = estimate_carbon_via_provider(
+        gpu_hours, provider=provider, **_carbon_overrides(grid_intensity, pue, gpu_tdp)
+    )
+    if _output.json_mode:
+        _output.print_json({"gpu_hours": gpu_hours, **est})
+        return
     _output.print_table(
         f"Carbon estimate — {gpu_hours} GPU-h",
         ["Metric", "Value"],
-        [["Energy (kWh)", f"{est['kwh']:.3f}"], ["CO2e (g)", f"{est['co2e_g']:.1f}"]],
+        [
+            ["Energy (kWh)", f"{est['kwh']:.3f}"],
+            ["CO2e (g)", f"{est['co2e_g']:.1f}"],
+            ["Provider", est["provider"]],
+            [
+                "Uncertainty",
+                "—" if est["uncertainty"] is None else f"±{est['uncertainty'] * 100:.0f}%",
+            ],
+        ],
     )
 
 
@@ -169,15 +227,86 @@ def carbon_record(
     grid_intensity: float = typer.Option(
         DEFAULT_GRID_INTENSITY_G_PER_KWH, "--grid-intensity", help="gCO2e per kWh"
     ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Carbon provider (default: green-ai-default). See: carbon providers",
+    ),
+    pue: float | None = typer.Option(None, "--pue", help="Override datacentre PUE"),
+    gpu_tdp: float | None = typer.Option(None, "--gpu-tdp", help="Override GPU TDP (watts)"),
 ) -> None:
-    """Estimate and persist a carbon record for a training run."""
+    """Estimate (via the active provider) and persist a carbon record for a training run."""
     init_db()
-    est = estimate_carbon(gpu_hours, grid_intensity_g_per_kwh=grid_intensity)
-    write_carbon_record(model, run_id, est["kwh"], est["co2e_g"], grid_intensity)
-    write_audit_event("cli", _actor(), "carbon_recorded", model, {"gpu_hours": gpu_hours, **est})
-    _output.ok(
-        f"Recorded {est['kwh']:.3f} kWh / {est['co2e_g']:.1f} gCO2e for [bold]{model}[/bold]."
+    est = estimate_carbon_via_provider(
+        gpu_hours, provider=provider, **_carbon_overrides(grid_intensity, pue, gpu_tdp)
     )
+    write_carbon_record(model, run_id, est["kwh"], est["co2e_g"], grid_intensity, est["provider"])
+    write_audit_event(
+        "cli",
+        _actor(),
+        "carbon_recorded",
+        model,
+        {
+            "gpu_hours": gpu_hours,
+            "provider": est["provider"],
+            "kwh": est["kwh"],
+            "co2e_g": est["co2e_g"],
+        },
+    )
+    _output.ok(
+        f"Recorded {est['kwh']:.3f} kWh / {est['co2e_g']:.1f} gCO2e for [bold]{model}[/bold] "
+        f"(provider: {est['provider']})."
+    )
+
+
+def _list_providers(domain: str, register_module: str, title: str) -> None:
+    """Shared renderer for `<domain> providers` — built-ins + entry-point plugins + status."""
+    import importlib
+
+    importlib.import_module(register_module)  # registers the built-ins as a side effect
+    from examlops.providers import default_provider_name, list_providers
+
+    infos = list_providers(domain)
+    default = default_provider_name(domain)
+    if _output.json_mode:
+        _output.print_json(
+            [
+                {
+                    "name": i.name,
+                    "kind": i.kind,
+                    "default": i.name == default,
+                    "ok": i.ok,
+                    "methodology": (
+                        i.provider.metadata().methodology if i.ok and i.provider else None
+                    ),
+                    "uncertainty": (
+                        i.provider.metadata().uncertainty if i.ok and i.provider else None
+                    ),
+                    "error": i.error,
+                }
+                for i in infos
+            ]
+        )
+        return
+    rows = []
+    for i in infos:
+        meta = i.provider.metadata() if i.ok and i.provider else None
+        unc = "—" if not meta or meta.uncertainty is None else f"±{meta.uncertainty * 100:.0f}%"
+        status = "ok" if i.ok else f"ERROR: {i.error}"
+        rows.append([i.name + ("  (default)" if i.name == default else ""), i.kind, unc, status])
+    _output.print_table(title, ["Name", "Kind", "Uncertainty", "Status"], rows)
+
+
+@carbon_app.command("providers", epilog=_EX_CARBON_PROVIDERS)
+def carbon_providers() -> None:
+    """List the available carbon providers (built-ins + entry-point plugins) and their status."""
+    _list_providers("carbon", "examlops.finops.carbon_providers", "Carbon providers")
+
+
+@cost_app.command("providers", epilog=_EX_COST_PROVIDERS)
+def cost_providers() -> None:
+    """List the available cost providers (rate cards) — built-ins + entry-point plugins."""
+    _list_providers("cost", "examlops.finops.cost_providers", "Cost providers")
 
 
 @carbon_app.command("report", epilog=_EX_CARBON_REPORT)

@@ -249,22 +249,43 @@ Energy (kWh) and CO2e accounting for training runs.
 
 Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write).
 
+The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or
+a declarative YAML formula. Defaults reproduce the platform's original methodology exactly.
+
 - `--gpu-hours` — GPU-hours to estimate
 - `--grid-intensity` — gCO2e per kWh
+- `--provider` — Carbon provider (default: green-ai-default). See: carbon providers
+- `--pue` — Override datacentre PUE
+- `--gpu-tdp` — Override GPU TDP (watts)
+
+#### `exa finops carbon providers`
+
+List the available carbon providers (built-ins + entry-point plugins) and their status.
 
 #### `exa finops carbon record`
 
-Estimate and persist a carbon record for a training run.
+Estimate (via the active provider) and persist a carbon record for a training run.
 
 - `--gpu-hours` — GPU-hours consumed by the run
 - `--run-id` — MLflow run id
 - `--grid-intensity` — gCO2e per kWh
+- `--provider` — Carbon provider (default: green-ai-default). See: carbon providers
+- `--pue` — Override datacentre PUE
+- `--gpu-tdp` — Override GPU TDP (watts)
 
 #### `exa finops carbon report`
 
 Aggregate recorded energy and carbon (optionally for one model).
 
 - `--model, -m` — Filter to one model
+
+### `exa finops cost`
+
+HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'.
+
+#### `exa finops cost providers`
+
+List the available cost providers (rate cards) — built-ins + entry-point plugins.
 
 ## `exa mcp`
 

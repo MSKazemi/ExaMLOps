@@ -110,3 +110,56 @@ def test_carbon_report_empty(db_path):
     res = runner.invoke(finops_cmd.app, ["carbon", "report"])
     assert res.exit_code == 0
     assert "no carbon records" in res.output.lower()
+
+
+def test_carbon_providers_lists_builtins(db_path):
+    from examlops.cli.commands import finops_cmd
+
+    res = runner.invoke(finops_cmd.app, ["carbon", "providers"])
+    assert res.exit_code == 0, res.output
+    assert "green-ai-default" in res.output
+    assert "codecarbon-like" in res.output and "ccf-like" in res.output
+    assert "default" in res.output
+
+
+def test_carbon_providers_json(db_path):
+    from examlops.cli import _output
+    from examlops.cli.commands import finops_cmd
+
+    _output.json_mode = True
+    try:
+        res = runner.invoke(finops_cmd.app, ["carbon", "providers"])
+    finally:
+        _output.json_mode = False
+    assert res.exit_code == 0, res.output
+    payload = {p["name"]: p for p in json.loads(res.output)}
+    assert payload["green-ai-default"]["default"] is True
+    assert payload["green-ai-default"]["uncertainty"] == 0.30
+
+
+def test_carbon_estimate_with_provider_and_pue(db_path):
+    from examlops.cli.commands import finops_cmd
+
+    # ccf-like: 10h × 0.4 kWh/gpu-h × 1.3 PUE = 5.2 kWh
+    res = runner.invoke(
+        finops_cmd.app,
+        ["carbon", "estimate", "--gpu-hours", "10", "--provider", "ccf-like", "--pue", "1.3"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "5.200" in res.output
+    assert "ccf-like" in res.output
+
+
+def test_carbon_record_persists_and_reports(db_path):
+    from examlops.cli.commands import finops_cmd
+    from examlops.platform_db import get_carbon_records
+
+    res = runner.invoke(
+        finops_cmd.app,
+        ["carbon", "record", "JPCP", "--gpu-hours", "10", "--provider", "ccf-like"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "ccf-like" in res.output
+    # provider provenance is persisted on the record (S4)
+    rec = get_carbon_records("JPCP")[0]
+    assert rec["provider"] == "ccf-like"

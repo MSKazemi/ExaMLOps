@@ -27,6 +27,7 @@ from examlops.cli.commands import (
     features_cmd,
     feedback_cmd,
     finops_cmd,
+    hpc_cmd,
     hpo_cmd,
     mcp_cmd,
     models,
@@ -201,6 +202,7 @@ eval_app.add_typer(feedback_cmd.app, name="feedback", help="Ground-truth feedbac
 app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
 
 app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
+app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
 app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
 
 app.command("ask", epilog=ask_cmd._EXAMPLES)(ask_cmd.ask)
