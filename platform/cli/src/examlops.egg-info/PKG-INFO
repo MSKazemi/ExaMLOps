@@ -15,3 +15,5 @@ Requires-Dist: fastmcp>=3.4; extra == "mcp"
 Provides-Extra: analysis
 Requires-Dist: numpy>=1.26; extra == "analysis"
 Requires-Dist: scipy>=1.11; extra == "analysis"
+Provides-Extra: finops
+Requires-Dist: simpleeval>=1.0; extra == "finops"

@@ -140,6 +140,19 @@ def init_db() -> None:
                 updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(scheduler, job_id)
             );
+            CREATE TABLE IF NOT EXISTS hpc_nodes (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster     TEXT NOT NULL,          -- registry cluster name (or 'default')
+                scheduler   TEXT NOT NULL,          -- 'flux' | 'slurm' | 'unmanaged'
+                node        TEXT NOT NULL,
+                cpus        INTEGER,
+                memory_mb   INTEGER,
+                gpus        INTEGER NOT NULL DEFAULT 0,
+                gpu_model   TEXT,
+                state       TEXT,                   -- idle|allocated|mixed|down|drain|unknown
+                partition   TEXT,                   -- Slurm partition / Flux queue
+                captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS explain_logs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -499,7 +512,8 @@ def init_db() -> None:
                 model          TEXT NOT NULL,
                 kwh            REAL,
                 co2e_g         REAL,
-                grid_intensity REAL
+                grid_intensity REAL,
+                provider       TEXT
             );
             CREATE TABLE IF NOT EXISTS inference_energy (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -544,6 +558,10 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "hpo_trials": {
         "state": "TEXT NOT NULL DEFAULT 'complete'",
         "pruned": "INTEGER NOT NULL DEFAULT 0",
+    },
+    # FinOps pluggable providers (ADR 0074): which carbon provider produced each record.
+    "carbon_records": {
+        "provider": "TEXT",
     },
 }
 
@@ -815,6 +833,51 @@ def get_hpc_jobs(model: str | None = None) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def record_node_snapshot(cluster: str, scheduler: str, nodes: list[dict[str, Any]]) -> int:
+    """Replace the stored node inventory for ``cluster`` with a fresh snapshot.
+
+    Snapshot semantics (latest wins): existing rows for the cluster are deleted and the
+    current ``nodes`` (dicts shaped like ``discovery.NodeInfo.to_dict()``) are inserted.
+    Returns the number of node rows written.
+    """
+    with get_db() as conn:
+        conn.execute("DELETE FROM hpc_nodes WHERE cluster=?", (cluster,))
+        conn.executemany(
+            """INSERT INTO hpc_nodes
+                   (cluster, scheduler, node, cpus, memory_mb, gpus, gpu_model, state, partition)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    cluster,
+                    scheduler,
+                    n.get("name"),
+                    n.get("cpus"),
+                    n.get("memory_mb"),
+                    n.get("gpus", 0) or 0,
+                    n.get("gpu_model"),
+                    n.get("state"),
+                    n.get("partition"),
+                )
+                for n in nodes
+            ],
+        )
+    return len(nodes)
+
+
+def get_node_snapshot(cluster: str | None = None) -> list[dict[str, Any]]:
+    """Return the latest stored node inventory, optionally filtered to one cluster."""
+    with get_db() as conn:
+        if cluster:
+            rows = conn.execute(
+                "SELECT * FROM hpc_nodes WHERE cluster=? ORDER BY node ASC", (cluster,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ======================================================================
 # Next-generation feature helpers (Phase 0). Each mirrors the set_/get_/
 # write_ conventions above so callers stay uniform across features.
@@ -968,12 +1031,13 @@ def write_carbon_record(
     kwh: float | None,
     co2e_g: float | None,
     grid_intensity: float | None = None,
+    provider: str | None = None,
 ) -> None:
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity)
-               VALUES (?,?,?,?,?)""",
-            (run_id, model, kwh, co2e_g, grid_intensity),
+            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity, provider)
+               VALUES (?,?,?,?,?,?)""",
+            (run_id, model, kwh, co2e_g, grid_intensity, provider),
         )
 
 

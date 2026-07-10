@@ -649,6 +649,13 @@ skipper-memory: ## Admin Skipper's long-term memory (stats|list|export|delete); 
 ##@ Convenience
 # =============================================================================
 
+finops-providers: install-dev ## List available carbon calculation providers (built-ins + plugins)
+	@$(VENV)/bin/exa finops carbon providers
+
+finops-plugin-example: install-dev ## Install the example carbon provider plugin (examples/exa-carbon-plugin)
+	@$(UV) pip install ./examples/exa-carbon-plugin
+	@printf "$(GREEN)Installed. Try: exa finops carbon estimate --gpu-hours 12 --provider example-fixed-grid$(RESET)\n"
+
 bootstrap: touch-env-dashboard stack-up install-dev ## One-shot infrastructure setup: stack + dependencies
 	@printf "\n$(GREEN)$(BOLD)Bootstrap complete.$(RESET)\n\n"
 	@printf "  Dashboard requires DASHBOARD_VIEWER_PASSWORD, DASHBOARD_ADMIN_PASSWORD,\n"
