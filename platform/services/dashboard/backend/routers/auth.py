@@ -22,6 +22,8 @@ class LoginResponse(BaseModel):
 class MeResponse(BaseModel):
     role: str
     expires_at: str
+    tenant: str = "default"
+    capabilities: list[str] = []
 
 
 @router.post(
@@ -58,5 +60,13 @@ async def logout(_: dict = Depends(require_role("viewer"))) -> Response:
 async def me(claims: dict = Depends(require_role("viewer"))) -> MeResponse:
     from datetime import datetime
 
+    from capabilities import principal_from_claims
+
     exp = datetime.fromtimestamp(claims["exp"], tz=UTC)
-    return MeResponse(role=claims["role"], expires_at=exp.isoformat())
+    principal = principal_from_claims(claims)
+    return MeResponse(
+        role=claims["role"],
+        expires_at=exp.isoformat(),
+        tenant=principal["tenant"],
+        capabilities=principal["capabilities"],
+    )

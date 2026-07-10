@@ -5,6 +5,9 @@ Summary: ExaMLOps shared schemas and the `exa` operator CLI.
 Requires-Python: >=3.12
 Requires-Dist: typer>=0.12
 Requires-Dist: pyyaml>=6.0
+Requires-Dist: tomli-w>=1.0
 Requires-Dist: prometheus-client>=0.20
 Requires-Dist: opentelemetry-sdk>=1.27.0
 Requires-Dist: opentelemetry-exporter-otlp-proto-grpc>=1.27.0
+Provides-Extra: mcp
+Requires-Dist: fastmcp>=3.4; extra == "mcp"

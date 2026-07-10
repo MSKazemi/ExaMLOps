@@ -15,6 +15,7 @@ Use `exa` for day-to-day ML production operations: training, retraining, deploym
 | `make stack-logs` | Tail docker-compose logs |
 | `make stack-shell SERVICE=mlflow` | Shell into a running container |
 | `exa status` | Show running containers and endpoint URLs |
+| `exa status --watch` | Live auto-refreshing platform view (`--interval N` seconds; Ctrl-C to exit) |
 
 ## Monitoring Stack
 
@@ -142,10 +143,12 @@ Live charts are visible in the Grafana **SeanerBUS Bridge** dashboard (`http://l
 | `exa serve benchmark` | Benchmark: 200 requests, report latency stats |
 | `exa serve infer-check` | Smoke test: POST one synthetic job to the inference pipeline, print JSON |
 | `exa serve traffic JPCP` | Show current alias traffic split for JPCP |
-| `exa serve traffic JPCP --production 90 --canary 10` | Set 90% Production / 10% Canary split |
+| `exa serve traffic JPCP --production 90 --canary 10` | Set 90% Production / 10% Canary split (confirms; audited) |
+| `exa serve traffic JPCP --production 90 --canary 10 --dry-run` | Preview the split without changing routing |
 | `exa serve models` | List models currently hot-loaded in Ray Serve |
 | `exa serve models --detail` | Show full detail per model (alias, version, status) |
 | `exa serve traffic-list` | Show traffic split configuration for all models |
+| `exa serve traffic-list --watch` | Live auto-refreshing traffic view (`--interval N` seconds; Ctrl-C to exit) |
 | `exa serve ab analyze JPCP` | Statistical A/B verdict (Welch's t-test) over recorded observations |
 | `exa serve ab analyze JPCP --lower-is-better` | Interpret smaller metric as the winner (RMSE, latency) |
 | `exa serve ab analyze JPCP --alpha 0.01 --min-sample 100` | Tune significance level and minimum sample gate |
@@ -175,8 +178,11 @@ Sysadmin commands for reviewing model changes detected by CI before training sta
 |---|---|
 | `exa approvals list` | List all pending model change approvals |
 | `exa approvals list --status approved` | List approvals by status (`pending`/`approved`/`rejected`) |
-| `exa approvals approve JPCP` | Approve a pending change — fires Prefect training run immediately |
-| `exa approvals reject JPCP` | Reject a pending change (no training) |
+| `exa approvals approve JPCP` | Approve a pending change — fires Prefect training run immediately (confirms first; audited) |
+| `exa approvals approve JPCP --dry-run` | Preview the approval without firing training |
+| `exa --yes approvals approve JPCP` | Approve without the confirmation prompt (CI/non-interactive) |
+| `exa approvals reject JPCP` | Reject a pending change (no training; confirms first) |
+| `exa approvals reject JPCP --dry-run` | Preview the rejection without changing anything |
 | `exa approvals reject JPCP --reason "needs data review"` | Reject with a reason recorded in the audit log |
 
 **How it works:**
@@ -340,10 +346,14 @@ exa pipeline promote jpcp --if-rmse-lt 5.0   # promote Staging→Production if R
 exa pipeline promote jpcp --if-rmse-lt 5.0 --dry-run  # show outcome without promoting
 exa pipeline promote --list                   # list saved promotion rules
 
-exa drift status                              # prediction drift status for all models
+exa drift status                              # prediction drift status for all models (with Trend sparkline)
 exa drift status JPCP                         # drift status for one model
-exa drift baseline JPCP                       # store current stats as baseline
-exa drift reset JPCP                          # clear all snapshots for a model
+exa drift status --watch --interval 10        # live auto-refreshing drift view (Ctrl-C to exit)
+exa drift baseline JPCP                       # store current stats as baseline (confirms before overwrite)
+exa drift baseline JPCP --dry-run             # preview the baseline without writing it
+exa drift reset JPCP                          # clear all snapshots (destructive — confirms first; audited)
+exa drift reset JPCP --dry-run                # show how many snapshots would be cleared
+exa --yes drift reset JPCP                    # skip the confirmation prompt (CI/non-interactive)
 exa --json drift status                       # machine-readable drift report
 exa drift auto-retrain enable JPCP --dataset PM100Dataset  # enable closed-loop auto-retrain
 exa drift auto-retrain enable JPCP --min-z 2.5 --cooldown 1800  # custom threshold + cooldown
@@ -420,9 +430,10 @@ exa --json approvals list | jq '.[] | select(.status == "pending")'
 | `make skipper-server` | Start Skipper's web chat UI + OpenAI/kube-q bridge on port 18004 — open `http://localhost:18004` in a browser |
 | `make skipper-chat` | Chat with Skipper via the kube-q (`kq`) terminal client (needs `skipper-server` running; installs `kube-q` if missing) |
 | `make skipper-test` | Run Skipper's unit test suite (`platform/services/agent/tests/`) |
+| `make skipper-memory ARGS=stats` | Admin Skipper's long-term memory: `stats` \| `list <kind>` \| `export` \| `delete <kind> [--scope S]` (≡ `python -m skipper.memory_admin`) |
 | `make agent` / `agent-server` / `agent-chat` / `agent-test` | Backward-compatible aliases for the `skipper*` targets above |
 
-The agent is a packaged LangGraph ReAct agent (`skipper/`) exposing **45 tools across 10 groups** for natural-language operations and Q&A.
+The agent is a packaged LangGraph ReAct agent (`skipper/`) exposing **45 tools across 10 groups** for natural-language operations and Q&A, plus **3 long-term memory tools** (`recall_memory`, `remember_preference`, `record_procedure`) when the memory store is enabled (Phase 25). Memory admin lives in the agent package (`python -m skipper.memory_admin`), not the `exa` CLI, to keep the platform CLI free of a langgraph dependency; memory mutations are visible via `exa audit --source agent-memory`. See `docs/guides/agent.md` (Long-Term Memory) and `docs/tutorials/skipper-memory.md`.
 
 ### LLM backend (triple)
 
@@ -554,6 +565,102 @@ exa pipeline validate
 # YAML registry overlay (env overlays still work)
 exa pipeline run --env prod
 exa pipeline deploy --env prod
+```
+
+## Self-documenting
+
+`exa docs` walks the live command tree and prints the full reference as Markdown — it can never drift from the implementation. Use `exa docs --out <file>` to write it, or `exa --json docs` for the raw command tree (useful for tooling or feeding an LLM an accurate capability map).
+
+## Plugins (extensibility)
+
+Third-party packages can add their own `exa` subcommands by exposing a `typer.Typer` app under the `examlops.cli_plugins` entry-point group:
+
+```toml
+# in a plugin package's pyproject.toml
+[project.entry-points."examlops.cli_plugins"]
+myteam = "my_pkg.cli:app"
+```
+
+Once the package is installed, its commands appear under `exa myteam …`. List discovered plugins and their load status with `exa plugins` (`--json` for machine output). Plugin loading is resilient — a broken plugin is reported but never crashes the CLI.
+
+## Config contexts (multi-environment)
+
+Switch the CLI between environments (e.g. local vs remote `lxp-cpu01`) with named contexts:
+
+| Command | Description |
+|---|---|
+| `exa config set control_plane http://23.109.46.77:18002 --context lxp` | Write a key into the `lxp` context |
+| `exa config use lxp` | Make `lxp` the active context |
+| `exa config contexts` | List contexts and show the active one |
+| `exa env` | Show effective config and where each value comes from (env / context / file / default) |
+| `exa -c lxp status` | Use the `lxp` context for a single command (`--context`/`-c` global) |
+
+Resolution order (highest wins): **environment variable** → **active context** → legacy top-level file settings → built-in default. `exa env` makes this explicit and redacts secrets. `EXAMLOPS_CONTEXT` selects a context without persisting it.
+
+## Output formats & shell completion
+
+Every command accepts a global `--output` / `-o` flag that controls how structured data is rendered:
+
+| Flag | Format | Use |
+|---|---|---|
+| `-o table` (default) | Rich human table | Interactive use |
+| `-o json` (or `--json`) | JSON | Scripting, agents, `jq` |
+| `-o yaml` | YAML | Config-style, readable diffs |
+| `-o csv` | CSV | Spreadsheets, `cut`/`awk` pipelines |
+
+```bash
+exa -o json models list | jq '.[].name'
+exa -o yaml mcp agent-card
+exa -o csv models cost jpcp > cost.csv
+```
+
+`--json` remains as a shorthand for `-o json`. Shell completion is built in: run `exa --install-completion` (bash/zsh/fish/PowerShell) once, or `exa --show-completion` to inspect the script.
+
+## Conversational front door & discoverability
+
+| Command | Description |
+|---|---|
+| `exa ask "which models are drifting?"` | Ask the Skipper agent a question in plain English (routes to its OpenAI-compatible bridge) |
+| `exa ask "retrain the worst one" --session mywork` | Preserve conversational context across turns with a session id |
+| `exa --json ask "list production models"` | Machine-readable answer for scripting |
+| `exa explain` | List every top-level command with a one-line description |
+| `exa explain drift` | Show a command group's subcommands |
+| `exa explain serve reload` | Plain-language description of a command plus its copy-paste examples |
+
+`exa ask` needs the Skipper agent running (`make skipper-server`); set its URL with `AGENT_URL` or `exa config set agent <url>` (default `http://localhost:18004`), and `AGENT_API_KEY` if the bridge is token-gated. Unknown commands get fuzzy "did you mean …" suggestions automatically.
+
+## Agent surface — MCP + Agent-to-Agent (A2A)
+
+`exa mcp` exposes the platform's capabilities to LLM agents and MCP clients (Claude Desktop, Claude Code, the in-repo skipper agent, and any Agent-to-Agent peer). The tools reuse the exact same code paths as the CLI, so the agent surface never drifts from the human surface.
+
+| Command | Description |
+|---|---|
+| `exa mcp tools` | List every tool an agent can call over MCP (read tools only) |
+| `exa mcp tools --all` | Include mutating (write) tools in the listing |
+| `exa mcp resources` | List MCP resources — readable context (status, model registry, audit log, per-model detail) |
+| `exa mcp prompts` | List MCP prompts — reusable agent workflows (diagnose drift, promote safely, triage) |
+| `exa mcp serve` | Run the MCP server over **stdio** (for Claude Desktop / Claude Code / MCP clients) |
+| `exa mcp serve --transport http --port 8765` | Run the MCP server over HTTP |
+| `exa mcp serve --allow-writes` | Also register mutating tools (e.g. `trigger_retrain`) — off by default |
+| `exa mcp agent-card` | Print the A2A Agent Card (skills, capabilities, transports) |
+| `exa --json mcp agent-card` | Emit the full machine-readable A2A Agent Card (serve at `/.well-known/agent.json`) |
+
+Install the optional MCP dependency once: `uv pip install 'examlops[mcp]'` (adds FastMCP; the core CLI works without it).
+
+**Write safety.** Read-only tools are always available. Mutating tools are registered only when writes are explicitly enabled — via `exa mcp serve --allow-writes` or `EXAMLOPS_MCP_ALLOW_WRITES=1`. Mutating calls that need `CONTROL_PLANE_TOKEN` return a structured error envelope when it is unset, so an agent can reason about the failure.
+
+Example — register ExaMLOps with an MCP client (stdio):
+
+```jsonc
+{
+  "mcpServers": {
+    "examlops": {
+      "command": "exa",
+      "args": ["mcp", "serve"],
+      "env": { "CONTROL_PLANE_URL": "http://localhost:18002" }
+    }
+  }
+}
 ```
 
 ## Service URLs

@@ -4,6 +4,9 @@ import { ServiceCard } from '@/components/ServiceCard'
 import { ArchitectureFlow } from '@/components/ArchitectureFlow'
 import { useHealth, useModels, useModelRegistry, useModelzooStats } from '@/lib/api'
 import type { ServiceStatus } from '@/lib/api'
+import { Skeleton } from '@/components/ui/skeleton'
+import { GrafanaPanel } from '@/components/GrafanaPanel'
+import { useTheme } from '@/lib/theme'
 
 const SERVICE_LABELS: Record<string, string> = {
   mlflow:        'MLflow',
@@ -98,6 +101,8 @@ export function Overview() {
   const { data: models } = useModels()
   const { data: registry } = useModelRegistry()
   const { data: zoo } = useModelzooStats()
+  const { theme } = useTheme()
+  const grafanaTheme = theme === 'day' ? 'light' : 'dark'
 
   const services = data ? (Object.entries(data.services) as [string, { status: ServiceStatus; url: string }][]) : []
   const onlineCount  = services.filter(([, s]) => s.status === 'ok').length
@@ -189,6 +194,20 @@ export function Overview() {
       {/* ── Architecture Flowchart ── */}
       <ArchitectureFlow services={servicesMap} />
 
+      {/* ── Live metrics (Grafana embed, F5) ── */}
+      <div className="space-y-3">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+          Live Metrics
+        </h2>
+        <GrafanaPanel
+          name="overview.online"
+          baseUrl={servicesMap.grafana?.url}
+          theme={grafanaTheme}
+          timeRange={{ from: 'now-6h', to: 'now' }}
+          title="Platform metrics"
+        />
+      </div>
+
       {/* ── Service Health ── */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -206,10 +225,9 @@ export function Overview() {
         )}
 
         {isLoading && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" aria-label="Loading services">
             {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-20 rounded-xl animate-pulse"
-                style={{ background: 'var(--surface-1)', border: '1px solid var(--border-sm)' }} />
+              <Skeleton key={i} className="h-20 w-full" />
             ))}
           </div>
         )}

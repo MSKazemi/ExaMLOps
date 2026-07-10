@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { clearAuth, getToken, type Role } from './auth'
+import { ApiError, parseProblem } from './errors'
 import {
   listContainers,
   startContainer,
@@ -40,15 +41,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   if (res.status === 401 || res.status === 403) {
     clearAuth()
     window.location.reload()
-    throw new Error(res.status === 403 ? 'Forbidden' : 'Unauthorized')
+    throw new ApiError(res.status, { title: res.status === 403 ? 'Forbidden' : 'Unauthorized' })
   }
   if (!res.ok) {
-    let detail = `API error ${res.status}`
+    let body: unknown = null
     try {
-      const body = await res.json()
-      if (body?.detail) detail = String(body.detail)
-    } catch { /* non-JSON error body — keep generic message */ }
-    throw new Error(detail)
+      body = await res.json()
+    } catch { /* non-JSON error body — parseProblem falls back to a generic title */ }
+    throw new ApiError(res.status, parseProblem(res.status, body))
   }
   return res.json() as Promise<T>
 }
@@ -195,6 +195,8 @@ export const login = (password: string): Promise<LoginResponse> =>
 export interface MeResponse {
   role: Role
   expires_at: string
+  tenant?: string
+  capabilities?: string[]
 }
 
 export const useMe = () =>

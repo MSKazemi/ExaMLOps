@@ -2,6 +2,19 @@ import { useState } from 'react'
 import { ShieldCheck, RefreshCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAudit, apiFetch } from '@/lib/api'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
+
+/** Shared loading placeholder (F3 Skeleton convention). */
+function TableSkeleton() {
+  return (
+    <div className="space-y-2" aria-label="Loading">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Skeleton key={i} className="h-8 w-full" />
+      ))}
+    </div>
+  )
+}
 
 interface PlatformAuditRow {
   id: number
@@ -44,7 +57,7 @@ function PlatformAuditTab() {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <TableSkeleton />}
 
       {data && (
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
@@ -61,7 +74,7 @@ function PlatformAuditTab() {
             </thead>
             <tbody style={{ background: 'var(--surface-0)' }}>
               {data.items.length === 0 ? (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No entries.</td></tr>
+                <tr><td colSpan={6} className="p-4"><EmptyState icon={ShieldCheck} title="No entries" className="border-0" /></td></tr>
               ) : data.items.map(row => (
                 <tr key={row.id} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
                   <td className="p-3 font-mono text-xs text-muted-foreground">
@@ -101,7 +114,7 @@ function ConfigAuditTab() {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <TableSkeleton />}
 
       {data && (
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
@@ -116,7 +129,7 @@ function ConfigAuditTab() {
             </thead>
             <tbody style={{ background: 'var(--surface-0)' }}>
               {data.items.length === 0 ? (
-                <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">No entries.</td></tr>
+                <tr><td colSpan={4} className="p-4"><EmptyState icon={ShieldCheck} title="No entries" className="border-0" /></td></tr>
               ) : data.items.map(row => (
                 <tr key={row.id} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
                   <td className="p-3 font-mono text-xs text-muted-foreground">

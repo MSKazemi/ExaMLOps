@@ -9,6 +9,7 @@ from auth import require_role
 from database import get_db
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from realtime import bus
 from settings import settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,11 @@ from routers.config import get_decrypted_secret
 log = logging.getLogger("dashboard.approvals")
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
+
+
+def _as_dict(value: object) -> dict:
+    """Control-plane responses are usually dicts; guard the ``**spread`` for anything else."""
+    return value if isinstance(value, dict) else {"result": value}
 
 
 async def _get_control_plane_token(db: AsyncSession) -> str | None:
@@ -79,7 +85,10 @@ async def approve_model(
 
     if not resp.is_success:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    result = resp.json()
+    # Push a live event onto the realtime gateway (F8) so open dashboards update without polling.
+    bus.publish("approval.approved", {"model": model_id, **_as_dict(result)})
+    return result
 
 
 @router.post(
@@ -108,4 +117,6 @@ async def reject_model(
 
     if not resp.is_success:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    result = resp.json()
+    bus.publish("approval.rejected", {"model": model_id, "reason": body.reason, **_as_dict(result)})
+    return result

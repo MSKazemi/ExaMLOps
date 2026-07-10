@@ -6,6 +6,8 @@ import {
   useRejectModel,
   type ApprovalEntry,
 } from '@/lib/api'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 
 function StatusBadge({ status }: { status: ApprovalEntry['status'] }) {
   const styles: Record<ApprovalEntry['status'], { bg: string; border: string; color: string; label: string }> = {
@@ -223,7 +225,17 @@ export function Approvals() {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && (
+        <div
+          className="space-y-2 rounded-xl p-4"
+          style={{ border: '1px solid var(--border)' }}
+          aria-label="Loading approvals"
+        >
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-9 w-full" />
+          ))}
+        </div>
+      )}
 
       {data && (
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
@@ -242,8 +254,17 @@ export function Approvals() {
             <tbody style={{ background: 'var(--surface-0)' }}>
               {data.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
-                    {showAll ? 'No approval entries found.' : 'No pending approvals.'}
+                  <td colSpan={7} className="p-4">
+                    <EmptyState
+                      icon={ClipboardCheck}
+                      title={showAll ? 'No approval entries' : 'No pending approvals'}
+                      description={
+                        showAll
+                          ? 'No model-change approvals have been recorded yet.'
+                          : 'Nothing is waiting for review. New retrain requests will appear here.'
+                      }
+                      className="border-0"
+                    />
                   </td>
                 </tr>
               ) : (

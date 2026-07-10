@@ -46,9 +46,26 @@ def test_approvals_approve():
         "examlops.cli.commands.approvals._client.post",
         return_value={"flow_run_id": "run-123", "model_id": "JPCP"},
     ):
-        result = runner.invoke(app, ["approvals", "approve", "JPCP"])
+        # approve fires training — now guarded by a confirmation prompt.
+        result = runner.invoke(app, ["--yes", "approvals", "approve", "JPCP"])
     assert result.exit_code == 0
     assert "JPCP" in result.output
+
+
+def test_approvals_approve_dry_run_fires_nothing():
+    with patch("examlops.cli.commands.approvals._client.post") as mock_post:
+        result = runner.invoke(app, ["approvals", "approve", "JPCP", "--dry-run"])
+    assert result.exit_code == 0
+    assert "dry run" in result.output.lower()
+    mock_post.assert_not_called()
+
+
+def test_approvals_approve_abort_on_decline():
+    with patch("examlops.cli.commands.approvals._client.post") as mock_post:
+        result = runner.invoke(app, ["approvals", "approve", "JPCP"], input="n\n")
+    assert result.exit_code == 0
+    assert "aborted" in result.output.lower()
+    mock_post.assert_not_called()
 
 
 def test_approvals_reject():

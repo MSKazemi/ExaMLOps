@@ -68,8 +68,22 @@ def list_approvals(
 @app.command(epilog=_EXAMPLES_APPROVE)
 def approve(
     model: str = typer.Argument(..., help="Model ID to approve (e.g. JPCP)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be approved without firing training"
+    ),
 ) -> None:
     """Approve a pending model change — fires Prefect training immediately."""
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "would_approve": model})
+        else:
+            _output.info(f"Dry run — would approve {model} and schedule training (nothing fired).")
+        return
+    if not _output.confirm(
+        f"Approve [bold]{model}[/bold] and schedule training now?", default=True
+    ):
+        _output.warning("Aborted — nothing approved.")
+        raise typer.Exit(0)
     cfg = load_config()
     with _output.spinner(f"Approving {model} and scheduling training…"):
         try:
@@ -103,8 +117,19 @@ def approve(
 def reject(
     model: str = typer.Argument(..., help="Model ID to reject"),
     reason: str | None = typer.Option(None, "--reason", "-r", help="Rejection reason"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be rejected without changing anything"
+    ),
 ) -> None:
     """Reject a pending model change — no training will run."""
+    if dry_run:
+        if _output.json_mode:
+            _output.print_json({"dry_run": True, "would_reject": model, "reason": reason or ""})
+        else:
+            _output.info(
+                f"Dry run — would reject {model}" + (f" (reason: {reason})" if reason else "")
+            )
+        return
     if not _output.confirm(
         f"Reject pending approval for [bold]{model}[/bold]? This cannot be undone."
     ):

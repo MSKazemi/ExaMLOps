@@ -3,6 +3,7 @@ import { RefreshCw, Package, AlertCircle, CheckCircle2, Hash, GitCommit, Layers,
 import { useNavigate, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useModels, useReloadRay, useModelRegistry, useModelzooStats, useModelzooModels, useHealth, useModelzooFreshness, useModelzooEvents, useMe, type ModelRegistryItem, type ModelzooModel, type ModelFreshness } from '@/lib/api'
 import { FreshnessBadge } from '@/components/FreshnessBadge'
 import { ScaffoldWizard } from '@/components/ScaffoldWizard'
@@ -333,10 +334,9 @@ export function Models() {
         </div>
 
         {zoo?.configured && zooLoading && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Loading models">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-24 rounded-xl animate-pulse"
-                style={{ background: 'var(--surface-1)', border: '1px solid var(--border-sm)' }} />
+              <Skeleton key={i} className="h-24 w-full" />
             ))}
           </div>
         )}
@@ -375,10 +375,9 @@ export function Models() {
         </div>
 
         {registryLoading && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Loading models">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-24 rounded-xl animate-pulse"
-                style={{ background: 'var(--surface-1)', border: '1px solid var(--border-sm)' }} />
+              <Skeleton key={i} className="h-24 w-full" />
             ))}
           </div>
         )}

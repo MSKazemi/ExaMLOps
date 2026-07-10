@@ -71,11 +71,11 @@ endif
         control-plane-up control-plane-down control-plane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
         agent \
-        venv install install-dev clean \
+        venv install install-dev install-hooks clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \
         ci ci-modelzoo ci-infra ci-examlops \
         modelzoo-test agent-test \
-        docs-serve docs-build \
+        docs-serve docs-build docs-cli \
         bootstrap \
         _guard-uv _guard-python _guard-service
 
@@ -473,6 +473,11 @@ install-dev: venv ## Install runtime + dev dependencies (pytest · ruff · mypy)
 	@$(UV) pip install -e ".[dev]" -q
 	@printf "$(GREEN)Runtime + dev dependencies installed.$(RESET)\n"
 
+install-hooks: ## Install git hooks (fast pre-push CI gate) into .git/hooks/
+	@cp platform/ci/hooks/pre-push .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-push
+	@printf "$(GREEN)pre-push hook installed$(RESET) — runs ruff check + format --check + py-compile before every push.\n"
+
 clean: ## Remove .venv, build artifacts, and all cache directories
 	@rm -rf $(VENV) platform/cli/src/*.egg-info
 	@find . -type d \( -name __pycache__ -o -name .pytest_cache \
@@ -597,6 +602,10 @@ docs-build: install-dev ## Build MkDocs static site → site/
 	@$(VENV)/bin/mkdocs build --clean
 	@printf "$(GREEN)Docs built: site/index.html$(RESET)\n"
 
+docs-cli: install-dev ## Regenerate the full CLI reference from the live command tree
+	@$(VENV)/bin/exa docs --out docs/reference/cli-generated.md
+	@printf "$(GREEN)CLI reference regenerated: docs/reference/cli-generated.md$(RESET)\n"
+
 # =============================================================================
 ##@ ModelZoo Tests
 # =============================================================================
@@ -630,6 +639,10 @@ skipper-chat: ## Chat with Skipper via the kube-q `kq` terminal client (needs sk
 	$(VENV)/bin/kq --url http://localhost:$${AGENT_SERVER_PORT:-18004} $${AGENT_API_KEY:+--api-key $$AGENT_API_KEY}
 
 agent-chat: skipper-chat ## Alias for `skipper-chat` (backward compatibility)
+
+skipper-memory: ## Admin Skipper's long-term memory (stats|list|export|delete); e.g. make skipper-memory ARGS=stats
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	cd platform/services/agent && $(PWD)/$(PYTHON) -m skipper.memory_admin $${ARGS:-stats}
 
 # =============================================================================
 ##@ Convenience

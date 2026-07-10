@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import typer
+
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
@@ -22,10 +24,22 @@ _SERVICE_URLS = {
 }
 
 
-def status() -> None:
+def status(
+    watch: bool = typer.Option(
+        False, "--watch", "-w", help="Live auto-refreshing view (Ctrl-C to exit)"
+    ),
+    interval: int = typer.Option(5, "--interval", help="Refresh interval in seconds for --watch"),
+) -> None:
     """Platform snapshot: service health, pending approvals, production models."""
     cfg = load_config()
 
+    if watch and not _output.json_mode:
+        _output.watch_loop(lambda: _render_status(cfg, watch=True), interval)
+        return
+    _render_status(cfg, watch=False)
+
+
+def _render_status(cfg, watch: bool) -> None:
     with _output.spinner("Checking platform health…"):
         try:
             data = _client.get(f"{cfg.control_plane_url}/status", token=cfg.control_plane_token)
@@ -40,6 +54,10 @@ def status() -> None:
         return
 
     if data is None:
+        # In watch mode, keep the loop alive instead of exiting the process.
+        if watch:
+            _output.warning("Control Plane unreachable — retrying on next refresh.")
+            return
         _output.error(
             "Control Plane unreachable. Is the stack running?",
             hint="Try: exa stack status  or  exa stack up",
@@ -115,7 +133,7 @@ def status() -> None:
             ["Model", "Production Version", "Staging Version"],
             [
                 [
-                    (m.get("name") or m if isinstance(m, str) else "—"),
+                    (m if isinstance(m, str) else (m.get("name") or "—")),
                     m.get("production_version", "—") if isinstance(m, dict) else "—",
                     m.get("staging_version", "—") if isinstance(m, dict) else "—",
                 ]

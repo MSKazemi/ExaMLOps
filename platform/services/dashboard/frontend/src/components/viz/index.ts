@@ -1,0 +1,9 @@
+// F4 visualization system — public component surface (ADR 0055).
+export { ChartFrame } from './ChartFrame'
+export type { ChartFrameProps, ChartTableColumn } from './ChartFrame'
+export { KpiTile } from './KpiTile'
+export type { KpiTileProps } from './KpiTile'
+export { Distribution } from './Distribution'
+export type { DistributionProps } from './Distribution'
+export { Uncertainty } from './Uncertainty'
+export type { UncertaintyProps, UncertaintyVariant } from './Uncertainty'
