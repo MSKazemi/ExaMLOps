@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.28.1] — 2026-07-10
+
+### Fixed
+
+- **v0.28.0 pipeline was red on the blocking GitLab `ruff` gate.** The new F11 (copilot),
+  F22 (collaboration) and F24 (self-observability) dashboard backend modules and their tests shipped
+  with unsorted import blocks (ruff `I001`) and unformatted code that `ruff check` / `ruff format --check`
+  reject — leaving the release un-deployable to lxp. All import ordering and formatting auto-fixed; no
+  behavior change.
+- **`make preflight` was not portable across machines.** `ci-infra` assumed bare `ruff`/`pip` on `PATH`
+  (Error 127 locally) — now prefers `.venv/bin/ruff` when present; the syntax gate excludes
+  `node_modules`/`.venv` so a Docker-vitest `node_modules` artifact can't break it.
+- **Dashboard NOC wall carbon tile.** Default a missing carbon `uncertainty` to `0` before labelling
+  (null-safety).
+
+## [0.28.0] — 2026-07-10
+
 ### Fixed
 
 - **`exa docs` dropped every flag from the generated reference.** The command-tree walker filtered
