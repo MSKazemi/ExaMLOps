@@ -378,6 +378,14 @@ exa pipeline promote jpcp --if-rmse-lt 5.0   # promote Staging→Production if R
 exa pipeline promote jpcp --if-rmse-lt 5.0 --dry-run  # show outcome without promoting
 exa pipeline promote --list                   # list saved promotion rules
 
+exa data snapshot FData --path ./data/FData   # record an immutable dataset revision (content hash)
+exa data snapshot FData --backend minio --path ./cache/fdata.parquet  # snapshot a backend-materialised file
+exa data list FData                           # list recorded revisions newest-first (with linked runs)
+exa --json data list FData                    # machine-readable revision list
+exa data diff FData <revA> <revB>             # row-count / schema / size delta between two revisions
+exa data checkout FData <rev> --path ./data/FData  # verify local data matches a pinned revision (exit 1 if not)
+exa pipeline run --model JPCP --dataset FData --dataset-revision <rev>  # train pinned to an exact revision
+
 exa drift status                              # prediction drift status for all models (with Trend sparkline)
 exa drift status JPCP                         # drift status for one model
 exa drift status --watch --interval 10        # live auto-refreshing drift view (Ctrl-C to exit)

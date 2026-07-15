@@ -599,6 +599,23 @@ def init_db() -> None:
                 value       TEXT NOT NULL,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Next-Gen 40 · A1 — immutable, run-pinned dataset revisions (ADR 0003).
+            -- Idempotent on (backend, dataset, revision_id): re-recording a revision is a no-op.
+            CREATE TABLE IF NOT EXISTS dataset_revisions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                backend       TEXT NOT NULL,
+                dataset       TEXT NOT NULL,
+                revision_id   TEXT NOT NULL,
+                kind          TEXT NOT NULL DEFAULT 'content',
+                uri           TEXT,
+                schema_hash   TEXT,
+                mlflow_run_id TEXT,
+                row_count     INTEGER,
+                byte_count    INTEGER,
+                actor         TEXT,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (backend, dataset, revision_id)
+            );
         """)
         _migrate_columns(conn)
 
@@ -1447,3 +1464,76 @@ def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
             "SELECT * FROM autopilot_runs ORDER BY id DESC LIMIT ?", (last_n,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Next-Gen 40 · A1 — dataset revisions (ADR 0003) --------------------------
+# ``rev`` is any object exposing the DatasetRevision fields (backend, dataset,
+# revision_id, kind, uri, schema_hash). Kept duck-typed so this platform-layer
+# module never imports the pipelines package (avoids a layering cycle).
+
+
+def record_dataset_revision(
+    rev: Any,
+    *,
+    mlflow_run_id: str | None = None,
+    row_count: int | None = None,
+    byte_count: int | None = None,
+    actor: str | None = None,
+) -> None:
+    """Record a resolved dataset revision.
+
+    Idempotent on ``(backend, dataset, revision_id)`` (spec R5): re-recording the
+    same revision is a no-op and never raises a UNIQUE-constraint error.
+    """
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO dataset_revisions
+                   (backend, dataset, revision_id, kind, uri, schema_hash,
+                    mlflow_run_id, row_count, byte_count, actor)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(backend, dataset, revision_id) DO NOTHING""",
+            (
+                rev.backend,
+                rev.dataset,
+                rev.revision_id,
+                getattr(rev, "kind", "content"),
+                getattr(rev, "uri", None),
+                getattr(rev, "schema_hash", None),
+                mlflow_run_id,
+                row_count,
+                byte_count,
+                actor,
+            ),
+        )
+
+
+def get_dataset_revisions(dataset: str, backend: str | None = None) -> list[dict[str, Any]]:
+    """Return recorded revisions for ``dataset`` newest-first (spec R9).
+
+    When ``backend`` is given, restrict to that backend.
+    """
+    init_db()
+    with get_db() as conn:
+        if backend:
+            rows = conn.execute(
+                "SELECT * FROM dataset_revisions WHERE dataset=? AND backend=? "
+                "ORDER BY id DESC",
+                (dataset, backend),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM dataset_revisions WHERE dataset=? ORDER BY id DESC",
+                (dataset,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dataset_revision(
+    dataset: str, revision_id: str, backend: str | None = None
+) -> dict[str, Any] | None:
+    """Return a single recorded revision by id, or None if absent."""
+    for row in get_dataset_revisions(dataset, backend):
+        if row["revision_id"] == revision_id:
+            return row
+    return None

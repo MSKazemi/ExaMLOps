@@ -927,6 +927,44 @@ def evaluate_task(
 # ── Infrastructure tasks (model-agnostic) ──────────────────────────────────────
 
 
+def _pin_dataset_revision(
+    dataset_name: str, backend_name: str | None, run_id: str
+) -> None:
+    """A1 (ADR 0003): resolve, tag, and record the dataset revision for this run.
+
+    Fully fail-open (spec R4/R13): any error is swallowed so a revision hiccup can
+    never fail a training run. Honours an explicit ``EXAMLOPS_DATASET_REVISION`` pin
+    (spec R12) and otherwise records the resolved revision (lakeFS commit or
+    ``unknown`` when content can't be materialised in this context).
+    """
+    try:
+        from examlops.platform_db import record_dataset_revision  # noqa: PLC0415
+        from pipelines.datasets.versioning import resolve_revision  # noqa: PLC0415
+
+        rev = resolve_revision(backend_name, dataset_name)
+        pinned = os.getenv("EXAMLOPS_DATASET_REVISION", "").strip()
+        revision_id = pinned or rev.revision_id
+        backend = rev.backend
+        uri = rev.uri
+        mlflow.set_tag("dataset_revision", revision_id)
+        mlflow.set_tag("dataset_backend", backend)
+        mlflow.set_tag("dataset_uri", uri)
+        # Reconstruct a lightweight rev carrying the effective id for recording.
+        from dataclasses import replace  # noqa: PLC0415
+
+        eff = replace(rev, revision_id=revision_id)
+        record_dataset_revision(
+            eff,
+            mlflow_run_id=run_id or None,
+            row_count=rev.row_count,
+            byte_count=rev.byte_count,
+            actor=os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "pipeline",
+        )
+        print(f"[pipeline] dataset revision pinned: {backend}@{revision_id} ({rev.kind})")
+    except Exception as exc:  # noqa: BLE001 - fail-open, never break a run
+        print(f"[pipeline] dataset revision pin skipped: {exc}")
+
+
 @task(
     name="log_mlflow",
     cache_policy=NO_CACHE,
@@ -941,6 +979,7 @@ def log_mlflow_task(
     dataset_name: str,
     job_id: str | None = None,
     scheduler: str | None = None,
+    backend_name: str | None = None,
 ) -> dict:
     """Log model + metrics to MLflow. Returns registration dict."""
     _, config_cls, _ = MODEL_REGISTRY[model_name]
@@ -991,6 +1030,8 @@ def log_mlflow_task(
             active_run = mlflow.active_run()
             run_id = active_run.info.run_id if active_run is not None else ""
             registration["run_id"] = run_id
+            # A1: pin + record the dataset revision for reproducibility (fail-open).
+            _pin_dataset_revision(dataset_name, backend_name, run_id)
             client = mlflow.MlflowClient()
             versions = client.search_model_versions(f"run_id='{run_id}'")
             if versions:
@@ -1236,6 +1277,7 @@ def training_flow(
         dataset_cls_name,
         job_id=job_id,
         scheduler=_hpc_scheduler_name(),
+        backend_name=backend_name,
     )
     status = promote_task(model_name, registration, metrics)
 
