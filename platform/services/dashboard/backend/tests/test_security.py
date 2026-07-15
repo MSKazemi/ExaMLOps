@@ -5,7 +5,6 @@ from security import RateLimiter, build_csp, security_headers
 
 from tests.conftest import VIEWER_PW
 
-
 # ── CSP / headers (F16 R1) ───────────────────────────────────────────────────
 
 
@@ -44,14 +43,14 @@ def test_rate_limiter_allows_up_to_limit_then_blocks():
 def test_rate_limiter_evicts_old_hits_outside_window():
     rl = RateLimiter(limit=1, window_seconds=10.0)
     assert rl.allow("ip", now=0.0)
-    assert rl.allow("ip", now=5.0) is False   # still inside the 10s window
-    assert rl.allow("ip", now=11.0) is True   # first hit aged out
+    assert rl.allow("ip", now=5.0) is False  # still inside the 10s window
+    assert rl.allow("ip", now=11.0) is True  # first hit aged out
 
 
 def test_rate_limiter_keys_are_independent():
     rl = RateLimiter(limit=1, window_seconds=100.0)
     assert rl.allow("a", now=1.0)
-    assert rl.allow("b", now=1.0)             # different client, own bucket
+    assert rl.allow("b", now=1.0)  # different client, own bucket
     assert rl.allow("a", now=1.0) is False
 
 

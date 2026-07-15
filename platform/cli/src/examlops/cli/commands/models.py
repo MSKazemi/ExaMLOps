@@ -463,8 +463,11 @@ def cost(
             os.getenv("EXAMLOPS_HPC_SCHEDULER")
             or ("slurm" if os.getenv("EXAMLOPS_SLURM_MODE", "mock") == "slurm" else "mock")
         ).lower()
-        gpu_cost = float(os.getenv("GPU_COST_PER_HOUR", str(_GPU_COST_PER_HOUR_DEFAULT)))
-        cpu_cost = float(os.getenv("CPU_COST_PER_HOUR", str(_CPU_COST_PER_HOUR_DEFAULT)))
+        # Cost is computed by the pluggable 'cost' provider (ADR 0074) — the default 'flat-rate'
+        # reproduces the original gpu_hours×rate(+cpu_hours×rate) using the same env defaults, and a
+        # site can swap the rate card via [finops.cost] config / EXAMLOPS_COST_PROVIDER without code.
+        from examlops.finops.cost import estimate_cost_via_provider
+
         recorded_count = 0
 
         for ver in versions:
@@ -491,16 +494,16 @@ def cost(
             cost_usd = None
             if scheduler == "mock":
                 job_id, gpu_hours = _mock_slurm_data(model, ver_num)
-                cost_usd = round(gpu_hours * gpu_cost, 4)
+                cost_usd = estimate_cost_via_provider(gpu_hours)["cost_usd"]
             elif scheduler == "flux" and job_id:
                 flux_cost = _real_flux_cost(job_id)
                 if flux_cost is not None:
                     gpu_hours, cpu_hours = flux_cost
-                    cost_usd = round(gpu_hours * gpu_cost + cpu_hours * cpu_cost, 4)
+                    cost_usd = estimate_cost_via_provider(gpu_hours, cpu_hours)["cost_usd"]
             elif job_id:  # slurm (or any sacct-backed scheduler)
                 gpu_hours = _real_sacct(job_id)
                 if gpu_hours is not None:
-                    cost_usd = round(gpu_hours * gpu_cost, 4)
+                    cost_usd = estimate_cost_via_provider(gpu_hours)["cost_usd"]
 
             record_model_cost(model, ver_num, run_id, job_id, gpu_hours, cost_usd)
 

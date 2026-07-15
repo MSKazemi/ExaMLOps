@@ -196,7 +196,12 @@ export function Datasets() {
     }, 5_000)
 
     return () => clearInterval(interval)
-  }, [pipelineId, pipelineStatus])
+    // Intentionally keyed on pipelineId only: including pipelineStatus would tear
+    // down and recreate this interval (resetting `count` to 0) on every status
+    // transition, so the `count >= 60` 5-minute cap could never fire. Termination
+    // is driven by the interval's own `result.status` check instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipelineId])
 
   const handleSync = async () => {
     setSyncing(true)

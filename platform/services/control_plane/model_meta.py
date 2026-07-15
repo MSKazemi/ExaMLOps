@@ -30,7 +30,7 @@ class ModelMeta:
     path_in_repo: str  # relative to repo root, ends with /
     bundled_images: list[str] = field(default_factory=list)
     # Extended metadata — populated from YAML for dashboard display
-    dataplane_uuid: str | None = None
+    seanerbus_uuid: str | None = None
     hyperparameters: dict[str, Any] = field(default_factory=dict)
     prefect: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
@@ -56,7 +56,7 @@ def _scan_yamls() -> dict[str, dict[str, Any]]:
 
 def _find_model_dir(model_class_name: str) -> Path | None:
     """Locate the directory containing the model class by scanning modelzoo source files."""
-    tasks_root = _MODELZOO / "modelzoo" / "models" / "tasks"
+    tasks_root = _MODELZOO / "seanergys_modelzoo" / "models" / "tasks"
     if not tasks_root.is_dir():
         return None
     needle = f"class {model_class_name}"
@@ -119,9 +119,9 @@ def get_model_meta(model_name: str) -> ModelMeta:
         try:
             rel = model_dir.relative_to(_REPO_ROOT).as_posix() + "/"
         except ValueError:
-            rel = f"modelzoo/modelzoo/models/tasks/{model_class_name.lower()}/"
+            rel = f"modelzoo/seanergys_modelzoo/models/tasks/{model_class_name.lower()}/"
     else:
-        rel = f"modelzoo/modelzoo/models/tasks/{model_class_name.lower()}/"
+        rel = f"modelzoo/seanergys_modelzoo/models/tasks/{model_class_name.lower()}/"
 
     images: list[str] = []
     if model_dir is not None:
@@ -142,7 +142,7 @@ def get_model_meta(model_name: str) -> ModelMeta:
         promotion=promotion,
         path_in_repo=rel,
         bundled_images=images,
-        dataplane_uuid=cfg.get("dataplane_uuid"),
+        seanerbus_uuid=cfg.get("seanerbus_uuid"),
         hyperparameters=model_section.get("hyperparameters", {}),
         prefect=prefect_section,
         enabled=bool(cfg.get("enabled", True)),

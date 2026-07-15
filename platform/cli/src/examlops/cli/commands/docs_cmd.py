@@ -109,7 +109,14 @@ def docs(
     if out:
         from pathlib import Path
 
-        Path(out).write_text(markdown)
+        path = Path(out)
+        try:
+            if path.parent and not path.parent.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown)
+        except OSError as e:
+            _output.error(f"Could not write command reference to {out}: {e}")
+            return
         _output.ok(f"Wrote command reference to {out}")
         return
     # Print raw so it can be piped/redirected without Rich styling.

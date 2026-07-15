@@ -17,7 +17,7 @@ for p in (str(REPO_ROOT), str(MODELZOO)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from modelzoo.datasets._backends import (  # noqa: E402
+from seanergys_modelzoo.datasets._backends import (  # noqa: E402
     DataplaneBackend,
     DatasetBackend,
     MinIOBackend,

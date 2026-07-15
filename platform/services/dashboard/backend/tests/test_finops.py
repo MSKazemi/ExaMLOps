@@ -102,6 +102,35 @@ def test_carbon_summary_totals_and_uncertainty(platform_db):
     assert out["uncertainty"] == finops.CARBON_UNCERTAINTY
     assert "±30%" in out["methodology"]
     assert out["byModel"][0]["model"] == "jpcp"  # highest co2e first
+    # legacy records (no provider column populated) → fall back to platform defaults
+    assert out["providers"] == []
+
+
+def test_carbon_summary_uses_provider_methodology(tmp_path, monkeypatch):
+    # Records tagged with a single pluggable provider → surface that provider's own methodology +
+    # uncertainty instead of the platform defaults (ADR 0074 / S4).
+    db = tmp_path / "platform.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE carbon_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, run_id TEXT, model TEXT,
+            kwh REAL, co2e_g REAL, grid_intensity REAL, provider TEXT
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO carbon_records (model, kwh, co2e_g, grid_intensity, provider) VALUES (?,?,?,?,?)",
+        [("jpcp", 6.0, 900.0, 250.0, "codecarbon-like")],
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    out = finops.carbon_summary(str(db))
+    assert out["providers"] == ["codecarbon-like"]
+    # codecarbon-like advertises ±25% and a CodeCarbon-style methodology (not the ±30% default)
+    assert out["uncertainty"] == 0.25
+    assert "CodeCarbon" in out["methodology"]
 
 
 # ── unit economics (F13 R4) ──────────────────────────────────────────────────

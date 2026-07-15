@@ -7,7 +7,7 @@ CLIs and stage files. Two implementations:
   * ``LocalExecutor`` — ``subprocess`` + ``shutil.copy``; reproduces the historical
     "worker runs on the login node with a shared filesystem" behavior.
   * ``SSHExecutor``   — paramiko SSH + SFTP; lets a Docker Prefect worker submit to a
-    remote login node (e.g. remote) with no shared filesystem.
+    remote login node (e.g. lxp) with no shared filesystem.
 
 paramiko is chosen over asyncssh (the adapter contract and Prefect tasks are synchronous;
 an event loop would defeat connection reuse and complicate the long poll loop) and over

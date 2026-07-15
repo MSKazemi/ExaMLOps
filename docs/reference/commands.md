@@ -1,13 +1,13 @@
 # ExaMLOps Command Reference
 
-Use `exa` for day-to-day ML production operations: training, retraining, deployment, ModelZoo checks, approvals, serving, and DataPlane status. Keep `make` for bootstrap, Docker Compose infrastructure, monitoring, notebooks, CI, and low-level developer shortcuts.
+Use `exa` for day-to-day ML production operations: training, retraining, deployment, ModelZoo checks, approvals, serving, and SeanerBUS status. Keep `make` for bootstrap, Docker Compose infrastructure, monitoring, notebooks, CI, and low-level developer shortcuts.
 
 ## Stack Management
 
 | Command | Description |
 |---|---|
 | `make bootstrap` | One-shot setup: start stack + install all deps |
-| `make full-up` | Start everything: core stack + monitoring + DataPlane reqgen + bridge (guards: requires `dataplane-net` network and dataplane repo at `../dataplane`) |
+| `make full-up` | Start everything: core stack + monitoring + SeanerBUS reqgen + bridge (guards: requires `seanerbus-net` network and seanerbus repo at `../seanerbus`) |
 | `make stack-up` | Start full stack (Postgres, MLflow, Prefect, Ray, MinIO, Dashboard, Control Plane) |
 | `make stack-down` | Stop containers (volumes preserved) |
 | `make stack-wipe` | **DESTRUCTIVE** — remove all containers, volumes, images |
@@ -37,28 +37,28 @@ Grafana auto-provisions seven dashboards from `platform/infra/docker-compose/gra
 | `examlops_control_plane.json` | `examlops-control-plane` | Retrain success/error/dedup stats, duration percentiles, circuit breaker timeline, Prefect retry rate, approval funnel |
 | `examlops_drift.json` | `examlops-drift` | Prediction drift (median/p95/p05), input embedding norm/mean/std vs baseline, auto-retrain history |
 | `examlops_approvals.json` | `examlops-approvals` | Approval queue depth, funnel gauge, SLA risk, event rates, auto-expiry trend, event log |
-| `examlops_dataplane.json` | `examlops-dataplane` | Bridge health, per-model error %, latency p50/p95/p99, retrain trigger rate |
+| `examlops_seanerbus.json` | `examlops-seanerbus` | Bridge health, per-model error %, latency p50/p95/p99, retrain trigger rate |
 | `examlops_logs.json` | `examlops-logs` | Loki log explorer with service filter |
 
-The dashboard DataPlane page embeds the inference rate, error rate, and latency panels as iframes. This requires Grafana to be running with anonymous read-only access (enabled by default via `GF_AUTH_ANONYMOUS_ENABLED=true`). On the remote server, set `PUBLIC_HOST=<CONTROL_PLANE_HOST>` in `.env` so iframe URLs resolve correctly in the browser.
+The dashboard SeanerBUS page embeds the inference rate, error rate, and latency panels as iframes. This requires Grafana to be running with anonymous read-only access (enabled by default via `GF_AUTH_ANONYMOUS_ENABLED=true`). On the remote server, set `PUBLIC_HOST=137.204.56.169` in `.env` so iframe URLs resolve correctly in the browser.
 
-## Real DataPlane (dataplane repo)
+## Real SeanerBUS (seanerbus repo)
 
-The real DataPlane (Rust server + `examlops-reqgen`) lives in the companion `dataplane` repository. It replaces the old `dataplane_sim.py` mock bus. Start it from the dataplane repo root:
+The real SeanerBUS (Rust server + `examlops-reqgen`) lives in the companion `seanerbus` repository. It replaces the old `seanerbus_sim.py` mock bus. Start it from the seanerbus repo root:
 
 ```bash
 # one-time setup (creates shared Docker network)
-docker network create dataplane-net
+docker network create seanerbus-net
 
-# start real DataPlane + JPCP inference request generator
-cd ../dataplane && docker compose up -d
+# start real SeanerBUS + JPCP inference request generator
+cd ../seanerbus && docker compose up -d
 ```
 
 Once running, start the bridge from ai-productions:
 
 ```bash
-make dataplane-up
-make dataplane-bridge-logs
+make seanerbus-up
+make seanerbus-bridge-logs
 ```
 
 Or start everything at once:
@@ -67,48 +67,48 @@ Or start everything at once:
 make full-up   # starts reqgen + bridge automatically
 ```
 
-## DataPlane UUID Management
+## SeanerBUS UUID Management
 
-Each model has a stable UUID in its `pipelines/models/<name>.yaml` (`dataplane_uuid` field). The bridge registers one req/res handler per model at startup.
-
-| Command | Description |
-|---|---|
-| `exa dataplane list` | Show all models and their UUIDs |
-| `exa dataplane init-uuids` | Assign UUIDs to models that don't have one (idempotent) |
-| `exa dataplane regen-uuid JPCP` | Regenerate UUID for one model (notify HPC teams) |
-
-UUIDs are also visible in the dashboard at **DataPlane → Model UUIDs**.
-
-## DataPlane Bridge
+Each model has a stable UUID in its `pipelines/models/<name>.yaml` (`seanerbus_uuid` field). The bridge registers one req/res handler per model at startup.
 
 | Command | Description |
 |---|---|
-| `make dataplane-up` | Start DataPlane bridge container |
-| `make dataplane-down` | Stop bridge |
-| `make dataplane-bridge-logs` | Tail bridge logs |
-| `make dataplane-reqgen-logs` | Tail reqgen logs (`inference_requests.log` + `dataplane.log`) |
-| `exa dataplane status` | Probe bridge /health and /stats endpoints |
-| `make dataplane-bridge-up` | Start bridge bare-metal (reqres mode) |
+| `exa seanerbus list` | Show all models and their UUIDs |
+| `exa seanerbus init-uuids` | Assign UUIDs to models that don't have one (idempotent) |
+| `exa seanerbus regen-uuid JPCP` | Regenerate UUID for one model (notify HPC teams) |
 
-**Test script** (real DataPlane must be running):
+UUIDs are also visible in the dashboard at **SeanerBUS → Model UUIDs**.
+
+## SeanerBUS Bridge
+
+| Command | Description |
+|---|---|
+| `make seanerbus-up` | Start SeanerBUS bridge container |
+| `make seanerbus-down` | Stop bridge |
+| `make seanerbus-bridge-logs` | Tail bridge logs |
+| `make seanerbus-reqgen-logs` | Tail reqgen logs (`inference_requests.log` + `seanerbus.log`) |
+| `exa seanerbus status` | Probe bridge /health and /stats endpoints |
+| `make seanerbus-bridge-up` | Start bridge bare-metal (reqres mode) |
+
+**Test script** (real SeanerBUS must be running):
 
 ```bash
-make dataplane-test-req   # send one JPCP req/res inference request, print response
+make seanerbus-test-req   # send one JPCP req/res inference request, print response
 # or directly:
-python platform/clients/dataplane_test_req.py
+python platform/clients/seanerbus_test_req.py
 ```
 
-**Prometheus metrics** — the bridge exposes `GET /metrics` on :18003 (same server as `/health` and `/stats`). Prometheus scrapes it automatically via the `dataplane_bridge` job when the bridge container is running. Five metrics are exposed:
+**Prometheus metrics** — the bridge exposes `GET /metrics` on :18003 (same server as `/health` and `/stats`). Prometheus scrapes it automatically via the `seanerbus_bridge` job when the bridge container is running. Five metrics are exposed:
 
 | Metric | Labels | Description |
 |---|---|---|
-| `dataplane_bridge_up` | — | 1.0 while the process is running |
-| `dataplane_inferences_total` | `model` | Completed inference calls |
-| `dataplane_inference_errors_total` | `model` | Failed inference calls |
-| `dataplane_inference_latency_seconds` | `model` | End-to-end POST latency histogram |
-| `dataplane_retrain_triggers_total` | — | Drift-triggered retrains |
+| `seanerbus_bridge_up` | — | 1.0 while the process is running |
+| `seanerbus_inferences_total` | `model` | Completed inference calls |
+| `seanerbus_inference_errors_total` | `model` | Failed inference calls |
+| `seanerbus_inference_latency_seconds` | `model` | End-to-end POST latency histogram |
+| `seanerbus_retrain_triggers_total` | — | Drift-triggered retrains |
 
-Live charts are visible in the Grafana **DataPlane Bridge** dashboard (`http://localhost:13000/d/examlops-dataplane`) and embedded directly in the dashboard DataPlane page (requires `make monitoring-up`).
+Live charts are visible in the Grafana **SeanerBUS Bridge** dashboard (`http://localhost:13000/d/examlops-seanerbus`) and embedded directly in the dashboard SeanerBUS page (requires `make monitoring-up`).
 
 ## Pipeline
 
@@ -126,7 +126,7 @@ Live charts are visible in the Grafana **DataPlane Bridge** dashboard (`http://l
 | `exa pipeline run --env prod` | Run all pipelines using YAML registry with env overlay (`dev`/`staging`/`prod`) |
 | `exa pipeline run --env dev --dummy` | Run with dev overlay (loose thresholds, dummy data) |
 | `exa pipeline deploy --env prod` | Deploy one Prefect flow per model in the YAML registry, with env overlay |
-| `exa pipeline promote jpcp --if-rmse-lt 5.0` | Promote Staging → Production if RMSE < 5.0 (metric-gated) |
+| `exa pipeline promote jpcp --if-rmse-lt 5.0` | Promote Staging → Production if RMSE < 5.0 (metric-gated; confirms; audited) |
 | `exa pipeline promote --list` | List saved promotion rules |
 | `exa pipeline validate-model JPCP` | Latency smoke-test Staging alias (exit 1 on failure — CI gate) |
 | `exa pipeline validate-model JPCP --max-latency 0.5 --n 5` | Strict 500ms SLA, 5 requests |
@@ -263,6 +263,38 @@ table (the same GPU-hours `exa models cost` records) joined through `namespace_m
 is estimated as `kWh = gpu_hours × (TDP/1000) × PUE` and `gCO₂e = kWh × grid_intensity`, with
 documented, overridable defaults (400 W, PUE 1.5, 300 gCO₂e/kWh).
 
+## HPC Fleet
+
+Fleet layer over the scheduler abstraction: **discover** what a cluster offers, **connect** it
+under sysadmin approval, then **place**/schedule jobs on it. Discovery is read-only (it only
+*proposes* a config); no job runs on a cluster until a sysadmin approves it. See the guide at
+[`docs/guides/hpc-fleet.md`](../guides/hpc-fleet.md).
+
+| Command | Description |
+|---|---|
+| `exa hpc detect lxp-login` | Auto-detect the scheduler on a host (Flux/Slurm/unmanaged) and suggest a config — read-only |
+| `exa hpc nodes --host lxp-login` | List compute nodes with CPUs/memory/GPUs and normalized state |
+| `exa hpc nodes --save --cluster lxp` | Persist the node inventory snapshot to `hpc_nodes` |
+| `exa hpc gpus --host lxp-gpu01` | List GPU devices (model, memory, utilization, online) via `nvidia-smi` |
+| `exa hpc connect lxp-login --name lxp` | Probe + register a cluster as `PENDING` (cannot run jobs until approved) |
+| `exa hpc clusters` | List registered clusters and their approval state |
+| `exa hpc approve lxp` | Sysadmin: approve a cluster so jobs may be scheduled on it (audited) |
+| `exa hpc reject lxp --reason "wrong account"` | Sysadmin: reject a cluster (blocks scheduling; audited) |
+| `exa hpc place --gpus 4` | Show which ACTIVE cluster placement would choose for a resource ask |
+| `exa hpc queue --cluster lxp` | Live scheduler queue (`squeue` / `flux jobs`, normalized) |
+| `exa hpc jobs --model JPCP` | Tracked HPC submissions from `hpc_jobs` |
+| `exa hpc preflight lxp --gpus 4` | Fail-fast pre-submit checks (exit 1 on any failure — safe as a CI gate) |
+| `exa hpc capacity` | Per-cluster GPU capacity, utilization %, GPU-hours used and cost |
+| `exa pipeline run --model JPCP --dataset PM100Dataset --cluster lxp` | Run training on an approved cluster (refuses non-ACTIVE) |
+| `exa pipeline run --cluster auto --gpus 4 ...` | Let placement choose the cluster automatically |
+
+**How it works:** `clusters.yaml` (default `~/.config/examlops/clusters.yaml`, override
+`EXAMLOPS_HPC_REGISTRY`) holds the human-editable connection definition; the `hpc_clusters` table
+holds governance state (`PENDING`/`ACTIVE`/`REJECTED`) + audit. An ACTIVE cluster is resolved into
+the `EXAMLOPS_HPC_*` environment the scheduler adapter reads. Discovery is pluggable (a
+`SchedulerProbe` registry), so new backends (PBS/LSF/cloud) drop in without CLI changes. Fleet
+status, capacity, and admin approve/reject are also on the dashboard **Facility console**.
+
 ## `exa` CLI
 
 The `exa` command is the primary operator interface, installed via `pip install -e .` or `uv pip install -e ".[dev]"`.
@@ -379,9 +411,9 @@ exa audit --last 7d --model JPCP              # filter by model and time window
 exa audit --action model_approved             # filter by action type
 exa --json audit                              # machine-readable audit events
 
-exa dataplane list                            # list per-model DataPlane UUIDs
-exa dataplane init-uuids                      # assign missing UUIDs in pipelines/models/*.yaml
-exa dataplane status                          # probe bridge /health and /stats
+exa seanerbus list                            # list per-model SeanerBUS UUIDs
+exa seanerbus init-uuids                      # assign missing UUIDs in pipelines/models/*.yaml
+exa seanerbus status                          # probe bridge /health and /stats
 
 exa scaffold DemoAD                           # scaffold a new model (PascalCase name required)
 exa scaffold DemoAD --task anomaly_detection --type classification
@@ -399,7 +431,7 @@ make stack-ps
 ```
 
 Docker Compose service names used by `make stack-shell SERVICE=<name>`:
-`postgres` · `minio` · `mlflow` · `orchestrator` · `ray-serving` · `control-plane` · `prometheus` · `alertmanager` · `tempo` · `grafana` · `loki` · `promtail` · `dashboard` · `jupyterhub` · `dataplane-bridge`
+`postgres` · `minio` · `mlflow` · `orchestrator` · `ray-serving` · `control-plane` · `prometheus` · `alertmanager` · `tempo` · `grafana` · `loki` · `promtail` · `dashboard` · `jupyterhub` · `seanerbus-bridge`
 
 ```bash
 exa config show                               # print resolved config
@@ -490,11 +522,11 @@ make skipper               # streaming REPL with ANSI colors and token cost disp
 
 **Write confirmation:** 15 mutating tools pause with a `Proceed? [y/N]` prompt (REPL) or a confirmation modal (web UI) before acting. Pass `--yes` / `-y` globally to skip in CI.
 
-### Ollama model options (<OLLAMA_HOST> server)
+### Ollama model options (Omega server)
 
 ```bash
-ollama-tunnel start                         # port 11436 (<OLLAMA_HOST>)
-ollama-tunnel start <ollama-host>                    # port 11437 (<OLLAMA_HOST>, 16 models)
+ollama-tunnel start                         # port 11436 (Omega)
+ollama-tunnel start kapa                    # port 11437 (Kapa, 16 models)
 
 AGENT_MODEL=hermes3:70b make skipper          # best tool calling
 AGENT_MODEL=llama3.1:70b make skipper         # best Llama quality
@@ -583,17 +615,42 @@ myteam = "my_pkg.cli:app"
 
 Once the package is installed, its commands appear under `exa myteam …`. List discovered plugins and their load status with `exa plugins` (`--json` for machine output). Plugin loading is resilient — a broken plugin is reported but never crashes the CLI.
 
-## Config contexts (multi-environment)
+## Programmable MLOps — providers & policy
 
-Switch the CLI between environments (e.g. local vs remote `remote-cpu01`) with named contexts:
+Swap *how the platform calculates and decides* things without editing core code (ADRs 0076–0082; guide `docs/guides/programmable-mlops.md`).
+
+**Calculation providers** — a swappable strategy per domain (cost, carbon, **placement**, later drift/promotion), authored as a built-in, an `exa.providers.<domain>` entry-point plugin, or a declarative formula in `~/.config/examlops/providers.yaml`:
 
 | Command | Description |
 |---|---|
-| `exa config set control_plane http://<DATAPLANE_HOST>:18002 --context remote` | Write a key into the `remote` context |
-| `exa config use remote` | Make `remote` the active context |
+| `exa providers list` | List providers across every domain (builtin / entry-point / config + load status) |
+| `exa providers list --domain placement` | Just one domain |
+| `exa --json providers list` | Machine-readable (agents/scripts) |
+| `exa hpc place --gpus 4 --placement-provider expression` | Choose a cluster using a pluggable placement scorer |
+
+Set the active placement policy without touching code — a formula in `providers.yaml` (`placement:` block, e.g. `score: "idle_gpus*100 - carbon_intensity"`) or `EXAMLOPS_PLACEMENT_PROVIDER`.
+
+**Policy-as-code** — declarative governance for mutating operations (`~/.config/examlops/policy.yaml`; conditions run in a sandbox; every decision audited):
+
+| Command | Description |
+|---|---|
+| `exa policy list` | Show the policy rules currently loaded (action · condition · effect) |
+| `exa policy test retrain --set model=JPCP --set env=dev` | Dry-run the decision for an action + context (not audited) |
+| `exa policy test promote --set rmse_new=4.1 --set rmse_prod=5.0 --set env=dev` | Test a conditional rule |
+
+A rule is `{action, when?: <sandboxed expression>, effect: allow|deny|require_approval}`. With no policy file the effect is `allow` (backward compatible). `exa retrain` and the mutating MCP tools consult the policy before acting.
+
+## Config contexts (multi-environment)
+
+Switch the CLI between environments (e.g. local vs remote `lxp-cpu01`) with named contexts:
+
+| Command | Description |
+|---|---|
+| `exa config set control_plane http://23.109.46.77:18002 --context lxp` | Write a key into the `lxp` context |
+| `exa config use lxp` | Make `lxp` the active context |
 | `exa config contexts` | List contexts and show the active one |
 | `exa env` | Show effective config and where each value comes from (env / context / file / default) |
-| `exa -c remote status` | Use the `remote` context for a single command (`--context`/`-c` global) |
+| `exa -c lxp status` | Use the `lxp` context for a single command (`--context`/`-c` global) |
 
 Resolution order (highest wins): **environment variable** → **active context** → legacy top-level file settings → built-in default. `exa env` makes this explicit and redacts secrets. `EXAMLOPS_CONTEXT` selects a context without persisting it.
 
@@ -674,7 +731,7 @@ Example — register ExaMLOps with an MCP client (stdio):
 | Ray Serve API | http://localhost:18001 | — |
 | Ray Dashboard | http://localhost:18265 | — |
 | Control Plane | http://localhost:18002 | `Authorization: Bearer <CONTROL_PLANE_TOKEN>` |
-| DataPlane Bridge Status | http://localhost:18003 | — (GET /health /stats /metrics) |
+| SeanerBUS Bridge Status | http://localhost:18003 | — (GET /health /stats /metrics) |
 | MinIO Console | http://localhost:19001 | minioadmin / minioadmin |
 | Prometheus | http://localhost:19090 | — |
 | Alertmanager | http://localhost:19093 | — |
@@ -682,4 +739,4 @@ Example — register ExaMLOps with an MCP client (stdio):
 | Grafana | http://localhost:13000 | admin / admin |
 | Loki | http://localhost:13100 | — |
 
-Remote server `remote-cpu01`: replace `localhost` with `<DATAPLANE_HOST>`, or use `ssh remote` to forward all ports to localhost.
+Remote server `lxp-cpu01`: replace `localhost` with `23.109.46.77`, or use `ssh lxp` to forward all ports to localhost.

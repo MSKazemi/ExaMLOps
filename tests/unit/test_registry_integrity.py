@@ -52,7 +52,7 @@ def test_model_class_is_concrete(model_name):
 
 @pytest.mark.parametrize("model_name", sorted(MODEL_REGISTRY.keys()))
 def test_supported_datasets_are_listed(model_name):
-    """Each config must declare at least one DataplaneDataset subclass."""
+    """Each config must declare at least one SeanergysDataset subclass."""
     _, config_cls, _ = MODEL_REGISTRY[model_name]
     assert config_cls.SUPPORTED_DATASETS, f"{config_cls.__name__}.SUPPORTED_DATASETS is empty"
     for ds_cls in config_cls.SUPPORTED_DATASETS:

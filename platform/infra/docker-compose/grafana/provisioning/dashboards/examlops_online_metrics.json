@@ -12,7 +12,7 @@
   "links": [
     {"title": "Overview",      "url": "/d/examlops-overview",      "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
     {"title": "Drift Monitor", "url": "/d/examlops-drift",         "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
-    {"title": "DataPlane",     "url": "/d/examlops-dataplane",     "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+    {"title": "SeanerBUS",     "url": "/d/examlops-seanerbus",     "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
   ],
   "panels": [
     {

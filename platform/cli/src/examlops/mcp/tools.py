@@ -35,6 +35,19 @@ def _cfg() -> Config:
     return load_config()
 
 
+def _version_key(v: Any) -> tuple[int, Any]:
+    """Sort key for MLflow version strings: numeric where possible, else lexical.
+
+    MLflow returns model versions as strings (``"9"``, ``"10"``). A plain ``max``
+    would order them lexically and pick ``"9"`` over ``"10"``. This key sorts
+    numeric versions numerically and pushes any non-numeric value to the front.
+    """
+    try:
+        return (1, int(v))
+    except (TypeError, ValueError):
+        return (0, str(v))
+
+
 def _get(url: str, token: str = "") -> dict[str, Any]:
     """GET returning either the parsed body or a structured error envelope."""
     try:
@@ -74,11 +87,18 @@ def list_models() -> dict[str, Any]:
     models = res["data"].get("registered_models", [])
     out = []
     for m in models:
-        aliases = {a["alias"]: a["version"] for a in m.get("aliases", [])}
-        latest = max((v["version"] for v in m.get("latest_versions", [])), default=None)
+        aliases = {
+            a["alias"]: a["version"]
+            for a in m.get("aliases", [])
+            if "alias" in a and "version" in a
+        }
+        # MLflow serialises ``version`` as a string; compare numerically so that
+        # e.g. version "10" sorts above "9" instead of below it.
+        versions = [v["version"] for v in m.get("latest_versions", []) if "version" in v]
+        latest = max(versions, key=_version_key, default=None)
         out.append(
             {
-                "name": m["name"],
+                "name": m.get("name"),
                 "production": aliases.get("Production"),
                 "latest": latest,
                 "aliases": aliases,
@@ -175,6 +195,31 @@ def _as_dict(data: Any) -> dict[str, Any]:
 # ── mutating tools (gated behind EXAMLOPS_MCP_ALLOW_WRITES) ────────────────────
 
 
+def _agent_write_gate(action_kind: str, context: dict[str, Any]) -> dict[str, Any] | None:
+    """Least-privilege policy check for an agent write (ADR 0082 layer 2 + ADR 0079).
+
+    Beyond the coarse ``EXAMLOPS_MCP_ALLOW_WRITES`` switch, each mutating tool call is checked
+    against the ``agent_write`` policy. Returns an error dict when the write is disallowed, else
+    ``None``. ``require_approval`` is treated as *disallowed for an agent* — there is no human at the
+    tool-call boundary, so an approval-required action must not proceed autonomously. Policy being
+    unavailable never blocks (graceful): the write-gate has already applied.
+    """
+    try:
+        from examlops import policy
+
+        decision = policy.decide("agent_write", {"action_kind": action_kind, **context})
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if decision.denied:
+        return _err(f"policy denied agent write ({action_kind}): {decision.reason}")
+    if decision.requires_approval:
+        return _err(
+            f"policy requires human approval for {action_kind} — not permitted to an agent "
+            f"({decision.reason})"
+        )
+    return None
+
+
 def trigger_retrain(
     model_name: str,
     dataset_name: str,
@@ -193,6 +238,9 @@ def trigger_retrain(
         dummy: If true, run a fast dummy training loop instead of full training.
         backend_name: Optional dataset backend override (zenodo/minio/dataplane).
     """
+    gate = _agent_write_gate("retrain", {"model": model_name})
+    if gate is not None:
+        return gate
     cfg = _cfg()
     if not cfg.control_plane_token:
         return _err("CONTROL_PLANE_TOKEN not configured — cannot trigger retrain")
@@ -207,6 +255,24 @@ def trigger_retrain(
         data = _client.post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
     except _client.ClientError as exc:
         return _err(str(exc), status=getattr(exc, "status", None))
+
+    # Leave an audit trail for agent-initiated writes, mirroring `exa retrain`
+    # and the sibling `hpc_approve_cluster` tool. Best-effort: never fail the
+    # retrain because auditing is unavailable.
+    try:
+        from examlops.platform_db import init_db, write_audit_event
+
+        init_db()
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        write_audit_event(
+            "mcp",
+            actor,
+            "retrain_triggered",
+            model_name,
+            {"dataset": dataset_name, "dummy": bool(dummy), "backend": backend_name, "via": "mcp"},
+        )
+    except Exception:  # noqa: BLE001 - auditing is best-effort
+        pass
     return {"ok": True, **_as_dict(data)}
 
 
@@ -225,6 +291,92 @@ def retrain_status(flow_run_id: str) -> dict[str, Any]:
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
+
+
+# ── HPC fleet tools (Phase 35d) ───────────────────────────────────────────────
+
+
+def hpc_clusters() -> dict[str, Any]:
+    """List registered HPC clusters and their approval state (PENDING/ACTIVE/REJECTED).
+
+    Reads the fleet registry (clusters.yaml + hpc_clusters). Use before scheduling to see
+    which clusters a sysadmin has approved for training runs.
+    """
+    try:
+        from examlops.hpc_registry import list_clusters
+
+        return {"ok": True, "clusters": list_clusters()}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_nodes(cluster: str | None = None) -> dict[str, Any]:
+    """Return the latest discovered node inventory (CPUs/memory/GPUs/state) for a cluster.
+
+    Reads the ``hpc_nodes`` snapshot table. Refresh snapshots with
+    ``exa hpc nodes --save --cluster <name>``.
+    """
+    try:
+        from examlops.platform_db import get_node_snapshot, init_db
+
+        init_db()
+        return {"ok": True, "nodes": get_node_snapshot(cluster)}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_place(gpus: int = 0, nodes: int = 1) -> dict[str, Any]:
+    """Recommend which ACTIVE cluster should run a job needing ``gpus``/``nodes``.
+
+    Returns the chosen cluster, a human-readable reason, and the scored candidate list. Does
+    not submit anything — it only advises placement.
+    """
+    try:
+        from examlops.hpc_placement import ResourceAsk, choose_cluster
+        from examlops.hpc_placement_providers import resolve_placement_score_fn
+        from examlops.hpc_registry import active_clusters_with_inventory
+
+        result = choose_cluster(
+            ResourceAsk(gpus=gpus, nodes=nodes),
+            active_clusters_with_inventory(),
+            resolve_placement_score_fn(),
+        )
+        return {"ok": True, **result.to_dict()}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_jobs(model: str | None = None) -> dict[str, Any]:
+    """List tracked HPC job submissions (from the ``hpc_jobs`` table), newest first."""
+    try:
+        from examlops.platform_db import get_hpc_jobs, init_db
+
+        init_db()
+        return {"ok": True, "jobs": get_hpc_jobs(model)[:50]}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def hpc_approve_cluster(name: str) -> dict[str, Any]:
+    """Approve a PENDING HPC cluster so exaMLOps may schedule jobs on it (mutating, audited).
+
+    This is the sysadmin approval gate. Only registered when writes are explicitly enabled.
+    """
+    gate = _agent_write_gate("approve_cluster", {"target": name})
+    if gate is not None:
+        return gate
+    try:
+        from examlops.hpc_registry import get_merged
+        from examlops.platform_db import set_cluster_state, write_audit_event
+
+        if get_merged(name) is None:
+            return _err(f"unknown cluster: {name}")
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        set_cluster_state(name, "ACTIVE", approved_by=actor)
+        write_audit_event("mcp", actor, "cluster_approved", name, {"via": "mcp"})
+        return {"ok": True, "cluster": name, "state": "ACTIVE"}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
 
 
 @dataclass(frozen=True)
@@ -256,6 +408,11 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(recent_audit_events, tags=("read", "governance")),
     ToolSpec(trigger_retrain, mutating=True, tags=("write", "training")),
     ToolSpec(retrain_status, tags=("read", "training")),
+    ToolSpec(hpc_clusters, tags=("read", "hpc")),
+    ToolSpec(hpc_nodes, tags=("read", "hpc")),
+    ToolSpec(hpc_place, tags=("read", "hpc")),
+    ToolSpec(hpc_jobs, tags=("read", "hpc")),
+    ToolSpec(hpc_approve_cluster, mutating=True, tags=("write", "hpc", "governance")),
 )
 
 

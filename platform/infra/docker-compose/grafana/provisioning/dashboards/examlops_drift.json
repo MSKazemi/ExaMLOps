@@ -203,7 +203,7 @@
           "refId": "A"
         },
         {
-          "expr": "rate(dataplane_inference_errors_total[5m]) / rate(dataplane_inferences_total[5m]) * 100",
+          "expr": "rate(seanerbus_inference_errors_total[5m]) / rate(seanerbus_inferences_total[5m]) * 100",
           "legendFormat": "bus_error% {{model_id}}",
           "refId": "B"
         }
@@ -237,12 +237,12 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "dataplane_embedding_norm_mean",
+          "expr": "seanerbus_embedding_norm_mean",
           "legendFormat": "norm_mean {{model_id}}",
           "refId": "A"
         },
         {
-          "expr": "dataplane_embedding_norm_baseline",
+          "expr": "seanerbus_embedding_norm_baseline",
           "legendFormat": "norm_baseline {{model_id}}",
           "refId": "B"
         }
@@ -273,12 +273,12 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "dataplane_embedding_mean_value",
+          "expr": "seanerbus_embedding_mean_value",
           "legendFormat": "mean {{model_id}}",
           "refId": "A"
         },
         {
-          "expr": "dataplane_embedding_mean_baseline",
+          "expr": "seanerbus_embedding_mean_baseline",
           "legendFormat": "baseline_mean {{model_id}}",
           "refId": "B"
         }
@@ -309,12 +309,12 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "dataplane_embedding_std_value",
+          "expr": "seanerbus_embedding_std_value",
           "legendFormat": "std {{model_id}}",
           "refId": "A"
         },
         {
-          "expr": "dataplane_embedding_std_baseline",
+          "expr": "seanerbus_embedding_std_baseline",
           "legendFormat": "baseline_std {{model_id}}",
           "refId": "B"
         }

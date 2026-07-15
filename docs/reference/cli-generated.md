@@ -249,22 +249,134 @@ Energy (kWh) and CO2e accounting for training runs.
 
 Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write).
 
+The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or
+a declarative YAML formula. Defaults reproduce the platform's original methodology exactly.
+
 - `--gpu-hours` — GPU-hours to estimate
 - `--grid-intensity` — gCO2e per kWh
+- `--provider` — Carbon provider (default: green-ai-default). See: carbon providers
+- `--pue` — Override datacentre PUE
+- `--gpu-tdp` — Override GPU TDP (watts)
+
+#### `exa finops carbon providers`
+
+List the available carbon providers (built-ins + entry-point plugins) and their status.
 
 #### `exa finops carbon record`
 
-Estimate and persist a carbon record for a training run.
+Estimate (via the active provider) and persist a carbon record for a training run.
 
 - `--gpu-hours` — GPU-hours consumed by the run
 - `--run-id` — MLflow run id
 - `--grid-intensity` — gCO2e per kWh
+- `--provider` — Carbon provider (default: green-ai-default). See: carbon providers
+- `--pue` — Override datacentre PUE
+- `--gpu-tdp` — Override GPU TDP (watts)
 
 #### `exa finops carbon report`
 
 Aggregate recorded energy and carbon (optionally for one model).
 
 - `--model, -m` — Filter to one model
+
+### `exa finops cost`
+
+HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'.
+
+#### `exa finops cost providers`
+
+List the available cost providers (rate cards) — built-ins + entry-point plugins.
+
+## `exa hpc`
+
+HPC fleet — discover schedulers, nodes, and GPUs
+
+### `exa hpc approve`
+
+Sysadmin: approve a cluster so exaMLOps may schedule jobs on it.
+
+### `exa hpc capacity`
+
+Per-cluster GPU capacity, utilization, GPU-hours used and cost (ACTIVE clusters).
+
+### `exa hpc clusters`
+
+List registered clusters and their approval state.
+
+### `exa hpc connect`
+
+Probe a host and register it as a PENDING cluster (requires approval to use).
+
+- `--name, -n` — Cluster name (default: host)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force scheduler; default auto
+
+### `exa hpc detect`
+
+Auto-detect the scheduler on a host and suggest a configuration (read-only).
+
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+
+### `exa hpc gpus`
+
+List GPU devices — model, memory, utilization, online status (read-only).
+
+- `--host, -H` — Host to probe (omit = local)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force a probe; default auto
+
+### `exa hpc jobs`
+
+List tracked HPC submissions from platform.db (hpc_jobs).
+
+- `--model, -m` — Filter by model
+- `--limit, -n` — Max rows
+
+### `exa hpc nodes`
+
+List compute nodes with CPUs/memory/GPUs and normalized state (read-only).
+
+- `--host, -H` — Login-node host (omit = local)
+- `--user, -u` — SSH user
+- `--key, -k` — SSH private-key path
+- `--port, -p` — SSH port
+- `--scheduler, -s` — Force a probe (flux|slurm|nvidia-smi); default auto
+- `--save` — Persist the inventory snapshot to platform.db
+- `--cluster, -c` — Cluster name for --save
+
+### `exa hpc place`
+
+Show which ACTIVE cluster placement would choose for a resource ask.
+
+- `--gpus, -g` — GPUs the job needs
+- `--cpus` — CPUs the job needs
+- `--nodes, -N` — Nodes the job needs
+- `--placement-provider` — Placement scoring provider (default: least-loaded)
+
+### `exa hpc preflight`
+
+Fail-fast pre-submit checks against a cluster (exit 1 on any failure).
+
+- `--gpus, -g` — GPUs the job will request
+- `--nodes, -N` — Nodes the job will request
+
+### `exa hpc queue`
+
+Show the live scheduler queue for an ACTIVE cluster (read-only).
+
+- `--cluster, -c` — ACTIVE cluster to query
+
+### `exa hpc reject`
+
+Sysadmin: reject a cluster (blocks scheduling; auditable).
+
+- `--reason, -r` — Why the cluster is rejected
 
 ## `exa mcp`
 
@@ -421,7 +533,7 @@ Register an existing modelzoo model into the training pipeline.
 
 Unlike exa scaffold, this command does NOT create a new model class.
 It only generates the pipeline YAML and config shim for a model class that
-already lives in modelzoo/modelzoo/models/tasks/.
+already lives in modelzoo/seanergys_modelzoo/models/tasks/.
 
 Use this when you have written a model class by hand or imported one from
 the modelzoo and want to wire it into ExaMLOps training and inference.
@@ -514,6 +626,8 @@ Run training pipeline(s) locally via Prefect.
 - `--backend, -b` — Dataset storage backend
 - `--env` — YAML registry env overlay
 - `--registry` — Path to model_registry.yaml
+- `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
+- `--gpus, -g` — GPUs to request (for --cluster auto placement)
 
 ### `exa pipeline validate`
 
@@ -532,6 +646,20 @@ Returns exit code 0 on PASS, 1 on FAIL. Safe to use as a gate before promotion.
 ## `exa plugins`
 
 List installed exa CLI plugins and whether each loaded successfully.
+
+## `exa policy`
+
+Policy-as-code — declarative governance for mutations
+
+### `exa policy list`
+
+List the policy rules currently loaded from policy.yaml.
+
+### `exa policy test`
+
+Evaluate the policy decision for an action + context (not audited).
+
+- `--set, -s` — Context key=value (repeatable), e.g. --set env=dev
 
 ## `exa predict`
 
@@ -564,6 +692,16 @@ Plan/execute production deploys, or inspect deploy history/status.
 
 Verify production service health without changing state.
 
+## `exa providers`
+
+Pluggable calculation providers (all domains)
+
+### `exa providers list`
+
+List calculation providers across every domain (built-ins + entry-point plugins + config).
+
+- `--domain, -d` — Only this domain (default: all known domains)
+
 ## `exa retrain`
 
 Trigger a Prefect training run via the Control Plane.
@@ -581,25 +719,25 @@ Scaffold a new model: model class, config, unit test, and YAML.
 - `--type, -T` — ML task type
 - `--force` — Overwrite existing files
 
-## `exa dataplane`
+## `exa seanerbus`
 
-DataPlane bridge UUID management
+SeanerBUS bridge UUID management
 
-### `exa dataplane init-uuids`
+### `exa seanerbus init-uuids`
 
-Assign a DataPlane UUID to every model that doesn't have one. Idempotent.
+Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent.
 
-### `exa dataplane list`
+### `exa seanerbus list`
 
-Show all models and their DataPlane UUIDs.
+Show all models and their SeanerBUS UUIDs.
 
-### `exa dataplane regen-uuid`
+### `exa seanerbus regen-uuid`
 
-Regenerate the DataPlane UUID for one model. Notify HPC teams of the change.
+Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.
 
-### `exa dataplane status`
+### `exa seanerbus status`
 
-Probe the DataPlane bridge health and runtime stats endpoints.
+Probe the SeanerBUS bridge health and runtime stats endpoints.
 
 ## `exa serve`
 

@@ -4,7 +4,7 @@
 #
 # Key improvements over the previous version:
 #   • test:examlops always runs before every deploy (was change-triggered only)
-#   • deploy:remote requires test:examlops to pass (was optional — deploy could run
+#   • deploy:lxp requires test:examlops to pass (was optional — deploy could run
 #     on a broken examlops test suite)
 #   • New smoke stage: probes all critical services after deploy; auto-rolls back
 #     to the previous commit if health checks fail (self-healing)
@@ -14,17 +14,17 @@
 #   • deploy has an explicit 20-minute timeout (was unbounded)
 #   • ruff format --check is now a hard failure (was || true)
 #   • retrain script extracted to platform/ci/retrain_push_models.py
-#   • post-deploy jobs depend on smoke:remote (not directly on deploy:remote)
+#   • post-deploy jobs depend on smoke:lxp (not directly on deploy:lxp)
 #
 # Required CI/CD variables (Settings → CI/CD → Variables):
-#   REMOTE_SSH_KEY         masked, protected — ED25519 private key for remote-cpu01
-#   REMOTE_HOST_KEY        masked            — known_hosts entry for remote-cpu01
-#   REMOTE_USER                              — SSH username on remote-cpu01
-#   REMOTE_HOST                              — hostname or IP of remote-cpu01
-#   REMOTE_DEPLOY_PATH                       — /<DATA_DIR>/examlops
-#   REMOTE_DEPLOY_REPO                       — GitLab SSH URL of this repo
-#   REMOTE_CONTROL_PLANE_URL                 — http://remote-cpu01:18002
-#   REMOTE_CONTROL_PLANE_TOKEN masked        — bearer token for /retrain + /api/changes
+#   LXP_SSH_KEY         masked, protected — ED25519 private key for lxp-cpu01
+#   LXP_HOST_KEY        masked            — known_hosts entry for lxp-cpu01
+#   LXP_USER                              — SSH username on lxp-cpu01
+#   LXP_HOST                              — hostname or IP of lxp-cpu01
+#   LXP_DEPLOY_PATH                       — /nfs/share01/examlops
+#   LXP_DEPLOY_REPO                       — GitLab SSH URL of this repo
+#   LXP_CONTROL_PLANE_URL                 — http://lxp-cpu01:18002
+#   LXP_CONTROL_PLANE_TOKEN masked        — bearer token for /retrain + /api/changes
 #
 # Optional CI/CD variables:
 #   NOTIFICATION_WEBHOOK_URL  masked — Slack-compatible webhook; enables notify:failure
@@ -33,7 +33,7 @@
 #   SMOKE_RETRY_DELAY         seconds between retries (default 15)
 #
 # Runtime self-healing (separate from CI):
-#   One-time setup on remote-cpu01:  sudo bash platform/ci/setup_selfheal_systemd.sh
+#   One-time setup on lxp-cpu01:  sudo bash platform/ci/setup_selfheal_systemd.sh
 #   This installs a systemd timer that restarts unhealthy containers every 2 min.
 
 workflow:
@@ -73,9 +73,9 @@ variables:
 .ssh_setup: &ssh_setup
   - apt-get update -qq && apt-get install -y -qq openssh-client curl
   - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  - printf '%s\n' "$REMOTE_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+  - printf '%s\n' "$LXP_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
   - chmod 600 ~/.ssh/id_ed25519
-  - printf '%s\n' "$REMOTE_HOST_KEY" >> ~/.ssh/known_hosts
+  - printf '%s\n' "$LXP_HOST_KEY" >> ~/.ssh/known_hosts
   - chmod 600 ~/.ssh/known_hosts
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -89,7 +89,7 @@ sanity:python-syntax:
   script:
     - >
       find platform/ pipelines/ serving/ tests/ tools/
-      modelzoo/modelzoo/ -name "*.py" -print0
+      modelzoo/seanergys_modelzoo/ -name "*.py" -print0
       | xargs -0 -r python -m py_compile
 
 sanity:check-structure:
@@ -153,13 +153,13 @@ test:modelzoo:
     - poetry install --no-interaction --with dev,ci
   script:
     - mkdir -p ../reports
-    - ruff check modelzoo ci tests
-    - ruff format --check modelzoo ci tests
-    - mypy modelzoo ci tests --ignore-missing-imports --explicit-package-bases || true
+    - ruff check seanergys_modelzoo ci tests
+    - ruff format --check seanergys_modelzoo ci tests
+    - mypy seanergys_modelzoo ci tests --ignore-missing-imports --explicit-package-bases || true
     - pytest tests/unit/        -v --tb=short --junit-xml=../reports/modelzoo-unit.xml
     - pytest tests/smoke/       -v --tb=short --junit-xml=../reports/modelzoo-smoke.xml
     - pytest tests/integration/ -v --tb=short --junit-xml=../reports/modelzoo-integration.xml
-    - python -c "from modelzoo.logger.dataplane_logger import DataplaneLogger; print('Import OK')"
+    - python -c "from seanergys_modelzoo.logger.seanergys_logger import SeanergysLogger; print('Import OK')"
   artifacts:
     reports:
       junit: reports/modelzoo-*.xml
@@ -248,7 +248,7 @@ test:infra:alert-rules:
 # ── ExaMLOps: lint + mypy + unit + dashboard backend ─────────────────────────
 #
 # This is the core quality gate. It runs on EVERY push (no change-filter) so
-# that deploy:remote always has a real test result to depend on.  Removing the
+# that deploy:lxp always has a real test result to depend on.  Removing the
 # change-filter means a cold-cache run on unrelated commits costs ~2 min extra
 # but guarantees the platform is healthy before every deploy.
 
@@ -332,22 +332,17 @@ test:integration:
     expire_in: 7 days
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STAGE: DEPLOY — SSH to remote-cpu01, git pull, docker compose up (main only)
+# STAGE: DEPLOY — SSH to lxp-cpu01, git pull, docker compose up (main only)
 #
-# ⛔⛔ AUTO-DEPLOY TO REMOTE IS TEMPORARILY DISABLED (presentation freeze, 2026-07). ⛔⛔
-# Every job in the deploy → smoke → post-deploy chain below is gated `when: never`
-# so a push to main will NOT touch the live remote stack. To re-enable, in each of
-# deploy:remote / smoke:remote / post-deploy:remote:* restore the commented
-# `if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH / when: on_success` rule and delete
-# the `- when: never` line. (Manual deploy meanwhile: run `make` targets / the
-# mska-remote-deploy steps by hand on remote, or trigger via the GitLab UI after re-enabling.)
+# Auto-deploy to lxp runs on every main push: deploy:lxp → smoke:lxp (auto-rollback
+# on failure) → post-deploy:lxp:*. (The 2026-07 presentation freeze has been lifted.)
 # ═══════════════════════════════════════════════════════════════════════════
 
-deploy:remote:
+deploy:lxp:
   stage: deploy
   image: ubuntu:22.04
   timeout: 20 minutes
-  # deploy:remote only runs on main, where every gating test job is created
+  # deploy:lxp only runs on main, where every gating test job is created
   # (full-suite policy), so all are required here — deploy proceeds only when the
   # entire suite is green. test:modelzoo is intentionally excluded: it is a
   # non-blocking, informational job (ModelZoo owns its own CI/CD) and is not
@@ -359,35 +354,32 @@ deploy:remote:
     - job: test:infra:alert-rules
     - job: test:integration
   rules:
-    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). No automatic deploy
-    #    to remote. Re-enable by uncommenting the rule below and deleting `when: never`.
-    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    #   when: on_success
-    - when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
   environment:
-    name: production-remote
-    url: http://$REMOTE_HOST:18099
+    name: production-lxp
+    url: http://$LXP_HOST:18099
   before_script:
     - *ssh_setup
   script:
     - |
-      # Record the current production commit so smoke:remote can roll back to it.
-      PREV_SHA=$(ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
-        "cd \"$REMOTE_DEPLOY_PATH\" && git rev-parse HEAD 2>/dev/null || echo NONE")
+      # Record the current production commit so smoke:lxp can roll back to it.
+      PREV_SHA=$(ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" \
+        "cd \"$LXP_DEPLOY_PATH\" && git rev-parse HEAD 2>/dev/null || echo NONE")
       echo "Previous production SHA: $PREV_SHA"
       echo "$PREV_SHA" > prev_sha.txt
 
-      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" "
+      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" "
         set -e
-        if [ ! -d \"$REMOTE_DEPLOY_PATH/.git\" ]; then
-          mkdir -p \"$REMOTE_DEPLOY_PATH\"
-          GIT_TERMINAL_PROMPT=0 git clone \"$REMOTE_DEPLOY_REPO\" \"$REMOTE_DEPLOY_PATH\"
+        if [ ! -d \"$LXP_DEPLOY_PATH/.git\" ]; then
+          mkdir -p \"$LXP_DEPLOY_PATH\"
+          GIT_TERMINAL_PROMPT=0 git clone \"$LXP_DEPLOY_REPO\" \"$LXP_DEPLOY_PATH\"
         fi
-        cd \"$REMOTE_DEPLOY_PATH\"
+        cd \"$LXP_DEPLOY_PATH\"
         GIT_TERMINAL_PROMPT=0 git pull origin main
         docker compose \
           -f platform/infra/docker-compose/docker-compose.yml \
-          -f platform/infra/docker-compose/docker-compose.remote.yml \
+          -f platform/infra/docker-compose/docker-compose.lxp.yml \
           up --build -d --remove-orphans
         echo \"Deploy complete: \$(git rev-parse HEAD)\"
       "
@@ -400,16 +392,14 @@ deploy:remote:
 # STAGE: SMOKE — health probes after deploy, auto-rollback on failure
 # ═══════════════════════════════════════════════════════════════════════════
 
-smoke:remote:
+smoke:lxp:
   stage: smoke
   image: ubuntu:22.04
   timeout: 10 minutes
-  needs: [deploy:remote]
+  needs: [deploy:lxp]
   rules:
-    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
-    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    #   when: on_success
-    - when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
   before_script:
     - *ssh_setup
   script:
@@ -419,8 +409,8 @@ smoke:remote:
     - |
       run_smoke() {
         # Copy the smoke script to the remote host and execute it there.
-        ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
-          "EXAMLOPS_DEPLOY_PATH=$REMOTE_DEPLOY_PATH bash -s" \
+        ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" \
+          "EXAMLOPS_DEPLOY_PATH=$LXP_DEPLOY_PATH bash -s" \
           < platform/ci/smoke_check.sh
       }
 
@@ -447,14 +437,14 @@ smoke:remote:
       fi
 
       echo "==> Auto-rolling back to $PREV_SHA ..."
-      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" "
+      ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" "
         set -e
-        cd \"$REMOTE_DEPLOY_PATH\"
+        cd \"$LXP_DEPLOY_PATH\"
         echo 'Resetting to $PREV_SHA ...'
         git reset --hard '$PREV_SHA'
         docker compose \
           -f platform/infra/docker-compose/docker-compose.yml \
-          -f platform/infra/docker-compose/docker-compose.remote.yml \
+          -f platform/infra/docker-compose/docker-compose.lxp.yml \
           up --build -d --remove-orphans
         echo 'Rollback deployed: $PREV_SHA'
       "
@@ -462,8 +452,8 @@ smoke:remote:
       echo "==> Waiting ${SMOKE_STARTUP_WAIT}s for rollback to stabilise..."
       sleep "$SMOKE_STARTUP_WAIT"
 
-      if ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" \
-          "EXAMLOPS_DEPLOY_PATH=$REMOTE_DEPLOY_PATH bash -s" < platform/ci/smoke_check.sh; then
+      if ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" \
+          "EXAMLOPS_DEPLOY_PATH=$LXP_DEPLOY_PATH bash -s" < platform/ci/smoke_check.sh; then
         echo "==> Rollback is healthy. Previous release ($PREV_SHA) restored."
       else
         echo "==> WARNING: Rollback health check also failed. Manual intervention required."
@@ -475,18 +465,16 @@ smoke:remote:
 # STAGE: POST-DEPLOY — notify + retrain (only after smoke passes)
 # ═══════════════════════════════════════════════════════════════════════════
 
-post-deploy:remote:notify-model-changes:
+post-deploy:lxp:notify-model-changes:
   stage: post-deploy
   image: python:3.12-slim
-  needs: [smoke:remote]
+  needs: [smoke:lxp]
   rules:
-    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
-    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    #   when: on_success
-    - when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
   variables:
-    CONTROL_PLANE_URL: $REMOTE_CONTROL_PLANE_URL
-    CONTROL_PLANE_TOKEN: $REMOTE_CONTROL_PLANE_TOKEN
+    CONTROL_PLANE_URL: $LXP_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $LXP_CONTROL_PLANE_TOKEN
   before_script:
     - apt-get update -qq && apt-get install -y -qq git
     - pip install --quiet httpx
@@ -497,26 +485,24 @@ post-deploy:remote:notify-model-changes:
         --after  "$CI_COMMIT_SHA" \
         --commit-msg "$CI_COMMIT_MESSAGE" || true
 
-post-deploy:remote:retrain-push-models:
+post-deploy:lxp:retrain-push-models:
   stage: post-deploy
   image: python:3.12-slim
-  needs: [smoke:remote]
-  # Best-effort: the deploy is already validated by deploy:remote + smoke:remote. This
+  needs: [smoke:lxp]
+  # Best-effort: the deploy is already validated by deploy:lxp + smoke:lxp. This
   # only kicks off Prefect retraining, which is racy right after a fresh deploy
   # (Prefect still warming up) and is also driven by drift/schedule — so a timeout
   # here must not mark an otherwise-healthy deploy as failed.
   allow_failure: true
   rules:
-    # ⛔ TEMPORARILY DISABLED — presentation freeze (2026-07). Re-enable with deploy:remote.
-    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    #   when: on_success
-    - when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
   variables:
     MODELS: "JPCP MACK MCBound"
     RETRAIN_DATASET: "FDataDataset"
     RETRAIN_DUMMY: "false"
-    CONTROL_PLANE_URL: $REMOTE_CONTROL_PLANE_URL
-    CONTROL_PLANE_TOKEN: $REMOTE_CONTROL_PLANE_TOKEN
+    CONTROL_PLANE_URL: $LXP_CONTROL_PLANE_URL
+    CONTROL_PLANE_TOKEN: $LXP_CONTROL_PLANE_TOKEN
   script:
     - pip install --quiet httpx
     - python platform/ci/retrain_push_models.py

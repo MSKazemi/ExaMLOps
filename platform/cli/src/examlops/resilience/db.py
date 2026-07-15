@@ -1,6 +1,6 @@
 """SQLite connection hardening shared across every platform datastore.
 
-The platform has three long-lived processes (CLI, agent service, dataplane bridge)
+The platform has three long-lived processes (CLI, agent service, seanerbus bridge)
 plus the control plane all opening SQLite files. Without a busy-timeout, concurrent
 writers hit ``sqlite3.OperationalError: database is locked`` immediately. This module
 centralizes the pragmas (WAL + NORMAL + busy_timeout) and a retry-on-locked wrapper

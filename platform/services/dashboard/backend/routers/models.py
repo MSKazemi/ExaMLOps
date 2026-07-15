@@ -458,7 +458,7 @@ async def get_model_detail(
         },
         "lifecycle_gates": lifecycle_gates,
         "retraining": retraining,
-        "dataplane_uuid": meta.get("dataplane_uuid"),
+        "seanerbus_uuid": meta.get("seanerbus_uuid"),
         "stages": stages,
         "links": links,
         "images": images,

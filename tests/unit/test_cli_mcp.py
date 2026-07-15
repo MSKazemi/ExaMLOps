@@ -54,6 +54,43 @@ def test_iter_tools_shows_writes_when_enabled(monkeypatch):
     assert "trigger_retrain" in names
 
 
+# ── HPC fleet tools (Phase 35d) ───────────────────────────────────────────────
+
+
+def test_hpc_read_tools_registered_and_writes_gated(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_MCP_ALLOW_WRITES", raising=False)
+    from examlops.mcp.tools import iter_tools
+
+    names = {s.name for s in iter_tools()}
+    assert {"hpc_clusters", "hpc_nodes", "hpc_place", "hpc_jobs"} <= names
+    assert "hpc_approve_cluster" not in names  # mutating, hidden by default
+
+    monkeypatch.setenv("EXAMLOPS_MCP_ALLOW_WRITES", "1")
+    assert "hpc_approve_cluster" in {s.name for s in iter_tools()}
+
+
+def test_hpc_clusters_and_approve_via_mcp(db, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_HPC_REGISTRY", os.environ["PLATFORM_DB"] + ".yaml")
+    from examlops.hpc_registry import register_pending
+    from examlops.mcp.tools import hpc_approve_cluster, hpc_clusters
+
+    register_pending("lxp", "flux", host="lxp-login")
+    res = hpc_clusters()
+    assert res["ok"] and res["clusters"][0]["state"] == "PENDING"
+
+    approved = hpc_approve_cluster("lxp")
+    assert approved["ok"] and approved["state"] == "ACTIVE"
+    assert hpc_approve_cluster("ghost")["ok"] is False
+
+
+def test_hpc_place_tool_no_clusters(db):
+    from examlops.mcp.tools import hpc_place
+
+    res = hpc_place(gpus=4)
+    assert res["ok"] is True
+    assert res["cluster"] is None  # nothing ACTIVE yet
+
+
 def test_trigger_retrain_without_token_returns_error_envelope(monkeypatch):
     monkeypatch.delenv("CONTROL_PLANE_TOKEN", raising=False)
     from examlops.mcp.tools import trigger_retrain

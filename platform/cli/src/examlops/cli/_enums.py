@@ -47,5 +47,5 @@ class StackService(StrEnum):
     promtail = "promtail"
     dashboard = "dashboard"
     jupyterhub = "jupyterhub"
-    dataplane_sim = "dataplane-sim"
-    dataplane_bridge = "dataplane-bridge"
+    seanerbus_sim = "seanerbus-sim"
+    seanerbus_bridge = "seanerbus-bridge"

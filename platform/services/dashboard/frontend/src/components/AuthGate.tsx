@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Zap, KeyRound } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
-import dataplaneLogo from '@/assets/dataplane.jpg'
+import seanergysLogo from '@/assets/seanergys.jpg'
 import { getAuth, setAuth } from '@/lib/auth'
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
@@ -9,6 +9,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // Proactively log the user out when the token expires, even on a pure-realtime
+  // page that never fires an apiFetch. getAuth() drops the expired blob, so
+  // re-reading it returns null and the gate falls back to the login screen.
+  useEffect(() => {
+    if (!auth) return
+    const msLeft = new Date(auth.expiresAt).getTime() - Date.now()
+    const t = setTimeout(() => setAuthState(getAuth()), Math.max(0, msLeft))
+    return () => clearTimeout(t)
+  }, [auth])
 
   if (auth) return <>{children}</>
 
@@ -79,7 +89,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-center gap-3 pt-1">
             <img src={uniboLogo} alt="University of Bologna" className="h-6 w-6 object-contain opacity-60" />
             <div className="h-4 w-px bg-border" />
-            <img src={dataplaneLogo} alt="DATAPLANE" className="h-5 object-contain max-w-[72px] opacity-60" />
+            <img src={seanergysLogo} alt="SEANERGYS" className="h-5 object-contain max-w-[72px] opacity-60" />
           </div>
         </div>
 

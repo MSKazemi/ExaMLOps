@@ -40,11 +40,12 @@ def status(
 
 
 def _render_status(cfg, watch: bool) -> None:
+    from examlops import sdk
+
     with _output.spinner("Checking platform health…"):
-        try:
-            data = _client.get(f"{cfg.control_plane_url}/status", token=cfg.control_plane_token)
-        except _client.ClientError:
-            data = None
+        snapshot = sdk.status()
+    # Render through the SDK snapshot; `.raw` preserves the exact payload the renderer expects.
+    data = snapshot.raw if snapshot.reachable else None
 
     if _output.json_mode:
         if data:

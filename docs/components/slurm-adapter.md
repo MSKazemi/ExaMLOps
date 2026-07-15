@@ -31,9 +31,9 @@ setting environment variables. Two concerns are independent:
 # Mock (default — local development)
 exa pipeline run --dummy
 
-# Real Flux over SSH (e.g. the remote cluster; CPU-only, 0 GPUs enrolled)
+# Real Flux over SSH (e.g. the lxp cluster; CPU-only, 0 GPUs enrolled)
 export EXAMLOPS_HPC_SCHEDULER=flux EXAMLOPS_HPC_TRANSPORT=ssh \
-       EXAMLOPS_HPC_SSH_HOST=remote-cpu01 EXAMLOPS_HPC_SSH_USER=<user> \
+       EXAMLOPS_HPC_SSH_HOST=lxp-cpu01 EXAMLOPS_HPC_SSH_USER=<user> \
        EXAMLOPS_HPC_REMOTE_REPO=/path/to/deployed/ExaMLOps EXAMLOPS_HPC_GPUS=0
 exa pipeline run --model JPCP --dataset PM100Dataset --dummy
 
@@ -101,7 +101,7 @@ from flux_adapter import FluxAdapter
 adapter = get_scheduler_adapter()                   # factory (mock/slurm/flux + transport)
 
 # Or construct explicitly:
-adapter = FluxAdapter(executor=SSHExecutor(host="remote-cpu01", user="me"),
+adapter = FluxAdapter(executor=SSHExecutor(host="lxp-cpu01", user="me"),
                       remote_workdir="/home/me/examlops_jobs")
 
 job_id = adapter.submit_job("run.sh", resources={"nodes": 2, "time": "2:00:00"},
@@ -139,8 +139,8 @@ Terminal states (polling stops): `COMPLETED`, `FAILED`, `CANCELLED`, `TIMEOUT`.
 ## Notes / limitations
 
 - The training script imports the full modelzoo registry, so the **repo + venv must be
-  deployed on the cluster** (per the remote deploy runbook); the worker stages only `run.sh`
+  deployed on the cluster** (per the lxp deploy runbook); the worker stages only `run.sh`
   up and fetches `model.pkl` back over SFTP.
-- remote Flux currently has **0 GPUs enrolled** — runs are CPU-only; `hpc_jobs.gpus` records 0
+- lxp Flux currently has **0 GPUs enrolled** — runs are CPU-only; `hpc_jobs.gpus` records 0
   and cost uses a CPU-hour term (`CPU_COST_PER_HOUR`).
 - Flux `account`/`qos` require flux-accounting; without it those flags should be left unset.

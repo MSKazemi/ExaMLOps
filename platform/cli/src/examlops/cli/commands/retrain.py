@@ -59,10 +59,23 @@ def retrain(
             )
         return
 
+    # ── Policy-as-code gate (ADR 0079): default allow ⇒ unchanged behaviour ────
+    from examlops import policy
+
+    decision = policy.decide("retrain", {"model": model, "dataset": dataset_name, "dummy": dummy})
+    if decision.denied:
+        _output.error(
+            f"Policy denied retrain of {model}: {decision.reason}",
+            hint="See your policy.yaml or run: exa policy list",
+        )
+        raise typer.Exit(1)
+
     # ── Confirm the mutation (auto-yes under --yes / --json / CI) ──────────────
+    approval_note = " [policy requires approval]" if decision.requires_approval else ""
     if not _output.confirm(
-        f"Schedule a retrain of {model} on {dataset_name}{' (dummy)' if dummy else ''}?",
-        default=True,
+        f"Schedule a retrain of {model} on {dataset_name}"
+        f"{' (dummy)' if dummy else ''}?{approval_note}",
+        default=not decision.requires_approval,
     ):
         _output.warning("Aborted — no retrain scheduled.")
         raise typer.Exit(0)

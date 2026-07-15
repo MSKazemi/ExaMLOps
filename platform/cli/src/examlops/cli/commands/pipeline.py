@@ -17,6 +17,7 @@ from examlops.platform_db import (
     set_promotion_rule,
     write_audit_event,
 )
+from examlops.promotion_providers import resolve_promotion_eval_fn
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -93,6 +94,42 @@ def _run_pytest(args: list[str]) -> None:
         _output.error(f"pytest exited with code {e.returncode}")
 
 
+def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
+    """Resolve --cluster (name or 'auto') into EXAMLOPS_HPC_* env for the run subprocess.
+
+    Returns True on success (env applied), False if the cluster is unknown/not approved or
+    placement found no fit — in which case an error is printed and the run is aborted.
+    """
+    from examlops.hpc_registry import (
+        ClusterNotActiveError,
+        active_clusters_with_inventory,
+        resolve_env,
+    )
+
+    target = cluster
+    if cluster == "auto":
+        from examlops.hpc_placement import ResourceAsk, choose_cluster
+        from examlops.hpc_placement_providers import resolve_placement_score_fn
+
+        result = choose_cluster(
+            ResourceAsk(gpus=gpus), active_clusters_with_inventory(), resolve_placement_score_fn()
+        )
+        if result.cluster is None:
+            _output.error(f"Auto-placement found no cluster: {result.reason}")
+            return False
+        _output.info(f"Auto-placement: {result.reason}")
+        target = result.cluster
+
+    try:
+        env = resolve_env(target)
+    except ClusterNotActiveError as exc:
+        _output.error(str(exc))
+        return False
+    os.environ.update(env)
+    _output.detail(f"  targeting cluster '{target}' → {env.get('EXAMLOPS_HPC_SCHEDULER')}")
+    return True
+
+
 @app.command("list", epilog=_EXAMPLES_LIST)
 def list_pipelines():
     """List all auto-discovered models and their supported datasets."""
@@ -111,8 +148,19 @@ def run(
     ),
     env: EnvOverlay | None = typer.Option(None, "--env", help="YAML registry env overlay"),
     registry: str | None = typer.Option(None, "--registry", help="Path to model_registry.yaml"),
+    cluster: str | None = typer.Option(
+        None,
+        "--cluster",
+        "-C",
+        help="Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose",
+    ),
+    gpus: int = typer.Option(
+        0, "--gpus", "-g", help="GPUs to request (for --cluster auto placement)"
+    ),
 ):
     """Run training pipeline(s) locally via Prefect."""
+    if cluster and not _resolve_cluster_env(cluster, gpus):
+        return  # resolution failed / not approved — message already printed
     args: list[str] = []
     if dummy:
         args.append("--dummy")
@@ -372,15 +420,32 @@ def promote(
         if isinstance(metrics_list, list)
         else metrics_list
     )
-    metric_val = metrics.get(metric)
-    if metric_val is None:
+    raw_metric_val = metrics.get(metric)
+    if raw_metric_val is None:
         _output.error(
             f"Metric '{metric}' not found in run {run_id}. Available: {list(metrics.keys())}"
         )
         return
 
-    op_fn = _OPS[operator]
-    passes = op_fn(metric_val, threshold)  # type: ignore[operator]
+    # MLflow serialises special values as the JSON strings "NaN"/"Infinity"; coerce to
+    # float so comparison and formatting don't raise on a non-numeric metric value.
+    try:
+        metric_val = float(raw_metric_val)
+    except (TypeError, ValueError):
+        _output.error(
+            f"Metric '{metric}' has a non-numeric value {raw_metric_val!r} in run {run_id}; "
+            "cannot evaluate the promotion threshold."
+        )
+        return
+    if metric_val != metric_val or metric_val in (float("inf"), float("-inf")):  # NaN/Inf
+        _output.error(
+            f"Metric '{metric}' is {raw_metric_val} (NaN/Inf) in run {run_id}; "
+            "refusing to promote on a degenerate metric."
+        )
+        return
+
+    _eval = resolve_promotion_eval_fn()
+    passes, _reason = _eval(metric_val, threshold, operator)
     op_sym = "<" if operator in ("lt", "lte") else ">"
     status_str = f"{metric}={metric_val:.4f}  {op_sym}{threshold}"
 
@@ -391,6 +456,12 @@ def promote(
 
     if not passes:
         _output.ok(f"Not promoted: {model} v{version}: {status_str}  (threshold not met)")
+        return
+
+    if not _output.confirm(
+        f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
+    ):
+        _output.info("Cancelled.")
         return
 
     try:
@@ -455,7 +526,7 @@ def add_model(
 
     Unlike [bold]exa scaffold[/bold], this command does NOT create a new model class.
     It only generates the pipeline YAML and config shim for a model class that
-    already lives in modelzoo/modelzoo/models/tasks/.
+    already lives in modelzoo/seanergys_modelzoo/models/tasks/.
 
     Use this when you have written a model class by hand or imported one from
     the modelzoo and want to wire it into ExaMLOps training and inference.
@@ -465,14 +536,14 @@ def add_model(
     # Verify the model class exists in modelzoo before generating pipeline files.
     import os as _os
 
-    modelzoo_tasks = _os.path.join("modelzoo", "modelzoo", "models", "tasks")
+    modelzoo_tasks = _os.path.join("modelzoo", "seanergys_modelzoo", "models", "tasks")
     found_files = _glob.glob(
         _os.path.join(modelzoo_tasks, "**", f"{name.lower()}_model.py"), recursive=True
     )
     if not found_files:
         _output.error(
             f"Model class not found: expected a file matching "
-            f"modelzoo/modelzoo/models/tasks/**/{name.lower()}_model.py\n"
+            f"modelzoo/seanergys_modelzoo/models/tasks/**/{name.lower()}_model.py\n"
             f"  → Use [bold]exa scaffold {name}[/bold] to create a new model from scratch."
         )
         raise typer.Exit(1)

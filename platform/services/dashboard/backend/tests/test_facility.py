@@ -5,7 +5,7 @@ import sqlite3
 import facility
 import pytest
 
-from tests.conftest import VIEWER_PW
+from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
 @pytest.fixture
@@ -133,4 +133,130 @@ async def test_queue_endpoint(client, platform_db):
 async def test_job_endpoint_404(client, platform_db):
     token = await _login(client, VIEWER_PW)
     r = await client.get("/api/v1/facility/job/nope", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 404
+
+
+# ── fleet registry + approval gate (Phase 35b) ───────────────────────────────
+
+
+@pytest.fixture
+def fleet_db(platform_db):
+    """Augment the seeded platform.db with an hpc_clusters registry table."""
+    conn = sqlite3.connect(platform_db)
+    conn.executescript(
+        """
+        CREATE TABLE hpc_clusters (
+            name TEXT PRIMARY KEY, scheduler TEXT, transport TEXT, host TEXT,
+            ssh_user TEXT, ssh_port INTEGER, ssh_key TEXT, key_fingerprint TEXT,
+            state TEXT NOT NULL DEFAULT 'PENDING', capabilities TEXT,
+            requested_by TEXT, approved_by TEXT, reason TEXT,
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT
+        );
+        INSERT INTO hpc_clusters (name, scheduler, transport, host, state, capabilities)
+        VALUES ('lxp', 'flux', 'ssh', 'lxp-login', 'PENDING', '{"total_gpus": 8}');
+        """
+    )
+    conn.commit()
+    conn.close()
+    return platform_db
+
+
+@pytest.mark.asyncio
+async def test_fleet_lists_clusters(client, fleet_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/facility/fleet", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    c = body["clusters"][0]
+    assert c["name"] == "lxp" and c["state"] == "PENDING"
+    assert c["capabilities"]["total_gpus"] == 8
+    # No node snapshot → capacity falls back to declared capabilities (idle == total).
+    assert c["totalGpus"] == 8 and c["idleGpus"] == 8 and c["utilizationPct"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_fleet_capacity_from_node_snapshot_and_jobs(client, fleet_db):
+    # Seed a live node snapshot (half the GPUs allocated) + a completed GPU job.
+    conn = sqlite3.connect(fleet_db)
+    conn.executescript(
+        """
+        CREATE TABLE hpc_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, cluster TEXT, scheduler TEXT, node TEXT,
+            cpus INTEGER, memory_mb INTEGER, gpus INTEGER, gpu_model TEXT, state TEXT,
+            partition TEXT, captured_at TEXT
+        );
+        INSERT INTO hpc_nodes (cluster, scheduler, node, gpus, state) VALUES
+            ('lxp', 'flux', 'n1', 4, 'idle'),
+            ('lxp', 'flux', 'n2', 4, 'allocated');
+        UPDATE hpc_jobs SET run_seconds = 3600 WHERE scheduler = 'flux' AND gpus = 8;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/facility/fleet", headers={"Authorization": f"Bearer {token}"})
+    c = r.json()["clusters"][0]
+    assert c["totalGpus"] == 8 and c["idleGpus"] == 4  # from the snapshot, not capabilities
+    assert c["utilizationPct"] == 50.0
+    assert c["gpuHoursUsed"] == 8.0  # 8 GPUs × 3600s / 3600
+
+
+@pytest.mark.asyncio
+async def test_fleet_approve_requires_admin(client, fleet_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/v1/facility/fleet/lxp/approve", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_fleet_admin_approve_flips_state_and_audits(client, fleet_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/v1/facility/fleet/lxp/approve", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 200
+    assert r.json()["state"] == "ACTIVE"
+
+    conn = sqlite3.connect(fleet_db)
+    state = conn.execute("SELECT state FROM hpc_clusters WHERE name='lxp'").fetchone()[0]
+    audit = conn.execute(
+        "SELECT action, target FROM audit_events WHERE action='cluster_approved'"
+    ).fetchone()
+    conn.close()
+    assert state == "ACTIVE"
+    assert audit == ("cluster_approved", "lxp")
+
+
+@pytest.mark.asyncio
+async def test_fleet_reject_with_reason(client, fleet_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/v1/facility/fleet/lxp/reject",
+        json={"reason": "wrong account"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["state"] == "REJECTED"
+
+    conn = sqlite3.connect(fleet_db)
+    row = conn.execute("SELECT state, reason FROM hpc_clusters WHERE name='lxp'").fetchone()
+    conn.close()
+    assert row == ("REJECTED", "wrong account")
+
+
+@pytest.mark.asyncio
+async def test_fleet_approve_unknown_404(client, fleet_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/v1/facility/fleet/ghost/approve", headers={"Authorization": f"Bearer {token}"}
+    )
     assert r.status_code == 404

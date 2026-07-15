@@ -212,20 +212,20 @@ def test_approvals_reject_help_shows_examples():
     assert "Examples:" in r.output
 
 
-# ── dataplane ─────────────────────────────────────────────────────────────────
+# ── seanerbus ─────────────────────────────────────────────────────────────────
 
 
-def test_dataplane_list_help_shows_examples():
-    r = runner.invoke(app, ["dataplane", "list", "--help"])
+def test_seanerbus_list_help_shows_examples():
+    r = runner.invoke(app, ["seanerbus", "list", "--help"])
     assert r.exit_code == 0
     assert "Examples:" in r.output
 
 
-def test_dataplane_regen_uuid_help_shows_examples():
-    r = runner.invoke(app, ["dataplane", "regen-uuid", "--help"])
+def test_seanerbus_regen_uuid_help_shows_examples():
+    r = runner.invoke(app, ["seanerbus", "regen-uuid", "--help"])
     assert r.exit_code == 0
     assert "Examples:" in r.output
-    assert "exa dataplane regen-uuid" in r.output
+    assert "exa seanerbus regen-uuid" in r.output
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -274,8 +274,8 @@ def test_stack_status_help_shows_examples():
     assert "Examples:" in r.output
 
 
-def test_dataplane_init_uuids_help_shows_examples():
-    r = runner.invoke(app, ["dataplane", "init-uuids", "--help"])
+def test_seanerbus_init_uuids_help_shows_examples():
+    r = runner.invoke(app, ["seanerbus", "init-uuids", "--help"])
     assert r.exit_code == 0
     assert "Examples:" in r.output
 

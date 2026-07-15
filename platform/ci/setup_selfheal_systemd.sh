@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the ExaMLOps self-healing systemd timer on remote-cpu01.
+# Install the ExaMLOps self-healing systemd timer on lxp-cpu01.
 # Run once as root or with sudo:
 #   sudo bash platform/ci/setup_selfheal_systemd.sh [deploy-path]
 #
@@ -8,7 +8,7 @@
 #   journalctl -t examlops-selfheal -f
 set -euo pipefail
 
-DEPLOY_PATH="${1:-/<DATA_DIR>/examlops}"
+DEPLOY_PATH="${1:-/nfs/share01/examlops}"
 UNIT_DIR="/etc/systemd/system"
 HEAL_SCRIPT="$DEPLOY_PATH/platform/ci/self_heal.sh"
 

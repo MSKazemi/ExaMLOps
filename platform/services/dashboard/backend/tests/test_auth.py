@@ -37,6 +37,20 @@ async def test_login_with_empty_password_returns_401(client):
 
 
 @pytest.mark.asyncio
+async def test_login_is_rate_limited_after_repeated_attempts(client):
+    from routers.auth import LOGIN_LIMITER
+
+    # Exhaust the limiter with wrong-password attempts (they count too), then the
+    # next attempt — even with the correct password — must be throttled with 429.
+    for _ in range(LOGIN_LIMITER.limit):
+        r = await client.post("/api/auth/login", json={"password": "nope"})
+        assert r.status_code == 401
+    blocked = await client.post("/api/auth/login", json={"password": VIEWER_PW})
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+
+
+@pytest.mark.asyncio
 async def test_me_returns_role_for_valid_token(client):
     login = await client.post("/api/auth/login", json={"password": VIEWER_PW})
     token = login.json()["token"]

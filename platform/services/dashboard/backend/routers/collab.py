@@ -35,7 +35,9 @@ class SnapshotBody(BaseModel):
 
 
 @router.get("/{entity_type}/{entity_id}/comments")
-async def list_comments(entity_type: str, entity_id: str, claims: dict = Depends(_viewer)) -> dict[str, Any]:
+async def list_comments(
+    entity_type: str, entity_id: str, claims: dict = Depends(_viewer)
+) -> dict[str, Any]:
     p = principal_from_claims(claims)
     return {"comments": collab_lib.list_comments(_db(), entity_type, entity_id, p["tenant"])}
 
@@ -48,12 +50,16 @@ async def add_comment(
     comment = collab_lib.add_comment(_db(), entity_type, entity_id, p["tenant"], p["sub"], req.body)
     # Notify each @-mentioned user over the F8 channel (F12).
     for user in comment["mentions"]:
-        bus.publish("event.mention", {"user": user, "entity": f"{entity_type}/{entity_id}", "by": p["sub"]})
+        bus.publish(
+            "event.mention", {"user": user, "entity": f"{entity_type}/{entity_id}", "by": p["sub"]}
+        )
     return comment
 
 
 @router.get("/{entity_type}/{entity_id}/activity")
-async def activity(entity_type: str, entity_id: str, claims: dict = Depends(_viewer)) -> dict[str, Any]:
+async def activity(
+    entity_type: str, entity_id: str, claims: dict = Depends(_viewer)
+) -> dict[str, Any]:
     p = principal_from_claims(claims)
     return {"activity": collab_lib.entity_activity(_db(), entity_type, entity_id, p["tenant"])}
 

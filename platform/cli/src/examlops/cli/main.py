@@ -15,6 +15,7 @@ from examlops.cli.commands import (
     ab_cmd,
     approvals,
     ask_cmd,
+    autopilot_cmd,
     batch_cmd,
     cards_cmd,
     config_cmd,
@@ -27,6 +28,7 @@ from examlops.cli.commands import (
     features_cmd,
     feedback_cmd,
     finops_cmd,
+    hpc_cmd,
     hpo_cmd,
     mcp_cmd,
     models,
@@ -34,13 +36,16 @@ from examlops.cli.commands import (
     namespace_cmd,
     pipeline,
     plugins_cmd,
+    policy_cmd,
     predict,
     production,
+    project_cmd,
+    providers_cmd,
     quality_cmd,
     retrain,
     rollback_cmd,
     scaffold,
-    dataplane_cmd,
+    seanerbus_cmd,
     serve,
     shadow_cmd,
     stack,
@@ -168,6 +173,11 @@ def main(
 
 
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
+app.add_typer(
+    autopilot_cmd.app,
+    name="autopilot",
+    help="Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)",
+)
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")
 app.add_typer(modelzoo.app, name="modelzoo", help="ModelZoo repository freshness and events")
@@ -177,8 +187,11 @@ app.add_typer(pipeline.app, name="pipeline", help="Prefect training pipeline")
 pipeline.app.add_typer(quality_cmd.app, name="quality", help="Data quality validation gates")
 app.add_typer(stack.app, name="stack", help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config", help="CLI configuration")
-app.add_typer(dataplane_cmd.app, name="dataplane", help="DataPlane bridge UUID management")
+app.add_typer(seanerbus_cmd.app, name="seanerbus", help="SeanerBUS bridge UUID management")
 app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isolation")
+app.add_typer(
+    project_cmd.app, name="project", help="ExaMLOps Projects (CPU/memory/storage/GPU quotas)"
+)
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
@@ -201,7 +214,14 @@ eval_app.add_typer(feedback_cmd.app, name="feedback", help="Ground-truth feedbac
 app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
 
 app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
+app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
 app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
+app.add_typer(
+    providers_cmd.app, name="providers", help="Pluggable calculation providers (all domains)"
+)
+app.add_typer(
+    policy_cmd.app, name="policy", help="Policy-as-code — declarative governance for mutations"
+)
 
 app.command("ask", epilog=ask_cmd._EXAMPLES)(ask_cmd.ask)
 app.command("explain", epilog=explain_command._EXAMPLES)(explain_command.explain)

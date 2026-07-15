@@ -47,7 +47,7 @@
     {"title": "Drift Monitor",     "url": "/d/examlops-drift",           "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
     {"title": "Logs",              "url": "/d/examlops-logs",            "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
     {"title": "Approvals",         "url": "/d/examlops-approvals",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
-    {"title": "DataPlane",         "url": "/d/examlops-dataplane",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+    {"title": "SeanerBUS",         "url": "/d/examlops-seanerbus",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
   ],
   "panels": [
     {
@@ -99,10 +99,10 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "DataPlane Bridge",
+      "title": "SeanerBUS Bridge",
       "gridPos": {"h": 3, "w": 3, "x": 6, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "dataplane_bridge_up", "legendFormat": "bridge", "refId": "A"}],
+      "targets": [{"expr": "seanerbus_bridge_up", "legendFormat": "bridge", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -235,7 +235,7 @@
       "title": "Total Inferences (24 h)",
       "gridPos": {"h": 3, "w": 4, "x": 4, "y": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "increase(dataplane_inferences_total[24h])", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "increase(seanerbus_inferences_total[24h])", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -253,7 +253,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum(rate(dataplane_inference_errors_total[5m])) / sum(rate(dataplane_inferences_total[5m])) * 100",
+          "expr": "sum(rate(seanerbus_inference_errors_total[5m])) / sum(rate(seanerbus_inferences_total[5m])) * 100",
           "legendFormat": "",
           "refId": "A"
         }
@@ -275,7 +275,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by(le) (rate(dataplane_inference_latency_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m])))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -409,7 +409,7 @@
       "title": "Retrain Triggers from Bus (24 h)",
       "gridPos": {"h": 3, "w": 4, "x": 16, "y": 9},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "increase(dataplane_retrain_triggers_total[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "increase(seanerbus_retrain_triggers_total[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -449,8 +449,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "rate(dataplane_inferences_total[2m])", "legendFormat": "{{model_id}}", "refId": "A"},
-        {"expr": "rate(dataplane_inference_errors_total[2m])", "legendFormat": "ERR {{model_id}}", "refId": "B"}
+        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model_id}}", "refId": "A"},
+        {"expr": "rate(seanerbus_inference_errors_total[2m])", "legendFormat": "ERR {{model_id}}", "refId": "B"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},
@@ -475,17 +475,17 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "expr": "histogram_quantile(0.50, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
           "legendFormat": "p50 {{model_id}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "expr": "histogram_quantile(0.95, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
           "legendFormat": "p95 {{model_id}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by(le,model_id) (rate(dataplane_inference_latency_seconds_bucket[2m])))",
+          "expr": "histogram_quantile(0.99, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
           "legendFormat": "p99 {{model_id}}",
           "refId": "C"
         }

@@ -1,8 +1,8 @@
-"""Unit tests for DriftTracker in dataplane_bridge.
+"""Unit tests for DriftTracker in seanerbus_bridge.
 
 Imports DriftTracker by stubbing out the heavy C-extension dependencies
-(capnp, dataplane, prometheus_client) before importing the bridge module,
-following the same pattern used in test_dataplane_bridge.py.
+(capnp, seanerbus, prometheus_client) before importing the bridge module,
+following the same pattern used in test_seanerbus_bridge.py.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# ── stub heavy dependencies so bridge imports succeed without dataplane ─────
+# ── stub heavy dependencies so bridge imports succeed without seanerbus ─────
 
 
 def _ensure_stubs():
@@ -26,18 +26,18 @@ def _ensure_stubs():
         capnp_stub.run = lambda coro: coro  # type: ignore[attr-defined]
         sys.modules["capnp"] = capnp_stub
 
-    if "dataplane" not in sys.modules:
-        sb = types.ModuleType("dataplane")
-        sb_client = types.ModuleType("dataplane.client")
+    if "seanerbus" not in sys.modules:
+        sb = types.ModuleType("seanerbus")
+        sb_client = types.ModuleType("seanerbus.client")
         sb_client.Connection = MagicMock()  # type: ignore[attr-defined]
         sb.client = sb_client  # type: ignore[attr-defined]
-        sys.modules["dataplane"] = sb
-        sys.modules["dataplane.client"] = sb_client
+        sys.modules["seanerbus"] = sb
+        sys.modules["seanerbus.client"] = sb_client
 
-    if "dataplane_client" not in sys.modules:
-        sc = types.ModuleType("dataplane_client")
+    if "seanerbus_client" not in sys.modules:
+        sc = types.ModuleType("seanerbus_client")
         sc.Connection = MagicMock()  # type: ignore[attr-defined]
-        sys.modules["dataplane_client"] = sc
+        sys.modules["seanerbus_client"] = sc
 
     if "prometheus_client" not in sys.modules:
         prom = types.ModuleType("prometheus_client")
@@ -48,8 +48,8 @@ def _ensure_stubs():
         prom.CONTENT_TYPE_LATEST = "text/plain"  # type: ignore[attr-defined]
         sys.modules["prometheus_client"] = prom
 
-    if "dataplane_msgs" not in sys.modules:
-        msgs = types.ModuleType("dataplane_msgs")
+    if "seanerbus_msgs" not in sys.modules:
+        msgs = types.ModuleType("seanerbus_msgs")
         for cls_name in (
             "HpcJobV1",
             "HpcInferenceResV1",
@@ -59,7 +59,7 @@ def _ensure_stubs():
             "VectorResV1",
         ):
             setattr(msgs, cls_name, MagicMock())
-        sys.modules["dataplane_msgs"] = msgs
+        sys.modules["seanerbus_msgs"] = msgs
 
     if "model_schema_registry" not in sys.modules:
         msr = types.ModuleType("model_schema_registry")
@@ -71,12 +71,12 @@ def _ensure_stubs():
 
 _ensure_stubs()
 
-# Add platform/clients to path so `import dataplane_bridge` resolves.
+# Add platform/clients to path so `import seanerbus_bridge` resolves.
 _clients_dir = os.path.join(os.path.dirname(__file__), "..", "..", "platform", "clients")
 if _clients_dir not in sys.path:
     sys.path.insert(0, _clients_dir)
 
-import dataplane_bridge as bridge  # noqa: E402
+import seanerbus_bridge as bridge  # noqa: E402
 
 # Pop the stub so test_model_schema_registry.py can import the real module later.
 sys.modules.pop("model_schema_registry", None)
@@ -110,7 +110,7 @@ async def test_no_trigger_below_window():
     tracker = _make_tracker(window=5)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         for _ in range(4):  # one short of window=5
             tracker.record("JPCP", False)  # all failures
         await asyncio.sleep(0)  # drain event loop
@@ -123,7 +123,7 @@ async def test_no_trigger_below_threshold():
     tracker = _make_tracker(window=5, threshold=0.5)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         # 4 successes + 1 failure = 20% error rate < 50% threshold
         for _ in range(4):
             tracker.record("JPCP", True)
@@ -138,7 +138,7 @@ async def test_triggers_on_threshold_breach():
     tracker = _make_tracker(window=4, threshold=0.5)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         # First fill with successes to populate bucket without triggering
         for _ in range(4):
             tracker.record("JPCP", True)
@@ -162,7 +162,7 @@ async def test_cooldown_prevents_double_trigger():
     tracker = _make_tracker(window=4, threshold=0.5, cooldown=300)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         # First trigger: fill with failures
         for _ in range(4):
             tracker.record("JPCP", False)
@@ -184,7 +184,7 @@ async def test_cooldown_expired_allows_retrigger():
     tracker = _make_tracker(window=4, threshold=0.5, cooldown=300)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         # First trigger
         for _ in range(4):
             tracker.record("JPCP", False)
@@ -218,7 +218,7 @@ async def test_window_is_rolling():
     tracker = _make_tracker(window=window, threshold=0.5, cooldown=9999)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         # Fill window with failures → triggers retrain (cooldown=9999 blocks re-trigger)
         for _ in range(window):
             tracker.record("JPCP", False)
@@ -250,7 +250,7 @@ async def test_multiple_models_independent():
     tracker = _make_tracker(window=4, threshold=0.5)
     mock_client = _mock_async_client()
 
-    with patch("dataplane_bridge.httpx.AsyncClient", return_value=mock_client):
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_client):
         for _ in range(4):
             tracker.record("JPCP", False)
         for _ in range(4):

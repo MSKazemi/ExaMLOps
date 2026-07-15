@@ -1,4 +1,4 @@
-"""Tests for YAMLBackedConfig — the YAML-driven drop-in for DataplaneModelConfiguration."""
+"""Tests for YAMLBackedConfig — the YAML-driven drop-in for SeanergysModelConfiguration."""
 
 from __future__ import annotations
 

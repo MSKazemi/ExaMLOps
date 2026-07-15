@@ -139,7 +139,7 @@ def reject(
     try:
         result = _client.post(
             f"{cfg.control_plane_url}/reject/{model}",
-            {"reason": reason},
+            {"reason": reason or ""},
             token=cfg.control_plane_token,
         )
     except _client.ClientError as e:

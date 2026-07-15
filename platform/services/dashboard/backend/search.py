@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-import facility
 import mlops
 
 # Static navigation targets — always searchable, no DB needed (F1 pages).
@@ -70,9 +69,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 # ── per-source providers ──────────────────────────────────────────────────────
@@ -83,7 +85,16 @@ def _search_pages(query: str) -> list[dict[str, Any]]:
     for label, url in _PAGES:
         s = score(query, label)
         if s:
-            out.append({"kind": "page", "id": url, "label": label, "url": url, "score": s, "source": "docs"})
+            out.append(
+                {
+                    "kind": "page",
+                    "id": url,
+                    "label": label,
+                    "url": url,
+                    "score": s,
+                    "source": "docs",
+                }
+            )
     return out
 
 

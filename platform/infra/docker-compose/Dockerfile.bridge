@@ -10,15 +10,15 @@ WORKDIR /app
 RUN pip install --no-cache-dir pycapnp httpx prometheus_client pyyaml
 
 # Directory names vary by deploy environment:
-#   local dev:  DATAPLANE_DIR=dataplane          AI_PRODUCTIONS_DIR=ai-productions
-#   remote-cpu01:  DATAPLANE_DIR=examlops-dataplane/dataplane  AI_PRODUCTIONS_DIR=examlops
-ARG DATAPLANE_DIR=dataplane
+#   local dev:  SEANERBUS_DIR=seanerbus          AI_PRODUCTIONS_DIR=ai-productions
+#   lxp-cpu01:  SEANERBUS_DIR=examlops-seanerbus/seanerbus  AI_PRODUCTIONS_DIR=examlops
+ARG SEANERBUS_DIR=seanerbus
 ARG AI_PRODUCTIONS_DIR=ai-productions
 
-# Copy and install the dataplane Python bindings
-# (build context is the parent dataplane/ directory so both repos are accessible)
-COPY ${DATAPLANE_DIR}/bindings/python /app/dataplane-pkg
-RUN pip install --no-cache-dir /app/dataplane-pkg
+# Copy and install the seanerbus Python bindings
+# (build context is the parent seanergys/ directory so both repos are accessible)
+COPY ${SEANERBUS_DIR}/bindings/python /app/seanerbus-pkg
+RUN pip install --no-cache-dir /app/seanerbus-pkg
 
 # Copy bridge client code from ai-productions
 COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
@@ -26,4 +26,4 @@ COPY ${AI_PRODUCTIONS_DIR}/pipelines/models /app/pipelines/models
 
 WORKDIR /app
 
-CMD ["python", "clients/dataplane_bridge.py"]
+CMD ["python", "clients/seanerbus_bridge.py"]

@@ -31,6 +31,12 @@ analysis = [
     "numpy>=1.26",
     "scipy>=1.11",
 ]
+# Declarative YAML/expression calculation providers (examlops.providers.expression).
+# Lets a config-authored formula be evaluated safely without executing arbitrary code.
+# Lazily imported; built-in Python providers work without it.
+finops = [
+    "simpleeval>=1.0",
+]
 
 [project.scripts]
 exa = "examlops.cli.main:app"

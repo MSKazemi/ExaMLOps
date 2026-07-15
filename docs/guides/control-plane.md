@@ -116,7 +116,7 @@ The dashboard Approvals page (admin-only) shows a badge with the pending count a
 
 The GitHub Actions `examlops` job calls `ci/notify_model_changes.py` on every push to `main`. The script:
 1. Diffs `before..after` commits.
-2. Finds changed files under `modelzoo/modelzoo/models/tasks/`, `pipelines/model_configs/`, and `pipelines/models/`.
+2. Finds changed files under `modelzoo/seanergys_modelzoo/models/tasks/`, `pipelines/model_configs/`, and `pipelines/models/`.
 3. Extracts `model_id` values via regex.
 4. POSTs to `POST /api/changes` with bearer auth.
 5. **Fails silently** on connection error — never blocks CI.

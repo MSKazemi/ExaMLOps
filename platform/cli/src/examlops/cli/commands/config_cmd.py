@@ -21,9 +21,9 @@ _EXAMPLES_SHOW = "Examples:\n\n  exa config show"
 _EXAMPLES_INIT = "Examples:\n\n  exa config init"
 _EXAMPLES_SET = (
     "Examples:\n\n"
-    "  exa config set control_plane http://<CONTROL_PLANE_HOST>:18002\n\n"
+    "  exa config set control_plane http://137.204.56.169:18002\n\n"
     "  exa config set control_plane_token mysecrettoken\n\n"
-    "  exa config set mlflow http://<CONTROL_PLANE_HOST>:15000"
+    "  exa config set mlflow http://137.204.56.169:15000"
 )
 
 
@@ -91,10 +91,10 @@ _EXAMPLES_CONTEXTS = "Examples:\n\n  exa config contexts\n\n  exa --json config 
 _EXAMPLES_USE = (
     "Examples:\n\n"
     "  [dim]# Point config at a named environment[/dim]\n"
-    "  exa config use remote\n\n"
+    "  exa config use lxp\n\n"
     "  [dim]# Create + populate a context, then switch to it[/dim]\n"
-    "  exa config set control_plane http://<DATAPLANE_HOST>:18002 --context remote\n"
-    "  exa config use remote"
+    "  exa config set control_plane http://23.109.46.77:18002 --context lxp\n"
+    "  exa config use lxp"
 )
 
 

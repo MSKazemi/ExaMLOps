@@ -1,4 +1,4 @@
-"""<<name>>_config — Auto-scaffolded DataplaneModelConfiguration for <<NAME>>."""
+"""<<name>>_config — Auto-scaffolded SeanergysModelConfiguration for <<NAME>>."""
 
 from __future__ import annotations
 
@@ -12,22 +12,22 @@ for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from modelzoo.dataloader.dataplane_dataloader import DataplaneDataloader
-from modelzoo.datasets._backends import get_backend
-from modelzoo.datasets.f_data import FDataDataset
-from modelzoo.models.common.dataplane_configurator import (
-    DataplaneDataloaderParams,
-    DataplaneDatasetParams,
-    DataplaneModelConfiguration,
-    DataplaneModelParams,
+from seanergys_modelzoo.dataloader.seanergys_dataloader import SeanergysDataloader
+from seanergys_modelzoo.datasets._backends import get_backend
+from seanergys_modelzoo.datasets.f_data import FDataDataset
+from seanergys_modelzoo.models.common.seanergys_configurator import (
+    SeanergysDataloaderParams,
+    SeanergysDatasetParams,
+    SeanergysModelConfiguration,
+    SeanergysModelParams,
 )
-from modelzoo.models.tasks.<<TASK>>.<<name>>.<<name>>_model import <<NAME>>
+from seanergys_modelzoo.models.tasks.<<TASK>>.<<name>>.<<name>>_model import <<NAME>>
 
 
 <<TARGET_TRANSFORM_BLOCK>>
 
 
-class <<NAME>>Configuration(DataplaneModelConfiguration):
+class <<NAME>>Configuration(SeanergysModelConfiguration):
     """Configuration for <<NAME>> — TODO: one-line description."""
 
     MODEL_CLASS: ClassVar[type] = <<NAME>>
@@ -56,7 +56,7 @@ class <<NAME>>Configuration(DataplaneModelConfiguration):
         split: str = "train",
         is_dummy: bool = False,
         backend_name: str | None = None,
-    ) -> tuple[<<NAME>>, object, DataplaneDataloader]:
+    ) -> tuple[<<NAME>>, object, SeanergysDataloader]:
         """Return ready-to-use (model, dataset, loader) for a given split."""
         model_params, dataset_params, loader_params = cls._build_params(
             dataset_cls, is_dummy=is_dummy, split=split
@@ -72,7 +72,7 @@ class <<NAME>>Configuration(DataplaneModelConfiguration):
             ds_kwargs.pop("use_zenodo_url", None)
 
         dataset = FDataDataset(**ds_kwargs)
-        loader = DataplaneDataloader(dataset, **loader_params.to_dict())
+        loader = SeanergysDataloader(dataset, **loader_params.to_dict())
         return model, dataset, loader
 
     @classmethod
@@ -107,7 +107,7 @@ class <<NAME>>Configuration(DataplaneModelConfiguration):
 
     @classmethod
     def _fdata_params(cls, is_dummy: bool, split: str):
-        model_params = DataplaneModelParams(model_hyperparameters={"n_jobs": -1})
+        model_params = SeanergysModelParams(model_hyperparameters={"n_jobs": -1})
         if split == "train":
             files = ["23_12", "24_01"]
             filters = [("adt", ">=", "2023-12-01"), ("adt", "<=", "2024-01-31")]
@@ -115,7 +115,7 @@ class <<NAME>>Configuration(DataplaneModelConfiguration):
             files = ["24_02"]
             filters = [("adt", ">=", "2024-02-01"), ("adt", "<=", "2024-02-28")]
         _cache = Path(__file__).resolve().parents[2] / ".data_cache" / "fdata"
-        dataset_params = DataplaneDatasetParams(
+        dataset_params = SeanergysDatasetParams(
             use_zenodo_url=True,
             is_dummy=is_dummy,
             files=files,
@@ -126,5 +126,5 @@ class <<NAME>>Configuration(DataplaneModelConfiguration):
             output_features=[<<OUTPUT_FEATURES>>],
             download_path=str(_cache),
         )
-        loader_params = DataplaneDataloaderParams(batch_size=1)
+        loader_params = SeanergysDataloaderParams(batch_size=1)
         return model_params, dataset_params, loader_params

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './api'
 
 // ── view types (mirror backend facility.py / F6 interfaces) ──────────────────
@@ -77,3 +77,59 @@ export const useFacilityQueue = (cluster: string | null = null) =>
     queryKey: ['facility', 'queue', cluster],
     queryFn: () => apiFetch<QueueResponse>(`/api/v1/facility/queue${clusterQuery(cluster)}`),
   })
+
+// ── fleet registry + approval gate (Phase 35b) ───────────────────────────────
+
+export type ClusterState = 'PENDING' | 'ACTIVE' | 'REJECTED'
+
+export interface FleetCluster {
+  name: string
+  scheduler: string | null
+  transport: string | null
+  host: string | null
+  state: ClusterState
+  approvedBy: string | null
+  requestedBy: string | null
+  reason: string | null
+  capabilities: { total_gpus?: number; total_nodes?: number; version?: string } | null
+  totalGpus: number
+  idleGpus: number
+  utilizationPct: number
+  gpuHoursUsed: number
+  updatedAt: string | null
+}
+
+export interface FleetResponse {
+  clusters: FleetCluster[]
+  count: number
+}
+
+/** Colour-blind-safe status token for a cluster's approval state (maps to StatusPill). */
+export function clusterStateTone(state: ClusterState): 'healthy' | 'pending' | 'failed' | 'unknown' {
+  if (state === 'ACTIVE') return 'healthy'
+  if (state === 'PENDING') return 'pending'
+  if (state === 'REJECTED') return 'failed'
+  return 'unknown'
+}
+
+export const useFleet = () =>
+  useQuery<FleetResponse>({
+    queryKey: ['facility', 'fleet'],
+    queryFn: () => apiFetch<FleetResponse>('/api/v1/facility/fleet'),
+  })
+
+/** Admin: approve or reject a cluster; invalidates the fleet list on success. */
+export const useClusterDecision = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, decision, reason }: { name: string; decision: 'approve' | 'reject'; reason?: string }) =>
+      apiFetch<{ name: string; state: ClusterState }>(
+        `/api/v1/facility/fleet/${encodeURIComponent(name)}/${decision}`,
+        {
+          method: 'POST',
+          ...(decision === 'reject' ? { body: JSON.stringify({ reason: reason ?? null }) } : {}),
+        },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['facility', 'fleet'] }),
+  })
+}

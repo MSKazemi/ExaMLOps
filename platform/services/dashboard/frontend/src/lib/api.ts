@@ -299,7 +299,7 @@ export interface ModelDetailResponse {
     work_pool: string | null
     concurrency_limit: number | null
   }
-  dataplane_uuid?: string | null
+  seanerbus_uuid?: string | null
   stages: {
     production: ModelStageInfo | null
     canary: ModelStageInfo | null
@@ -524,9 +524,9 @@ export async function getPipelineStatus(pipelineId: number): Promise<{
   return apiFetch(`/api/modelzoo/pipeline-status/${pipelineId}`)
 }
 
-// ── DataPlane types ──────────────────────────────────────────────────────────
+// ── SeanerBUS types ──────────────────────────────────────────────────────────
 
-export interface DataplaneConfig {
+export interface SeanerbusConfig {
   [key: string]: string | undefined
 }
 
@@ -550,19 +550,19 @@ export interface BridgeStatus {
   error?: string
 }
 
-// ── DataPlane hooks ──────────────────────────────────────────────────────────
+// ── SeanerBUS hooks ──────────────────────────────────────────────────────────
 
-export const useDataplaneConfig = () =>
-  useQuery<DataplaneConfig>({
-    queryKey: ['dataplane', 'config'],
-    queryFn: () => apiFetch<DataplaneConfig>('/api/dataplane/config'),
+export const useSeanerbusConfig = () =>
+  useQuery<SeanerbusConfig>({
+    queryKey: ['seanerbus', 'config'],
+    queryFn: () => apiFetch<SeanerbusConfig>('/api/seanerbus/config'),
     staleTime: 30_000,
   })
 
-export const useDataplaneStatus = () =>
+export const useSeanerbusStatus = () =>
   useQuery<BridgeStatus>({
-    queryKey: ['dataplane', 'status'],
-    queryFn: () => apiFetch<BridgeStatus>('/api/dataplane/status'),
+    queryKey: ['seanerbus', 'status'],
+    queryFn: () => apiFetch<BridgeStatus>('/api/seanerbus/status'),
     staleTime: 10_000,
     refetchInterval: 15_000,
   })
@@ -571,10 +571,10 @@ export interface ModelUuids {
   [model: string]: string | null
 }
 
-export const useDataplaneModelUuids = () =>
+export const useSeanerbusModelUuids = () =>
   useQuery<ModelUuids>({
-    queryKey: ['dataplane', 'model-uuids'],
-    queryFn: () => apiFetch<ModelUuids>('/api/dataplane/model-uuids'),
+    queryKey: ['seanerbus', 'model-uuids'],
+    queryFn: () => apiFetch<ModelUuids>('/api/seanerbus/model-uuids'),
     staleTime: 60_000,
   })
 
@@ -589,10 +589,10 @@ export interface GrafanaPanels {
   }
 }
 
-export const useDataplaneGrafanaPanels = () =>
+export const useSeanerbusGrafanaPanels = () =>
   useQuery<GrafanaPanels>({
-    queryKey: ['dataplane', 'grafana-panels'],
-    queryFn: () => apiFetch<GrafanaPanels>('/api/dataplane/grafana-panels'),
+    queryKey: ['seanerbus', 'grafana-panels'],
+    queryFn: () => apiFetch<GrafanaPanels>('/api/seanerbus/grafana-panels'),
     staleTime: 300_000,
   })
 

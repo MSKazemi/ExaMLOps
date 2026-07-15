@@ -5,7 +5,7 @@ def _inputs(**overrides):
     base = LinkInputs(
         model_name="JPCP",
         mlflow_model_id="jpcp",
-        model_path_in_repo="modelzoo/modelzoo/models/tasks/power_consumption_prediction/jpcp/",
+        model_path_in_repo="modelzoo/seanergys_modelzoo/models/tasks/power_consumption_prediction/jpcp/",
         run_id="abc123",
         version="7",
         primary_dataset="PM100Dataset",
@@ -33,7 +33,7 @@ def test_all_links_built_when_inputs_complete():
     assert out["paper"] == "https://arxiv.org/abs/1"
     assert out["git_source"] == (
         "https://github.com/org/repo/blob/main/"
-        "modelzoo/modelzoo/models/tasks/power_consumption_prediction/jpcp/"
+        "modelzoo/seanergys_modelzoo/models/tasks/power_consumption_prediction/jpcp/"
     )
     assert "JPCP" in out["loki_logs"]
     assert out["control_plane_api"] == "https://cp.example/docs#/default/retrain_retrain_post"

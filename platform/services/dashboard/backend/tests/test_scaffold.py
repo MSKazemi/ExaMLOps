@@ -50,7 +50,7 @@ async def test_preview_returns_file_dict_when_script_exists(client):
 
     fake_result = SimpleNamespace(
         returncode=0,
-        stdout='{"modelzoo/modelzoo/models/tasks/testmodel.py": "# model code", "pipelines/models/testmodel.yaml": "name: TestModel\\n"}',
+        stdout='{"modelzoo/seanergys_modelzoo/models/tasks/testmodel.py": "# model code", "pipelines/models/testmodel.yaml": "name: TestModel\\n"}',
         stderr="",
     )
 
@@ -62,8 +62,8 @@ async def test_preview_returns_file_dict_when_script_exists(client):
 
     assert r.status_code == 200
     data = r.json()
-    assert "modelzoo/modelzoo/models/tasks/testmodel.py" in data
-    assert data["modelzoo/modelzoo/models/tasks/testmodel.py"] == "# model code"
+    assert "modelzoo/seanergys_modelzoo/models/tasks/testmodel.py" in data
+    assert data["modelzoo/seanergys_modelzoo/models/tasks/testmodel.py"] == "# model code"
 
 
 @pytest.mark.asyncio

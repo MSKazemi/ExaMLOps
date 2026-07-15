@@ -52,5 +52,7 @@ async def ask(req: AskRequest, claims: dict = Depends(_viewer)) -> dict[str, Any
         session=req.session,
     )
     actor = claims.get("role", "unknown")
-    copilot_lib.audit_copilot(_platform_db_path(), actor, question, ctx, result.get("proposals", []))
+    copilot_lib.audit_copilot(
+        _platform_db_path(), actor, question, ctx, result.get("proposals", [])
+    )
     return result

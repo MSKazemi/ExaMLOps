@@ -14,7 +14,7 @@ for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from modelzoo.models.common import framework_adapter as fa  # noqa: E402
+from seanergys_modelzoo.models.common import framework_adapter as fa  # noqa: E402
 
 # ── get_adapter / adapter_for ────────────────────────────────────────────────
 
@@ -143,19 +143,19 @@ class TestHuggingFaceAdapter:
 
 class TestLLMAgentSkeleton:
     def test_chat_must_be_overridden(self):
-        from modelzoo.models.common.huggingface_dataplane_model import (
-            DataplaneLLMAgent,
+        from seanergys_modelzoo.models.common.huggingface_seanergys_model import (
+            SeanergysLLMAgent,
         )
 
-        # DataplaneModel is abstract — provide minimal stubs for the abstract
+        # SeanergysModel is abstract — provide minimal stubs for the abstract
         # methods so we can instantiate and prove ``chat`` is the only piece
         # left for concrete LLM agents to implement.
-        from modelzoo.models.common.dataplane_model import DataplaneModelTask
-        from modelzoo.models.common.dataplane_model_metadata import (
-            DataplaneModelMetadata,
+        from seanergys_modelzoo.models.common.seanergys_model import SeanergysModelTask
+        from seanergys_modelzoo.models.common.seanergys_model_metadata import (
+            SeanergysModelMetadata,
         )
 
-        class StubAgent(DataplaneLLMAgent):
+        class StubAgent(SeanergysLLMAgent):
             def build_model(self):
                 pass
 
@@ -176,18 +176,18 @@ class TestLLMAgentSkeleton:
                 return None  # not exercised here
 
         agent = StubAgent(
-            metadata=DataplaneModelMetadata(name="stub-agent"),
-            task_type=DataplaneModelTask.CLASSIFICATION,
+            metadata=SeanergysModelMetadata(name="stub-agent"),
+            task_type=SeanergysModelTask.CLASSIFICATION,
         )
         assert agent.tool_specs == []
         with pytest.raises(NotImplementedError):
             agent.chat([{"role": "user", "content": "hi"}])
 
     def test_framework_is_huggingface(self):
-        from modelzoo.models.common.huggingface_dataplane_model import (
-            DataplaneHuggingFaceModel,
-            DataplaneLLMAgent,
+        from seanergys_modelzoo.models.common.huggingface_seanergys_model import (
+            SeanergysHuggingFaceModel,
+            SeanergysLLMAgent,
         )
 
-        assert DataplaneHuggingFaceModel.framework == "huggingface"
-        assert DataplaneLLMAgent.framework == "huggingface"
+        assert SeanergysHuggingFaceModel.framework == "huggingface"
+        assert SeanergysLLMAgent.framework == "huggingface"

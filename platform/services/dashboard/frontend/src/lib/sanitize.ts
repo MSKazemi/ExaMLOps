@@ -14,8 +14,13 @@ const STYLE_BLOCK = /<style\b[^>]*>[\s\S]*?<\/style\s*>/gi
 const DANGEROUS_TAGS = /<\/?(?:iframe|object|embed|link|meta|base)\b[^>]*>/gi
 // Inline event handlers: on<name>=... (quoted or bare).
 const EVENT_HANDLER = /\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
-// Script-ish URI schemes anywhere in an attribute value.
-const SCRIPT_URI = /(?:javascript|vbscript|data:text\/html)\s*:/gi
+// Script-ish URI schemes anywhere in an attribute value. Two variants on purpose:
+// the global one is for `.replace` (strip every occurrence); the non-global one is
+// for `.test` in `safeUrl`. Sharing a single `g`-flagged regex between `.replace`
+// and `.test` is unsafe — `.test` advances `lastIndex`, so a shared instance can
+// start mid-string on the next call and miss a match.
+const SCRIPT_URI_GLOBAL = /(?:javascript|vbscript|data:text\/html)\s*:/gi
+const SCRIPT_URI = /(?:javascript|vbscript|data:text\/html)\s*:/i
 
 /**
  * Strip common XSS vectors from a markdown/HTML string (F16 R2). Removes `<script>`/`<style>`
@@ -29,7 +34,7 @@ export function sanitizeMarkdown(input: string): string {
     .replace(STYLE_BLOCK, '')
     .replace(DANGEROUS_TAGS, '')
     .replace(EVENT_HANDLER, '')
-    .replace(SCRIPT_URI, '')
+    .replace(SCRIPT_URI_GLOBAL, '')
 }
 
 /**
@@ -39,9 +44,7 @@ export function sanitizeMarkdown(input: string): string {
 export function safeUrl(url: string): string {
   const trimmed = (url ?? '').trim()
   if (!trimmed) return ''
-  if (SCRIPT_URI.test(trimmed)) {
-    SCRIPT_URI.lastIndex = 0 // reset the stateful global regex
-    return ''
-  }
+  // SCRIPT_URI is non-global, so `.test` is stateless (no lastIndex carry-over).
+  if (SCRIPT_URI.test(trimmed)) return ''
   return trimmed
 }

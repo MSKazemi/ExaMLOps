@@ -2,7 +2,7 @@
 # All expressions reference metrics emitted by:
 #   serving/ray_serving/app.py         (ray_examlops_*)
 #   platform/services/control_plane/   (examlops_*)
-#   dataplane-bridge                   (dataplane_*)
+#   seanerbus-bridge                   (seanerbus_*)
 groups:
 
   # ── Ray Serve / Online Inference ──────────────────────────────────────────────
@@ -99,42 +99,42 @@ groups:
           summary: "SLO error budget burn rate > 3× (6 h window)"
           description: "Error budget burn rate is {{ $value | humanize }}× over the last 6 hours."
 
-  # ── DataPlane Bridge ──────────────────────────────────────────────────────────
-  - name: examlops-dataplane
+  # ── SeanerBUS Bridge ──────────────────────────────────────────────────────────
+  - name: examlops-seanerbus
     rules:
 
-      - alert: DataPlaneBridgeDown
-        expr: dataplane_bridge_up == 0
+      - alert: SeanerBUSBridgeDown
+        expr: seanerbus_bridge_up == 0
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "DataPlane bridge is offline"
-          description: "dataplane_bridge_up = 0 for 2 min — inference requests from the bus are failing."
+          summary: "SeanerBUS bridge is offline"
+          description: "seanerbus_bridge_up = 0 for 2 min — inference requests from the bus are failing."
 
-      - alert: DataPlaneHighErrorRate
+      - alert: SeanerBUSHighErrorRate
         expr: |
-          sum(rate(dataplane_inference_errors_total[5m]))
-          / clamp_min(sum(rate(dataplane_inferences_total[5m])), 0.001)
+          sum(rate(seanerbus_inference_errors_total[5m]))
+          / clamp_min(sum(rate(seanerbus_inferences_total[5m])), 0.001)
           > 0.05
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "DataPlane inference error rate > 5%"
+          summary: "SeanerBUS inference error rate > 5%"
           description: "Bridge inference error rate is {{ $value | humanizePercentage }} over the last 5 min."
 
-      - alert: DataPlaneHighLatencyP99
+      - alert: SeanerBUSHighLatencyP99
         expr: |
           histogram_quantile(0.99,
-            sum by(le) (rate(dataplane_inference_latency_seconds_bucket[5m]))
+            sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m]))
           ) > 0.5
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "DataPlane p99 latency > 500 ms"
-          description: "DataPlane p99 inference latency is {{ $value | humanizeDuration }}."
+          summary: "SeanerBUS p99 latency > 500 ms"
+          description: "SeanerBUS p99 inference latency is {{ $value | humanizeDuration }}."
 
   # ── Control Plane ─────────────────────────────────────────────────────────────
   - name: examlops-control-plane

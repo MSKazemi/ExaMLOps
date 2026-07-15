@@ -15,6 +15,7 @@ renders an empty-but-valid console instead of a 500.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -52,9 +53,132 @@ def clusters(db_path: str) -> list[str]:
     try:
         if not _has_hpc_jobs(conn):
             return []
-        return [r["scheduler"] for r in conn.execute(
-            "SELECT DISTINCT scheduler FROM hpc_jobs ORDER BY scheduler"
-        )]
+        return [
+            r["scheduler"]
+            for r in conn.execute("SELECT DISTINCT scheduler FROM hpc_jobs ORDER BY scheduler")
+        ]
+    finally:
+        conn.close()
+
+
+# ── fleet registry: clusters + approval gate (Phase 35b) ─────────────────────
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _capacity_by_cluster(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """Idle/total GPUs per cluster from the hpc_nodes snapshot (empty if absent)."""
+    if not _has_table(conn, "hpc_nodes"):
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for r in conn.execute(
+        """SELECT cluster,
+                  SUM(gpus) AS total_gpus,
+                  SUM(CASE WHEN state='idle' THEN gpus ELSE 0 END) AS idle_gpus
+             FROM hpc_nodes GROUP BY cluster"""
+    ):
+        out[r["cluster"]] = {
+            "total_gpus": r["total_gpus"] or 0,
+            "idle_gpus": r["idle_gpus"] or 0,
+        }
+    return out
+
+
+def _gpu_hours_by_scheduler(conn: sqlite3.Connection) -> dict[str, float]:
+    """Consumed GPU-hours (gpus × run_seconds / 3600) per scheduler from hpc_jobs."""
+    if not _has_hpc_jobs(conn):
+        return {}
+    out: dict[str, float] = {}
+    for r in conn.execute(
+        """SELECT scheduler, SUM(gpus * run_seconds) / 3600.0 AS gpu_hours
+             FROM hpc_jobs
+            WHERE gpus IS NOT NULL AND run_seconds IS NOT NULL
+            GROUP BY scheduler"""
+    ):
+        out[r["scheduler"]] = round(r["gpu_hours"] or 0.0, 2)
+    return out
+
+
+def fleet_clusters(db_path: str) -> list[dict[str, Any]]:
+    """Registered clusters with approval state + capacity/utilization (graceful if absent)."""
+    conn = _connect(db_path)
+    try:
+        if not _has_table(conn, "hpc_clusters"):
+            return []
+        rows = conn.execute(
+            """SELECT name, scheduler, transport, host, state, approved_by, requested_by,
+                      reason, capabilities, updated_at
+                 FROM hpc_clusters ORDER BY name"""
+        ).fetchall()
+        cap_by_cluster = _capacity_by_cluster(conn)
+        gpu_hours = _gpu_hours_by_scheduler(conn)
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            caps = None
+            if r["capabilities"]:
+                try:
+                    caps = json.loads(r["capabilities"])
+                except (ValueError, TypeError):
+                    caps = None
+            # Prefer live node-snapshot totals; fall back to declared capabilities.
+            snap = cap_by_cluster.get(r["name"], {})
+            total_gpus = snap.get("total_gpus") or (caps or {}).get("total_gpus", 0) or 0
+            idle_gpus = snap.get("idle_gpus", total_gpus)
+            util = round(100.0 * (total_gpus - idle_gpus) / total_gpus, 1) if total_gpus else 0.0
+            out.append(
+                {
+                    "name": r["name"],
+                    "scheduler": r["scheduler"],
+                    "transport": r["transport"],
+                    "host": r["host"],
+                    "state": r["state"],
+                    "approvedBy": r["approved_by"],
+                    "requestedBy": r["requested_by"],
+                    "reason": r["reason"],
+                    "capabilities": caps,
+                    "totalGpus": total_gpus,
+                    "idleGpus": idle_gpus,
+                    "utilizationPct": util,
+                    "gpuHoursUsed": gpu_hours.get(r["scheduler"], 0.0),
+                    "updatedAt": r["updated_at"],
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def set_cluster_state(
+    db_path: str, name: str, state: str, *, actor: str, reason: str | None = None
+) -> bool:
+    """Transition a cluster's state and write an audit event. False if unknown/no table."""
+    conn = _connect(db_path)
+    try:
+        if not _has_table(conn, "hpc_clusters"):
+            return False
+        cur = conn.execute(
+            """UPDATE hpc_clusters
+                   SET state=?, approved_by=?, reason=COALESCE(?, reason),
+                       updated_at=CURRENT_TIMESTAMP
+                 WHERE name=?""",
+            (state, actor, reason, name),
+        )
+        if cur.rowcount == 0:
+            return False
+        action = "cluster_approved" if state == "ACTIVE" else "cluster_rejected"
+        if _has_table(conn, "audit_events"):
+            conn.execute(
+                "INSERT INTO audit_events (source, actor, action, target, details) "
+                "VALUES (?,?,?,?,?)",
+                ("dashboard", actor, action, name, json.dumps({"reason": reason})),
+            )
+        conn.commit()
+        return True
     finally:
         conn.close()
 

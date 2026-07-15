@@ -1,0 +1,19 @@
+# LXP-CPU01 overrides — apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.lxp.yml up -d
+#
+# Adjusts bridge build ARGs to match lxp directory layout:
+#   /nfs/share01/examlops/           (the ai-productions repo)
+#   /nfs/share01/examlops-seanerbus/seanerbus/  (the seanerbus repo)
+
+services:
+  control-plane:
+    extra_hosts:
+      - "gitlab.seanergys.fz-juelich.de:134.94.199.214"
+
+  seanerbus-bridge:
+    build:
+      dockerfile: examlops/platform/infra/docker-compose/Dockerfile.bridge
+      network: host
+      args:
+        AI_PRODUCTIONS_DIR: examlops
+        SEANERBUS_DIR: examlops-seanerbus/seanerbus

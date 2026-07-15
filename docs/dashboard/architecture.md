@@ -300,13 +300,16 @@ frontend: telemetry.scrubPii(...) strips email/JWT/bearer/hex before anything is
 ## FinOps & Green-AI (F13)
 
 A cost + carbon surface (ADR 0066) rendering the shipped phase 23/24 cost/carbon backend
-(`model_costs`, `project_budgets`, `carbon_records`), honest about estimation uncertainty.
+(`model_costs`, `project_budgets`, `carbon_records`), honest about estimation uncertainty. Carbon
+figures are computed by **pluggable providers** (ADR 0074): `carbon_summary` reports which provider(s)
+produced the records and, when a single provider is in use, surfaces *its* methodology + uncertainty
+(resolved best-effort from `examlops.providers`) instead of a hardcoded default.
 
 ```
 GET /api/v1/finops/overview ─► routers/finops.py ─► bff.aggregate({cost, budget, carbon, unitEconomics})
   cost   → finops.cost_rollup      (per-model GPU-hours + USD + facility totals, R1)
   budget → finops.budget_status    (budget-vs-actual + overBudget flag, R2)
-  carbon → finops.carbon_summary   (kWh + gCO₂e totals + methodology + ±uncertainty, R3)
+  carbon → finops.carbon_summary   (kWh + gCO₂e totals + methodology + ±uncertainty + providers, R3)
   unit   → finops.unit_economics   (cost-per-training-run, R4)
 ```
 
@@ -698,7 +701,7 @@ lib/grafana.ts: GRAFANA_PANELS registry {name → {uid, panelId}}  +  base URL (
 - **`<GrafanaPanel>`** — builds the `d-solo` iframe URL from the registry, shows a `<Skeleton>` while
   the frame loads, and an accessible `<EmptyState>` fallback when Grafana isn't configured/reachable.
   Lazy-loaded (`loading="lazy"`), theme + time-range + template-vars driven (R1/R4).
-- **Auth/security** — internal/remote deployments may use anonymous Viewer; exposed deployments use a
+- **Auth/security** — internal/lxp deployments may use anonymous Viewer; exposed deployments use a
   service-account token/proxy, and the embed origin is scoped by `frame-ancestors` (owned by F16).
 
 ## Sequence: login

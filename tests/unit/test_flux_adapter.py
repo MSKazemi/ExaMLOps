@@ -163,6 +163,34 @@ def test_get_job_status_falls_back_to_eventlog_then_raises():
         a.get_job_status("ƒGONE")
 
 
+def test_status_from_eventlog_json_spaced_status_is_completed():
+    # A successful finish serialized as valid JSON ("status": 0 WITH a space) must
+    # classify COMPLETED — the old substring check for '"status":0' wrongly said FAILED.
+    eventlog = (
+        '{"timestamp":1.0,"name":"submit","context":{}}\n'
+        '{"timestamp":2.0,"name":"finish","context":{"status": 0}}\n'
+        '{"timestamp":3.0,"name":"clean","context":{}}\n'
+    )
+    canned = {
+        ("flux", "jobs"): CompletedCommand(0, "", ""),
+        ("flux", "job"): CompletedCommand(0, eventlog, ""),
+    }
+    status = _adapter(canned).get_job_status("ƒOK")
+    assert status["state"] == "COMPLETED"
+    assert status["exit_code"] == 0
+
+
+def test_status_from_eventlog_nonzero_status_is_failed():
+    eventlog = '{"name":"finish","context":{"status": 256}}\n'  # wait-status: exit 1
+    canned = {
+        ("flux", "jobs"): CompletedCommand(0, "", ""),
+        ("flux", "job"): CompletedCommand(0, eventlog, ""),
+    }
+    status = _adapter(canned).get_job_status("ƒBAD")
+    assert status["state"] == "FAILED"
+    assert status["exit_code"] == 1
+
+
 def test_wait_until_complete_terminates_on_inactive():
     line = "INACTIVE COMPLETED 2026-07-01T10:00:00 2026-07-01T10:30:00 0\n"
     canned = {("flux", "jobs"): CompletedCommand(0, line, "")}

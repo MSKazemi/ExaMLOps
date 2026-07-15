@@ -8,6 +8,7 @@ exercise the routing logic on a bare instance constructed via
 from __future__ import annotations
 
 import sys
+import threading
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ def _make_server(
     # test state cleanly.
     cls = rs_app.MultiModelServer.func_or_class
     server = object.__new__(cls)
+    server._cache_lock = threading.RLock()
     server._hot = {}
     server._version_cache = OrderedDict()
     server._version_cache_size = version_cache_size
@@ -82,6 +84,16 @@ class TestResolve:
         resolved = server._resolve("M", alias="Canary", version=None)
         assert resolved["version"] == "5"
         assert resolved["alias"] == "Canary"
+
+    def test_lookup_is_case_insensitive_on_lowercase_registry_name(self):
+        # Hot set is keyed on the lowercase MLflow name; an uppercase request
+        # (the documented canonical casing) must still resolve, not 404.
+        server = _make_server()
+        server._hot[("jpcp", rs_app.MODEL_STAGE)] = _fake_hot_entry("3")
+        server._hot[("jpcp", "Canary")] = _fake_hot_entry("5")
+
+        assert server._resolve("JPCP", alias=None, version=None)["version"] == "3"
+        assert server._resolve("JPCP", alias="Canary", version=None)["version"] == "5"
 
     def test_alias_lookup_falls_back_to_mlflow_when_not_hot(self):
         server = _make_server()

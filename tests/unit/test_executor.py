@@ -57,12 +57,12 @@ def test_get_executor_ssh_requires_host(monkeypatch):
 
 
 def test_get_executor_builds_ssh_from_env(monkeypatch):
-    monkeypatch.setenv("EXAMLOPS_HPC_SSH_HOST", "remote-login")
+    monkeypatch.setenv("EXAMLOPS_HPC_SSH_HOST", "lxp-login")
     monkeypatch.setenv("EXAMLOPS_HPC_SSH_USER", "mohsen")
     monkeypatch.setenv("EXAMLOPS_HPC_SSH_PORT", "2222")
     ex = get_executor()
     assert isinstance(ex, SSHExecutor)
-    assert ex.host == "remote-login" and ex.user == "mohsen" and ex.port == 2222
+    assert ex.host == "lxp-login" and ex.user == "mohsen" and ex.port == 2222
 
 
 class _FakeChannel:

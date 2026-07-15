@@ -16,11 +16,29 @@ from typing import Any
 
 # Carbon estimation is inherently approximate (grid intensity varies hourly, TDP ≠ actual draw).
 # Surface a coarse relative uncertainty so the UI can show error bars rather than false precision.
+# These are the fallback figures for the platform's default methodology; when records were produced
+# by a pluggable provider (ADR 0074) we prefer that provider's own methodology/uncertainty.
 CARBON_UNCERTAINTY = 0.30  # ±30%
 CARBON_METHODOLOGY = (
     "Energy = GPU-hours × TDP × PUE; CO₂e = energy × grid intensity. "
     "Grid intensity and TDP are estimates; treat figures as ±30%."
 )
+
+
+def _provider_metadata(provider_name: str) -> tuple[str | None, float | None]:
+    """Best-effort (methodology, uncertainty) for a carbon provider name (ADR 0074).
+
+    Imported lazily and defensively: the dashboard service does not depend on the ``examlops`` CLI
+    package, so when it is unavailable we fall back to the platform defaults rather than failing.
+    """
+    try:
+        import examlops.finops.carbon_providers  # noqa: F401 - registers the built-ins
+        from examlops.providers import get_provider
+
+        meta = get_provider("carbon", provider_name).metadata()
+        return meta.methodology or None, meta.uncertainty
+    except Exception:
+        return None, None
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -30,9 +48,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 # ── cost rollup (F13 R1) ──────────────────────────────────────────────────────
@@ -127,6 +148,7 @@ def carbon_summary(db_path: str) -> dict[str, Any]:
     try:
         totals = {"kwh": 0.0, "co2e_g": 0.0, "records": 0}
         by_model: list[dict[str, Any]] = []
+        providers: list[str] = []
         if _table_exists(conn, "carbon_records"):
             r = conn.execute(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(kwh),0) AS kwh, COALESCE(SUM(co2e_g),0) AS c "
@@ -134,18 +156,43 @@ def carbon_summary(db_path: str) -> dict[str, Any]:
             ).fetchone()
             totals = {"kwh": round(r["kwh"], 3), "co2e_g": round(r["c"], 1), "records": r["n"]}
             by_model = [
-                {"model": m["model"], "kwh": round(m["kwh"] or 0.0, 3), "co2e_g": round(m["c"] or 0.0, 1)}
+                {
+                    "model": m["model"],
+                    "kwh": round(m["kwh"] or 0.0, 3),
+                    "co2e_g": round(m["c"] or 0.0, 1),
+                }
                 for m in conn.execute(
                     "SELECT model, SUM(kwh) AS kwh, SUM(co2e_g) AS c FROM carbon_records "
                     "GROUP BY model ORDER BY c DESC"
                 )
             ]
+            # Which pluggable providers produced these records (ADR 0074)? Guarded — older DBs may
+            # predate the `provider` column.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(carbon_records)")}
+            if "provider" in cols:
+                providers = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT DISTINCT provider FROM carbon_records WHERE provider IS NOT NULL "
+                        "ORDER BY provider"
+                    )
+                ]
+        # When every record came from a single provider, surface that provider's own methodology +
+        # uncertainty; otherwise fall back to the platform defaults (mixed/legacy records).
+        methodology, uncertainty = CARBON_METHODOLOGY, CARBON_UNCERTAINTY
+        if len(providers) == 1:
+            m, u = _provider_metadata(providers[0])
+            if m is not None:
+                methodology = m
+            if u is not None:
+                uncertainty = u
         return {
             "totals": totals,
             "byModel": by_model,
+            "providers": providers,
             "co2e_kg": round(totals["co2e_g"] / 1000.0, 2),
-            "uncertainty": CARBON_UNCERTAINTY,
-            "methodology": CARBON_METHODOLOGY,
+            "uncertainty": uncertainty,
+            "methodology": methodology,
         }
     finally:
         conn.close()

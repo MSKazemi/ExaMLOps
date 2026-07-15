@@ -4,7 +4,7 @@ config_class: jpcp_config.JPCPConfiguration
 task_type: regression
 framework: sklearn
 enabled: true
-dataplane_uuid: <UUID>
+seanerbus_uuid: 30b0f24c-e154-432b-91f9-25a144095a30
 
 model:
   embedding_type: INT

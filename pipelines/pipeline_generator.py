@@ -2,8 +2,8 @@
 pipeline_generator — Auto-pipeline generator for ExaMLOps.
 
 At startup, auto-discovers all (model, config) pairs by scanning:
-  • modelzoo/modelzoo/models/tasks/**/*.py  → DataplaneModel subclasses
-  • pipelines/model_configs/*.py                      → DataplaneModelConfiguration subclasses
+  • modelzoo/seanergys_modelzoo/models/tasks/**/*.py  → SeanergysModel subclasses
+  • pipelines/model_configs/*.py                      → SeanergysModelConfiguration subclasses
 
 Each config class must declare MODEL_CLASS = <ModelClass> to be matched.
 Matched pairs are registered automatically — no manual wiring needed.
@@ -70,9 +70,9 @@ for _p in (str(_REPO_ROOT), str(_PLATFORM), str(_MODELZOO), str(_SLURM_ADAPTER_D
         sys.path.insert(0, _p)
 
 from ci.utils import retrieve_instances_from_file
-from modelzoo.decorators import pipeline_step  # noqa: F401 — re-exported for callers
-from modelzoo.models.common.dataplane_configurator import DataplaneModelConfiguration
-from modelzoo.models.common.dataplane_model import DataplaneModel
+from seanergys_modelzoo.decorators import pipeline_step  # noqa: F401 — re-exported for callers
+from seanergys_modelzoo.models.common.seanergys_configurator import SeanergysModelConfiguration
+from seanergys_modelzoo.models.common.seanergys_model import SeanergysModel
 
 from pipelines.model_loader import ModelYAMLConfig, scan_model_yamls  # noqa: E402
 
@@ -89,43 +89,43 @@ from pipelines.registry_loader import export_registry, load_registry, resolve_en
 MODEL_REGISTRY: dict[
     str,
     # middle slot holds either a config *class* or a YAMLBackedConfig *instance*
-    tuple[type[DataplaneModel], Any, dict[str, Any]],
+    tuple[type[SeanergysModel], Any, dict[str, Any]],
 ] = {}
 
 
 # ── Auto-discovery ─────────────────────────────────────────────────────────────
 
 
-def discover_models() -> dict[str, type[DataplaneModel]]:
+def discover_models() -> dict[str, type[SeanergysModel]]:
     """
-    Scan modelzoo/modelzoo/models/tasks/**/*.py and return every
-    concrete DataplaneModel subclass found, keyed by class name.
+    Scan modelzoo/seanergys_modelzoo/models/tasks/**/*.py and return every
+    concrete SeanergysModel subclass found, keyed by class name.
     """
-    tasks_root = _MODELZOO / "modelzoo" / "models" / "tasks"
-    found: dict[str, type[DataplaneModel]] = {}
+    tasks_root = _MODELZOO / "seanergys_modelzoo" / "models" / "tasks"
+    found: dict[str, type[SeanergysModel]] = {}
     for py_file in sorted(tasks_root.rglob("*.py")):
         if py_file.name.startswith("_"):
             continue
         try:
-            classes = retrieve_instances_from_file(py_file, DataplaneModel)
+            classes = retrieve_instances_from_file(py_file, SeanergysModel)
             found.update(classes)
         except Exception as exc:
             print(f"[discovery] Warning: could not scan {py_file.name}: {exc}")
     return found
 
 
-def discover_configs() -> dict[str, type[DataplaneModelConfiguration]]:
+def discover_configs() -> dict[str, type[SeanergysModelConfiguration]]:
     """
     Scan pipelines/model_configs/*.py and return every concrete
-    DataplaneModelConfiguration subclass found, keyed by class name.
+    SeanergysModelConfiguration subclass found, keyed by class name.
     """
     configs_dir = _REPO_ROOT / "pipelines" / "model_configs"
-    found: dict[str, type[DataplaneModelConfiguration]] = {}
+    found: dict[str, type[SeanergysModelConfiguration]] = {}
     for py_file in sorted(configs_dir.glob("*.py")):
         if py_file.name.startswith("_"):
             continue
         try:
-            classes = retrieve_instances_from_file(py_file, DataplaneModelConfiguration)
+            classes = retrieve_instances_from_file(py_file, SeanergysModelConfiguration)
             found.update(classes)
         except Exception as exc:
             print(f"[discovery] Warning: could not scan {py_file.name}: {exc}")
@@ -153,8 +153,8 @@ def auto_register_all() -> None:
 
 
 def register_model(
-    model_cls: type[DataplaneModel],
-    config_cls: type[DataplaneModelConfiguration],
+    model_cls: type[SeanergysModel],
+    config_cls: type[SeanergysModelConfiguration],
 ) -> None:
     """
     Register a model + configurator pair.
@@ -171,7 +171,7 @@ def register_model(
 
 
 def _build_model_tasks(
-    model_cls: type[DataplaneModel],
+    model_cls: type[SeanergysModel],
     config_cls: Any,  # config class or YAMLBackedConfig instance
 ) -> dict[str, Any]:
     """
@@ -246,7 +246,7 @@ def _build_model_tasks(
     return tasks
 
 
-def make_prefect_tasks_from_model(model_cls: type[DataplaneModel]) -> dict[str, Any]:
+def make_prefect_tasks_from_model(model_cls: type[SeanergysModel]) -> dict[str, Any]:
     """
     Public utility: scan a model class for @pipeline_step methods and return
     a dict mapping step attribute name → Prefect Task callable.
@@ -285,8 +285,8 @@ _DATASET_CLASS_MAP: dict[str, type] | None = None
 def _get_dataset_class_map() -> dict[str, type]:
     global _DATASET_CLASS_MAP
     if _DATASET_CLASS_MAP is None:
-        from modelzoo.datasets.f_data import FDataDataset
-        from modelzoo.datasets.pm100 import PM100Dataset
+        from seanergys_modelzoo.datasets.f_data import FDataDataset
+        from seanergys_modelzoo.datasets.pm100 import PM100Dataset
 
         _DATASET_CLASS_MAP = {
             "PM100Dataset": PM100Dataset,
@@ -334,25 +334,25 @@ def _build_train_components(
     backend_name: str | None,
 ) -> tuple:
     """Build (model, dataset, loader) from YAML config + Python shim transforms."""
-    from modelzoo.dataloader.dataplane_dataloader import DataplaneDataloader
-    from modelzoo.datasets._backends import get_backend
-    from modelzoo.models.common.dataplane_configurator import (
-        DataplaneDataloaderParams,
-        DataplaneModelParams,
+    from seanergys_modelzoo.dataloader.seanergys_dataloader import SeanergysDataloader
+    from seanergys_modelzoo.datasets._backends import get_backend
+    from seanergys_modelzoo.models.common.seanergys_configurator import (
+        SeanergysDataloaderParams,
+        SeanergysModelParams,
     )
 
     ds_name = dataset_cls.__name__
     ds_entry = yaml_cfg.dataset(ds_name)
     split_cfg = yaml_cfg.split_config(ds_name, split)
 
-    # Build DataplaneModelParams from YAML model section
+    # Build SeanergysModelParams from YAML model section
     model_dict = dict(yaml_cfg.model)
     raw_embedding = model_dict.pop("embedding_type", None)
     hyperparameters = model_dict.pop("hyperparameters", {})
     if raw_embedding is not None:
         model_dict["embedding_type"] = shim.resolve_embedding_type(raw_embedding)
     model_dict["model_hyperparameters"] = hyperparameters
-    model_params = DataplaneModelParams(**model_dict)
+    model_params = SeanergysModelParams(**model_dict)
 
     model = shim.MODEL_CLASS(**model_params.to_dict())
 
@@ -389,17 +389,17 @@ def _build_train_components(
     else:
         ds_kwargs["use_zenodo_url"] = True
 
-    loader_params = DataplaneDataloaderParams(batch_size=ds_entry.batch_size)
+    loader_params = SeanergysDataloaderParams(batch_size=ds_entry.batch_size)
     dataset = dataset_cls(**ds_kwargs)
-    loader = DataplaneDataloader(dataset, **loader_params.to_dict())
+    loader = SeanergysDataloader(dataset, **loader_params.to_dict())
     return model, dataset, loader
 
 
 class YAMLBackedConfig:
-    """Drop-in for DataplaneModelConfiguration, backed by a per-model YAML file.
+    """Drop-in for SeanergysModelConfiguration, backed by a per-model YAML file.
 
     Stored in MODEL_REGISTRY in the config_cls slot. Implements the same
-    interface as DataplaneModelConfiguration so all existing pipeline tasks
+    interface as SeanergysModelConfiguration so all existing pipeline tasks
     work without changes.
     """
 
@@ -483,7 +483,7 @@ def _build_dataset_lookup() -> dict[str, type]:
 
 
 def _make_yaml_override_config(
-    base_config_cls: Any,  # a DataplaneModelConfiguration subclass (classmethods called below)
+    base_config_cls: Any,  # a SeanergysModelConfiguration subclass (classmethods called below)
     entry: Any,
     dataset_classes: list[type],
 ) -> type:
@@ -851,7 +851,7 @@ def result_fetch_task(
     Load the trained estimator from disk and inject it into a fresh model
     instance that carries the correct hyperparams, metadata, and embeddings.
 
-    Returns a fully-populated DataplaneModel ready for evaluate_task.
+    Returns a fully-populated SeanergysModel ready for evaluate_task.
     """
     if state != "COMPLETED":
         raise RuntimeError(f"Cannot fetch result: job state is '{state}'")
@@ -865,7 +865,7 @@ def result_fetch_task(
     # Phase 5: dispatch on framework. Sklearn models keep using joblib; PyTorch
     # / HuggingFace models load via their adapter so the same code path serves
     # every framework.
-    from modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
+    from seanergys_modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
 
     adapter = adapter_for(model_init)
     loaded_estimator = adapter.load(model_init, Path(artifact_path))
@@ -891,7 +891,7 @@ def evaluate_task(
     backend_name: str | None = None,
 ) -> dict:
     """Evaluate the trained model on the validation split. Returns metrics dict."""
-    from modelzoo.models.common.dataplane_model import DataplaneModelTask
+    from seanergys_modelzoo.models.common.seanergys_model import SeanergysModelTask
 
     _, config_cls, _ = MODEL_REGISTRY[model_name]
     ds_cls = _resolve_dataset_cls(config_cls, dataset_cls_name)
@@ -902,7 +902,7 @@ def evaluate_task(
     y_pred = model.estimator.predict(X_val)
 
     is_classification = (
-        hasattr(model, "task_type") and model.task_type == DataplaneModelTask.CLASSIFICATION
+        hasattr(model, "task_type") and model.task_type == SeanergysModelTask.CLASSIFICATION
     )
 
     if is_classification:
@@ -956,7 +956,7 @@ def log_mlflow_task(
     # attribute (sklearn / pytorch / huggingface). Legacy sklearn models without
     # ``framework`` set fall through to the SklearnFrameworkAdapter — same
     # behaviour as before.
-    from modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
+    from seanergys_modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
 
     adapter = adapter_for(model)
 
@@ -1143,18 +1143,39 @@ def promote_task(
             f"({rule['metric']}={metric_val:.4f}, threshold={rule['threshold']})"
         )
 
-    # Roll the previous Production version into Archived (only when we
-    # actually replaced it, and only when it isn't the version we just promoted).
+    # Roll the previous Production version into Archived (only when we actually
+    # replaced it, only when it isn't the version we just promoted, and only when
+    # no other live alias (Canary/Staging) still points at it — otherwise the same
+    # version would carry both e.g. @Canary and @Archived, an inconsistent state
+    # that alias-based serving would still route as Canary.
     if (
         "Production" in set_aliases
         and previous_production is not None
         and previous_production != str(version)
     ):
+        still_referenced = False
         try:
-            client.set_registered_model_alias(model_id, "Archived", previous_production)
-            print(f"[pipeline] Archived previous {model_id} v{previous_production}")
+            rm = client.get_registered_model(model_id)
+            aliases_map = getattr(rm, "aliases", None) or {}
+            if isinstance(aliases_map, dict):
+                still_referenced = any(
+                    str(v) == previous_production and a != "Archived"
+                    for a, v in aliases_map.items()
+                )
         except Exception as exc:  # noqa: BLE001
-            print(f"[pipeline] Could not set @Archived on v{previous_production}: {exc}")
+            print(f"[pipeline] Could not check aliases before archiving: {exc}")
+
+        if still_referenced:
+            print(
+                f"[pipeline] Not archiving {model_id} v{previous_production} — "
+                "still referenced by another alias."
+            )
+        else:
+            try:
+                client.set_registered_model_alias(model_id, "Archived", previous_production)
+                print(f"[pipeline] Archived previous {model_id} v{previous_production}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[pipeline] Could not set @Archived on v{previous_production}: {exc}")
 
     if "Production" in set_aliases:
         _notify_ray_serve(model_id)

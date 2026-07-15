@@ -21,7 +21,7 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
     Uses the shared :mod:`examlops.resilience.db` helper so every one of the ~170
     call sites (and the 3 concurrent long-lived writers: CLI, agent service,
-    dataplane bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
+    seanerbus bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
     waits out lock contention instead of raising ``database is locked`` immediately,
     plus ``check_same_thread=False`` for the threaded services.
     """
@@ -139,6 +139,36 @@ def init_db() -> None:
                 created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(scheduler, job_id)
+            );
+            CREATE TABLE IF NOT EXISTS hpc_nodes (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster     TEXT NOT NULL,          -- registry cluster name (or 'default')
+                scheduler   TEXT NOT NULL,          -- 'flux' | 'slurm' | 'unmanaged'
+                node        TEXT NOT NULL,
+                cpus        INTEGER,
+                memory_mb   INTEGER,
+                gpus        INTEGER NOT NULL DEFAULT 0,
+                gpu_model   TEXT,
+                state       TEXT,                   -- idle|allocated|mixed|down|drain|unknown
+                partition   TEXT,                   -- Slurm partition / Flux queue
+                captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS hpc_clusters (
+                name            TEXT PRIMARY KEY,
+                scheduler       TEXT NOT NULL,        -- flux|slurm|unmanaged|mock
+                transport       TEXT NOT NULL DEFAULT 'ssh',  -- ssh|local
+                host            TEXT,
+                ssh_user        TEXT,
+                ssh_port        INTEGER DEFAULT 22,
+                ssh_key         TEXT,
+                key_fingerprint TEXT,
+                state           TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|ACTIVE|REJECTED
+                capabilities    TEXT,                 -- JSON (discovery ClusterCaps)
+                requested_by    TEXT,
+                approved_by     TEXT,
+                reason          TEXT,
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS explain_logs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -499,7 +529,8 @@ def init_db() -> None:
                 model          TEXT NOT NULL,
                 kwh            REAL,
                 co2e_g         REAL,
-                grid_intensity REAL
+                grid_intensity REAL,
+                provider       TEXT
             );
             CREATE TABLE IF NOT EXISTS inference_energy (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -526,6 +557,48 @@ def init_db() -> None:
                 retention_days  INTEGER NOT NULL DEFAULT 365,
                 purge_after     DATETIME
             );
+
+            -- ExaMLOps Projects (RHOAI-style resource envelopes for Docker)
+            CREATE TABLE IF NOT EXISTS projects (
+                name            TEXT PRIMARY KEY,
+                description     TEXT,
+                cpu_limit       REAL NOT NULL DEFAULT 4.0,
+                memory_limit_gb REAL NOT NULL DEFAULT 8.0,
+                storage_gb      REAL NOT NULL DEFAULT 50.0,
+                gpu_limit       INTEGER NOT NULL DEFAULT 0,
+                network_name    TEXT,
+                status          TEXT NOT NULL DEFAULT 'ACTIVE',
+                created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by      TEXT,
+                updated_at      DATETIME
+            );
+            CREATE TABLE IF NOT EXISTS project_models (
+                project     TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, model)
+            );
+
+            -- Self-driving autopilot (ADR 0085): closed-loop detect→retrain→validate→promote
+            CREATE TABLE IF NOT EXISTS autopilot_runs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                triggered_by        TEXT NOT NULL DEFAULT 'manual',
+                model_filter        TEXT,
+                dry_run             INTEGER NOT NULL DEFAULT 0,
+                enabled_state       TEXT NOT NULL DEFAULT 'enabled',
+                retrains_triggered  INTEGER NOT NULL DEFAULT 0,
+                promotions_made     INTEGER NOT NULL DEFAULT 0,
+                policy_blocks       INTEGER NOT NULL DEFAULT 0,
+                human_required      INTEGER NOT NULL DEFAULT 0,
+                skipped             INTEGER NOT NULL DEFAULT 0,
+                summary             TEXT
+            );
+            CREATE TABLE IF NOT EXISTS autopilot_config (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         _migrate_columns(conn)
 
@@ -544,6 +617,10 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "hpo_trials": {
         "state": "TEXT NOT NULL DEFAULT 'complete'",
         "pruned": "INTEGER NOT NULL DEFAULT 0",
+    },
+    # FinOps pluggable providers (ADR 0074): which carbon provider produced each record.
+    "carbon_records": {
+        "provider": "TEXT",
     },
 }
 
@@ -815,6 +892,138 @@ def get_hpc_jobs(model: str | None = None) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def record_node_snapshot(cluster: str, scheduler: str, nodes: list[dict[str, Any]]) -> int:
+    """Replace the stored node inventory for ``cluster`` with a fresh snapshot.
+
+    Snapshot semantics (latest wins): existing rows for the cluster are deleted and the
+    current ``nodes`` (dicts shaped like ``discovery.NodeInfo.to_dict()``) are inserted.
+    Returns the number of node rows written.
+    """
+    with get_db() as conn:
+        conn.execute("DELETE FROM hpc_nodes WHERE cluster=?", (cluster,))
+        conn.executemany(
+            """INSERT INTO hpc_nodes
+                   (cluster, scheduler, node, cpus, memory_mb, gpus, gpu_model, state, partition)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    cluster,
+                    scheduler,
+                    n.get("name"),
+                    n.get("cpus"),
+                    n.get("memory_mb"),
+                    n.get("gpus", 0) or 0,
+                    n.get("gpu_model"),
+                    n.get("state"),
+                    n.get("partition"),
+                )
+                for n in nodes
+            ],
+        )
+    return len(nodes)
+
+
+def get_node_snapshot(cluster: str | None = None) -> list[dict[str, Any]]:
+    """Return the latest stored node inventory, optionally filtered to one cluster."""
+    with get_db() as conn:
+        if cluster:
+            rows = conn.execute(
+                "SELECT * FROM hpc_nodes WHERE cluster=? ORDER BY node ASC", (cluster,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_cluster(
+    name: str,
+    scheduler: str,
+    *,
+    transport: str = "ssh",
+    host: str | None = None,
+    ssh_user: str | None = None,
+    ssh_port: int | None = 22,
+    ssh_key: str | None = None,
+    key_fingerprint: str | None = None,
+    capabilities: dict[str, Any] | None = None,
+    requested_by: str | None = None,
+) -> None:
+    """Insert or update a cluster *definition* — state is never changed here.
+
+    A brand-new cluster starts ``PENDING`` (the table default). Re-running discovery on an
+    already-approved (or already-rejected) cluster refreshes its definition + capabilities
+    but leaves its ``state``/``approved_by`` intact, so re-probing can never silently
+    authorize or de-authorize a cluster. State transitions go through
+    :func:`set_cluster_state`.
+    """
+    caps = json.dumps(capabilities) if capabilities else None
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO hpc_clusters
+                   (name, scheduler, transport, host, ssh_user, ssh_port, ssh_key,
+                    key_fingerprint, capabilities, requested_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(name) DO UPDATE SET
+                   scheduler=excluded.scheduler,
+                   transport=excluded.transport,
+                   host=excluded.host,
+                   ssh_user=excluded.ssh_user,
+                   ssh_port=excluded.ssh_port,
+                   ssh_key=excluded.ssh_key,
+                   key_fingerprint=excluded.key_fingerprint,
+                   capabilities=excluded.capabilities,
+                   updated_at=CURRENT_TIMESTAMP""",
+            (
+                name,
+                scheduler,
+                transport,
+                host,
+                ssh_user,
+                ssh_port,
+                ssh_key,
+                key_fingerprint,
+                caps,
+                requested_by,
+            ),
+        )
+
+
+def set_cluster_state(
+    name: str,
+    state: str,
+    *,
+    approved_by: str | None = None,
+    reason: str | None = None,
+) -> bool:
+    """Transition a cluster's state (PENDING|ACTIVE|REJECTED). Returns False if unknown."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE hpc_clusters
+                   SET state=?, approved_by=COALESCE(?, approved_by),
+                       reason=COALESCE(?, reason), updated_at=CURRENT_TIMESTAMP
+                 WHERE name=?""",
+            (state, approved_by, reason, name),
+        )
+        return cur.rowcount > 0
+
+
+def get_cluster(name: str) -> dict[str, Any] | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM hpc_clusters WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        if state:
+            rows = conn.execute(
+                "SELECT * FROM hpc_clusters WHERE state=? ORDER BY name ASC", (state,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM hpc_clusters ORDER BY name ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
 # ======================================================================
 # Next-generation feature helpers (Phase 0). Each mirrors the set_/get_/
 # write_ conventions above so callers stay uniform across features.
@@ -968,12 +1177,13 @@ def write_carbon_record(
     kwh: float | None,
     co2e_g: float | None,
     grid_intensity: float | None = None,
+    provider: str | None = None,
 ) -> None:
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity)
-               VALUES (?,?,?,?,?)""",
-            (run_id, model, kwh, co2e_g, grid_intensity),
+            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity, provider)
+               VALUES (?,?,?,?,?,?)""",
+            (run_id, model, kwh, co2e_g, grid_intensity, provider),
         )
 
 
@@ -1015,3 +1225,225 @@ def get_project_consumption(project: str) -> dict[str, float]:
 
 def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+
+
+# ── ExaMLOps Projects (RHOAI-style resource envelopes for Docker) ─────────────
+
+
+def create_project(
+    name: str,
+    *,
+    description: str | None = None,
+    cpu_limit: float = 4.0,
+    memory_limit_gb: float = 8.0,
+    storage_gb: float = 50.0,
+    gpu_limit: int = 0,
+    created_by: str | None = None,
+) -> None:
+    """Create a new project with resource quotas."""
+    init_db()
+    network_name = f"examlops-{name}"
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO projects
+               (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
+                network_name, created_by)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
+             network_name, created_by),
+        )
+
+
+def get_project(name: str) -> dict[str, Any] | None:
+    """Return project row as dict, or None if not found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_projects(status: str | None = None) -> list[dict[str, Any]]:
+    """Return all projects, optionally filtered by status (ACTIVE/ARCHIVED)."""
+    init_db()
+    with get_db() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM projects WHERE status=? ORDER BY name", (status,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_project_quota(
+    name: str,
+    *,
+    cpu_limit: float | None = None,
+    memory_limit_gb: float | None = None,
+    storage_gb: float | None = None,
+    gpu_limit: int | None = None,
+    description: str | None = None,
+) -> bool:
+    """Update quota fields for a project. Returns True if found and updated."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        if cpu_limit is not None:
+            conn.execute(
+                "UPDATE projects SET cpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (cpu_limit, name),
+            )
+        if memory_limit_gb is not None:
+            conn.execute(
+                "UPDATE projects SET memory_limit_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (memory_limit_gb, name),
+            )
+        if storage_gb is not None:
+            conn.execute(
+                "UPDATE projects SET storage_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (storage_gb, name),
+            )
+        if gpu_limit is not None:
+            conn.execute(
+                "UPDATE projects SET gpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (gpu_limit, name),
+            )
+        if description is not None:
+            conn.execute(
+                "UPDATE projects SET description=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (description, name),
+            )
+    return True
+
+
+def archive_project(name: str) -> bool:
+    """Set project status to ARCHIVED. Returns True if found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE projects SET status='ARCHIVED', updated_at=CURRENT_TIMESTAMP WHERE name=?",
+            (name,),
+        )
+    return True
+
+
+def delete_project(name: str) -> bool:
+    """Delete a project and its model assignments. Returns True if found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM project_models WHERE project=?", (name,))
+        conn.execute("DELETE FROM projects WHERE name=?", (name,))
+    return True
+
+
+def assign_model_to_project(project: str, model: str) -> bool:
+    """Assign a model to a project. Returns False if project not found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)",
+            (project, model),
+        )
+    return True
+
+
+def list_project_models(project: str) -> list[str]:
+    """Return model names assigned to a project."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT model FROM project_models WHERE project=? ORDER BY model", (project,)
+        ).fetchall()
+    return [r["model"] for r in rows]
+
+
+# ── Autopilot (ADR 0085): self-driving closed-loop detect→retrain→promote ────
+
+
+def get_autopilot_config(key: str) -> str | None:
+    """Return a value from autopilot_config, or None if not set."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM autopilot_config WHERE key=?", (key,)
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def set_autopilot_config(key: str, value: str) -> None:
+    """Upsert a key/value pair in autopilot_config."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO autopilot_config (key, value, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (key, value),
+        )
+
+
+def create_autopilot_run(
+    triggered_by: str = "manual",
+    model_filter: str | None = None,
+    dry_run: bool = False,
+    enabled_state: str = "enabled",
+) -> int:
+    """Insert a new autopilot_runs row and return its id."""
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO autopilot_runs
+               (triggered_by, model_filter, dry_run, enabled_state)
+               VALUES (?,?,?,?)""",
+            (triggered_by, model_filter, int(dry_run), enabled_state),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def update_autopilot_run(
+    run_id: int,
+    *,
+    retrains_triggered: int = 0,
+    promotions_made: int = 0,
+    policy_blocks: int = 0,
+    human_required: int = 0,
+    skipped: int = 0,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    """Update counts and summary for a completed autopilot run."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE autopilot_runs
+               SET retrains_triggered=?, promotions_made=?, policy_blocks=?,
+                   human_required=?, skipped=?, summary=?
+               WHERE id=?""",
+            (
+                retrains_triggered,
+                promotions_made,
+                policy_blocks,
+                human_required,
+                skipped,
+                json.dumps(summary) if summary else None,
+                run_id,
+            ),
+        )
+
+
+def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
+    """Return the last N autopilot run records, newest first."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM autopilot_runs ORDER BY id DESC LIMIT ?", (last_n,)
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -39,7 +39,7 @@ async def test_export_env_maps_url_keys(client, db_engine):
     async with factory() as s:
         s.add(DashboardConfig(key="mlflow_url", value="http://mlflow:5000", is_secret=False))
         s.add(DashboardConfig(key="minio_url", value="http://minio:9000", is_secret=False))
-        s.add(DashboardConfig(key="dataplane_host", value="dataplane-host", is_secret=False))
+        s.add(DashboardConfig(key="seanerbus_host", value="seanerbus-host", is_secret=False))
         await s.commit()
 
     token = await _login(client, ADMIN_PW)
@@ -50,7 +50,7 @@ async def test_export_env_maps_url_keys(client, db_engine):
     content = r.text
     assert "MLFLOW_TRACKING_URI=http://mlflow:5000" in content
     assert "MLFLOW_S3_ENDPOINT_URL=http://minio:9000" in content
-    assert "DATAPLANE_HOST=dataplane-host" in content
+    assert "SEANERBUS_HOST=seanerbus-host" in content
     # Keys not in the mapping must not appear
     assert "mlflow_url" not in content
 

@@ -32,7 +32,9 @@ _MUTATING = (
     "scaffold",
 )
 
-_EXA_CMD = re.compile(r"\bexa\s+[a-z][\w\- ]*(?:--[\w\-]+(?:[= ][^\s`\"]+)?|[a-z0-9][\w\-.]*)*", re.I)
+_EXA_CMD = re.compile(
+    r"\bexa\s+[a-z][\w\- ]*(?:--[\w\-]+(?:[= ][^\s`\"]+)?|[a-z0-9][\w\-.]*)*", re.I
+)
 
 
 def build_system_context(ctx: dict[str, Any] | None) -> str:
@@ -119,7 +121,9 @@ def extract_trace(data: object) -> list[dict[str, Any]]:
     return steps
 
 
-def build_request_body(question: str, ctx: dict[str, Any] | None, *, session: str) -> dict[str, Any]:
+def build_request_body(
+    question: str, ctx: dict[str, Any] | None, *, session: str
+) -> dict[str, Any]:
     """Assemble the OpenAI-compatible chat body (system context + user question)."""
     return {
         "model": "examlops-agent",
@@ -143,7 +147,9 @@ def parse_response(data: object) -> dict[str, Any]:
     }
 
 
-def audit_copilot(db_path: str, actor: str, question: str, ctx: dict[str, Any] | None, proposals: list) -> bool:
+def audit_copilot(
+    db_path: str, actor: str, question: str, ctx: dict[str, Any] | None, proposals: list
+) -> bool:
     """Audit a copilot query to ``audit_events`` (F11 §6 / D4). Best-effort."""
     try:
         conn = sqlite3.connect(db_path)

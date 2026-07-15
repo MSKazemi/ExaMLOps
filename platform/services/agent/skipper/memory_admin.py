@@ -71,7 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, store=None) -> str:
     args = build_parser().parse_args(argv)
-    out = _run(args, store if store is not None else open_store())
+    owns_store = store is None
+    store = store if store is not None else open_store()
+    try:
+        out = _run(args, store)
+    finally:
+        # Close the SQLite connection we opened (a caller-injected store is theirs).
+        conn = getattr(store, "conn", None)
+        if owns_store and conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
     print(out)
     return out
 

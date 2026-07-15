@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AnnouncerContext, type AnnouncerPriority } from './announcer'
 
 // Polite/assertive screen-reader announcer provider (F18 / ADR 0068, R3). Live/pushed content (F8)
@@ -16,6 +16,11 @@ export function AnnouncerProvider({ children }: { children: ReactNode }) {
     set('')
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => set(message), 50)
+  }, [])
+
+  // Clear any pending announce timer on unmount (avoids setState-after-unmount).
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current)
   }, [])
 
   return (

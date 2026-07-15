@@ -19,9 +19,9 @@ for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from modelzoo.datasets.f_data import FDataDataset
-from modelzoo.datasets.pm100 import PM100Dataset
-from modelzoo.models.tasks.power_consumption_prediction.jpcp.jpcp_model import (
+from seanergys_modelzoo.datasets.f_data import FDataDataset
+from seanergys_modelzoo.datasets.pm100 import PM100Dataset
+from seanergys_modelzoo.models.tasks.power_consumption_prediction.jpcp.jpcp_model import (
     JPCP,
     Embedding,
 )
@@ -30,7 +30,7 @@ from modelzoo.models.tasks.power_consumption_prediction.jpcp.jpcp_model import (
 class JPCPConfiguration:
     """Python shim for JPCP — provides transform callables only.
 
-    Does NOT inherit DataplaneModelConfiguration; that base class requires
+    Does NOT inherit SeanergysModelConfiguration; that base class requires
     abstract methods now handled entirely by YAMLBackedConfig.
     """
 
