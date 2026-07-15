@@ -13,14 +13,12 @@ and include a security-review note in the commit message (ADR 0081 §trust-tier)
 from __future__ import annotations
 
 import ast
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
 
-from examlops.providers.expression import SAFE_FUNCTIONS, evaluate_formula
 from examlops.providers.base import ProviderError
+from examlops.providers.expression import SAFE_FUNCTIONS, evaluate_formula
 
 # ── 1. No raw eval/exec on the sandboxed config paths ────────────────────────
 
@@ -51,8 +49,7 @@ def test_no_raw_eval_exec_in_sandboxed_modules(rel_path):
     source = path.read_text()
     hits = _ast_calls(source, {"eval", "exec", "compile"})
     assert not hits, (
-        f"{rel_path} uses raw eval/exec which bypasses the simpleeval sandbox:\n"
-        + "\n".join(hits)
+        f"{rel_path} uses raw eval/exec which bypasses the simpleeval sandbox:\n" + "\n".join(hits)
     )
 
 
@@ -60,8 +57,19 @@ def test_no_raw_eval_exec_in_sandboxed_modules(rel_path):
 
 # Reviewed 2026-07-15 (INC-6 / ADR 0081).  Any addition requires a new review note.
 _REVIEWED_SAFE_FUNCTIONS = {
-    "min", "max", "abs", "round", "pow",
-    "log", "log10", "log2", "exp", "sqrt", "floor", "ceil", "sum",
+    "min",
+    "max",
+    "abs",
+    "round",
+    "pow",
+    "log",
+    "log10",
+    "log2",
+    "exp",
+    "sqrt",
+    "floor",
+    "ceil",
+    "sum",
 }
 
 
@@ -82,14 +90,18 @@ def test_safe_functions_match_reviewed_set():
 
 # ── 3. Sandbox rejects dangerous YAML-authored patterns ───────────────────────
 
-@pytest.mark.parametrize("bad_expr", [
-    "__import__('os').system('echo hi')",
-    "(1).__class__.__bases__",
-    "open('/etc/passwd')",
-    "__builtins__['exec']('import os')",
-    "[x for x in []]",         # comprehension (forbidden by simpleeval)
-    "lambda x: x",             # lambda (forbidden)
-])
+
+@pytest.mark.parametrize(
+    "bad_expr",
+    [
+        "__import__('os').system('echo hi')",
+        "(1).__class__.__bases__",
+        "open('/etc/passwd')",
+        "__builtins__['exec']('import os')",
+        "[x for x in []]",  # comprehension (forbidden by simpleeval)
+        "lambda x: x",  # lambda (forbidden)
+    ],
+)
 def test_sandbox_rejects_dangerous_expressions(bad_expr):
     """Dangerous YAML formulas must raise ProviderError, never execute."""
     with pytest.raises((ProviderError, Exception)):
@@ -98,11 +110,14 @@ def test_sandbox_rejects_dangerous_expressions(bad_expr):
 
 def test_sandbox_allows_safe_arithmetic():
     """Legal arithmetic formulas evaluate correctly."""
-    assert evaluate_formula("min(a, b) + sqrt(c)", {"a": 3.0, "b": 5.0, "c": 4.0}) == pytest.approx(5.0)
+    assert evaluate_formula("min(a, b) + sqrt(c)", {"a": 3.0, "b": 5.0, "c": 4.0}) == pytest.approx(
+        5.0
+    )
 
 
 def test_sandbox_chained_formulas_use_correct_output_from_providers():
     from examlops.providers.expression import evaluate_formulas
+
     out = evaluate_formulas(
         {"kwh": "gpu_hours * 0.3", "co2e_g": "kwh * 400"},
         {"gpu_hours": 10.0},

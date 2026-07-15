@@ -19,18 +19,18 @@ from examlops.promotion_providers import (
 )
 from examlops.providers import default_provider_name, list_providers
 
-
 # ── ThresholdPromotionProvider.compute ────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "metric_val,threshold,operator,expected_passes",
     [
-        (3.0, 5.0, "lt", True),    # 3 < 5
-        (5.0, 5.0, "lt", False),   # 5 is not < 5
-        (5.0, 5.0, "lte", True),   # 5 <= 5
-        (6.0, 5.0, "gt", True),    # 6 > 5
-        (5.0, 5.0, "gt", False),   # 5 is not > 5
-        (5.0, 5.0, "gte", True),   # 5 >= 5
+        (3.0, 5.0, "lt", True),  # 3 < 5
+        (5.0, 5.0, "lt", False),  # 5 is not < 5
+        (5.0, 5.0, "lte", True),  # 5 <= 5
+        (6.0, 5.0, "gt", True),  # 6 > 5
+        (5.0, 5.0, "gt", False),  # 5 is not > 5
+        (5.0, 5.0, "gte", True),  # 5 >= 5
         (4.9, 5.0, "gte", False),  # 4.9 is not >= 5
     ],
 )
@@ -55,6 +55,7 @@ def test_threshold_provider_reason_format():
 
 
 # ── resolve_promotion_eval_fn ─────────────────────────────────────────────────
+
 
 def test_default_eval_matches_inline_logic():
     """resolve_promotion_eval_fn() must be byte-identical to the pre-provider inline ops."""
@@ -87,6 +88,7 @@ def test_eval_returns_bool():
 
 # ── expression formula overrides evaluation (zero core edits) ─────────────────
 
+
 def test_expression_formula_always_passes():
     """A declarative formula returning passes=1 passes through the substrate."""
     from examlops.providers import get_provider
@@ -102,10 +104,13 @@ def test_expression_formula_always_passes():
 
 # ── graceful degradation ──────────────────────────────────────────────────────
 
+
 def test_broken_provider_degrades_to_inline(monkeypatch):
     import examlops.promotion_providers as mod
 
-    monkeypatch.setattr(mod, "resolve_provider", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        mod, "resolve_provider", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     eval_fn = mod.resolve_promotion_eval_fn()
     passes, _ = eval_fn(3.0, 5.0, "lt")
     assert passes is True
@@ -125,6 +130,7 @@ def test_provider_compute_error_degrades(monkeypatch):
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
+
 
 def test_registration_is_idempotent_and_default():
     register_builtins()

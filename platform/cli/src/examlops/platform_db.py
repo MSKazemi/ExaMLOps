@@ -1266,8 +1266,16 @@ def create_project(
                (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
                 network_name, created_by)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
-             network_name, created_by),
+            (
+                name,
+                description,
+                cpu_limit,
+                memory_limit_gb,
+                storage_gb,
+                gpu_limit,
+                network_name,
+                created_by,
+            ),
         )
 
 
@@ -1392,9 +1400,7 @@ def get_autopilot_config(key: str) -> str | None:
     """Return a value from autopilot_config, or None if not set."""
     init_db()
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT value FROM autopilot_config WHERE key=?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value FROM autopilot_config WHERE key=?", (key,)).fetchone()
     return row["value"] if row else None
 
 
@@ -1517,8 +1523,7 @@ def get_dataset_revisions(dataset: str, backend: str | None = None) -> list[dict
     with get_db() as conn:
         if backend:
             rows = conn.execute(
-                "SELECT * FROM dataset_revisions WHERE dataset=? AND backend=? "
-                "ORDER BY id DESC",
+                "SELECT * FROM dataset_revisions WHERE dataset=? AND backend=? ORDER BY id DESC",
                 (dataset, backend),
             ).fetchall()
         else:
