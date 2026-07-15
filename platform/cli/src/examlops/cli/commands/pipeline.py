@@ -17,6 +17,7 @@ from examlops.platform_db import (
     set_promotion_rule,
     write_audit_event,
 )
+from examlops.promotion_providers import resolve_promotion_eval_fn
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -443,8 +444,8 @@ def promote(
         )
         return
 
-    op_fn = _OPS[operator]
-    passes = op_fn(metric_val, threshold)  # type: ignore[operator]
+    _eval = resolve_promotion_eval_fn()
+    passes, _reason = _eval(metric_val, threshold, operator)
     op_sym = "<" if operator in ("lt", "lte") else ">"
     status_str = f"{metric}={metric_val:.4f}  {op_sym}{threshold}"
 

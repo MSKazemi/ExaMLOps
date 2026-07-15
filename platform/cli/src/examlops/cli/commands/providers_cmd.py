@@ -20,7 +20,13 @@ app = typer.Typer(no_args_is_help=True, help="Pluggable calculation providers (a
 _DOMAIN_MODULES: dict[str, str] = {
     "carbon": "examlops.finops.carbon_providers",
     "cost": "examlops.finops.cost_providers",
+    "drift": "examlops.drift_providers",
+    "llm_cache": "examlops.llmops_providers",
+    "llm_cost": "examlops.llmops_providers",
+    "llm_routing": "examlops.llmops_providers",
     "placement": "examlops.hpc_placement_providers",
+    "promotion": "examlops.promotion_providers",
+    "rag_quality": "examlops.llmops_providers",
 }
 
 _EXAMPLES = (
