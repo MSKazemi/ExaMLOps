@@ -146,6 +146,11 @@ def run(
     backend: StorageBackend | None = typer.Option(
         None, "--backend", "-b", help="Dataset storage backend"
     ),
+    dataset_revision: str | None = typer.Option(
+        None,
+        "--dataset-revision",
+        help="Pin training to a recorded dataset revision (see `exa data list`)",
+    ),
     env: EnvOverlay | None = typer.Option(None, "--env", help="YAML registry env overlay"),
     registry: str | None = typer.Option(None, "--registry", help="Path to model_registry.yaml"),
     cluster: str | None = typer.Option(
@@ -161,6 +166,21 @@ def run(
     """Run training pipeline(s) locally via Prefect."""
     if cluster and not _resolve_cluster_env(cluster, gpus):
         return  # resolution failed / not approved — message already printed
+    # A1 (spec R12): a pinned revision must be materialisable — verify it was
+    # recorded before we launch, and exit non-zero otherwise.
+    if dataset_revision:
+        if not dataset:
+            _output.error("--dataset-revision requires --dataset to identify the pinned dataset.")
+        from examlops.platform_db import get_dataset_revision
+        from examlops.platform_db import init_db as _init_db
+
+        _init_db()
+        if get_dataset_revision(dataset, dataset_revision) is None:
+            _output.error(
+                f"Dataset revision '{dataset_revision}' not found for {dataset} — "
+                "cannot materialise. Run `exa data snapshot` / `exa data list` first."
+            )
+        os.environ["EXAMLOPS_DATASET_REVISION"] = dataset_revision
     args: list[str] = []
     if dummy:
         args.append("--dummy")
