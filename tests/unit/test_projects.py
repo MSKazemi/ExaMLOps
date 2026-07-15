@@ -9,8 +9,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from typer.testing import CliRunner
 
@@ -35,6 +33,7 @@ def _tmp_db(tmp_path, monkeypatch):
 
 
 # ── platform_db helpers ───────────────────────────────────────────────────────
+
 
 class TestProjectDB:
     def test_create_and_get(self):
@@ -130,6 +129,7 @@ class TestProjectDB:
 
 # ── CLI: create ───────────────────────────────────────────────────────────────
 
+
 class TestProjectCLI:
     def test_create_basic(self):
         result = runner.invoke(app, ["project", "create", "myproj", "--cpu-limit", "4"])
@@ -138,14 +138,24 @@ class TestProjectCLI:
         assert get_project("myproj") is not None
 
     def test_create_with_all_options(self):
-        result = runner.invoke(app, [
-            "project", "create", "fullproj",
-            "--cpu-limit", "8",
-            "--memory-gb", "32",
-            "--storage-gb", "200",
-            "--gpu-limit", "2",
-            "--description", "Full project",
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "project",
+                "create",
+                "fullproj",
+                "--cpu-limit",
+                "8",
+                "--memory-gb",
+                "32",
+                "--storage-gb",
+                "200",
+                "--gpu-limit",
+                "2",
+                "--description",
+                "Full project",
+            ],
+        )
         assert result.exit_code == 0
         p = get_project("fullproj")
         assert p["cpu_limit"] == pytest.approx(8.0)
@@ -171,6 +181,7 @@ class TestProjectCLI:
         result = runner.invoke(app, ["--json", "project", "list"])
         assert result.exit_code == 0
         import json
+
         rows = json.loads(result.output)
         assert any(r["name"] == "jsonproj" for r in rows)
 
@@ -213,6 +224,7 @@ class TestProjectCLI:
 
 # ── CLI: compose ─────────────────────────────────────────────────────────────
 
+
 class TestProjectCompose:
     def test_compose_no_models(self, tmp_path):
         runner.invoke(app, ["project", "create", "empty-proj", "--cpu-limit", "4"])
@@ -220,6 +232,7 @@ class TestProjectCompose:
         result = runner.invoke(app, ["project", "compose", "empty-proj", "--out", out_file])
         assert result.exit_code == 0
         import yaml as _yaml
+
         with open(out_file) as f:
             doc = _yaml.safe_load(f)
         assert doc["name"] == "examlops-empty-proj"
@@ -227,13 +240,16 @@ class TestProjectCompose:
         assert "examlops-empty-proj" in doc["networks"]
 
     def test_compose_with_models(self, tmp_path):
-        runner.invoke(app, ["project", "create", "model-proj", "--cpu-limit", "4", "--memory-gb", "8"])
+        runner.invoke(
+            app, ["project", "create", "model-proj", "--cpu-limit", "4", "--memory-gb", "8"]
+        )
         runner.invoke(app, ["project", "assign-model", "model-proj", "JPCP"])
         runner.invoke(app, ["project", "assign-model", "model-proj", "MACK"])
         out_file = str(tmp_path / "compose.yml")
         result = runner.invoke(app, ["project", "compose", "model-proj", "--out", out_file])
         assert result.exit_code == 0
         import yaml as _yaml
+
         with open(out_file) as f:
             doc = _yaml.safe_load(f)
         services = doc["services"]
@@ -246,33 +262,44 @@ class TestProjectCompose:
 
     def test_compose_resource_limits_split_across_models(self, tmp_path):
         """With 2 models and 4 CPU limit, each model gets 2 CPUs."""
-        runner.invoke(app, ["project", "create", "split-proj", "--cpu-limit", "4", "--memory-gb", "8"])
+        runner.invoke(
+            app, ["project", "create", "split-proj", "--cpu-limit", "4", "--memory-gb", "8"]
+        )
         runner.invoke(app, ["project", "assign-model", "split-proj", "A"])
         runner.invoke(app, ["project", "assign-model", "split-proj", "B"])
         out_file = str(tmp_path / "compose.yml")
         runner.invoke(app, ["project", "compose", "split-proj", "--out", out_file])
         import yaml as _yaml
+
         with open(out_file) as f:
             doc = _yaml.safe_load(f)
         # 4 / 2 = 2.0 CPUs per service
-        assert float(doc["services"]["a"]["deploy"]["resources"]["limits"]["cpus"]) == pytest.approx(2.0)
+        assert float(
+            doc["services"]["a"]["deploy"]["resources"]["limits"]["cpus"]
+        ) == pytest.approx(2.0)
 
     def test_compose_gpu_adds_device_reservation(self, tmp_path):
-        runner.invoke(app, ["project", "create", "gpu-proj", "--cpu-limit", "4", "--gpu-limit", "1"])
+        runner.invoke(
+            app, ["project", "create", "gpu-proj", "--cpu-limit", "4", "--gpu-limit", "1"]
+        )
         runner.invoke(app, ["project", "assign-model", "gpu-proj", "JPCP"])
         out_file = str(tmp_path / "compose.yml")
         runner.invoke(app, ["project", "compose", "gpu-proj", "--out", out_file])
         import yaml as _yaml
+
         with open(out_file) as f:
             doc = _yaml.safe_load(f)
         devices = doc["services"]["jpcp"]["deploy"]["resources"]["reservations"]["devices"]
         assert any(d["driver"] == "nvidia" for d in devices)
 
     def test_compose_includes_x_metadata(self, tmp_path):
-        runner.invoke(app, ["project", "create", "meta-proj", "--cpu-limit", "2", "--memory-gb", "4"])
+        runner.invoke(
+            app, ["project", "create", "meta-proj", "--cpu-limit", "2", "--memory-gb", "4"]
+        )
         out_file = str(tmp_path / "compose.yml")
         runner.invoke(app, ["project", "compose", "meta-proj", "--out", out_file])
         import yaml as _yaml
+
         with open(out_file) as f:
             doc = _yaml.safe_load(f)
         meta = doc["x-project-metadata"]
