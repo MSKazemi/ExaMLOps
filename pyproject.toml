@@ -11,7 +11,7 @@ py-modules = []
 # `make install-dev` (uv pip install -e ".[dev]") bootstraps the whole dev env.
 [project]
 name = "examlops-workspace"
-version = "0.24.0"
+version = "0.31.0"
 requires-python = ">=3.12"
 dependencies = [
     # workspace members — installs exa CLI entry point
