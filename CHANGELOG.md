@@ -5,8 +5,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-07-15
+
 ### Added
 
+- **Next-Gen 40 · A1 — Data & dataset versioning (ADR 0003).** ExaMLOps now pins the *data* a run
+  used, like it already pins code (git SHA) and models (MLflow versions). Every run resolves an
+  immutable `DatasetRevision` before training and records it — enabling reproducibility, rollback, and
+  EU AI Act Art. 10 data-governance evidence. Two strategies behind one value object: **lakeFS** commit
+  ids when `EXAMLOPS_LAKEFS_ENDPOINT` is set, else a **deterministic content hash**
+  (`sha256(sorted file digests ‖ schema)`), order-independent and stable across runs. Resolution is
+  **fail-open** — a revision hiccup records `revision_id="unknown"` and warns rather than failing a
+  run. New `dataset_revisions` `platform_db` table (idempotent on `(backend, dataset, revision_id)`);
+  `exa data snapshot|list|diff|checkout`; `exa pipeline run --dataset-revision <rev>` pins a run
+  (exit-non-zero if the revision was never recorded) and tags the MLflow run
+  (`dataset_revision`/`dataset_backend`/`dataset_uri`). First feature of the 40-feature Next-Gen
+  roadmap to move from design → implementation. Guide `docs/guides/data-versioning.md`; 28 new tests
+  (spec GWT-1..5). Backward compatible — default runs simply record the resolved revision.
+- **Self-driving MLOps autopilot (INC-9; ADR 0085).** Closes the loop to A3 maturity:
+  detect drift → policy gate → retrain → MLflow-Staging metric gate → policy gate → promote.
+  `exa autopilot run [--dry-run] [--model]` / `enable` / `disable` / `status`. Kill-switch is
+  **disabled by default** (`EXAMLOPS_AUTOPILOT_ENABLED` env takes precedence over the `autopilot_config`
+  table). Two policy gates — `autopilot_trigger` (before retrain) and `autopilot_promote` (before
+  promotion); a `require_approval` decision emits a `human_approval_required` audit event instead of
+  acting. New `autopilot_runs` + `autopilot_config` tables. 46 new tests (external calls injectable/
+  monkeypatched, so no MLflow/Ray needed).
+- **ExaMLOps Projects — Docker resource envelopes (ADR 0084).** RHOAI-inspired Projects ported to the
+  Docker/Compose footprint: `exa project create/list/show/set-quota/assign-model/compose/archive/
+  delete` with per-project CPU / memory / storage / GPU quotas, rendered into a Docker Compose fragment
+  with per-service limits. New `projects` + `project_models` tables.
+- **Programmable MLOps — drift & promotion providers (INC-5).** The `examlops.providers` substrate now
+  covers two more domains: `drift` (`z-score` default) and `promotion` (`threshold` default), resolved
+  via `resolve_drift_score_fn` / `resolve_promotion_eval_fn` and wired into `exa drift` / `exa pipeline
+  promote`. Byte-identical defaults; swap the formula with zero core edits.
+- **Programmable MLOps — LLMOps calculation providers (INC-5b; ADR 0083).** Four new provider domains —
+  `llm_cost` (token-rate), `llm_cache` (hit-savings), `llm_routing` (least-cost), `rag_quality`
+  (retrieval-lite) — bringing `exa providers list` to **9 domains** and pre-registering defaults so the
+  F10-LLMOps backends compute through `get_provider` from their first commit.
+- **Programmable MLOps — extension trust tiers (INC-6; ADR 0081).** Structural guards on the
+  plugin/sandboxed-expression boundary: an AST-walk gate rejects unsafe constructs in sandboxed
+  modules, a `SAFE_FUNCTIONS` allow-list is the review seam for the trusted tier. Guide
+  `docs/guides/provider-security-trust-tiers.md`; 12 new security tests.
 - **Programmable MLOps — least-privilege agent writes (INC-4; ADR 0082 layer 2).** Beyond the coarse
   `EXAMLOPS_MCP_ALLOW_WRITES` switch, every mutating MCP tool (`trigger_retrain`, `hpc_approve_cluster`)
   now passes the `agent_write` policy (ADR 0079) via `_agent_write_gate(action_kind, context)` before
