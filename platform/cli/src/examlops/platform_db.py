@@ -557,6 +557,48 @@ def init_db() -> None:
                 retention_days  INTEGER NOT NULL DEFAULT 365,
                 purge_after     DATETIME
             );
+
+            -- ExaMLOps Projects (RHOAI-style resource envelopes for Docker)
+            CREATE TABLE IF NOT EXISTS projects (
+                name            TEXT PRIMARY KEY,
+                description     TEXT,
+                cpu_limit       REAL NOT NULL DEFAULT 4.0,
+                memory_limit_gb REAL NOT NULL DEFAULT 8.0,
+                storage_gb      REAL NOT NULL DEFAULT 50.0,
+                gpu_limit       INTEGER NOT NULL DEFAULT 0,
+                network_name    TEXT,
+                status          TEXT NOT NULL DEFAULT 'ACTIVE',
+                created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by      TEXT,
+                updated_at      DATETIME
+            );
+            CREATE TABLE IF NOT EXISTS project_models (
+                project     TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, model)
+            );
+
+            -- Self-driving autopilot (ADR 0085): closed-loop detect→retrain→validate→promote
+            CREATE TABLE IF NOT EXISTS autopilot_runs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                triggered_by        TEXT NOT NULL DEFAULT 'manual',
+                model_filter        TEXT,
+                dry_run             INTEGER NOT NULL DEFAULT 0,
+                enabled_state       TEXT NOT NULL DEFAULT 'enabled',
+                retrains_triggered  INTEGER NOT NULL DEFAULT 0,
+                promotions_made     INTEGER NOT NULL DEFAULT 0,
+                policy_blocks       INTEGER NOT NULL DEFAULT 0,
+                human_required      INTEGER NOT NULL DEFAULT 0,
+                skipped             INTEGER NOT NULL DEFAULT 0,
+                summary             TEXT
+            );
+            CREATE TABLE IF NOT EXISTS autopilot_config (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         _migrate_columns(conn)
 
@@ -1183,3 +1225,225 @@ def get_project_consumption(project: str) -> dict[str, float]:
 
 def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+
+
+# ── ExaMLOps Projects (RHOAI-style resource envelopes for Docker) ─────────────
+
+
+def create_project(
+    name: str,
+    *,
+    description: str | None = None,
+    cpu_limit: float = 4.0,
+    memory_limit_gb: float = 8.0,
+    storage_gb: float = 50.0,
+    gpu_limit: int = 0,
+    created_by: str | None = None,
+) -> None:
+    """Create a new project with resource quotas."""
+    init_db()
+    network_name = f"examlops-{name}"
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO projects
+               (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
+                network_name, created_by)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
+             network_name, created_by),
+        )
+
+
+def get_project(name: str) -> dict[str, Any] | None:
+    """Return project row as dict, or None if not found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_projects(status: str | None = None) -> list[dict[str, Any]]:
+    """Return all projects, optionally filtered by status (ACTIVE/ARCHIVED)."""
+    init_db()
+    with get_db() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM projects WHERE status=? ORDER BY name", (status,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_project_quota(
+    name: str,
+    *,
+    cpu_limit: float | None = None,
+    memory_limit_gb: float | None = None,
+    storage_gb: float | None = None,
+    gpu_limit: int | None = None,
+    description: str | None = None,
+) -> bool:
+    """Update quota fields for a project. Returns True if found and updated."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        if cpu_limit is not None:
+            conn.execute(
+                "UPDATE projects SET cpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (cpu_limit, name),
+            )
+        if memory_limit_gb is not None:
+            conn.execute(
+                "UPDATE projects SET memory_limit_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (memory_limit_gb, name),
+            )
+        if storage_gb is not None:
+            conn.execute(
+                "UPDATE projects SET storage_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (storage_gb, name),
+            )
+        if gpu_limit is not None:
+            conn.execute(
+                "UPDATE projects SET gpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (gpu_limit, name),
+            )
+        if description is not None:
+            conn.execute(
+                "UPDATE projects SET description=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (description, name),
+            )
+    return True
+
+
+def archive_project(name: str) -> bool:
+    """Set project status to ARCHIVED. Returns True if found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE projects SET status='ARCHIVED', updated_at=CURRENT_TIMESTAMP WHERE name=?",
+            (name,),
+        )
+    return True
+
+
+def delete_project(name: str) -> bool:
+    """Delete a project and its model assignments. Returns True if found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM project_models WHERE project=?", (name,))
+        conn.execute("DELETE FROM projects WHERE name=?", (name,))
+    return True
+
+
+def assign_model_to_project(project: str, model: str) -> bool:
+    """Assign a model to a project. Returns False if project not found."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)",
+            (project, model),
+        )
+    return True
+
+
+def list_project_models(project: str) -> list[str]:
+    """Return model names assigned to a project."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT model FROM project_models WHERE project=? ORDER BY model", (project,)
+        ).fetchall()
+    return [r["model"] for r in rows]
+
+
+# ── Autopilot (ADR 0085): self-driving closed-loop detect→retrain→promote ────
+
+
+def get_autopilot_config(key: str) -> str | None:
+    """Return a value from autopilot_config, or None if not set."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM autopilot_config WHERE key=?", (key,)
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def set_autopilot_config(key: str, value: str) -> None:
+    """Upsert a key/value pair in autopilot_config."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO autopilot_config (key, value, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (key, value),
+        )
+
+
+def create_autopilot_run(
+    triggered_by: str = "manual",
+    model_filter: str | None = None,
+    dry_run: bool = False,
+    enabled_state: str = "enabled",
+) -> int:
+    """Insert a new autopilot_runs row and return its id."""
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO autopilot_runs
+               (triggered_by, model_filter, dry_run, enabled_state)
+               VALUES (?,?,?,?)""",
+            (triggered_by, model_filter, int(dry_run), enabled_state),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def update_autopilot_run(
+    run_id: int,
+    *,
+    retrains_triggered: int = 0,
+    promotions_made: int = 0,
+    policy_blocks: int = 0,
+    human_required: int = 0,
+    skipped: int = 0,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    """Update counts and summary for a completed autopilot run."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE autopilot_runs
+               SET retrains_triggered=?, promotions_made=?, policy_blocks=?,
+                   human_required=?, skipped=?, summary=?
+               WHERE id=?""",
+            (
+                retrains_triggered,
+                promotions_made,
+                policy_blocks,
+                human_required,
+                skipped,
+                json.dumps(summary) if summary else None,
+                run_id,
+            ),
+        )
+
+
+def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
+    """Return the last N autopilot run records, newest first."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM autopilot_runs ORDER BY id DESC LIMIT ?", (last_n,)
+        ).fetchall()
+    return [dict(r) for r in rows]
