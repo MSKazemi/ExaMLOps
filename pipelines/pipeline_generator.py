@@ -927,9 +927,7 @@ def evaluate_task(
 # ── Infrastructure tasks (model-agnostic) ──────────────────────────────────────
 
 
-def _pin_dataset_revision(
-    dataset_name: str, backend_name: str | None, run_id: str
-) -> None:
+def _pin_dataset_revision(dataset_name: str, backend_name: str | None, run_id: str) -> None:
     """A1 (ADR 0003): resolve, tag, and record the dataset revision for this run.
 
     Fully fail-open (spec R4/R13): any error is swallowed so a revision hiccup can
