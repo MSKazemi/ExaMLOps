@@ -79,9 +79,7 @@ def _schema_hash(paths: list[Path]) -> str:
             schema = pq.read_schema(path)
         except Exception:
             continue
-        parts.append(
-            "|".join(f"{name}:{schema.field(name).type}" for name in schema.names)
-        )
+        parts.append("|".join(f"{name}:{schema.field(name).type}" for name in schema.names))
     if not parts:
         return ""
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()

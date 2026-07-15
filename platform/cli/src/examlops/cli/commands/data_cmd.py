@@ -185,8 +185,12 @@ def diff(
         [
             ["rows", str(ra), str(rb), "-" if row_delta is None else f"{row_delta:+d}"],
             ["bytes", str(ba), str(bb), "-" if byte_delta is None else f"{byte_delta:+d}"],
-            ["schema", a["schema_hash"][:12] or "-", b["schema_hash"][:12] or "-",
-             "changed" if schema_changed else "same"],
+            [
+                "schema",
+                a["schema_hash"][:12] or "-",
+                b["schema_hash"][:12] or "-",
+                "changed" if schema_changed else "same",
+            ],
         ],
     )
 
@@ -220,8 +224,7 @@ def checkout(
         return
     if actual != revision_id:
         _output.error(
-            f"Data at {path} does not match revision {revision_id} "
-            f"(computed {_short(actual)}).",
+            f"Data at {path} does not match revision {revision_id} (computed {_short(actual)}).",
             exit_code=1,
         )
     _output.ok(f"Verified: {path} matches [cyan]{revision_id}[/cyan]")

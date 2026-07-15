@@ -160,9 +160,7 @@ def test_gwt3_idempotency(tmp_path):
 def test_get_filters_by_backend(tmp_path):
     p = _write_parquet(tmp_path / "a.parquet", {"x": [1]})
     r_minio = resolve_revision("minio", "FData", data_path=p)
-    r_zenodo = DatasetRevision(
-        backend="zenodo", dataset="FData", revision_id="zzz", kind="content"
-    )
+    r_zenodo = DatasetRevision(backend="zenodo", dataset="FData", revision_id="zzz", kind="content")
     record_dataset_revision(r_minio, actor="me")
     record_dataset_revision(r_zenodo, actor="me")
     assert len(get_dataset_revisions("FData")) == 2

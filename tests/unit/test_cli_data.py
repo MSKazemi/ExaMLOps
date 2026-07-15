@@ -35,7 +35,9 @@ def _parquet(path: Path, rows: int) -> Path:
 
 def test_snapshot_records_and_prints(tmp_path):
     p = _parquet(tmp_path / "d.parquet", 5)
-    result = runner.invoke(app, ["data", "snapshot", "FData", "--backend", "minio", "--path", str(p)])
+    result = runner.invoke(
+        app, ["data", "snapshot", "FData", "--backend", "minio", "--path", str(p)]
+    )
     assert result.exit_code == 0, result.output
     rows = get_dataset_revisions("FData")
     assert len(rows) == 1
@@ -115,7 +117,9 @@ def test_checkout_mismatch_exits_nonzero(tmp_path):
     rev = get_dataset_revisions("FData")[0]["revision_id"]
     # Mutate the file so its hash no longer matches the pinned revision.
     _parquet(tmp_path / "d.parquet", 99)
-    bad = runner.invoke(app, ["data", "checkout", "FData", rev, "--path", str(tmp_path / "d.parquet")])
+    bad = runner.invoke(
+        app, ["data", "checkout", "FData", rev, "--path", str(tmp_path / "d.parquet")]
+    )
     assert bad.exit_code != 0
 
 

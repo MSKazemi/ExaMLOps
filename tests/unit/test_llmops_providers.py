@@ -7,6 +7,7 @@ Verifies default formulas, edge cases, graceful degradation, and registry presen
 from __future__ import annotations
 
 import math
+
 import pytest
 
 from examlops.llmops_providers import (
@@ -18,32 +19,36 @@ from examlops.llmops_providers import (
 )
 from examlops.providers import default_provider_name, list_providers
 
-
 # ── llm_cost: TokenRateCostProvider ──────────────────────────────────────────
+
 
 class TestTokenRateCostProvider:
     def _p(self):
         return TokenRateCostProvider()
 
     def test_basic_cost(self):
-        out = self._p().compute({
-            "prompt_tokens": 1000,
-            "completion_tokens": 500,
-            "reasoning_tokens": 0,
-            "input_price_per_1k": 0.002,
-            "output_price_per_1k": 0.004,
-        })
+        out = self._p().compute(
+            {
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "reasoning_tokens": 0,
+                "input_price_per_1k": 0.002,
+                "output_price_per_1k": 0.004,
+            }
+        )
         # 1000/1000 * 0.002 + 500/1000 * 0.004 = 0.002 + 0.002 = 0.004
         assert math.isclose(out["cost_usd"], 0.004, rel_tol=1e-6)
 
     def test_reasoning_tokens_billed_at_output_rate(self):
-        out = self._p().compute({
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "reasoning_tokens": 1000,
-            "input_price_per_1k": 0.001,
-            "output_price_per_1k": 0.005,
-        })
+        out = self._p().compute(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_tokens": 1000,
+                "input_price_per_1k": 0.001,
+                "output_price_per_1k": 0.005,
+            }
+        )
         # 1000/1000 * 0.005 = 0.005
         assert math.isclose(out["cost_usd"], 0.005, rel_tol=1e-6)
 
@@ -52,18 +57,21 @@ class TestTokenRateCostProvider:
         assert out["cost_usd"] == pytest.approx(0.0)
 
     def test_completion_plus_reasoning_sum(self):
-        out = self._p().compute({
-            "prompt_tokens": 0,
-            "completion_tokens": 500,
-            "reasoning_tokens": 500,
-            "input_price_per_1k": 0.0,
-            "output_price_per_1k": 0.010,
-        })
+        out = self._p().compute(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 500,
+                "reasoning_tokens": 500,
+                "input_price_per_1k": 0.0,
+                "output_price_per_1k": 0.010,
+            }
+        )
         # (500+500)/1000 * 0.010 = 0.010
         assert math.isclose(out["cost_usd"], 0.010, rel_tol=1e-6)
 
 
 # ── llm_cache: HitSavingsCacheProvider ───────────────────────────────────────
+
 
 class TestHitSavingsCacheProvider:
     def _p(self):
@@ -78,31 +86,37 @@ class TestHitSavingsCacheProvider:
         assert out["hit_rate"] == 0.0
 
     def test_cost_saved(self):
-        out = self._p().compute({
-            "total_calls": 10,
-            "cache_hits": 3,
-            "cost_per_call_usd": 0.01,
-        })
+        out = self._p().compute(
+            {
+                "total_calls": 10,
+                "cache_hits": 3,
+                "cost_per_call_usd": 0.01,
+            }
+        )
         assert math.isclose(out["cost_saved_usd"], 0.03, rel_tol=1e-6)
 
     def test_latency_saved(self):
-        out = self._p().compute({
-            "total_calls": 10,
-            "cache_hits": 5,
-            "latency_full_ms": 300,
-            "latency_cached_ms": 10,
-        })
+        out = self._p().compute(
+            {
+                "total_calls": 10,
+                "cache_hits": 5,
+                "latency_full_ms": 300,
+                "latency_cached_ms": 10,
+            }
+        )
         # 5 * (300 - 10) = 1450
         assert math.isclose(out["latency_saved_ms"], 1450, rel_tol=1e-6)
 
     def test_latency_saved_clamps_negative_gap(self):
         # cached latency > full latency (shouldn't happen but must not go negative)
-        out = self._p().compute({
-            "total_calls": 5,
-            "cache_hits": 5,
-            "latency_full_ms": 50,
-            "latency_cached_ms": 100,
-        })
+        out = self._p().compute(
+            {
+                "total_calls": 5,
+                "cache_hits": 5,
+                "latency_full_ms": 50,
+                "latency_cached_ms": 100,
+            }
+        )
         assert out["latency_saved_ms"] == pytest.approx(0.0)
 
     def test_all_zeros(self):
@@ -113,6 +127,7 @@ class TestHitSavingsCacheProvider:
 
 
 # ── llm_routing: LeastCostRoutingProvider ────────────────────────────────────
+
 
 class TestLeastCostRoutingProvider:
     def _p(self):
@@ -146,27 +161,32 @@ class TestLeastCostRoutingProvider:
 
 # ── rag_quality: RetrievalLiteQualityProvider ─────────────────────────────────
 
+
 class TestRetrievalLiteQualityProvider:
     def _p(self):
         return RetrievalLiteQualityProvider()
 
     def test_perfect_retrieval(self):
-        out = self._p().compute({
-            "retrieved_relevances": [1.0, 1.0, 1.0],
-            "relevant_total": 3,
-            "k": 3,
-        })
+        out = self._p().compute(
+            {
+                "retrieved_relevances": [1.0, 1.0, 1.0],
+                "relevant_total": 3,
+                "k": 3,
+            }
+        )
         assert out["precision"] == pytest.approx(1.0)
         assert out["recall"] == pytest.approx(1.0)
         assert out["relevance"] == pytest.approx(1.0)
 
     def test_partial_hit(self):
         # 2 of 3 retrieved are relevant (≥ 0.5), 4 total relevant docs
-        out = self._p().compute({
-            "retrieved_relevances": [0.8, 0.3, 0.9],
-            "relevant_total": 4,
-            "k": 3,
-        })
+        out = self._p().compute(
+            {
+                "retrieved_relevances": [0.8, 0.3, 0.9],
+                "relevant_total": 4,
+                "k": 3,
+            }
+        )
         assert out["precision"] == pytest.approx(2 / 3, rel=1e-4)
         assert out["recall"] == pytest.approx(2 / 4, rel=1e-4)
         assert out["relevance"] == pytest.approx((0.8 + 0.3 + 0.9) / 3, rel=1e-4)
@@ -178,25 +198,30 @@ class TestRetrievalLiteQualityProvider:
         assert out["relevance"] == 0.0
 
     def test_zero_relevant_total_no_division_error(self):
-        out = self._p().compute({
-            "retrieved_relevances": [0.9, 0.8],
-            "relevant_total": 0,
-            "k": 2,
-        })
+        out = self._p().compute(
+            {
+                "retrieved_relevances": [0.9, 0.8],
+                "relevant_total": 0,
+                "k": 2,
+            }
+        )
         assert out["recall"] == 0.0
 
     def test_custom_threshold(self):
         # With a high threshold (0.9), only scores ≥ 0.9 count as hits
-        out = self._p().compute({
-            "retrieved_relevances": [0.95, 0.7, 0.85],
-            "relevant_total": 3,
-            "k": 3,
-            "threshold": 0.9,
-        })
+        out = self._p().compute(
+            {
+                "retrieved_relevances": [0.95, 0.7, 0.85],
+                "relevant_total": 3,
+                "k": 3,
+                "threshold": 0.9,
+            }
+        )
         assert out["precision"] == pytest.approx(1 / 3, rel=1e-4)
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
+
 
 def test_all_four_domains_registered():
     register_builtins()
@@ -207,7 +232,9 @@ def test_all_four_domains_registered():
         ("rag_quality", "retrieval-lite"),
     ]:
         names = {i.name for i in list_providers(domain)}
-        assert expected_default in names, f"domain={domain}: {expected_default} not found in {names}"
+        assert expected_default in names, (
+            f"domain={domain}: {expected_default} not found in {names}"
+        )
         assert default_provider_name(domain) == expected_default
 
 
