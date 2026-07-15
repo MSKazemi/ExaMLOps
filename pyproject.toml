@@ -64,6 +64,11 @@ dev = [
                         # dep lives in pipelines/pyproject.toml, but CI installs only the
                         # root workspace `.[dev]`, so without it here the executor tests
                         # fail in CI with ModuleNotFoundError while passing locally.
+    "simpleeval>=1.0",  # Declarative-expression provider (ADR 0074) + policy `when`
+                        # conditions (ADR 0079). The runtime dep is the optional
+                        # `examlops[finops]` extra, but CI installs only root `.[dev]`;
+                        # without it here 17 provider/policy tests that exercise the
+                        # expression path fail in CI (ProviderError) while passing locally.
 ]
 
 # ─── Tool config ─────────────────────────────────────────────────────────────
