@@ -6,6 +6,7 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.drift_providers import resolve_drift_score_fn
 from examlops.platform_db import (
     get_db,
     get_drift_auto_retrain,
@@ -69,20 +70,8 @@ def _drift_rows(model_filter: str | None) -> list[dict]:
             continue
         live = _compute_stats(preds)
         baseline = get_drift_baseline(model)
-        if baseline is None:
-            z = 0.0
-            status = "OK (no baseline)"
-        elif baseline["std"] == 0:
-            z = 0.0
-            status = "OK (no baseline)"
-        else:
-            z = abs(live["mean"] - baseline["mean"]) / baseline["std"]
-            if z >= _CRIT_Z:
-                status = "CRITICAL"
-            elif z >= _WARN_Z:
-                status = "WARNING"
-            else:
-                status = "OK"
+        _score = resolve_drift_score_fn()
+        z, status = _score(live["mean"], live["std"], baseline)
         # preds are newest-first; reverse to oldest→newest so the trend reads left-to-right.
         recent = [round(float(p), 3) for p in reversed(preds)][-_TREND_POINTS:]
         results.append(

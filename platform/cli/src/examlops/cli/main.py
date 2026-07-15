@@ -15,6 +15,7 @@ from examlops.cli.commands import (
     ab_cmd,
     approvals,
     ask_cmd,
+    autopilot_cmd,
     batch_cmd,
     cards_cmd,
     config_cmd,
@@ -38,6 +39,7 @@ from examlops.cli.commands import (
     policy_cmd,
     predict,
     production,
+    project_cmd,
     providers_cmd,
     quality_cmd,
     retrain,
@@ -171,6 +173,11 @@ def main(
 
 
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
+app.add_typer(
+    autopilot_cmd.app,
+    name="autopilot",
+    help="Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)",
+)
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")
 app.add_typer(modelzoo.app, name="modelzoo", help="ModelZoo repository freshness and events")
@@ -182,6 +189,9 @@ app.add_typer(stack.app, name="stack", help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config", help="CLI configuration")
 app.add_typer(seanerbus_cmd.app, name="seanerbus", help="SeanerBUS bridge UUID management")
 app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isolation")
+app.add_typer(
+    project_cmd.app, name="project", help="ExaMLOps Projects (CPU/memory/storage/GPU quotas)"
+)
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
