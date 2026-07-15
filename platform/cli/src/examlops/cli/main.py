@@ -19,6 +19,7 @@ from examlops.cli.commands import (
     batch_cmd,
     cards_cmd,
     config_cmd,
+    data_cmd,
     docs_cmd,
     doctor,
     drift,
@@ -177,6 +178,9 @@ app.add_typer(
     autopilot_cmd.app,
     name="autopilot",
     help="Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)",
+)
+app.add_typer(
+    data_cmd.app, name="data", help="Dataset versioning & reproducibility (revisions, diff, checkout)"
 )
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")
