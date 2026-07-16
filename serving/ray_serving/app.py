@@ -180,6 +180,17 @@ elif _ray_registry_path_str:
         )
 
 
+def _project_for(model_name: str) -> str | None:
+    """Owning Project for a model (ADR 0088), or None. Degrades to None if the platform
+    package / DB is unavailable in the serving runtime."""
+    try:
+        from examlops.project_scope import resolve_project
+
+        return resolve_project(model_name)
+    except Exception:
+        return None
+
+
 def _get_serve_aliases_for(model_name: str) -> list[str]:
     """Return serve aliases for a model, falling back to PRELOAD_ALIASES.
 
@@ -230,6 +241,7 @@ class ModelInfo(BaseModel):
     model_version: str | None
     run_id: str | None
     status: str
+    project: str | None = None  # owning Project (ADR 0088), None = unscoped
 
 
 class PredictResponse(BaseModel):
@@ -727,6 +739,7 @@ class MultiModelServer:
                 model_version=entry["version"],
                 run_id=entry["run_id"],
                 status="ok",
+                project=_project_for(name),
             )
             for (name, alias), entry in hot_items
         ]
