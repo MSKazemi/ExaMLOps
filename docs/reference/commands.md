@@ -295,6 +295,35 @@ the `EXAMLOPS_HPC_*` environment the scheduler adapter reads. Discovery is plugg
 `SchedulerProbe` registry), so new backends (PBS/LSF/cloud) drop in without CLI changes. Fleet
 status, capacity, and admin approve/reject are also on the dashboard **Facility console**.
 
+## Projects & Workspaces
+
+```bash
+exa project create research --cpu-limit 4 --memory-gb 8 --storage-gb 100  # create a workspace
+exa project list                                     # all projects + quotas
+exa project show research                            # full anatomy (resources·members·quota·budget·consumption)
+exa project assign research JPCP --kind model        # attach any resource kind
+exa project assign research jpcp-train --kind pipeline
+exa project assign-model research MACK               # legacy alias for --kind model
+exa project add-member research alice --role editor  # owner⊇editor⊇viewer (D6 authz-backed)
+exa project members research
+exa project remove-member research alice
+exa project use research                             # set active project (EXAMLOPS_PROJECT overrides)
+exa project current
+exa project set-quota research --cpu-limit 8 --memory-gb 16
+exa project compose research --out docker-compose.project.yml  # quota-bounded Compose (ADR 0084)
+exa project grant alice owner project:research       # low-level RBAC grant (also on assign path)
+exa project archive research
+exa project delete research
+```
+
+A **Project** is ExaMLOps's canonical *workspace* (RHOAI-inspired, ADR 0086): one named unit that
+groups models, pipelines, serving, connections, and datasets, plus its members (owner/editor/viewer
+via the D6 `authz_relations` table) and the quota + cost attributed to it. It unifies the previously
+separate `projects`/`namespaces`/authz/tenant grouping primitives. Kinds: `model`, `pipeline`,
+`serving_endpoint`, `connection`, `dataset`, `storage`. The dashboard **Projects console**
+(feature-flag `projectsConsole`) mirrors these; `project.manage` (admin) gates mutations. See
+`docs/guides/projects-workspaces.md`.
+
 ## `exa` CLI
 
 The `exa` command is the primary operator interface, installed via `pip install -e .` or `uv pip install -e ".[dev]"`.
@@ -647,6 +676,56 @@ Set the active placement policy without touching code — a formula in `provider
 | `exa policy test promote --set rmse_new=4.1 --set rmse_prod=5.0 --set env=dev` | Test a conditional rule |
 
 A rule is `{action, when?: <sandboxed expression>, effect: allow|deny|require_approval}`. With no policy file the effect is `allow` (backward compatible). `exa retrain` and the mutating MCP tools consult the policy before acting.
+
+## Next-Gen 40 — data, LLMOps, observability, governance, serving
+
+Additive, graceful-degrading capabilities from the 40-feature Next-Gen roadmap (guides in `docs/guides/`; design in `design/adr/0003–0044` + `design/vision/specs/`). Every optional dependency (lakeFS, pandera, OpenBao, Sigstore, OpenFGA, vLLM, Marquez, KServe, pgvector) degrades to a local/pure-python fallback.
+
+**Data & provenance (A-track):**
+
+| Command | Description |
+|---|---|
+| `exa data snapshot/list/diff/checkout` | **A1** immutable dataset revisions (lakeFS or content-hash) |
+| `exa data validate <model>` | **A5** data-contract quality gate |
+| `exa models lineage <model> --graph` | **A2** upstream/downstream provenance graph |
+| `exa models lineage --impact <dataset_revision>` | **A2** model versions derived from a dataset revision |
+
+**LLMOps (B-track):**
+
+| Command | Description |
+|---|---|
+| `exa prompt create/list/show/diff/label/rollback` | **B1** versioned prompt registry (immutable versions + moving labels) |
+| `exa gateway key issue/list/revoke` | **B2** virtual keys (per-tenant allow-list + budget, audited) |
+| `exa gateway chat <model> --message … [--cache]` | **B2** OpenAI-compat routed call (+ **B3** semantic cache) |
+| `exa gateway cache stats` | **B3** cache hit-rate + token/cost savings |
+| `exa vector create/upsert/search/reindex/stats` | **B5** engine-agnostic vector store (fixed-dim, metadata filter, per-tenant) |
+| `exa rag ingest/query/list` | **B4** RAG pipeline — ingest KBs, query with citations |
+
+**Observability & eval (C-track):**
+
+| Command | Description |
+|---|---|
+| `exa genai check/cost` | **C1** OpenTelemetry GenAI semconv spans + token cost |
+| `exa eval run <suite> --items … --model …` | **C2** continuous-eval suites (+ LLM-as-judge) |
+| `exa eval gate set/show/run` | **C3** eval regression gate (block/warn, `max_drop`/`min`) |
+| `exa pipeline promote <m> --if-… [--force]` | **C3** gate-checked promotion (`--force` overrides, audited) |
+
+**Governance & security (D-track):**
+
+| Command | Description |
+|---|---|
+| `exa secrets set/get/rotate/list/scan` | **D7** secrets management (OpenBao→Fernet→env) + leak scan |
+| `exa project grant/revoke/access` | **D6** relationship RBAC (owner⊇editor⊇viewer, `EXAMLOPS_MULTITENANCY`) |
+| `exa models sign/verify/bom` | **D3** ML supply-chain — signing, AI-BOM, verify-before-load |
+| `exa guardrails test/check-tool/stats` | **D8** injection/PII/toxicity defense + tool allow-list (off/monitor/enforce) |
+
+**Serving & training (E-track):**
+
+| Command | Description |
+|---|---|
+| `exa serve manifest <model>` / `exa serve backend` | **E1** KServe manifest generation behind a `ServingBackend` seam |
+| `exa models quantize <m> <v> --method awq` | **E2** quantize → new signed + BOM'd version |
+| `exa models engine list/validate` | **E2** inference-engine config (vLLM/SGLang) + registry validation |
 
 ## Config contexts (multi-environment)
 

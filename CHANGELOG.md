@@ -5,6 +5,105 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-07-16
+
+### Added — Next-Gen 40 wave 3 (C-track observability complete: C4–C8; D1/D2/D4 governance)
+
+- **D4 — Immutable, tamper-evident audit trail (ADR 0028).** `write_audit_event` now
+  hash-chains every event (`prev_hash` + `hash = SHA256(prev_hash ‖ canonical(event))`);
+  DB-level triggers make `audit_events` append-only (UPDATE/DELETE blocked, R3);
+  `verify_audit_chain` recomputes the chain and identifies the first broken link (R2);
+  `sign_audit_checkpoint` signs the chain head (D3 HMAC, R5); `export_audit_events` gives
+  read-only archival export (R4). Events carry actor + tenant + resource (R7). New
+  `audit_checkpoints` table + `prev_hash`/`hash`/`tenant` columns (idempotent migration).
+  CLI `exa audit verify|checkpoint|checkpoints|export` (bare `exa audit` log view preserved).
+  Fully backward-compatible (1234/1234 suite green). Guide `docs/guides/audit-trail.md`. 10 GWT tests.
+- **D2 — NIST AI RMF control backbone (ADR 0027).** `examlops.governance` — versioned
+  `catalogue.yaml` (Govern/Map/Measure/Manage + GenAI Profile, 10 controls with EU-AI-Act +
+  ISO/IEC-42001 crosswalk); `load_catalogue`, `validate_mapping` (CI gate: every control
+  references a real evidence collector), `governance_report` (satisfied/partial/gap per
+  control from **live** evidence — a missing source is always a gap, never a false pass),
+  `crosswalk`. Shares D1's evidence-collector layer (one evidence pass, two frameworks;
+  D1 gained `data_governance`/`risk_management`/`changes` collectors). Reports versioned,
+  audited (D4), tenant-scoped (D6). CLI `exa governance catalogue|validate|report|crosswalk`.
+  Evidence coverage, not certification. Guide `docs/guides/governance-nist-rmf.md`. 10 GWT tests.
+- **D1 — EU AI Act compliance tooling (ADR 0012).** `examlops.compliance` —
+  `classify_system` (risk tier + intended purpose), `generate_technical_file` (Annex-IV
+  document assembled from **live** evidence across A2/C2/C8/D3/C5/C6/D4, flagging missing
+  sections rather than omitting them, versioned + disclaimer on every surface),
+  `check_art12_logging` (audit-trail coverage report), and a validated conformity state
+  machine (`draft→documented→assessed→declared`). Reusable **control→article→evidence**
+  `FRAMEWORK` (shared with D2/NIST RMF). In-scope-but-unclassified models are blocked from
+  promotion (R2, `--force`-overridable + audited). New `compliance_systems` +
+  `technical_files` tables. CLI `exa compliance classify|technical-file|art12|status|
+  declare|framework`. Not legal advice. Guide `docs/guides/eu-ai-act-compliance.md`. 10 GWT tests.
+- **C8 — Fairness & subgroup performance monitoring (ADR 0025).** `examlops.fairness` —
+  `slice_metrics` (per-slice accuracy/error/selection-rate/TPR/FPR; Fairlearn `MetricFrame`
+  when installed, pure-Python otherwise), `fairness_disparity` (demographic-parity diff,
+  equalized-odds diff, selection-rate/accuracy range), `fairness_gate` for C3. Min-sample
+  noise guard excludes tiny slices (R3). Disparity above threshold gates promotion under
+  `EXAMLOPS_FAIRNESS_GATE_ENABLED` (audited, `--force`-overridable). New `fairness_config` +
+  `fairness_samples` tables. CLI `exa fairness config|slice|report`. Tenant-scoped (D6),
+  audited (D4). Guide `docs/guides/fairness.md`. 10 GWT tests.
+- **C7 — Shadow deployment & champion-challenger (ADR 0024).** `examlops.champion_challenger`
+  — `enable_shadow`/`challenger_status`/`maybe_promote`; isolated shadow inference
+  (`run_shadow` swallows shadow crashes so production is unaffected; `shadow_context`
+  + `guard_write`/`ShadowWriteError` make shadows side-effect-free); champion-vs-challenger
+  scoreboard scored with the phase-24 Welch t-test (`analysis/ab_stats`, pure-Python
+  z-approx fallback) as labels arrive; promotion proposed via C3 only on a significant win
+  (Δ≥min, p<α, N≥min) with **no C6 SLO regression**. New `challenger_config` +
+  `challenger_samples` tables. CLI `exa serve challenger enable|status|promote|disable|list`.
+  Audited (D4), tenant-scoped (D6). Guide `docs/guides/shadow-champion-challenger.md`. 10 GWT tests.
+- **C6 — Model-quality SLOs/SLIs & burn-rate alerting (ADR 0023).** `examlops.slo` —
+  declarative OpenSLO-style specs (`slo_specs`, versioned + per-tenant); `generate_rules`
+  emits promtool-valid Prometheus recording rules + multi-window/multi-burn-rate
+  Alertmanager rules (Google-SRE 2-window: fast burn pages, slow burn tickets);
+  `slo_status`/`budget_exhausted` compute live SLI, remaining error budget, and burn rate
+  from `slo_samples`. Budget exhaustion gates promotion (C3) when
+  `EXAMLOPS_SLO_GATE_ENABLED` is set (audited, `--force`-overridable). CLI `exa slo
+  set|apply|list|status|generate|burn|record`. Guide `docs/guides/slos.md`. 11 GWT tests.
+- **C5 — Advanced drift: concept / label-free perf / data-quality (ADR 0022).**
+  `examlops.drift_advanced` — `detect_concept_drift` (mean-shift z-test on realized
+  error as delayed labels arrive → `drift_kind=concept`), `estimate_performance`
+  (CBPE-like label-free accuracy estimate; large drop **warns**, never force-retrains),
+  and `profile_inference` (schema/null/range/cardinality profile + A5 bad-payload fold →
+  `drift_kind=data_quality`). New unified `drift_events` (drift_kind discriminator) +
+  `perf_estimates` tables. Concept-CRITICAL is auto-retrain consumable (cooldown-aware,
+  wired into `exa drift trigger`). CLI `exa drift concept|estimate|profile|events`.
+  13 GWT tests. Degrades to pure-Python stats (Evidently/River/NannyML/whylogs optional).
+- **C4 — AgentOps: agent trace & tool-call analytics (ADR 0021).** `examlops.agentops` —
+  `record_session`/`SessionRecorder` aggregate a Skipper run into additive `platform_db`
+  tables (`agent_sessions`, `agent_tool_calls`); `tool_success_rate`, and `detect_anomalies`
+  for reasoning loops / step blowups / cost overruns / error bursts. Tool args are stored
+  **PII-redacted** (D8) as a hash digest — never raw; dangerous-tool calls
+  (`trigger_retrain`/`promote_model`/…) are audited to `audit_events` (D4); tenant-scoped
+  (D6). CLI `exa agentops tools|sessions|replay|anomalies`. Guide `docs/guides/agentops.md`.
+  13 GWT tests. Degrades to pure SQLite (no OTel collector required).
+
+### Added — Projects & Workspaces (Increment 1, RHOAI-inspired, ADR 0086)
+
+Elevates the partial ADR-0084 `projects` primitive into ExaMLOps's single canonical *workspace*,
+consolidating four fragmented grouping primitives (projects / namespaces / `authz_relations` / F15
+tenant claim) into one key. Additive · test-backed (GWT) · back-compat preserved.
+
+- **feat(projects): unified data model** — generic `project_resources(project,kind,ref)` membership
+  (kind ∈ model|pipeline|serving_endpoint|connection|dataset|storage) with model dual-write to
+  `project_models`; people membership + permissions via the existing D6 `authz_relations`
+  (owner⊇editor⊇viewer, no new ACL table); additive `model_costs.project` column (idempotent
+  `_COLUMN_MIGRATIONS`) completing per-project cost attribution; `get_project_consumption` unions
+  `project_resources`∪`project_models`∪`namespace_models`; `get_project_full` anatomy.
+- **feat(projects): CLI** — `exa project assign --kind`, `members`/`add-member`/`remove-member`,
+  full-anatomy `show`, and `use`/`current` active-project context (`_config.active_project`,
+  `EXAMLOPS_PROJECT` precedence).
+- **feat(projects): dashboard** — `routers/projects.py` (`/api/v1/projects` list + `/{name}` anatomy
+  + admin writes), `PROJECT_MANAGE` capability, `projectsConsole` flag, and a React Projects console
+  (`Projects.tsx`/`ProjectDetail.tsx` + `lib/projects.ts`).
+- **docs(projects):** guide `docs/guides/projects-workspaces.md`; CLAUDE.md phase-41 row + commands;
+  `docs/reference/commands.md` Projects section. Design set: SoA dossier
+  `design/vision/library/rhoai-soa-projects.md`, Vision Card (GO 24/25), ADRs **0086–0090**, specs
+  **P1–P5**, plan `.claude/plans/projects-workspace/`. Roadmap: P2 Named Connections · P3
+  project-scoped serving/pipelines · P4 project FinOps/monitoring · P5 workbenches.
+
 ## [0.33.0] — 2026-07-16
 
 ### Added — Next-Gen 40 wave 2 (RAG cluster + guardrails)

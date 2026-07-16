@@ -834,6 +834,171 @@ def init_db() -> None:
                 added_by  TEXT,
                 PRIMARY KEY (project, kind, ref)
             );
+            -- Next-Gen 40 · C4 — AgentOps: per-session agent traces (ADR 0021).
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id  TEXT PRIMARY KEY,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                agent       TEXT,               -- logical agent name (e.g. skipper)
+                model       TEXT,
+                steps       INTEGER NOT NULL DEFAULT 0,
+                tool_calls  INTEGER NOT NULL DEFAULT 0,
+                errors      INTEGER NOT NULL DEFAULT 0,
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd    REAL NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'ok',  -- ok | anomaly | error
+                anomalies   TEXT,               -- JSON list of detected anomaly codes
+                started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at    DATETIME
+            );
+            -- Next-Gen 40 · C4 — per tool-call analytics (success rate, loops, latency).
+            CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                step        INTEGER NOT NULL DEFAULT 0,
+                tool        TEXT NOT NULL,
+                args_digest TEXT,               -- redacted (D8) hash of args for loop detection
+                ok          INTEGER NOT NULL DEFAULT 1,
+                error       TEXT,
+                latency_ms  REAL,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C5 — unified advanced drift events (ADR 0022).
+            -- drift_kind ∈ feature | prediction | input_embedding | concept | data_quality.
+            CREATE TABLE IF NOT EXISTS drift_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                drift_kind TEXT NOT NULL,
+                severity   TEXT NOT NULL DEFAULT 'OK',   -- OK | WARN | CRITICAL
+                score      REAL,                          -- test statistic (kind-specific)
+                metric     TEXT,                          -- realized metric name (concept)
+                detail     TEXT,                          -- JSON: profile / test params
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C5 — label-free performance estimates vs realized (ADR 0022).
+            CREATE TABLE IF NOT EXISTS perf_estimates (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                metric     TEXT NOT NULL,
+                estimated  REAL,                          -- CBPE/DLE pre-label estimate
+                realized   REAL,                          -- filled once labels arrive
+                baseline   REAL,
+                method     TEXT NOT NULL DEFAULT 'cbpe-like',
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C6 — model-quality SLO specs (OpenSLO-style) (ADR 0023).
+            CREATE TABLE IF NOT EXISTS slo_specs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                model       TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                name        TEXT NOT NULL,      -- SLO name (e.g. latency-p99, groundedness)
+                sli_source  TEXT NOT NULL,      -- c1 | c2 | c5 | availability | prometheus
+                sli_query   TEXT,               -- PromQL / SLI expression
+                target      REAL NOT NULL,      -- objective ratio (0..1), e.g. 0.99
+                window      TEXT NOT NULL DEFAULT '30d',
+                higher_is_better INTEGER NOT NULL DEFAULT 1,
+                version     INTEGER NOT NULL DEFAULT 1,
+                gate_promotion INTEGER NOT NULL DEFAULT 0,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(model, tenant, name)
+            );
+            -- Next-Gen 40 · C6 — SLI good/total samples feeding budget + burn rate.
+            CREATE TABLE IF NOT EXISTS slo_samples (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                model   TEXT NOT NULL,
+                tenant  TEXT NOT NULL DEFAULT 'default',
+                name    TEXT NOT NULL,
+                good    REAL NOT NULL DEFAULT 0,   -- events meeting the SLI this interval
+                total   REAL NOT NULL DEFAULT 0,   -- total events this interval
+                ts      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C7 — champion-challenger config (ADR 0024).
+            CREATE TABLE IF NOT EXISTS challenger_config (
+                model               TEXT PRIMARY KEY,
+                tenant              TEXT NOT NULL DEFAULT 'default',
+                challenger_version  TEXT NOT NULL,
+                mirror_pct          INTEGER NOT NULL DEFAULT 100,
+                min_delta           REAL NOT NULL DEFAULT 0.0,
+                alpha               REAL NOT NULL DEFAULT 0.05,
+                min_samples         INTEGER NOT NULL DEFAULT 100,
+                auto_promote        INTEGER NOT NULL DEFAULT 0,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by          TEXT
+            );
+            -- Next-Gen 40 · C7 — per-request champion vs challenger scored samples.
+            CREATE TABLE IF NOT EXISTS challenger_samples (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                request_hash    TEXT,
+                champion_pred   REAL,
+                challenger_pred REAL,
+                label           REAL,          -- filled as ground truth / C2 judge arrives
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C8 — fairness / subgroup monitoring config (ADR 0025).
+            CREATE TABLE IF NOT EXISTS fairness_config (
+                model          TEXT PRIMARY KEY,
+                tenant         TEXT NOT NULL DEFAULT 'default',
+                slice_attrs    TEXT NOT NULL DEFAULT '[]',  -- JSON list of slicing attributes
+                threshold      REAL NOT NULL DEFAULT 0.1,   -- max allowed disparity
+                min_samples    INTEGER NOT NULL DEFAULT 30, -- noise guard per slice
+                gate_promotion INTEGER NOT NULL DEFAULT 0,
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C8 — per-request fairness samples (slice attr + pred + label).
+            CREATE TABLE IF NOT EXISTS fairness_samples (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                model       TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                slice_attr  TEXT NOT NULL,
+                slice_value TEXT NOT NULL,
+                prediction  REAL,
+                label       REAL,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · D1 — EU AI Act compliance: risk classification + conformity (ADR 0012).
+            CREATE TABLE IF NOT EXISTS compliance_systems (
+                model               TEXT PRIMARY KEY,
+                tenant              TEXT NOT NULL DEFAULT 'default',
+                in_scope            INTEGER NOT NULL DEFAULT 1,
+                risk_tier           TEXT,       -- prohibited | high | limited | minimal
+                intended_purpose    TEXT,
+                deployment_context  TEXT,
+                conformity_state    TEXT NOT NULL DEFAULT 'draft',  -- draft|documented|assessed|declared
+                updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by          TEXT
+            );
+            -- Next-Gen 40 · D1 — versioned generated technical files (Annex IV).
+            CREATE TABLE IF NOT EXISTS technical_files (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                model        TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                gaps         INTEGER NOT NULL DEFAULT 0,   -- count of flagged missing sections
+                content      TEXT NOT NULL,
+                generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                generated_by TEXT
+            );
+            -- Next-Gen 40 · D4 — signed checkpoints over the hash-chained audit trail (ADR 0028).
+            CREATE TABLE IF NOT EXISTS audit_checkpoints (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                head_id    INTEGER NOT NULL,   -- audit_events.id at the chain head
+                head_hash  TEXT NOT NULL,      -- hash of the head event
+                signature  TEXT NOT NULL,      -- detached signature over head_hash (D7 key)
+                key_id     TEXT,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · D4 — append-only enforcement: block UPDATE/DELETE at the DB level (R3).
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only (D4)'); END;
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only (D4)'); END;
         """)
         _migrate_columns(conn)
 
@@ -842,6 +1007,12 @@ def init_db() -> None:
 # ``ALTER TABLE ADD COLUMN`` errors if the column already exists, so we gate on
 # PRAGMA table_info. Keep entries here forever — they are cheap and self-skipping.
 _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
+    "audit_events": {
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        "prev_hash": "TEXT",
+        "hash": "TEXT",
+    },
     # #8 Real HPO/AutoML: Optuna study bookkeeping on the existing hpo tables.
     "hpo_studies": {
         "study_name": "TEXT",
@@ -878,17 +1049,76 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
+def _audit_canonical(
+    source: str,
+    actor: str | None,
+    action: str,
+    target: str | None,
+    details_json: str | None,
+    tenant: str,
+    ts: str,
+) -> str:
+    """Deterministic serialization of an audit event for the D4 hash chain (R1)."""
+    return json.dumps(
+        {
+            "source": source,
+            "actor": actor,
+            "action": action,
+            "target": target,
+            "details": details_json,
+            "tenant": tenant,
+            "ts": ts,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _audit_hash(prev_hash: str, canonical: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"{prev_hash}‖{canonical}".encode()).hexdigest()
+
+
 def write_audit_event(
     source: str,
     actor: str | None,
     action: str,
     target: str | None,
     details: dict[str, Any] | None = None,
+    *,
+    tenant: str = "default",
 ) -> None:
+    """Append a tamper-evident, hash-chained audit event (D4, R1/R7).
+
+    Each row stores ``prev_hash`` and ``hash = H(prev_hash ‖ canonical(event))`` so any
+    edit/deletion/reordering breaks the chain (verify with :func:`verify_audit_chain`).
+    The table is append-only at the DB level (triggers). Chaining degrades gracefully:
+    if the hash columns are missing (older DB pre-migration) the event is still written.
+    """
+    details_json = json.dumps(details) if details else None
     with get_db() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+        if not {"prev_hash", "hash"} <= cols:  # pre-migration DB — plain append
+            conn.execute(
+                "INSERT INTO audit_events (source, actor, action, target, details) "
+                "VALUES (?,?,?,?,?)",
+                (source, actor, action, target, details_json),
+            )
+            return
+        # Chain over the current head. CURRENT_TIMESTAMP is resolved here so the stored
+        # ts matches what we hash.
+        ts = conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+        head = conn.execute(
+            "SELECT hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        prev_hash = head["hash"] if head and head["hash"] else "GENESIS"
+        canonical = _audit_canonical(source, actor, action, target, details_json, tenant, ts)
+        h = _audit_hash(prev_hash, canonical)
         conn.execute(
-            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-            (source, actor, action, target, json.dumps(details) if details else None),
+            "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
+            "prev_hash, hash, ts) VALUES (?,?,?,?,?,?,?,?,?)",
+            (source, actor, action, target, details_json, tenant, prev_hash, h, ts),
         )
 
 
@@ -2613,3 +2843,721 @@ def cache_stats(tenant: str | None = None) -> dict[str, Any]:
         "tokens_saved": int(row["tokens_saved"]),
         "cost_saved": float(row["cost_saved"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C4 — AgentOps: agent trace & tool-call analytics (ADR 0021).
+# ---------------------------------------------------------------------------
+def record_agent_session(
+    session_id: str,
+    *,
+    tenant: str = "default",
+    agent: str | None = None,
+    model: str | None = None,
+    steps: int = 0,
+    tool_calls: int = 0,
+    errors: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_usd: float = 0.0,
+    status: str = "ok",
+    anomalies: list[str] | None = None,
+    ended: bool = False,
+) -> None:
+    """Upsert a session summary row (idempotent by ``session_id``)."""
+    init_db()
+    anom_json = json.dumps(anomalies) if anomalies else None
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO agent_sessions
+                   (session_id, tenant, agent, model, steps, tool_calls, errors,
+                    input_tokens, output_tokens, cost_usd, status, anomalies,
+                    ended_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?, CASE WHEN ? THEN CURRENT_TIMESTAMP END)
+               ON CONFLICT(session_id) DO UPDATE SET
+                    tenant=excluded.tenant, agent=excluded.agent, model=excluded.model,
+                    steps=excluded.steps, tool_calls=excluded.tool_calls,
+                    errors=excluded.errors, input_tokens=excluded.input_tokens,
+                    output_tokens=excluded.output_tokens, cost_usd=excluded.cost_usd,
+                    status=excluded.status, anomalies=excluded.anomalies,
+                    ended_at=COALESCE(excluded.ended_at, agent_sessions.ended_at)""",
+            (
+                session_id,
+                tenant,
+                agent,
+                model,
+                steps,
+                tool_calls,
+                errors,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                status,
+                anom_json,
+                ended,
+            ),
+        )
+
+
+def record_agent_tool_call(
+    session_id: str,
+    tool: str,
+    *,
+    tenant: str = "default",
+    step: int = 0,
+    args_digest: str | None = None,
+    ok: bool = True,
+    error: str | None = None,
+    latency_ms: float | None = None,
+) -> None:
+    """Append one tool-call event (already-redacted ``args_digest`` from D8)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO agent_tool_calls
+                   (session_id, tenant, step, tool, args_digest, ok, error, latency_ms)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (session_id, tenant, step, tool, args_digest, 1 if ok else 0, error, latency_ms),
+        )
+
+
+def tool_success_rate(
+    tool: str | None = None, *, tenant: str | None = None
+) -> list[dict[str, Any]]:
+    """Per-tool success rate + call count (R2) — for the AgentOps dashboard panel."""
+    init_db()
+    clauses, params = [], []
+    if tool:
+        clauses.append("tool=?")
+        params.append(tool)
+    if tenant:
+        clauses.append("tenant=?")
+        params.append(tenant)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT tool,
+                       COUNT(*)                AS calls,
+                       COALESCE(SUM(ok),0)     AS ok,
+                       AVG(latency_ms)         AS avg_latency_ms
+                FROM agent_tool_calls {where}
+                GROUP BY tool ORDER BY calls DESC""",
+            tuple(params),
+        ).fetchall()
+    out = []
+    for r in rows:
+        calls, ok = int(r["calls"]), int(r["ok"])
+        out.append(
+            {
+                "tool": r["tool"],
+                "calls": calls,
+                "ok": ok,
+                "errors": calls - ok,
+                "success_rate": (ok / calls) if calls else 0.0,
+                "avg_latency_ms": float(r["avg_latency_ms"])
+                if r["avg_latency_ms"] is not None
+                else None,
+            }
+        )
+    return out
+
+
+def list_agent_sessions(
+    *, tenant: str | None = None, status: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Recent agent sessions newest-first (R6 replay index)."""
+    init_db()
+    clauses, params = [], []
+    if tenant:
+        clauses.append("tenant=?")
+        params.append(tenant)
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM agent_sessions {where}
+                ORDER BY started_at DESC LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_agent_session_trace(session_id: str) -> dict[str, Any]:
+    """Full session replay: summary + ordered tool-call steps (R6)."""
+    init_db()
+    with get_db() as conn:
+        head = conn.execute(
+            "SELECT * FROM agent_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        steps = conn.execute(
+            """SELECT step, tool, args_digest, ok, error, latency_ms, ts
+               FROM agent_tool_calls WHERE session_id=? ORDER BY step, id""",
+            (session_id,),
+        ).fetchall()
+    return {
+        "session": dict(head) if head else None,
+        "steps": [dict(s) for s in steps],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C5 — advanced drift: concept / label-free perf / data quality (ADR 0022).
+# ---------------------------------------------------------------------------
+def record_drift_event(
+    model: str,
+    drift_kind: str,
+    *,
+    severity: str = "OK",
+    score: float | None = None,
+    metric: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """Write one unified drift event (R6). ``drift_kind`` is the discriminator."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO drift_events (model, drift_kind, severity, score, metric, detail)
+               VALUES (?,?,?,?,?,?)""",
+            (model, drift_kind, severity, score, metric, json.dumps(detail) if detail else None),
+        )
+
+
+def list_drift_events(
+    *, model: str | None = None, drift_kind: str | None = None, last_n: int = 50
+) -> list[dict[str, Any]]:
+    """Recent unified drift events, newest first — filterable by model/kind (R6)."""
+    init_db()
+    clauses, params = [], []
+    if model:
+        clauses.append("model=?")
+        params.append(model)
+    if drift_kind:
+        clauses.append("drift_kind=?")
+        params.append(drift_kind)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM drift_events {where} ORDER BY ts DESC, id DESC LIMIT ?",
+            (*params, last_n),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["detail"] = json.loads(d["detail"]) if d["detail"] else None
+        out.append(d)
+    return out
+
+
+def latest_drift_event(model: str, drift_kind: str) -> dict[str, Any] | None:
+    """Most recent event of a given kind for a model (auto-retrain consumers)."""
+    events = list_drift_events(model=model, drift_kind=drift_kind, last_n=1)
+    return events[0] if events else None
+
+
+def record_perf_estimate(
+    model: str,
+    metric: str,
+    *,
+    estimated: float | None = None,
+    realized: float | None = None,
+    baseline: float | None = None,
+    method: str = "cbpe-like",
+) -> None:
+    """Store a label-free performance estimate (or realized backfill) (R3)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO perf_estimates (model, metric, estimated, realized, baseline, method)
+               VALUES (?,?,?,?,?,?)""",
+            (model, metric, estimated, realized, baseline, method),
+        )
+
+
+def list_perf_estimates(model: str, *, last_n: int = 50) -> list[dict[str, Any]]:
+    """Estimated-vs-realized performance history for a model (R3/R4)."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM perf_estimates WHERE model=? ORDER BY ts DESC, id DESC LIMIT ?",
+            (model, last_n),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C6 — model-quality SLOs / SLIs & burn-rate (ADR 0023).
+# ---------------------------------------------------------------------------
+def upsert_slo_spec(
+    model: str,
+    name: str,
+    *,
+    tenant: str = "default",
+    sli_source: str = "prometheus",
+    sli_query: str | None = None,
+    target: float = 0.99,
+    window: str = "30d",
+    higher_is_better: bool = True,
+    gate_promotion: bool = False,
+) -> None:
+    """Insert or version-bump an SLO spec (R1/R7 — versioned + per-tenant)."""
+    init_db()
+    with get_db() as conn:
+        prev = conn.execute(
+            "SELECT version FROM slo_specs WHERE model=? AND tenant=? AND name=?",
+            (model, tenant, name),
+        ).fetchone()
+        version = (prev["version"] + 1) if prev else 1
+        conn.execute(
+            """INSERT INTO slo_specs
+                   (model, tenant, name, sli_source, sli_query, target, window,
+                    higher_is_better, version, gate_promotion, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(model, tenant, name) DO UPDATE SET
+                    sli_source=excluded.sli_source, sli_query=excluded.sli_query,
+                    target=excluded.target, window=excluded.window,
+                    higher_is_better=excluded.higher_is_better,
+                    version=excluded.version, gate_promotion=excluded.gate_promotion,
+                    updated_at=CURRENT_TIMESTAMP""",
+            (
+                model,
+                tenant,
+                name,
+                sli_source,
+                sli_query,
+                target,
+                window,
+                1 if higher_is_better else 0,
+                version,
+                1 if gate_promotion else 0,
+            ),
+        )
+
+
+def list_slo_specs(*, model: str | None = None, tenant: str | None = None) -> list[dict[str, Any]]:
+    """All SLO specs, optionally filtered by model/tenant (R5)."""
+    init_db()
+    clauses, params = [], []
+    if model:
+        clauses.append("model=?")
+        params.append(model)
+    if tenant:
+        clauses.append("tenant=?")
+        params.append(tenant)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM slo_specs {where} ORDER BY model, name", tuple(params)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_slo_spec(model: str, name: str, tenant: str = "default") -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM slo_specs WHERE model=? AND tenant=? AND name=?",
+            (model, tenant, name),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_slo_sample(
+    model: str, name: str, good: float, total: float, *, tenant: str = "default"
+) -> None:
+    """Append one SLI good/total measurement interval (R4)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO slo_samples (model, tenant, name, good, total) VALUES (?,?,?,?,?)",
+            (model, tenant, name, good, total),
+        )
+
+
+def slo_sli_ratio(
+    model: str, name: str, *, tenant: str = "default", last_n: int = 1000
+) -> tuple[float, float]:
+    """Aggregate (good, total) over the most recent samples for an SLO."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COALESCE(SUM(good),0) AS good, COALESCE(SUM(total),0) AS total
+               FROM (SELECT good, total FROM slo_samples
+                     WHERE model=? AND tenant=? AND name=?
+                     ORDER BY id DESC LIMIT ?)""",
+            (model, tenant, name, last_n),
+        ).fetchone()
+    return float(row["good"]), float(row["total"])
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C7 — champion-challenger / shadow scoreboard (ADR 0024).
+# ---------------------------------------------------------------------------
+def set_challenger_config(
+    model: str,
+    challenger_version: str,
+    *,
+    tenant: str = "default",
+    mirror_pct: int = 100,
+    min_delta: float = 0.0,
+    alpha: float = 0.05,
+    min_samples: int = 100,
+    auto_promote: bool = False,
+    enabled: bool = True,
+    updated_by: str | None = None,
+) -> None:
+    """Enable/configure a challenger for a model (R1/R5)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO challenger_config
+                   (model, tenant, challenger_version, mirror_pct, min_delta, alpha,
+                    min_samples, auto_promote, enabled, updated_at, updated_by)
+               VALUES (?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP, ?)""",
+            (
+                model,
+                tenant,
+                challenger_version,
+                mirror_pct,
+                min_delta,
+                alpha,
+                min_samples,
+                1 if auto_promote else 0,
+                1 if enabled else 0,
+                updated_by,
+            ),
+        )
+
+
+def get_challenger_config(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM challenger_config WHERE model=?", (model,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_challenger_configs(*, tenant: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    where = "WHERE tenant=?" if tenant else ""
+    params = (tenant,) if tenant else ()
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM challenger_config {where} ORDER BY model", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def disable_challenger(model: str, *, updated_by: str | None = None) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE challenger_config SET enabled=0, updated_at=CURRENT_TIMESTAMP, "
+            "updated_by=? WHERE model=?",
+            (updated_by, model),
+        )
+
+
+def record_challenger_sample(
+    model: str,
+    *,
+    tenant: str = "default",
+    request_hash: str | None = None,
+    champion_pred: float | None = None,
+    challenger_pred: float | None = None,
+    label: float | None = None,
+) -> None:
+    """Log one champion vs challenger prediction pair (R4)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO challenger_samples
+                   (model, tenant, request_hash, champion_pred, challenger_pred, label)
+               VALUES (?,?,?,?,?,?)""",
+            (model, tenant, request_hash, champion_pred, challenger_pred, label),
+        )
+
+
+def get_challenger_samples(
+    model: str, *, tenant: str = "default", labelled_only: bool = False, last_n: int = 5000
+) -> list[dict[str, Any]]:
+    """Recent champion/challenger samples for scoring."""
+    init_db()
+    clause = "WHERE model=? AND tenant=?"
+    params: list[Any] = [model, tenant]
+    if labelled_only:
+        clause += " AND label IS NOT NULL"
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM challenger_samples {clause} ORDER BY id DESC LIMIT ?",
+            (*params, last_n),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C8 — fairness & subgroup performance monitoring (ADR 0025).
+# ---------------------------------------------------------------------------
+def set_fairness_config(
+    model: str,
+    slice_attrs: list[str],
+    *,
+    tenant: str = "default",
+    threshold: float = 0.1,
+    min_samples: int = 30,
+    gate_promotion: bool = False,
+    enabled: bool = True,
+) -> None:
+    """Declare slicing attributes + disparity threshold for a model (R1)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO fairness_config
+                   (model, tenant, slice_attrs, threshold, min_samples,
+                    gate_promotion, enabled, updated_at)
+               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
+            (
+                model,
+                tenant,
+                json.dumps(slice_attrs),
+                threshold,
+                min_samples,
+                1 if gate_promotion else 0,
+                1 if enabled else 0,
+            ),
+        )
+
+
+def get_fairness_config(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM fairness_config WHERE model=?", (model,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["slice_attrs"] = json.loads(d["slice_attrs"]) if d["slice_attrs"] else []
+    return d
+
+
+def record_fairness_sample(
+    model: str,
+    slice_attr: str,
+    slice_value: str,
+    *,
+    tenant: str = "default",
+    prediction: float | None = None,
+    label: float | None = None,
+) -> None:
+    """Log one per-request fairness sample (R2)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO fairness_samples
+                   (model, tenant, slice_attr, slice_value, prediction, label)
+               VALUES (?,?,?,?,?,?)""",
+            (model, tenant, slice_attr, slice_value, prediction, label),
+        )
+
+
+def get_fairness_samples(
+    model: str, slice_attr: str, *, tenant: str = "default", last_n: int = 20000
+) -> list[dict[str, Any]]:
+    """Recent fairness samples for one slicing attribute."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT slice_value, prediction, label FROM fairness_samples
+               WHERE model=? AND tenant=? AND slice_attr=? ORDER BY id DESC LIMIT ?""",
+            (model, tenant, slice_attr, last_n),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D1 — EU AI Act compliance (ADR 0012).
+# ---------------------------------------------------------------------------
+def set_compliance_system(
+    model: str,
+    *,
+    tenant: str = "default",
+    in_scope: bool = True,
+    risk_tier: str | None = None,
+    intended_purpose: str | None = None,
+    deployment_context: str | None = None,
+    conformity_state: str | None = None,
+    updated_by: str | None = None,
+) -> None:
+    """Upsert a system's compliance record (classification / conformity) (R1)."""
+    init_db()
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM compliance_systems WHERE model=?", (model,)
+        ).fetchone()
+        if existing:
+            cur = dict(existing)
+            conn.execute(
+                """UPDATE compliance_systems SET tenant=?, in_scope=?, risk_tier=?,
+                       intended_purpose=?, deployment_context=?, conformity_state=?,
+                       updated_at=CURRENT_TIMESTAMP, updated_by=? WHERE model=?""",
+                (
+                    tenant,
+                    1 if in_scope else 0,
+                    risk_tier if risk_tier is not None else cur["risk_tier"],
+                    intended_purpose if intended_purpose is not None else cur["intended_purpose"],
+                    deployment_context
+                    if deployment_context is not None
+                    else cur["deployment_context"],
+                    conformity_state if conformity_state is not None else cur["conformity_state"],
+                    updated_by,
+                    model,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO compliance_systems
+                       (model, tenant, in_scope, risk_tier, intended_purpose,
+                        deployment_context, conformity_state, updated_by)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    model,
+                    tenant,
+                    1 if in_scope else 0,
+                    risk_tier,
+                    intended_purpose,
+                    deployment_context,
+                    conformity_state or "draft",
+                    updated_by,
+                ),
+            )
+
+
+def get_compliance_system(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM compliance_systems WHERE model=?", (model,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_compliance_systems(*, tenant: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    where = "WHERE tenant=?" if tenant else ""
+    params = (tenant,) if tenant else ()
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM compliance_systems {where} ORDER BY model", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_technical_file(
+    model: str,
+    content: str,
+    *,
+    tenant: str = "default",
+    gaps: int = 0,
+    generated_by: str | None = None,
+) -> int:
+    """Persist a new (versioned) technical file; returns the new version (R5)."""
+    init_db()
+    with get_db() as conn:
+        prev = conn.execute(
+            "SELECT MAX(version) AS v FROM technical_files WHERE model=?", (model,)
+        ).fetchone()
+        version = (prev["v"] or 0) + 1
+        conn.execute(
+            """INSERT INTO technical_files (model, tenant, version, gaps, content, generated_by)
+               VALUES (?,?,?,?,?,?)""",
+            (model, tenant, version, gaps, content, generated_by),
+        )
+    return version
+
+
+def list_technical_files(model: str) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT version, gaps, generated_at, generated_by FROM technical_files "
+            "WHERE model=? ORDER BY version DESC",
+            (model,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D4 — immutable, tamper-evident audit trail (ADR 0028).
+# ---------------------------------------------------------------------------
+def verify_audit_chain() -> dict[str, Any]:
+    """Recompute the hash chain and report the first broken link, if any (R2/R6)."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, source, actor, action, target, details, tenant, prev_hash, hash, ts "
+            "FROM audit_events WHERE hash IS NOT NULL ORDER BY id ASC"
+        ).fetchall()
+    prev = "GENESIS"
+    for r in rows:
+        canonical = _audit_canonical(
+            r["source"],
+            r["actor"],
+            r["action"],
+            r["target"],
+            r["details"],
+            r["tenant"] or "default",
+            r["ts"],
+        )
+        expected = _audit_hash(prev, canonical)
+        if r["prev_hash"] != prev or r["hash"] != expected:
+            return {
+                "ok": False,
+                "verified": True,
+                "count": len(rows),
+                "broken_at_id": r["id"],
+                "reason": "prev_hash mismatch"
+                if r["prev_hash"] != prev
+                else "hash mismatch (event altered)",
+            }
+        prev = r["hash"]
+    return {"ok": True, "verified": True, "count": len(rows), "head_hash": prev}
+
+
+def audit_chain_head() -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return {"id": row["id"], "hash": row["hash"]} if row else None
+
+
+def sign_audit_checkpoint(signature: str, *, key_id: str | None = None) -> dict[str, Any] | None:
+    """Persist a detached signature over the current chain head (R5). Returns the checkpoint."""
+    head = audit_chain_head()
+    if head is None:
+        return None
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_checkpoints (head_id, head_hash, signature, key_id) VALUES (?,?,?,?)",
+            (head["id"], head["hash"], signature, key_id),
+        )
+    return {"head_id": head["id"], "head_hash": head["hash"], "key_id": key_id}
+
+
+def list_audit_checkpoints(last_n: int = 20) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM audit_checkpoints ORDER BY id DESC LIMIT ?", (last_n,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def export_audit_events(*, before_ts: str | None = None) -> list[dict[str, Any]]:
+    """Read-only archival export of the audit trail (R4). Never deletes — append-only."""
+    init_db()
+    clause = "WHERE ts < ?" if before_ts else ""
+    params = (before_ts,) if before_ts else ()
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM audit_events {clause} ORDER BY id ASC", params
+        ).fetchall()
+    return [dict(r) for r in rows]

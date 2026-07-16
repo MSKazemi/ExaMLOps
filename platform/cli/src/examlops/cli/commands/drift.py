@@ -375,6 +375,52 @@ def trigger(
         except ClientError as e:
             _output.error(f"Failed to trigger retrain for {model}: {e}")
 
+    # C5 (R2): concept-CRITICAL detections are also auto-retrain consumable, subject
+    # to the same cooldown. Skip any model already triggered above on prediction drift.
+    from examlops.platform_db import latest_drift_event
+
+    already = {t["model"] for t in triggered}
+    for model, ar in enabled_configs.items():
+        if model in already:
+            continue
+        ev = latest_drift_event(model, "concept")
+        if not ev or ev["severity"] != "CRITICAL":
+            continue
+        if ar["last_triggered"]:
+            last = datetime.datetime.fromisoformat(ar["last_triggered"])
+            if (datetime.datetime.utcnow() - last).total_seconds() < ar["cooldown_s"]:
+                skipped.append({"model": model, "reason": "concept: cooldown active"})
+                continue
+        if dry_run:
+            triggered.append(
+                {"model": model, "z": ev.get("score") or 0.0, "action": "would retrain (concept)"}
+            )
+            continue
+        body = {"model_name": model, "dataset_name": ar["dataset_name"], "is_dummy": False}
+        try:
+            result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
+            record_drift_trigger(model)
+            write_audit_event(
+                "cli",
+                actor,
+                "drift_auto_retrain_triggered",
+                model,
+                {
+                    "drift_kind": "concept",
+                    "score": ev.get("score"),
+                    "flow_run_id": result.get("flow_run_id"),
+                },
+            )
+            triggered.append(
+                {
+                    "model": model,
+                    "z": ev.get("score") or 0.0,
+                    "flow_run_id": result.get("flow_run_id"),
+                }
+            )
+        except ClientError as e:
+            _output.error(f"Failed to trigger concept-drift retrain for {model}: {e}")
+
     if _output.json_mode:
         _output.print_json({"triggered": triggered, "skipped": skipped})
         return
@@ -663,3 +709,176 @@ def input_reset(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "input_reset", model, {"cleared": n})
     _output.ok(f"Cleared {n} input snapshot(s) for {model}")
+
+
+# ---------------------------------------------------------------------------
+# C5 — advanced drift: concept / label-free perf / data-quality (ADR 0022)
+# ---------------------------------------------------------------------------
+_EXAMPLES_CONCEPT = (
+    "Examples:\n\n"
+    "  exa drift concept JPCP\n\n"
+    "  exa drift concept JPCP --window 100\n\n"
+    "  exa --json drift concept JPCP"
+)
+
+
+@app.command(epilog=_EXAMPLES_CONCEPT)
+def concept(
+    model: str = typer.Argument(..., help="Model name"),
+    alias: str = typer.Option(None, "--alias", help="Restrict to one serving alias"),
+    window: int = typer.Option(50, "--window", help="Recent window size (samples)"),
+):
+    """Concept-drift test on realized error as delayed labels arrive (C5·R1)."""
+    from examlops.drift_advanced import detect_concept_drift
+
+    init_db()
+    res = detect_concept_drift(model, alias=alias, window=window)
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": res.model,
+                "drift_kind": res.drift_kind,
+                "severity": res.severity,
+                "score": res.score,
+                "detail": res.detail,
+            }
+        )
+        return
+    color = {"OK": "green", "WARN": "yellow", "CRITICAL": "red"}.get(res.severity, "white")
+    _output.info(f"Concept drift for [bold]{model}[/bold]: [{color}]{res.severity}[/{color}]")
+    if res.score is not None:
+        _output.info(f"  z-score: {res.score:.2f}")
+    if "recent_error" in res.detail:
+        _output.info(
+            f"  baseline error {res.detail['baseline_error']:.4f} → "
+            f"recent {res.detail['recent_error']:.4f} (n={res.detail['n']})"
+        )
+    elif res.detail.get("reason"):
+        _output.info(f"  {res.detail['reason']} (n={res.detail.get('n', 0)})")
+
+
+@app.command()
+def estimate(
+    model: str = typer.Argument(..., help="Model name"),
+    alias: str = typer.Option(None, "--alias", help="Restrict to one serving alias"),
+    baseline: float = typer.Option(None, "--baseline", help="Baseline metric to compare against"),
+    window: int = typer.Option(200, "--window", help="Recent predictions to estimate over"),
+):
+    """Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4)."""
+    from examlops.drift_advanced import estimate_performance
+
+    init_db()
+    res = estimate_performance(model, alias=alias, baseline=baseline, window=window)
+    if _output.json_mode:
+        _output.print_json(res)
+        return
+    if res["estimated"] is None:
+        _output.info(f"No predictions recorded for {model} — nothing to estimate.")
+        return
+    _output.info(
+        f"Estimated {res['metric']} for [bold]{model}[/bold]: "
+        f"{res['estimated']:.4f} ({res['method']}, n={res['n']})"
+    )
+    if res.get("realized") is not None:
+        _output.info(f"  realized (labelled): {res['realized']:.4f}")
+    if res.get("warn"):
+        _output.warning(
+            f"Estimated performance dropped ≥{int(0.10 * 100)}% vs baseline "
+            f"{baseline:.4f} — warning only (awaiting labels)."
+        )
+
+
+@app.command()
+def profile(
+    model: str = typer.Argument(..., help="Model name"),
+    last_n: int = typer.Option(200, "--last-n", help="Recent predictions to profile"),
+    bad_payloads: int = typer.Option(0, "--bad-payloads", help="A5 bad-payload count to fold in"),
+):
+    """Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5)."""
+    import json as _json
+
+    from examlops.drift_advanced import profile_inference
+
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT features_json FROM predictions WHERE model=? ORDER BY id DESC LIMIT ?",
+            (model, last_n),
+        ).fetchall()
+    batch = []
+    for r in rows:
+        if r["features_json"]:
+            try:
+                obj = _json.loads(r["features_json"])
+                if isinstance(obj, dict):
+                    batch.append(obj)
+            except (ValueError, TypeError):
+                continue
+    prof = profile_inference(model, batch, bad_payloads=bad_payloads)
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": prof.model,
+                "n": prof.n,
+                "null_fraction": prof.null_fraction,
+                "severity": prof.severity,
+                "fields": prof.fields,
+            }
+        )
+        return
+    color = {"OK": "green", "WARN": "yellow", "CRITICAL": "red"}.get(prof.severity, "white")
+    _output.info(
+        f"Data-quality profile for [bold]{model}[/bold]: [{color}]{prof.severity}[/{color}] "
+        f"(n={prof.n}, null_fraction={prof.null_fraction:.2%})"
+    )
+    if prof.fields:
+        _output.print_table(
+            "Fields",
+            ["Field", "Nulls", "Null %", "Min", "Max", "Cardinality"],
+            [
+                [
+                    k,
+                    str(v["nulls"]),
+                    f"{v['null_fraction']:.1%}",
+                    str(v["min"]),
+                    str(v["max"]),
+                    str(v["cardinality"]),
+                ]
+                for k, v in prof.fields.items()
+            ],
+        )
+
+
+@app.command()
+def events(
+    model: str = typer.Option(None, "--model", help="Filter to one model"),
+    kind: str = typer.Option(
+        None, "--kind", help="feature|prediction|input_embedding|concept|data_quality"
+    ),
+    last_n: int = typer.Option(30, "--last-n", help="Max events (newest first)"),
+):
+    """List unified drift events across all kinds (C5·R6)."""
+    from examlops.platform_db import list_drift_events
+
+    init_db()
+    evs = list_drift_events(model=model, drift_kind=kind, last_n=last_n)
+    if _output.json_mode:
+        _output.print_json(evs)
+        return
+    if not evs:
+        _output.info("No drift events recorded yet.")
+        return
+    _output.print_table(
+        "Drift Events",
+        ["Time", "Model", "Kind", "Severity", "Score"],
+        [
+            [
+                e["ts"],
+                e["model"],
+                e["drift_kind"],
+                e["severity"],
+                f"{e['score']:.3f}" if e["score"] is not None else "—",
+            ]
+            for e in evs
+        ],
+    )

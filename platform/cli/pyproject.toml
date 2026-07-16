@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examlops"
-version = "0.33.0"
+version = "0.34.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 dependencies = [
@@ -43,3 +43,7 @@ exa = "examlops.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# D2 NIST AI RMF catalogue (and any other in-package data files) must ship in wheels.
+examlops = ["governance/*.yaml"]

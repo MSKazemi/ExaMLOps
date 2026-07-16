@@ -39,6 +39,8 @@ const Alerts = lazy(() => import('@/pages/Alerts').then((m) => ({ default: m.Ale
 const Flags = lazy(() => import('@/pages/Flags').then((m) => ({ default: m.Flags })))
 const NocWall = lazy(() => import('@/pages/NocWall').then((m) => ({ default: m.NocWall })))
 const Preferences = lazy(() => import('@/pages/Preferences').then((m) => ({ default: m.Preferences })))
+const Projects = lazy(() => import('@/pages/Projects').then((m) => ({ default: m.Projects })))
+const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ default: m.ProjectDetail })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -122,6 +124,12 @@ export default function App() {
                       )}
                       {isEnabled('facilityConsole') && (
                         <Route path="/facility" element={<FacilityConsole />} />
+                      )}
+                      {isEnabled('projectsConsole') && (
+                        <>
+                          <Route path="/projects" element={<Projects />} />
+                          <Route path="/projects/:name" element={<ProjectDetail />} />
+                        </>
                       )}
                       <Route path="/finops" element={<Finops />} />
                       <Route path="/status" element={<SelfObs />} />
