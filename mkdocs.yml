@@ -59,6 +59,48 @@ nav:
       - Management Agent: guides/agent.md
       - CI/CD — GitLab Pipeline: guides/cicd.md
       - JupyterHub Notebooks: guides/jupyter.md
+  - Tutorials:
+      - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
+      - Skipper Long-Term Memory: tutorials/skipper-memory.md
+      - Anomaly Detection E2E: tutorials/demoanomaly-e2e-demo.md
+  - Next-Gen 40:
+      - Data & reproducibility:
+          - Lineage & provenance: guides/lineage.md
+          - Feature store: guides/feature-store.md
+          - Asset-centric pipelines: guides/asset-pipelines.md
+          - Reproducibility bundles: guides/reproducibility-bundles.md
+      - LLMOps:
+          - Prompt management: guides/prompt-management.md
+          - Model gateway: guides/model-gateway.md
+          - RAG: guides/rag.md
+          - Vector store: guides/vector-store.md
+          - Embedding lifecycle: guides/embedding-lifecycle.md
+          - Fine-tuning: guides/fine-tuning.md
+          - Structured output & reasoning: guides/structured-output-reasoning.md
+      - Observability & evaluation:
+          - AgentOps: guides/agentops.md
+          - Evaluation & regression gates: guides/evaluation.md
+          - Advanced drift: guides/drift-advanced.md
+          - SLOs: guides/slos.md
+          - Champion-challenger: guides/shadow-champion-challenger.md
+          - Fairness: guides/fairness.md
+      - Governance & security:
+          - Secrets: guides/secrets.md
+          - Supply-chain security: guides/supply-chain-security.md
+          - Immutable audit trail: guides/audit-trail.md
+          - EU AI Act: guides/eu-ai-act-compliance.md
+          - NIST RMF: guides/governance-nist-rmf.md
+          - Policy-as-code: guides/policy-as-code.md
+          - Guardrails: guides/guardrails.md
+      - Serving & training:
+          - Kubernetes serving: guides/kubernetes-serving.md
+          - LLM serving engines: guides/llm-serving-engines.md
+          - GPU sharing: guides/gpu-sharing.md
+          - Inference gateway: guides/inference-gateway.md
+          - Autoscaling: guides/autoscaling.md
+          - Distributed training: guides/distributed-training.md
+          - Federated training: guides/federated-training.md
+          - Heterogeneous hardware: guides/heterogeneous-hardware.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Slurm Adapter — HPC: components/slurm-adapter.md
@@ -75,6 +117,7 @@ nav:
       - Operations: dashboard/operations.md
   - Reference:
       - exa CLI: reference/cli.md
+      - exa CLI (full command tree): reference/cli-generated.md
       - make Commands: reference/commands.md
       - API Reference: reference/api.md
       - Environment Variables: reference/env-vars.md

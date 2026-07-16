@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Next-Gen 40 dashboard surface + public docs
+
+- **feat(dashboard): Next-Gen 40 read API (`/api/nextgen/*`).** New `routers/nextgen.py`
+  surfaces the newest Next-Gen 40 platform.db tables to the dashboard: federated runs +
+  detail (E7), device pools / placement decisions / burst events (E8), autoscale config +
+  scale events (E5), distributed runs (E6), inference-gateway config (E4), feature views
+  (A3), and a `/nextgen/summary` roll-up. Viewer-gated and fail-open (empty result, never a
+  500, when a table/DB is absent) — same contract as the other platform-data routers. 9 tests.
+- **docs(nextgen-40): public tour tutorial + full guide navigation.** New `docs/tutorials/
+  nextgen-40-tour.md` — a hands-on, offline-runnable walkthrough with command examples
+  verified against the live CLI. All ~40 feature guides + the generated CLI reference are
+  wired into the mkdocs nav under new **Next-Gen 40** and **Tutorials** sections.
+- **docs(nextgen-40): regenerated CLI reference** (`docs/reference/cli-generated.md`) covering
+  every Next-Gen 40 command group (federated, hardware, feature, assets, reproduce, embedding,
+  distributed, policy, …) from the live Typer tree.
+
 ### Added — Projects & Workspaces roadmap P2–P5 (RHOAI-inspired, ADRs 0087–0090)
 
 Completes the Projects initiative: all four roadmap features shipped on top of the P1 unified

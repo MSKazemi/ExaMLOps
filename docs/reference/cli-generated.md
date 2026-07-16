@@ -10,6 +10,34 @@ ExaMLOps platform CLI — manage models, training, inference, and services.
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
 
+## `exa agentops`
+
+AgentOps — agent trace & tool-call analytics
+
+### `exa agentops anomalies`
+
+Detect reasoning loops, step blowups, and cost overruns (R4, GWT-3/4).
+
+- `--cost-budget` — USD budget for overrun check
+
+### `exa agentops replay`
+
+Reconstruct a session's tool-call timeline (R6, GWT-5).
+
+### `exa agentops sessions`
+
+List recent agent sessions with steps, cost, and status (R6 index).
+
+- `--tenant` — Filter to one tenant
+- `--status` — ok | anomaly | error
+- `--limit` — Max sessions (newest first)
+
+### `exa agentops tools`
+
+Per-tool success rate, call count, and average latency (R2).
+
+- `--tenant` — Filter to one tenant (D6)
+
 ## `exa approvals`
 
 Sysadmin approval gate
@@ -43,15 +71,70 @@ Ask the Skipper agent a question in natural language.
 
 - `--session, -s` — Session id to preserve conversational context
 
+## `exa assets`
+
+Asset-centric pipelines — freshness DAG + rebuild (A4)
+
+### `exa assets declare`
+
+Declare an asset and its upstream dependencies (R1).
+
+- `--kind` — dataset | feature | model
+- `--deps` — Comma-separated upstream asset names
+- `--description` — Human description
+
+### `exa assets graph`
+
+Print the asset DAG (coincides with the A2 lineage graph) (R6/GWT-4).
+
+### `exa assets list`
+
+List declared assets with their current version.
+
+### `exa assets materialize`
+
+Rebuild the asset + its stale ancestors only (R4/GWT-3).
+
+- `--force` — Rebuild even if fresh
+
+### `exa assets source-changed`
+
+Advance a source asset's version so downstream assets go stale (GWT-2).
+
+### `exa assets status`
+
+Show the freshness graph — fresh/stale + why (R5/GWT-2).
+
 ## `exa audit`
 
-Show platform audit log — who did what and when.
+Audit log — tamper-evident, hash-chained (D4)
 
 - `--last` — Time window (e.g. 7d, 30d)
 - `--model, -m` — Filter by target model
 - `--action, -a` — Filter by action type
 - `--source, -s` — Filter by source (cli/agent/bridge)
 - `--limit, -n` — Max events to show
+
+### `exa audit checkpoint`
+
+Sign the current chain head, producing a detached checkpoint signature (D4·R5).
+
+### `exa audit checkpoints`
+
+List signed audit checkpoints.
+
+- `--limit, -n` — Max checkpoints to show
+
+### `exa audit export`
+
+Archival export of the audit trail (D4·R4). Append-only — never deletes.
+
+- `--out` — Write the archival JSON export to this file
+- `--before` — Only events before this ISO timestamp
+
+### `exa audit verify`
+
+Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken.
 
 ## `exa autopilot`
 
@@ -76,6 +159,74 @@ Run one autopilot cycle: drift scan → policy → retrain → metrics → polic
 Show recent autopilot run history.
 
 - `--last` — Number of recent runs to show
+
+## `exa cards`
+
+Croissant dataset cards + structured model cards
+
+### `exa cards completeness`
+
+Score model-card completeness (0..1) — the D5/C3 promotion gate signal (R6).
+
+- `--tenant` — Tenant scope
+- `--require` — Exit 1 if completeness below this fraction (0..1)
+
+### `exa cards dataset`
+
+Emit + validate a Croissant JSON-LD dataset card (R1/R2).
+
+- `--revision` — Dataset revision (A1)
+- `--license` — Dataset license
+- `--out` — Write the Croissant JSON to this file
+
+### `exa cards model`
+
+Build a structured model card from live data — gaps as 'not provided' (R3/R4).
+
+- `--tenant` — Tenant scope (D6)
+- `--out` — Write the card Markdown to this file
+- `--save` — Persist a versioned card
+
+## `exa compliance`
+
+EU AI Act compliance — classify, Annex-IV, Art.12
+
+### `exa compliance art12`
+
+Check Art. 12 record-keeping coverage in the immutable audit trail (R7).
+
+### `exa compliance classify`
+
+Record a system's EU AI Act risk classification (R1).
+
+- `--risk-tier` — prohibited|high|limited|minimal
+- `--purpose` — Intended purpose
+- `--context` — Deployment context
+- `--tenant` — Tenant scope (D6)
+
+### `exa compliance declare`
+
+Advance the conformity state machine with transition validation (R8).
+
+- `--state` — draft|documented|assessed|declared
+- `--tenant` — Tenant scope
+
+### `exa compliance framework`
+
+Show the control→article→evidence mapping (shared with D2).
+
+### `exa compliance status`
+
+Show compliance classification + conformity state.
+
+- `--tenant` — Tenant scope
+
+### `exa compliance technical-file`
+
+Generate the Annex-IV technical file from live evidence, flagging gaps (R3/R4/R5).
+
+- `--out` — Write the Annex-IV Markdown to this file
+- `--tenant` — Tenant scope
 
 ## `exa config`
 
@@ -102,6 +253,44 @@ Print the current resolved config (env vars + TOML file).
 ### `exa config use`
 
 Switch the active context (environment).
+
+## `exa connection`
+
+Named Connections — reusable data sources (P2)
+
+### `exa connection create`
+
+Create a named connection.
+
+- `--kind, -k` — Connection kind: s3, uri, dataplane
+- `--project, -p` — Owning project (omit = global)
+- `--config, -c` — Non-secret config as JSON
+- `--secret-value` — Secret (stored in the secrets client, never in platform.db)
+
+### `exa connection delete`
+
+Delete a connection (the referenced secret is left intact).
+
+- `--project, -p` — Owning project
+- `--yes, -y` — Skip confirmation
+
+### `exa connection list`
+
+List connections (metadata only — never secret values).
+
+- `--project, -p` — Filter by project
+
+### `exa connection show`
+
+Show one connection (config + secret presence, never the secret value).
+
+- `--project, -p` — Owning project
+
+### `exa connection test`
+
+Read-only reachability probe (exit 1 on failure; never prints secrets).
+
+- `--project, -p` — Owning project
 
 ## `exa data`
 
@@ -175,6 +364,29 @@ Store current rolling stats as the drift baseline for a model.
 
 - `--dry-run` — Show the baseline that would be set without writing it
 
+### `exa drift concept`
+
+Concept-drift test on realized error as delayed labels arrive (C5·R1).
+
+- `--alias` — Restrict to one serving alias
+- `--window` — Recent window size (samples)
+
+### `exa drift estimate`
+
+Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4).
+
+- `--alias` — Restrict to one serving alias
+- `--baseline` — Baseline metric to compare against
+- `--window` — Recent predictions to estimate over
+
+### `exa drift events`
+
+List unified drift events across all kinds (C5·R6).
+
+- `--model` — Filter to one model
+- `--kind` — feature|prediction|input_embedding|concept|data_quality
+- `--last-n` — Max events (newest first)
+
 ### `exa drift input`
 
 #### `exa drift input baseline`
@@ -192,6 +404,13 @@ Clear all input embedding snapshots for a model (keeps baseline).
 #### `exa drift input status`
 
 Show input embedding distribution drift for all models (or one model).
+
+### `exa drift profile`
+
+Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).
+
+- `--last-n` — Recent predictions to profile
+- `--bad-payloads` — A5 bad-payload count to fold in
 
 ### `exa drift reset`
 
@@ -218,6 +437,43 @@ Show prediction drift status for all models (or one model).
 Check drift z-scores and fire POST /retrain for models above threshold.
 
 - `--dry-run` — Show what would be triggered without firing
+
+## `exa embedding`
+
+Embedding lifecycle — encoders + blue-green reindex (B6)
+
+### `exa embedding list`
+
+List registered encoders.
+
+### `exa embedding register`
+
+Register a versioned encoder → encoder_id (R1).
+
+- `--dim` — Embedding dimension
+- `--metric` — cosine | dot | l2
+- `--norm` — Normalization (l2/none)
+
+### `exa embedding reindex`
+
+Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5).
+
+- `--tenant` — Tenant scope
+- `--corpus-size` — Docs to re-embed
+- `--recall` — Measured recall of the new index
+- `--recall-floor` — Minimum recall to switch
+
+### `exa embedding set-encoder`
+
+Bootstrap a collection's active encoder (R2).
+
+- `--tenant` — Tenant scope
+
+### `exa embedding status`
+
+Show a collection's active/staging encoder + reindex history.
+
+- `--tenant` — Tenant scope
 
 ## `exa env`
 
@@ -292,6 +548,83 @@ Run a deterministic eval suite over items and persist scores (exit != 0 on error
 
 Explain what a command does, in plain language, with examples.
 
+## `exa fairness`
+
+Fairness — subgroup performance & disparity monitoring
+
+### `exa fairness config`
+
+Declare slicing attributes + disparity threshold for a model (R1).
+
+- `--attr` — Slicing attribute (repeatable)
+- `--threshold` — Max allowed disparity
+- `--min-samples` — Noise guard per slice
+- `--gate` — Gate promotion on disparity (C3)
+- `--tenant` — Tenant scope (D6)
+
+### `exa fairness report`
+
+Full fairness report across all declared slice attributes (R5).
+
+- `--tenant` — Tenant scope
+
+### `exa fairness slice`
+
+Show per-slice performance for one slicing attribute (R2, GWT-1).
+
+- `--tenant` — Tenant scope
+
+## `exa feature`
+
+Feature store — one train/serve definition, no skew (A3)
+
+### `exa feature apply`
+
+Register/patch a feature view — the single train+serve definition (R1).
+
+- `--entity` — Entity the view is keyed on
+- `--features` — Comma-separated feature names
+- `--source` — Offline source hint (parquet/table)
+- `--ttl` — Freshness TTL in seconds (0 = no staleness alert)
+- `--revision` — A1 dataset revision pin
+
+### `exa feature freshness`
+
+Show materialization age and staleness vs the view TTL (R6/GWT-4).
+
+### `exa feature get`
+
+Read an entity's feature vector — online (default) or point-in-time offline (--asof).
+
+- `--entity-id` — Entity id
+- `--asof` — Point-in-time (offline as-of) instead of the online value
+
+### `exa feature ingest`
+
+Record an offline feature observation (point-in-time source of truth).
+
+- `--entity-id` — Entity id
+- `--event-ts` — Event timestamp (YYYY-MM-DD HH:MM:SS)
+- `--values` — JSON object of feature values
+
+### `exa feature list`
+
+List registered feature views.
+
+### `exa feature materialize`
+
+Materialize latest offline values → online store (R6).
+
+- `--start` — Window start timestamp
+- `--end` — Window end timestamp
+
+### `exa feature skew`
+
+Assert online == offline as-of for an entity (skew must be zero) (R2/GWT-1).
+
+- `--entity-id` — Entity id
+- `--asof` — Event timestamp to compare as-of
+
 ## `exa features`
 
 Feature store — versioned training features
@@ -313,6 +646,51 @@ Pull a feature file from the store.
 Push a feature file into the versioned feature store.
 
 - `--name, -n` — Feature set name
+
+## `exa federated`
+
+Federated & privacy-preserving training — FedAvg/DP/secure-agg (E7)
+
+### `exa federated budget`
+
+Show the tracked differential-privacy (ε, δ) budget.
+
+### `exa federated init`
+
+Initialize a federated run: register sites + privacy config.
+
+- `--site` — Participating site (repeatable)
+- `--strategy` — fedavg | fedprox | robust
+- `--run-id` — Explicit run id (else derived)
+- `--dp` — Enable differential privacy accounting
+- `--epsilon-per-round` — DP ε spent per round
+- `--delta` — DP δ
+- `--secure-agg` — Hide per-site updates
+- `--unauthorized` — Site to register but NOT authorize (repeatable)
+
+### `exa federated round`
+
+Aggregate one round of site updates (rejects unauthorized/unsigned sites).
+
+- `--update` — site:w1,w2,…:num_samples[:loss] (repeatable)
+- `--unsigned` — Treat this site's update as unsigned (repeatable)
+
+### `exa federated status`
+
+Show run config, sites, and completed rounds.
+
+## `exa finetune`
+
+Run a fine-tune and register a signed, lineage-linked adapter (R1/R3/GWT-1).
+
+- `--method` — lora | qlora | full
+- `--dataset` — A1-pinned dataset revision
+- `--rank` — LoRA rank
+- `--target-modules` — Comma-separated modules
+- `--eval` — Recorded eval score
+- `--eval-floor` — C3 quality floor for promotion
+- `--cost` — Fine-tune GPU-hours
+- `--adapter-id` — Explicit adapter id
 
 ## `exa finops`
 
@@ -423,6 +801,43 @@ List virtual keys (hashes only).
 
 Revoke a virtual key by its stored hash.
 
+### `exa gateway reasoning`
+
+Reasoning ops — budget/accounting/trace (B8)
+
+#### `exa gateway reasoning account`
+
+Account reasoning vs output tokens/cost separately (R5).
+
+- `--reasoning` — Reasoning (thinking) tokens
+- `--output` — Output tokens
+- `--reasoning-rate` — $/reasoning token
+- `--output-rate` — $/output token
+- `--tenant` — Tenant scope
+
+#### `exa gateway reasoning budget`
+
+Show how a reasoning budget caps a request (R4).
+
+- `--max` — Reasoning budget (max thinking tokens)
+
+#### `exa gateway reasoning stats`
+
+Reasoning-vs-output token/cost split + structured-output outcomes.
+
+- `--model` — Filter by model
+- `--tenant` — Filter by tenant
+
+### `exa gateway schema`
+
+Structured output — schema-constrained (B8)
+
+#### `exa gateway schema test`
+
+Validate (and optionally repair) an object against a JSON Schema (R1/R8).
+
+- `--repair` — Attempt repair on invalid
+
 ## `exa genai`
 
 GenAI observability (OpenTelemetry semconv) + token cost
@@ -438,6 +853,29 @@ Estimate the USD cost of a GenAI call from its token usage (spec R7).
 - `--model, -m` — Model name (e.g. gpt-4o)
 - `--in` — Input (prompt) token count
 - `--out` — Output (completion) token count
+
+## `exa governance`
+
+NIST AI RMF control coverage & crosswalk
+
+### `exa governance catalogue`
+
+List the versioned NIST AI RMF control catalogue (R1).
+
+### `exa governance crosswalk`
+
+Show the control → EU AI Act + ISO/IEC 42001 crosswalk (R5).
+
+### `exa governance report`
+
+Evidence-coverage report: satisfied / partial / gap per control (R3/R4).
+
+- `--model` — One model (default: fleet-wide posture)
+- `--tenant` — Tenant scope (D6)
+
+### `exa governance validate`
+
+Validate the feature→control mapping (CI gate, R2). Exit 1 on any error.
 
 ## `exa guardrails`
 
@@ -465,6 +903,62 @@ Run a text through the guardrail and show the action + findings.
 - `--direction` — input | output
 - `--mode` — off | monitor | enforce
 - `--tenant` — Tenant policy scope (D6)
+
+## `exa hardware`
+
+Heterogeneous hardware & hybrid HPC↔cloud placement (E8)
+
+### `exa hardware add-pool`
+
+Register (or update) a device pool.
+
+- `--target` — hpc | cloud
+- `--accelerator` — nvidia|amd|intel-gaudi|tpu|cpu
+- `--capability` — Capability tag (repeatable)
+- `--count` — Devices available
+- `--region` — Region (for residency + carbon)
+- `--cost-per-hour` — Cost per device-hour
+- `--carbon-factor` — gCO2e per device-hour
+- `--supports-fractions` — Vendor GPU fractioning (MIG)
+
+### `exa hardware burst`
+
+Plan a governed HPC→cloud burst (blocked + audited when residency forbids egress).
+
+- `--accelerator` — Requested accelerator
+- `--engine` — Engine (E2)
+- `--residency` — open | eu-only | no-egress
+- `--allow-burst` — Opt in to cloud burst
+
+### `exa hardware decisions`
+
+Show recent placement decisions.
+
+- `--limit` — Rows to show
+
+### `exa hardware place`
+
+Place a workload on the best-available compatible device (honest fallback / clear reject).
+
+- `--accelerator` — Requested accelerator
+- `--engine` — Serving/training engine (E2)
+- `--target` — hpc | cloud (default: any)
+- `--capability` — Required capability (repeatable)
+- `--fraction` — GPU fraction (0<f≤1)
+
+### `exa hardware pools`
+
+List registered device pools.
+
+- `--target` — Filter by hpc|cloud
+- `--accelerator` — Filter by accelerator
+
+### `exa hardware portable`
+
+Check whether an engine can run on a given accelerator (portability gate).
+
+- `--engine` — Engine name
+- `--accelerator` — Target accelerator
 
 ## `exa hpc`
 
@@ -499,6 +993,36 @@ Auto-detect the scheduler on a host and suggest a configuration (read-only).
 - `--user, -u` — SSH user
 - `--key, -k` — SSH private-key path
 - `--port, -p` — SSH port
+
+### `exa hpc gpu-share`
+
+Fractional GPU allocation & bin-packing (E3)
+
+#### `exa hpc gpu-share accounting`
+
+Show recorded fractional GPU allocations.
+
+- `--tenant` — Filter to one tenant
+
+#### `exa hpc gpu-share pack`
+
+Bin-pack fractional asks onto whole GPUs (first-fit-decreasing).
+
+- `--ask` — label:fraction (repeatable)
+- `--gpus` — Number of whole GPUs available
+- `--mig-capable` — Cluster supports MIG
+- `--timeslice` — Cluster supports time-slicing
+
+#### `exa hpc gpu-share plan`
+
+Select the best GPU-sharing mechanism for a request (honest fallback).
+
+- `--fraction` — GPU fraction requested (0..1)
+- `--mig` — MIG profile (e.g. 2g.10gb)
+- `--mig-capable` — Cluster supports MIG
+- `--timeslice` — Cluster supports time-slicing
+- `--record` — Persist the allocation
+- `--tenant` — Tenant scope
 
 ### `exa hpc gpus`
 
@@ -779,6 +1303,42 @@ Register Prefect deployments for all models (or one model).
 - `--registry` — Path to model_registry.yaml
 - `--env, -e` — Registry env overlay
 
+### `exa pipeline distributed`
+
+Distributed training + checkpoint/resume (E6)
+
+#### `exa pipeline distributed checkpoint`
+
+Write an integrity-hashed sharded checkpoint (R3/R5).
+
+- `--step` — Training step
+- `--epoch` — Training epoch
+- `--shards` — Number of shards
+- `--state` — JSON optimizer/model state summary
+
+#### `exa pipeline distributed launch`
+
+Launch a distributed training run (R1/R2/R8).
+
+- `--nodes` — Number of nodes
+- `--gpus-per-node` — GPUs per node
+- `--strategy` — fsdp | zero | megatron
+- `--dataset-revision` — A1 revision pin
+- `--checkpoint-every` — Checkpoint interval
+- `--run-id` — Explicit run id
+
+#### `exa pipeline distributed list`
+
+List distributed training runs.
+
+#### `exa pipeline distributed resume`
+
+Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid.
+
+#### `exa pipeline distributed status`
+
+Show a distributed run + its checkpoints.
+
 ### `exa pipeline export-registry`
 
 Export auto-discovered model state to pipelines/model_registry.yaml.
@@ -855,6 +1415,7 @@ Run training pipeline(s) locally via Prefect.
 - `--registry` — Path to model_registry.yaml
 - `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
 - `--gpus, -g` — GPUs to request (for --cluster auto placement)
+- `--project, -p` — Scope the run to a Project (ADR 0088): tags the run and attributes its cost
 
 ### `exa pipeline validate`
 
@@ -877,6 +1438,40 @@ List installed exa CLI plugins and whether each loaded successfully.
 ## `exa policy`
 
 Policy-as-code — declarative governance for mutations
+
+### `exa policy bundle`
+
+Signed, versioned policy bundles (D5)
+
+#### `exa policy bundle list`
+
+List signed policy bundle versions.
+
+- `--tenant` — Filter by tenant
+
+#### `exa policy bundle sign`
+
+Version + sign the effective policy bundle for a tenant (R2).
+
+- `--tenant` — Tenant scope
+
+#### `exa policy bundle verify`
+
+Verify a stored policy bundle's hash + signature (R2). Exit 1 if invalid.
+
+- `--tenant` — Tenant scope
+- `--version` — Specific version (default latest)
+
+### `exa policy eval`
+
+Evaluate a structured governance decision via the PolicyEngine (D5, R1/R5/GWT-5).
+
+- `--action` — Action verb (promote/deploy/allocate/…)
+- `--subject` — Who is acting
+- `--resource` — What is acted on (e.g. JPCP/17)
+- `--tenant` — Tenant scope
+- `--set, -s` — Context key=value (repeatable)
+- `--dry-run` — Explain without auditing (R5)
 
 ### `exa policy list`
 
@@ -952,6 +1547,10 @@ Assign any resource (model/pipeline/serving/connection/dataset/storage) to a pro
 
 Assign a model to a project (alias for: exa project assign <p> <model> --kind model).
 
+### `exa project budget`
+
+Show budget/quota status and flag breaches (exit 1 if over budget).
+
 ### `exa project compose`
 
 Generate a Docker Compose fragment with resource limits for this project.
@@ -964,6 +1563,10 @@ Resource limits follow Docker Compose v3 ``deploy.resources`` semantics:
 - ``memory``: total RAM (e.g. 8589934592 bytes = 8 GB)
 
 - `--out, -o` — Write to file instead of stdout
+
+### `exa project cost`
+
+Show per-project cost attribution (GPU-hours · USD · carbon).
 
 ### `exa project create`
 
@@ -1094,6 +1697,35 @@ Answer a question from a knowledge base, citing retrieved chunks.
 - `-k, --k` — Number of chunks to retrieve
 - `--tenant` — Tenant namespace
 
+## `exa reproduce`
+
+Reproducibility bundles — signed manifest + verify (A8)
+
+### `exa reproduce build`
+
+Capture + sign a reproducibility bundle for a model version (R1/R2).
+
+- `--dataset` — Dataset name
+- `--revision` — A1 dataset revision
+- `--seed` — RNG seed to record
+- `--hyperparams` — JSON hyperparameters
+- `--metrics` — JSON recorded metrics
+- `--image-digest` — Container image digest
+
+### `exa reproduce list`
+
+List reproducibility bundles.
+
+### `exa reproduce run`
+
+Rebuild plan + metric-match within tolerance — never claims bit-exactness (R3/GWT-2).
+
+- `--observed` — JSON of re-observed metrics to match against recorded
+
+### `exa reproduce verify`
+
+Check referenced inputs still exist + hashes match (R5/GWT-4). Exit 1 if rotted.
+
 ## `exa retrain`
 
 Trigger a Prefect training run via the Control Plane.
@@ -1204,6 +1836,81 @@ Show A/B tests (most recent 20).
 
 Stop the running A/B test for a model.
 
+### `exa serve adapter`
+
+Multi-LoRA adapters (add/list/promote/route) (B7)
+
+#### `exa serve adapter add`
+
+Register an adapter (alias of `exa finetune`) (R6).
+
+- `--dataset` — A1 dataset revision
+- `--method` — lora | qlora | full
+- `--rank` — LoRA rank
+- `--eval` — Eval score
+- `--eval-floor` — C3 quality floor
+
+#### `exa serve adapter list`
+
+List registered adapters (R6).
+
+- `--base` — Filter by base model ref
+
+#### `exa serve adapter promote`
+
+Promote an adapter — blocked by the C3 eval-gate if below floor (R2/GWT-2).
+
+#### `exa serve adapter route`
+
+Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).
+
+- `--prompt` — Prompt text
+- `--hot-set` — Hot-set size (LRU)
+
+### `exa serve autoscale`
+
+Autoscaling & scale-to-zero (E5)
+
+#### `exa serve autoscale record`
+
+Record an executed scale event (audited D4).
+
+- `--reason` — Why the scale happened
+- `--cold-start` — Measured cold-start seconds
+- `--tenant` — Tenant scope
+
+#### `exa serve autoscale savings`
+
+Estimate FinOps savings from scale-to-zero (R7).
+
+- `--gpu-cost` — GPU cost per hour
+
+#### `exa serve autoscale set`
+
+Declare a per-model autoscale policy (R1).
+
+- `--min` — Minimum replicas (0 enables scale-to-zero floor)
+- `--max` — Maximum replicas
+- `--metric` — rps|queue_depth|gpu_util|p95
+- `--target` — Target value for the metric
+- `--scale-to-zero-after` — Idle seconds before scaling to zero (0 disables)
+- `--warm-pool` — Warm replicas to keep (avoid cold start)
+- `--gpu-fraction` — E3 GPU fraction per replica
+- `--tenant` — Tenant scope
+
+#### `exa serve autoscale simulate`
+
+Compute the scaling decision for a given state (pure, anti-thrash aware) (R2/R3).
+
+- `--replicas` — Current replica count
+- `--observed` — Observed metric value
+- `--idle` — Idle seconds (for scale-to-zero)
+- `--since-last` — Seconds since last scale
+
+#### `exa serve autoscale status`
+
+Show the autoscale policy + recent scale events + cold-start time.
+
 ### `exa serve backend`
 
 Show the active serving backend (ray-compose default | kserve-k8s).
@@ -1230,6 +1937,44 @@ Run synchronous batch inference from a JSON/JSONL input file.
 Benchmark Ray Serve using the dummy client and report latency stats.
 
 - `--requests, -n` — Number of benchmark requests
+
+### `exa serve challenger`
+
+Champion-challenger scoreboard & promotion
+
+#### `exa serve challenger disable`
+
+Disable the challenger for a model.
+
+#### `exa serve challenger enable`
+
+Enable a challenger and declare its promotion policy (R1/R5).
+
+- `--version` — Challenger MLflow version
+- `--mirror` — Percent of traffic to mirror (0-100)
+- `--min-delta` — Min error reduction to win
+- `--alpha` — Significance level
+- `--min-samples` — Min labelled samples to decide
+- `--auto-promote` — Promote automatically on win
+- `--tenant` — Tenant scope (D6)
+
+#### `exa serve challenger list`
+
+List configured challengers.
+
+- `--tenant` — Filter to one tenant
+
+#### `exa serve challenger promote`
+
+Propose promotion via C3 if the policy is met and no SLO regression (R5/R6).
+
+- `--tenant` — Tenant scope
+
+#### `exa serve challenger status`
+
+Show the champion-challenger scoreboard: delta, p-value, N, SLO (R4).
+
+- `--tenant` — Tenant scope
 
 ### `exa serve check`
 
@@ -1276,6 +2021,35 @@ Hot-reload Production models from MLflow into Ray Serve.
 
 - `--model, -m` — Reload one model (default: all)
 
+### `exa serve routing`
+
+KV/prefix-cache-aware inference routing (E4)
+
+#### `exa serve routing set`
+
+Configure a model's inference routing (R3 default round-robin; cache-aware opt-in).
+
+- `--mode` — round_robin | cache_aware
+- `--slo-latency-ms` — Avoid replicas over this
+- `--disaggregate` — Split prefill/decode pools
+- `--prefill-pool` — Prefill pool name
+- `--decode-pool` — Decode pool name
+- `--tenant` — Tenant scope
+
+#### `exa serve routing simulate`
+
+Simulate a shared-prefix request stream and report the cache-aware vs round-robin hit rate.
+
+- `--replicas` — Replica count
+- `--shared-prefix-requests` — Requests sharing one prefix
+- `--mode` — round_robin | cache_aware
+
+#### `exa serve routing stats`
+
+Show recorded prefix-cache hit rate + routing-decision breakdown.
+
+- `--tenant` — Filter by tenant
+
 ### `exa serve shadow`
 
 Shadow deployment traffic mirroring
@@ -1313,6 +2087,58 @@ Show traffic split configuration for all models.
 
 - `--watch, -w` — Live auto-refreshing view (Ctrl-C to exit)
 - `--interval` — Refresh interval in seconds for --watch
+
+## `exa slo`
+
+Model-quality SLOs — error budgets & burn-rate alerts
+
+### `exa slo apply`
+
+Apply all SLO specs from a YAML file (R1).
+
+### `exa slo burn`
+
+Show which SLOs are burning budget (and would page) (R3).
+
+- `--tenant` — Tenant scope
+
+### `exa slo generate`
+
+Generate promtool-valid Prometheus recording + burn-rate rules (R2/R3).
+
+- `--tenant` — Tenant scope
+- `--out` — Write rules YAML to this file
+
+### `exa slo list`
+
+List declared SLO specs.
+
+- `--model` — Filter to one model
+- `--tenant` — Filter to one tenant
+
+### `exa slo record`
+
+Record one SLI measurement interval (R4) — feeds budget + burn rate.
+
+- `--tenant` — Tenant scope
+
+### `exa slo set`
+
+Declare or version-bump one SLO spec (R1).
+
+- `--target` — Objective ratio 0..1
+- `--window` — Rolling window (e.g. 30d)
+- `--source` — c1|c2|c5|availability|prometheus
+- `--query` — PromQL SLI expression (good ratio)
+- `--tenant` — Tenant scope (D6)
+- `--gate` — Gate promotion when budget exhausted (C3)
+
+### `exa slo status`
+
+Show SLI, remaining error budget, and burn rate per SLO (R5).
+
+- `--name` — One SLO (default: all for the model)
+- `--tenant` — Tenant scope
 
 ## `exa stack`
 
@@ -1408,3 +2234,41 @@ Upsert a single vector (rejected if dim mismatches the collection).
 - `--vector` — JSON array of floats
 - `--meta` — JSON metadata object
 - `--tenant` — Tenant namespace
+
+## `exa workbench`
+
+Project Workbenches — on-demand dev environments (P5)
+
+### `exa workbench create`
+
+Define a workbench in a project (status STOPPED until started).
+
+- `--project, -p` — Owning project (required)
+- `--image` — Container image
+- `--cpu` — CPU cores
+- `--memory-gb` — RAM in GB
+
+### `exa workbench delete`
+
+Delete a workbench definition.
+
+- `--project, -p` — Owning project
+- `--yes, -y` — Skip confirmation
+
+### `exa workbench list`
+
+List workbenches.
+
+- `--project, -p` — Filter by project
+
+### `exa workbench start`
+
+Start a workbench — marks it RUNNING and prints its launch spec (image, volume, injected env).
+
+- `--project, -p` — Owning project
+
+### `exa workbench stop`
+
+Stop a workbench (marks STOPPED).
+
+- `--project, -p` — Owning project
