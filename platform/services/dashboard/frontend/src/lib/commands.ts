@@ -20,6 +20,7 @@ export const COMMANDS: Command[] = [
   { id: 'nav-overview', label: 'Go to Overview', to: '/', group: 'Navigate' },
   { id: 'nav-services', label: 'Go to Services', to: '/services', group: 'Navigate' },
   { id: 'nav-models', label: 'Go to Models', to: '/models', group: 'Navigate' },
+  { id: 'nav-projects', label: 'Go to Projects', to: '/projects', group: 'Navigate' },
   { id: 'nav-mlops', label: 'Go to MLOps Console', to: '/mlops', group: 'Navigate' },
   { id: 'nav-facility', label: 'Go to Facility Console', to: '/facility', group: 'Navigate' },
   { id: 'nav-datasets', label: 'Go to Datasets', to: '/datasets', group: 'Navigate' },
@@ -37,6 +38,14 @@ export const COMMANDS: Command[] = [
   {
     id: 'act-drift', label: 'Copy: drift status command', group: 'Actions',
     cliEquivalent: 'exa drift status',
+  },
+  {
+    id: 'act-projects-list', label: 'Copy: list projects command', group: 'Actions',
+    cliEquivalent: 'exa project list',
+  },
+  {
+    id: 'act-project-create', label: 'Copy: create project command', scopes: ['admin'], group: 'Actions',
+    cliEquivalent: 'exa project create <name>',
   },
 ]
 

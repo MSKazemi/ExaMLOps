@@ -53,6 +53,30 @@ Show platform audit log — who did what and when.
 - `--source, -s` — Filter by source (cli/agent/bridge)
 - `--limit, -n` — Max events to show
 
+## `exa autopilot`
+
+Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)
+
+### `exa autopilot disable`
+
+Disable the autopilot kill-switch (persistent, stored in platform.db).
+
+### `exa autopilot enable`
+
+Enable the autopilot kill-switch (persistent, stored in platform.db).
+
+### `exa autopilot run`
+
+Run one autopilot cycle: drift scan → policy → retrain → metrics → policy → promote.
+
+- `--dry-run` — Preview without acting
+
+### `exa autopilot status`
+
+Show recent autopilot run history.
+
+- `--last` — Number of recent runs to show
+
 ## `exa config`
 
 CLI configuration
@@ -78,6 +102,40 @@ Print the current resolved config (env vars + TOML file).
 ### `exa config use`
 
 Switch the active context (environment).
+
+## `exa data`
+
+Dataset versioning & reproducibility (revisions, diff, checkout)
+
+### `exa data checkout`
+
+Materialise / verify the exact pinned data, or exit non-zero (spec R11).
+
+- `--path, -p` — Local file/dir to verify against a content revision
+
+### `exa data diff`
+
+Report row-count / schema / size deltas between two revisions (spec R10).
+
+### `exa data list`
+
+List recorded revisions newest-first, with linked runs (spec R9).
+
+- `--backend, -b` — Filter by backend
+
+### `exa data snapshot`
+
+Resolve the current dataset state to a revision and record it (spec R8).
+
+- `--backend, -b` — Storage backend (zenodo|minio|dataplane)
+- `--path, -p` — Local file/dir of already-materialised parquet to hash
+
+### `exa data validate`
+
+Validate a dataset against its data contract; exit non-zero on error violations (spec R11).
+
+- `--path, -p` — Local parquet file/dir to validate
+- `--revision` — A1 revision id for provenance
 
 ## `exa docs`
 
@@ -195,6 +253,41 @@ Show prediction/label pairs joined on request_hash (delayed-label join).
 
 - `--alias, -a` — Filter by MLflow alias
 
+### `exa eval gate`
+
+Eval regression gate (block/warn promotion on regression)
+
+#### `exa eval gate run`
+
+Run the gate for a candidate version (exit 1 in block mode on failure) — CI-safe (R10).
+
+- `--higher-is-better` — Metric direction
+
+#### `exa eval gate set`
+
+Configure the regression gate for a model.
+
+- `--suite` — C2 suite that produces the scores
+- `--metric` — metric[:min=X][:max_drop=Y] (repeatable)
+- `--baseline` — Baseline alias
+- `--mode` — block | warn
+
+#### `exa eval gate show`
+
+Show the configured gate for a model.
+
+### `exa eval run`
+
+Run a deterministic eval suite over items and persist scores (exit != 0 on error only).
+
+- `--model` — Model the suite evaluates
+- `--items` — JSONL of {output, reference?, prompt?}
+- `--version` — Candidate model version
+- `--alias` — Alias being evaluated
+- `--sample` — Sample N items by request_hash
+- `--dataset-revision` — A1 revision
+- `--run-id` — Idempotency key (default: derived)
+
 ## `exa explain`
 
 Explain what a command does, in plain language, with examples.
@@ -286,6 +379,92 @@ HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'
 #### `exa finops cost providers`
 
 List the available cost providers (rate cards) — built-ins + entry-point plugins.
+
+## `exa gateway`
+
+Model gateway — virtual keys, routing, and cost
+
+### `exa gateway cache`
+
+Semantic cache (B3) — hit-rate + measured savings
+
+#### `exa gateway cache stats`
+
+Show semantic-cache hit-rate and token/cost savings (B3).
+
+- `--tenant` — Filter to one tenant
+
+### `exa gateway chat`
+
+Send one chat message through the gateway (uses the default echo route).
+
+- `--message` — User message
+- `--key` — Virtual key to authenticate with
+- `--cache` — Route through the B3 semantic cache
+
+### `exa gateway key`
+
+Virtual key administration
+
+#### `exa gateway key issue`
+
+Issue a virtual key (printed once — only its hash is stored).
+
+- `--tenant` — Tenant the key belongs to
+- `--project` — Project the key belongs to
+- `--model` — Allow-list model (repeatable; omit = all models)
+- `--budget` — Budget in USD (omit = unlimited)
+
+#### `exa gateway key list`
+
+List virtual keys (hashes only).
+
+#### `exa gateway key revoke`
+
+Revoke a virtual key by its stored hash.
+
+## `exa genai`
+
+GenAI observability (OpenTelemetry semconv) + token cost
+
+### `exa genai check`
+
+Show GenAI telemetry status: tracing on/off, content capture, semconv version.
+
+### `exa genai cost`
+
+Estimate the USD cost of a GenAI call from its token usage (spec R7).
+
+- `--model, -m` — Model name (e.g. gpt-4o)
+- `--in` — Input (prompt) token count
+- `--out` — Output (completion) token count
+
+## `exa guardrails`
+
+Guardrails — injection/PII/toxicity defense
+
+### `exa guardrails check-tool`
+
+Check an agent tool call against the per-tenant allow-list (R7).
+
+- `--allow` — Allowed tool (repeatable)
+- `--mode` — off | monitor | enforce
+- `--tenant` — Tenant scope
+
+### `exa guardrails stats`
+
+Show guardrail action counts (allow/redact/block).
+
+- `--tenant` — Filter to one tenant
+
+### `exa guardrails test`
+
+Run a text through the guardrail and show the action + findings.
+
+- `--text` — Text to run through the guardrail
+- `--direction` — input | output
+- `--mode` — off | monitor | enforce
+- `--tenant` — Tenant policy scope (D6)
 
 ## `exa hpc`
 
@@ -416,6 +595,15 @@ List the tools ExaMLOps exposes to agents over MCP.
 
 MLflow model registry
 
+### `exa models bom`
+
+Generate a CycloneDX AI-BOM for a model version.
+
+- `--dataset` — Training dataset name
+- `--dataset-revision` — Pinned dataset revision (A1)
+- `--framework` — ML framework
+- `--output` — Write BOM JSON to this file
+
 ### `exa models card`
 
 Generate model cards
@@ -444,17 +632,41 @@ Show HPC cost summary across all models.
 
 Compare metrics and params between two model versions.
 
+### `exa models engine`
+
+Inspect and validate per-model engine config
+
+#### `exa models engine list`
+
+List available inference engines.
+
+#### `exa models engine validate`
+
+Validate a model YAML's engine block (the CI integrity guard uses the same check).
+
 ### `exa models info`
 
 Show detail for one model: all versions, aliases, metrics.
 
 ### `exa models lineage`
 
-Show the pipeline → dataset → model version lineage chain.
+Show the pipeline → dataset → model version lineage chain (or the A2 graph).
+
+- `--graph` — Show the upstream+downstream provenance graph (A2)
+- `--impact` — List model versions derived from a dataset revision (A2)
 
 ### `exa models list`
 
 List all registered models with their production alias and latest version.
+
+### `exa models quantize`
+
+Quantize a model → register a new signed + BOM'd version (GWT-3).
+
+- `--method` — awq | gptq | fp8 | int8
+- `--path` — Local artifact dir to sign for the new version (D3)
+- `--dataset` — Training dataset (for BOM)
+- `--dataset-revision` — Pinned dataset revision (for BOM)
 
 ### `exa models rollback`
 
@@ -472,6 +684,19 @@ Roll back a model alias (default: Production) to a specified or selected version
 - `--alias, -a` — Alias to reassign (default: Production)
 - `--reason, -r` — Optional reason for the rollback
 - `--dry-run, -n` — Preview without applying the change
+
+### `exa models sign`
+
+Sign a model artifact bundle (HMAC fallback or Sigstore keyless).
+
+- `--path` — Local artifact file or directory to sign
+
+### `exa models verify`
+
+Verify a model's signature against current artifact bytes (verify-before-load gate).
+
+- `--path` — Local artifact file or directory to verify
+- `--mode` — enforce (exit 1 on failure) or warn (record only)
 
 ## `exa modelzoo`
 
@@ -597,6 +822,7 @@ Specify metric threshold with --if-<metric>-<op> <value>, e.g. --if-rmse-lt 5.0
 - `--dry-run` — Show outcome without promoting
 - `--save` — Save rule to DB for future reference
 - `--list` — List saved promotion rules
+- `--force` — Override a failing C3 eval gate (audited, D4)
 
 ### `exa pipeline promote-delete`
 
@@ -624,6 +850,7 @@ Run training pipeline(s) locally via Prefect.
 - `--dataset, -d` — Run for a single dataset class only
 - `--dummy` — Use dummy data (dev-safe)
 - `--backend, -b` — Dataset storage backend
+- `--dataset-revision` — Pin training to a recorded dataset revision (see `exa data list`)
 - `--env` — YAML registry env overlay
 - `--registry` — Path to model_registry.yaml
 - `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
@@ -692,6 +919,145 @@ Plan/execute production deploys, or inspect deploy history/status.
 
 Verify production service health without changing state.
 
+## `exa project`
+
+ExaMLOps Projects (CPU/memory/storage/GPU quotas)
+
+### `exa project access`
+
+List RBAC relations (by subject and/or object).
+
+- `--subject` — Show all grants for a subject
+- `--object` — Show all grants on an object
+
+### `exa project add-member`
+
+Add a person to a project (owner ⊇ editor ⊇ viewer; RHOAI Admin/Edit/View).
+
+- `--role, -r` — owner | editor | viewer
+
+### `exa project archive`
+
+Archive a project (marks ARCHIVED; data is preserved).
+
+- `--yes, -y` — Skip confirmation
+
+### `exa project assign`
+
+Assign any resource (model/pipeline/serving/connection/dataset/storage) to a project.
+
+- `--kind, -k` — Resource kind: model, pipeline, serving_endpoint, connection, dataset, storage
+
+### `exa project assign-model`
+
+Assign a model to a project (alias for: exa project assign <p> <model> --kind model).
+
+### `exa project compose`
+
+Generate a Docker Compose fragment with resource limits for this project.
+
+The output enforces the project's CPU/memory quota across all its containers.
+Merge it with your main docker-compose.yml or pass it to docker compose -f.
+
+Resource limits follow Docker Compose v3 ``deploy.resources`` semantics:
+- ``cpus``: fractional CPU cores (e.g. 2.0 = 2 cores)
+- ``memory``: total RAM (e.g. 8589934592 bytes = 8 GB)
+
+- `--out, -o` — Write to file instead of stdout
+
+### `exa project create`
+
+Create a new project with resource quotas (CPU/memory/storage/GPU).
+
+- `--description, -d` — Project description
+- `--cpu-limit` — Total CPU cores for this project
+- `--memory-gb` — Total RAM in GB for this project
+- `--storage-gb` — Total storage in GB for this project
+- `--gpu-limit` — Total GPU count for this project (0 = no GPUs)
+
+### `exa project current`
+
+Show the active project (EXAMLOPS_PROJECT env → config.toml → none).
+
+### `exa project delete`
+
+Delete a project and remove all its model assignments (irreversible).
+
+- `--yes, -y` — Skip confirmation
+
+### `exa project grant`
+
+Grant a subject a relation on an object (RBAC, audited, spec D6).
+
+### `exa project list`
+
+List all projects with their resource quotas.
+
+- `--status, -s` — Filter by status (ACTIVE|ARCHIVED)
+
+### `exa project members`
+
+List the people who have a role on a project.
+
+### `exa project remove-member`
+
+Remove a person's role(s) from a project.
+
+- `--role, -r` — Specific role, or all if omitted
+
+### `exa project revoke`
+
+Revoke a subject's relation on an object (audited).
+
+### `exa project set-quota`
+
+Update resource quotas for an existing project.
+
+- `--cpu-limit` — New CPU limit (cores)
+- `--memory-gb` — New RAM limit (GB)
+- `--storage-gb` — New storage limit (GB)
+- `--gpu-limit` — New GPU limit (count)
+- `--description` — New description
+
+### `exa project show`
+
+Show the full project anatomy: quota, resources by kind, members, budget, consumption.
+
+### `exa project use`
+
+Set the active project (persisted in config.toml; EXAMLOPS_PROJECT env overrides).
+
+## `exa prompt`
+
+Prompt registry — versioned templates + labels (dev/prod)
+
+### `exa prompt create`
+
+Create a new immutable prompt version (spec R1).
+
+- `--template, -t` — Prompt template with {vars}
+- `--label, -l` — Also point this label at the new version
+
+### `exa prompt diff`
+
+Show a line diff between two prompt versions (spec R3).
+
+### `exa prompt label`
+
+Move a label to a version — audited (spec R8/R9).
+
+### `exa prompt list`
+
+List prompt names, or the versions + labels of one prompt.
+
+### `exa prompt rollback`
+
+Roll a label back to a prior version without deleting history (spec R10).
+
+### `exa prompt show`
+
+Show a prompt version's template (by version or name@label).
+
 ## `exa providers`
 
 Pluggable calculation providers (all domains)
@@ -701,6 +1067,32 @@ Pluggable calculation providers (all domains)
 List calculation providers across every domain (built-ins + entry-point plugins + config).
 
 - `--domain, -d` — Only this domain (default: all known domains)
+
+## `exa rag`
+
+RAG — ingest knowledge bases and query with citations
+
+### `exa rag ingest`
+
+Chunk, embed, and index documents into a knowledge base.
+
+- `--docs` — JSONL of {id, text}
+- `--tenant` — Tenant namespace (D6)
+- `--source-revision` — A1 dataset/source revision to version against
+
+### `exa rag list`
+
+List knowledge bases and their versions.
+
+- `--tenant` — Filter to one tenant
+
+### `exa rag query`
+
+Answer a question from a knowledge base, citing retrieved chunks.
+
+- `--question` — The question to answer
+- `-k, --k` — Number of chunks to retrieve
+- `--tenant` — Tenant namespace
 
 ## `exa retrain`
 
@@ -738,6 +1130,39 @@ Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.
 ### `exa seanerbus status`
 
 Probe the SeanerBUS bridge health and runtime stats endpoints.
+
+## `exa secrets`
+
+Secrets management, rotation, and leak scanning
+
+### `exa secrets get`
+
+Resolve a secret. Redacts by default; --reveal prints plaintext.
+
+- `--tenant` — Tenant scope
+- `--reveal` — Print the plaintext value (dangerous)
+
+### `exa secrets list`
+
+List secret metadata (paths/versions) — never values.
+
+- `--tenant` — Filter by tenant
+
+### `exa secrets rotate`
+
+Rotate a secret to a fresh random value (audited, spec R4).
+
+- `--tenant` — Tenant scope
+
+### `exa secrets scan`
+
+Scan a file/dir for likely secrets; exit non-zero on any finding (CI gate, R10).
+
+### `exa secrets set`
+
+Store an encrypted secret in the local store (audited).
+
+- `--tenant` — Tenant scope
 
 ## `exa serve`
 
@@ -778,6 +1203,10 @@ Show A/B tests (most recent 20).
 #### `exa serve ab stop`
 
 Stop the running A/B test for a model.
+
+### `exa serve backend`
+
+Show the active serving backend (ray-compose default | kserve-k8s).
 
 ### `exa serve batch`
 
@@ -825,6 +1254,15 @@ Show recent explain requests for a model.
 ### `exa serve infer-check`
 
 Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.
+
+### `exa serve manifest`
+
+Generate a schema-valid KServe InferenceService manifest from the model registry (E1).
+
+- `--alias` — MLflow alias to serve
+- `--canary` — Canary traffic percent (0..100)
+- `--out` — Write manifest YAML to this file
+- `--registry-dir` — Dir of per-model YAML (default: RAY_MODELS_DIR)
 
 ### `exa serve models`
 
@@ -928,3 +1366,45 @@ Platform snapshot: service health, pending approvals, production models.
 
 - `--watch, -w` — Live auto-refreshing view (Ctrl-C to exit)
 - `--interval` — Refresh interval in seconds for --watch
+
+## `exa vector`
+
+Vector store — collections, upsert, search, reindex
+
+### `exa vector create`
+
+Create a vector collection with a fixed dim + distance metric.
+
+- `--dim` — Fixed dimensionality
+- `--metric` — cosine | l2 | dot
+- `--tenant` — Tenant namespace (D6)
+
+### `exa vector reindex`
+
+Rebuild the collection index (blue-green; recall preserved) — invoked by B6.
+
+- `--tenant` — Tenant namespace
+
+### `exa vector search`
+
+Search top-k nearest by the collection metric, with optional metadata filter.
+
+- `--vector` — JSON array of floats (query)
+- `-k, --k` — Top-k results
+- `--filter` — JSON metadata equality filter
+- `--tenant` — Tenant namespace
+
+### `exa vector stats`
+
+Show collection dim, metric, and item count.
+
+- `--tenant` — Tenant namespace
+
+### `exa vector upsert`
+
+Upsert a single vector (rejected if dim mismatches the collection).
+
+- `--id` — Item id
+- `--vector` — JSON array of floats
+- `--meta` — JSON metadata object
+- `--tenant` — Tenant namespace

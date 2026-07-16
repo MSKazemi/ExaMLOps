@@ -13,11 +13,14 @@ from typer.core import TyperGroup
 from examlops.cli import _output, _plugins
 from examlops.cli.commands import (
     ab_cmd,
+    agentops_cmd,
     approvals,
     ask_cmd,
     autopilot_cmd,
     batch_cmd,
     cards_cmd,
+    challenger_cmd,
+    compliance_cmd,
     config_cmd,
     data_cmd,
     docs_cmd,
@@ -28,11 +31,13 @@ from examlops.cli.commands import (
     eval_cmd,
     explain_cmd,
     explain_command,
+    fairness_cmd,
     features_cmd,
     feedback_cmd,
     finops_cmd,
     gateway_cmd,
     genai_cmd,
+    governance_cmd,
     guardrails_cmd,
     hpc_cmd,
     hpo_cmd,
@@ -57,6 +62,7 @@ from examlops.cli.commands import (
     secrets_cmd,
     serve,
     shadow_cmd,
+    slo_cmd,
     stack,
     status,
     supplychain_cmd,
@@ -209,6 +215,9 @@ app.add_typer(
     project_cmd.app, name="project", help="ExaMLOps Projects (CPU/memory/storage/GPU quotas)"
 )
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
+serve.app.add_typer(
+    challenger_cmd.app, name="challenger", help="Champion-challenger scoreboard & promotion"
+)
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
 models.app.add_typer(cards_cmd.app, name="card", help="Generate model cards")
@@ -252,6 +261,19 @@ app.add_typer(
     guardrails_cmd.app, name="guardrails", help="Guardrails — injection/PII/toxicity defense"
 )
 app.add_typer(
+    agentops_cmd.app, name="agentops", help="AgentOps — agent trace & tool-call analytics"
+)
+app.add_typer(slo_cmd.app, name="slo", help="Model-quality SLOs — error budgets & burn-rate alerts")
+app.add_typer(
+    fairness_cmd.app, name="fairness", help="Fairness — subgroup performance & disparity monitoring"
+)
+app.add_typer(
+    compliance_cmd.app, name="compliance", help="EU AI Act compliance — classify, Annex-IV, Art.12"
+)
+app.add_typer(
+    governance_cmd.app, name="governance", help="NIST AI RMF control coverage & crosswalk"
+)
+app.add_typer(
     prompt_cmd.app, name="prompt", help="Prompt registry — versioned templates + labels (dev/prod)"
 )
 app.add_typer(
@@ -273,7 +295,7 @@ app.command("retrain", epilog=retrain._EXAMPLES)(retrain.retrain)
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
-app.command("audit", epilog=audit_cmd._EXAMPLES)(audit_cmd.audit)
+app.add_typer(audit_cmd.app, name="audit", help="Audit log — tamper-evident, hash-chained (D4)")
 app.command("doctor", epilog=doctor._EXAMPLES)(doctor.doctor)
 app.command("plugins", epilog=plugins_cmd._EXAMPLES)(plugins_cmd.plugins)
 app.command("docs", epilog=docs_cmd._EXAMPLES)(docs_cmd.docs)

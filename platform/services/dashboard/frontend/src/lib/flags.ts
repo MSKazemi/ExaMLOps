@@ -5,7 +5,7 @@
 // via `localStorage` (`flag:<name>`) or a build-time env (`VITE_FLAG_<NAME>`). The full staged
 // rollout / targeting engine is F25 — this is the read side every new page uses.
 
-export type FlagName = 'mlopsConsole' | 'facilityConsole' | 'commandPalette'
+export type FlagName = 'mlopsConsole' | 'facilityConsole' | 'commandPalette' | 'projectsConsole'
 
 interface FlagDef {
   default: boolean
@@ -16,6 +16,7 @@ export const FLAGS: Record<FlagName, FlagDef> = {
   mlopsConsole: { default: true, description: 'F9 MLOps console' },
   facilityConsole: { default: true, description: 'F6 exascale facility console' },
   commandPalette: { default: true, description: 'F2 ⌘K command palette' },
+  projectsConsole: { default: true, description: 'Projects console' },
 }
 
 /** Resolve a flag: localStorage override → env override → registry default. Pure given its inputs. */
