@@ -116,6 +116,26 @@ def set_active_context(name: str) -> None:
     _write_raw(existing)
 
 
+def active_project(raw: dict | None = None) -> str | None:
+    """The active Project (ADR 0086): ``EXAMLOPS_PROJECT`` env wins, else the TOML pointer."""
+    env = os.getenv("EXAMLOPS_PROJECT")
+    if env:
+        return env
+    if raw is None:
+        raw = _read_raw()
+    return raw.get("active_project")
+
+
+def set_active_project(name: str | None) -> None:
+    """Persist ``active_project`` in config.toml (``None`` clears it)."""
+    existing = _read_raw()
+    if name:
+        existing["active_project"] = name
+    else:
+        existing.pop("active_project", None)
+    _write_raw(existing)
+
+
 def write_config(updates: dict, context: str | None = None) -> None:
     """Merge updates into the config TOML file.
 
