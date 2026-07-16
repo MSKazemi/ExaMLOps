@@ -5,6 +5,59 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-07-16
+
+### Added — Next-Gen 40 implementation wave (MVP slice: A1→A2 · C1→C2→C3 · B1→B2 · E2→E1, + governance/security roots)
+
+Twelve Next-Gen 40 features moved from design → implementation, each additive, test-backed
+(GWT specs), CI-gated (ruff), and guarded by graceful degradation (every optional external
+dependency falls back to a local/pure-python path that works with no service). All new state
+lives in additive `platform_db` tables.
+
+- **C1 — GenAI observability (ADR 0006).** `examlops.telemetry.genai` — OpenTelemetry GenAI
+  semconv spans (`gen_ai.*` + `examlops.cost.usd`), token/cost recording, content-capture gated by
+  `EXAMLOPS_GENAI_CAPTURE_CONTENT` with a D8 redactor seam. No-op when `OTEL_SDK_DISABLED`.
+  `exa genai check|cost`. Guide `docs/guides/genai-observability.md`.
+- **A5 — Data contracts & quality (ADR 0005).** `pipelines/contracts` — pure-pandas
+  `DataContract`/`QualityResult` (pandera-optional), check builders, and `validate_request()` for a
+  4xx inference gate. `exa data validate`. Guide `docs/guides/data-quality.md`.
+- **B1 — Prompt management (ADR 0009).** `examlops.prompts` — immutable versioned prompt templates
+  + moving labels (dev/staging/prod), `render()` with variable validation (treats vars as data),
+  30s-TTL cache + last-known-good fail-safe. `exa prompt create|list|show|diff|label|rollback`.
+  Guide `docs/guides/prompt-management.md`.
+- **D7 — Secrets management (ADR 0011).** `examlops.secrets` — OpenBao → Fernet-local → env
+  resolution (fail-fast), tenant path-scoping, `scan_text` secret detection. `exa secrets
+  set|get|rotate|list|scan` + a `sanity:secret-scan` CI job. Guide `docs/guides/secrets.md`.
+- **D6 — Fine-grained RBAC & multi-tenancy (ADR 0014).** `examlops.authz` — relationship model
+  (`owner⊇editor⊇viewer`), default-deny, hierarchical project objects, `EXAMLOPS_MULTITENANCY`
+  flag (off ⇒ single-tenant compat). `exa project grant|revoke|access`. Guide
+  `docs/guides/rbac-multi-tenancy.md`.
+- **D3 — ML supply-chain security (ADR 0013).** `examlops.supplychain` — model artifact signing
+  (HMAC fallback / Sigstore seam), CycloneDX AI-BOM, enforce/warn verify-before-load gate.
+  `exa models sign|verify|bom`. Guide `docs/guides/supply-chain-security.md`.
+- **E2 — Optimized inference engines (ADR 0016).** `examlops.engines` — `InferenceEngine` protocol
+  (vLLM default / SGLang, lazy GPU import) + dep-free `EchoEngine`; per-model `engine:` block +
+  validation (CI guard); `exa models quantize` → new signed + BOM'd version (D3); speculative-decode
+  telemetry to C1. `exa models engine list|validate`. Guide `docs/guides/llm-serving-engines.md`.
+- **A2 — OpenLineage & provenance graph (ADR 0004).** `examlops.lineage` — fail-open `emit_lineage`
+  (Marquez POST + `platform_db` dual-write), OpenLineage-schema events with `examlops.` facets.
+  `exa models lineage --graph|--impact`. Guide `docs/guides/lineage.md`.
+- **C2 — Continuous eval + LLM-as-judge (ADR 0007).** `examlops.evaluation` — deterministic
+  evaluators + temperature-0 `LLMJudge` (records judge model+prompt), `Suite` runner, request-hash
+  sampling, judge calibration; idempotent `eval_suite_results`. `exa eval run`. Guide
+  `docs/guides/evaluation.md`.
+- **C3 — Eval regression gate (ADR 0008).** `examlops.evaluation.gate` — `max_drop` regression +
+  `min` floor, block/warn, higher/lower-is-better; `exa eval gate set|show|run`; `exa pipeline
+  promote --force` override with block-gate refuse + D4 audit.
+- **B2 — Model gateway & routing (ADR 0010).** `examlops.gateway` — OpenAI-compat `GatewayClient`
+  with weighted routing + failover, typed errors, per-tenant/project virtual keys (allow-list +
+  budget, hash-only storage, audited), per-call C1 span + FinOps cost, B3 cache hook, last-resort
+  degrade. `exa gateway key issue|list|revoke` + `chat`. Guide `docs/guides/model-gateway.md`.
+- **E1 — Kubernetes-native serving (ADR 0015).** `examlops.serving_backends` — `ServingBackend` seam
+  (`RayServeCompose` default / `KServeK8s` via `EXAMLOPS_SERVING_BACKEND`), `registry_to_kserve`
+  generates schema-valid InferenceService/LLMInferenceService from the model registry, canary
+  rollout, D3 verify-before-load. `exa serve manifest|backend`. Guide `docs/guides/kubernetes-serving.md`.
+
 ## [0.31.0] — 2026-07-15
 
 ### Added

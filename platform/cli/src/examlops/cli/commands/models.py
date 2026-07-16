@@ -172,16 +172,66 @@ _EXAMPLES_LINEAGE = (
     "Examples:\n\n"
     "  exa models lineage jpcp\n\n"
     "  exa models lineage jpcp 18\n\n"
+    "  exa models lineage jpcp --graph\n\n"
+    "  exa models lineage --impact abc123\n\n"
     "  exa --json models lineage jpcp"
 )
 
 
 @app.command(epilog=_EXAMPLES_LINEAGE)
 def lineage(
-    model: str = typer.Argument(..., help="Registered model name (e.g. jpcp)"),
+    model: str | None = typer.Argument(None, help="Registered model name (e.g. jpcp)"),
     version: str | None = typer.Argument(None, help="Version number (default: Production alias)"),
+    graph: bool = typer.Option(
+        False, "--graph", help="Show the upstream+downstream provenance graph (A2)"
+    ),
+    impact: str | None = typer.Option(
+        None, "--impact", help="List model versions derived from a dataset revision (A2)"
+    ),
 ):
-    """Show the pipeline → dataset → model version lineage chain."""
+    """Show the pipeline → dataset → model version lineage chain (or the A2 graph)."""
+    # A2 — impact analysis: which models came from a dataset revision.
+    if impact is not None:
+        from examlops.platform_db import lineage_impact
+
+        rows = lineage_impact(impact)
+        if _output.json_mode:
+            _output.print_json({"dataset_revision": impact, "derived": rows})
+            return
+        if not rows:
+            _output.ok(f"No models recorded as derived from revision {impact}.")
+            return
+        _output.print_table(
+            f"Impact of dataset revision {impact}",
+            ["Model", "Version", "Run ID"],
+            [[r["model"], r["model_version"] or "—", (r["run_id"] or "—")[:12]] for r in rows],
+        )
+        return
+
+    if model is None:
+        _output.error("Provide a model name, or use --impact <dataset_revision>.")
+        return
+
+    # A2 — provenance graph from platform_db (upstream datasets/runs, downstream deployments).
+    if graph:
+        from examlops.platform_db import lineage_graph
+
+        g = lineage_graph(model)
+        if _output.json_mode:
+            _output.print_json(g)
+            return
+        from examlops.cli._output import console
+
+        console.print(f"\n[bold cyan]Provenance graph — {model}[/bold cyan]")
+        console.print(f"  runs: {len(g['runs'])}")
+        for n in g["upstream"]:
+            console.print(f"  [green]▲ upstream[/green]   {n['node_type']}: {n['node_name']}")
+        for n in g["downstream"]:
+            console.print(f"  [magenta]▼ downstream[/magenta] {n['node_type']}: {n['node_name']}")
+        if not g["runs"]:
+            console.print("  [dim](no lineage events recorded yet)[/dim]")
+        return
+
     cfg = load_config()
 
     if version is None:

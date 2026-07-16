@@ -350,6 +350,9 @@ def promote(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show outcome without promoting"),
     save: bool = typer.Option(False, "--save", help="Save rule to DB for future reference"),
     list_rules: bool = typer.Option(False, "--list", help="List saved promotion rules"),
+    force: bool = typer.Option(
+        False, "--force", help="Override a failing C3 eval gate (audited, D4)"
+    ),
 ):
     """Promote a model alias when a metric threshold passes (rule-based gate).
 
@@ -477,6 +480,37 @@ def promote(
     if not passes:
         _output.ok(f"Not promoted: {model} v{version}: {status_str}  (threshold not met)")
         return
+
+    # C3 — eval regression gate: refuse to move the alias when a block-mode gate fails,
+    # unless --force (which is audited). No configured gate → this is a no-op.
+    from examlops.evaluation.gate import run_eval_gate
+
+    higher_better = operator in ("gt", "gte")
+    gate_result = run_eval_gate(model, str(version), higher_is_better=higher_better)
+    if gate_result is not None and not gate_result.passed:
+        failing = [m.name for m in gate_result.metrics if m.failed]
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_gate",
+                model,
+                {"version": version, "failing_metrics": failing},
+            )
+            _output.error(
+                f"Eval gate FAILED for {model} v{version}: {', '.join(failing)}. "
+                "Use --force to override (audited).",
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "eval_gate_override",
+            model,
+            {"version": version, "to": to_alias, "failing_metrics": failing, "forced": True},
+        )
+        _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
 
     if not _output.confirm(
         f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
