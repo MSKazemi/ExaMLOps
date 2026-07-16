@@ -30,14 +30,18 @@ import yaml
 
 from examlops.cli import _output
 from examlops.platform_db import (
+    add_project_member,
     archive_project,
-    assign_model_to_project,
+    assign_resource_to_project,
     create_project,
     delete_project,
     get_project,
+    get_project_full,
     init_db,
+    list_project_members,
     list_project_models,
     list_projects,
+    remove_project_member,
     update_project_quota,
     write_audit_event,
 )
@@ -167,34 +171,63 @@ def project_list(
 def show(
     name: str = typer.Argument(..., help="Project name"),
 ) -> None:
-    """Show project details, resource quotas, and assigned models."""
+    """Show the full project anatomy: quota, resources by kind, members, budget, consumption."""
     init_db()
-    project = get_project(name)
-    if not project:
+    full = get_project_full(name)
+    if not full:
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
-    models = list_project_models(name)
     if _output.json_mode:
-        _output.print_json({**project, "models": models})
+        _output.print_json(full)
         return
+
+    resources: dict = full["resources"]
+    members: list = full["members"]
+    consumption: dict = full["consumption"]
+    budget = full.get("budget")
     _output.print_table(
         f"Project: {name}",
         ["Field", "Value"],
         [
-            ["Status", project["status"]],
-            ["Description", project["description"] or ""],
-            ["CPU limit", f"{project['cpu_limit']:.1f} cores"],
-            ["Memory limit", f"{project['memory_limit_gb']:.1f} GB"],
-            ["Storage limit", f"{project['storage_gb']:.0f} GB"],
-            ["GPU limit", str(project["gpu_limit"])],
-            ["Docker network", project["network_name"] or f"examlops-{name}"],
-            ["Created at", project["created_at"]],
-            ["Created by", project["created_by"] or ""],
-            ["Models assigned", str(len(models))],
+            ["Status", full["status"]],
+            ["Description", full["description"] or ""],
+            ["CPU limit", f"{full['cpu_limit']:.1f} cores"],
+            ["Memory limit", f"{full['memory_limit_gb']:.1f} GB"],
+            ["Storage limit", f"{full['storage_gb']:.0f} GB"],
+            ["GPU limit", str(full["gpu_limit"])],
+            ["Docker network", full["network_name"] or f"examlops-{name}"],
+            ["Created at", full["created_at"]],
+            ["Created by", full["created_by"] or ""],
+            ["Members", str(len(members))],
+            [
+                "Consumption",
+                f"{consumption['gpu_hours']:.1f} GPU-h · ${consumption['cost_usd']:.2f}",
+            ],
+            [
+                "Budget",
+                (
+                    f"{budget.get('gpu_hours', 0)} GPU-h · ${budget.get('cost_usd', 0)}"
+                    if budget
+                    else "(none)"
+                ),
+            ],
         ],
     )
-    if models:
-        _output.print_table("Assigned models", ["Model"], [[m] for m in models])
+    if resources:
+        _output.print_table(
+            "Resources",
+            ["Kind", "Refs"],
+            [[kind, ", ".join(refs)] for kind, refs in sorted(resources.items())],
+        )
+    if members:
+        _output.print_table(
+            "Members",
+            ["Subject", "Role", "Granted by", "When"],
+            [
+                [m["subject"], m["role"], m.get("granted_by") or "-", (m.get("when") or "")[:19]]
+                for m in members
+            ],
+        )
 
 
 @app.command("set-quota")
@@ -242,14 +275,146 @@ def assign_model(
     project: str = typer.Argument(..., help="Project name"),
     model: str = typer.Argument(..., help="Model name to assign (e.g. JPCP)"),
 ) -> None:
-    """Assign a model to a project."""
+    """Assign a model to a project (alias for: exa project assign <p> <model> --kind model)."""
+    _assign(project, "model", model)
+
+
+_KINDS = ["model", "pipeline", "serving_endpoint", "connection", "dataset", "storage"]
+_EX_ASSIGN = (
+    "Examples:\n\n"
+    "  exa project assign research JPCP --kind model\n\n"
+    "  exa project assign research jpcp-train --kind pipeline"
+)
+
+
+def _assign(project: str, kind: str, ref: str) -> None:
     init_db()
-    ok = assign_model_to_project(project, model)
+    ok = assign_resource_to_project(project, kind, ref, added_by=_actor())
     if not ok:
         _output.error(f"Project '{project}' not found")
         raise typer.Exit(1)
-    write_audit_event("cli", _actor(), "project_model_assigned", model, {"project": project})
-    _output.ok(f"Model {model} assigned to project '{project}'")
+    write_audit_event(
+        "cli", _actor(), "project_resource_assigned", ref, {"project": project, "kind": kind}
+    )
+    _output.ok(f"{kind} '{ref}' assigned to project '{project}'")
+
+
+@app.command("assign", epilog=_EX_ASSIGN)
+def assign(
+    project: str = typer.Argument(..., help="Project name"),
+    ref: str = typer.Argument(..., help="Resource identifier (e.g. JPCP, jpcp-train)"),
+    kind: str = typer.Option("model", "--kind", "-k", help=f"Resource kind: {', '.join(_KINDS)}"),
+) -> None:
+    """Assign any resource (model/pipeline/serving/connection/dataset/storage) to a project."""
+    if kind not in _KINDS:
+        _output.error(f"--kind must be one of: {', '.join(_KINDS)}")
+        raise typer.Exit(1)
+    _assign(project, kind, ref)
+
+
+# --- People membership + permissions (ADR 0086, via D6 authz) -----------------
+
+_EX_ADD_MEMBER = (
+    "Examples:\n\n"
+    "  exa project add-member research alice --role editor\n\n"
+    "  exa project add-member research bob --role viewer"
+)
+
+
+@app.command("members")
+def members(project: str = typer.Argument(..., help="Project name")) -> None:
+    """List the people who have a role on a project."""
+    init_db()
+    if not get_project(project):
+        _output.error(f"Project '{project}' not found")
+        raise typer.Exit(1)
+    rows = list_project_members(project)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info(f"No members on '{project}'. Add one: exa project add-member {project} <user>")
+        return
+    _output.print_table(
+        f"Members of {project}",
+        ["Subject", "Role", "Granted by", "When"],
+        [
+            [r["subject"], r["role"], r.get("granted_by") or "-", (r.get("when") or "")[:19]]
+            for r in rows
+        ],
+    )
+
+
+@app.command("add-member", epilog=_EX_ADD_MEMBER)
+def add_member(
+    project: str = typer.Argument(..., help="Project name"),
+    subject: str = typer.Argument(..., help="User/subject id"),
+    role: str = typer.Option("viewer", "--role", "-r", help="owner | editor | viewer"),
+) -> None:
+    """Add a person to a project (owner ⊇ editor ⊇ viewer; RHOAI Admin/Edit/View)."""
+    init_db()
+    if role not in {"owner", "editor", "viewer"}:
+        _output.error("--role must be one of: owner, editor, viewer")
+        raise typer.Exit(1)
+    if not get_project(project):
+        _output.error(f"Project '{project}' not found")
+        raise typer.Exit(1)
+    add_project_member(project, subject, role, actor=_actor())
+    write_audit_event(
+        "cli", _actor(), "project_member_added", subject, {"project": project, "role": role}
+    )
+    _output.ok(f"Added [bold]{subject}[/bold] as '{role}' on project '{project}'")
+
+
+@app.command("remove-member")
+def remove_member(
+    project: str = typer.Argument(..., help="Project name"),
+    subject: str = typer.Argument(..., help="User/subject id"),
+    role: str | None = typer.Option(None, "--role", "-r", help="Specific role, or all if omitted"),
+) -> None:
+    """Remove a person's role(s) from a project."""
+    init_db()
+    n = remove_project_member(project, subject, role, actor=_actor())
+    write_audit_event(
+        "cli", _actor(), "project_member_removed", subject, {"project": project, "role": role}
+    )
+    if n:
+        _output.ok(f"Removed {subject} from project '{project}'")
+    else:
+        _output.info("No such membership.")
+
+
+# --- Active-project context (ADR 0086) ----------------------------------------
+
+
+@app.command("use")
+def use(
+    name: str = typer.Argument(..., help="Project to make active"),
+) -> None:
+    """Set the active project (persisted in config.toml; EXAMLOPS_PROJECT env overrides)."""
+    from examlops.cli._config import set_active_project
+
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    set_active_project(name)
+    _output.ok(f"Active project set to '{name}'")
+
+
+@app.command("current")
+def current() -> None:
+    """Show the active project (EXAMLOPS_PROJECT env → config.toml → none)."""
+    from examlops.cli._config import active_project
+
+    proj = active_project()
+    if _output.json_mode:
+        _output.print_json({"active_project": proj})
+        return
+    if proj:
+        _output.info(f"Active project: [bold]{proj}[/bold]")
+    else:
+        _output.info("No active project. Set one: exa project use <name>")
 
 
 @app.command(epilog=_EXAMPLES_COMPOSE)

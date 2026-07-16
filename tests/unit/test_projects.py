@@ -14,13 +14,23 @@ from typer.testing import CliRunner
 
 from examlops.cli.main import app
 from examlops.platform_db import (
+    add_project_member,
     archive_project,
     assign_model_to_project,
+    assign_resource_to_project,
     create_project,
     delete_project,
+    get_db,
     get_project,
+    get_project_consumption,
+    get_project_full,
+    init_db,
+    list_project_members,
     list_project_models,
     list_projects,
+    list_relations,
+    record_model_cost,
+    remove_project_member,
     update_project_quota,
 )
 
@@ -310,3 +320,123 @@ class TestProjectCompose:
     def test_compose_missing_project_fails(self):
         result = runner.invoke(app, ["project", "compose", "ghost"])
         assert result.exit_code != 0
+
+
+# ── Unified Project Workspace (ADR 0086, spec P1) ─────────────────────────────
+
+
+class TestUnifiedProjectWorkspace:
+    def test_gwt1_generic_membership_dual_writes_model(self):
+        create_project("demo")
+        assert assign_resource_to_project("demo", "model", "JPCP")
+        with get_db() as c:
+            assert c.execute(
+                "SELECT 1 FROM project_models WHERE project='demo' AND model='JPCP'"
+            ).fetchone()
+            assert c.execute(
+                "SELECT 1 FROM project_resources "
+                "WHERE project='demo' AND kind='model' AND ref='JPCP'"
+            ).fetchone()
+
+    def test_generic_membership_non_model_kind(self):
+        create_project("demo")
+        assert assign_resource_to_project("demo", "pipeline", "jpcp-train")
+        from examlops.platform_db import list_project_resources
+
+        assert list_project_resources("demo")["pipeline"] == ["jpcp-train"]
+
+    def test_unknown_kind_rejected(self):
+        create_project("demo")
+        with pytest.raises(ValueError):
+            assign_resource_to_project("demo", "bogus", "x")
+
+    def test_assign_to_missing_project_returns_false(self):
+        assert assign_resource_to_project("nope", "model", "X") is False
+
+    def test_gwt2_members_via_authz_and_audit(self):
+        create_project("demo")
+        add_project_member("demo", "alice", "editor", actor="admin")
+        members = list_project_members("demo")
+        assert [(m["subject"], m["role"]) for m in members] == [("alice", "editor")]
+        assert list_relations(obj="project:demo")
+        with get_db() as c:
+            assert c.execute(
+                "SELECT 1 FROM audit_events WHERE action='authz_grant' AND target='project:demo'"
+            ).fetchone()
+
+    def test_member_role_validation(self):
+        create_project("demo")
+        with pytest.raises(ValueError):
+            add_project_member("demo", "alice", "superuser")
+
+    def test_remove_member(self):
+        create_project("demo")
+        add_project_member("demo", "bob", "viewer", actor="admin")
+        assert remove_project_member("demo", "bob") >= 1
+        assert list_project_members("demo") == []
+
+    def test_gwt3_anatomy(self):
+        create_project("demo")
+        assign_resource_to_project("demo", "model", "JPCP")
+        add_project_member("demo", "alice", "owner", actor="admin")
+        full = get_project_full("demo")
+        assert full["resources"]["model"] == ["JPCP"]
+        assert full["members"][0]["subject"] == "alice"
+        assert full["consumption"] == {"gpu_hours": 0.0, "cost_usd": 0.0}
+
+    def test_anatomy_unknown_project_is_none(self):
+        assert get_project_full("ghost") is None
+
+    def test_gwt4_model_costs_project_column_idempotent(self):
+        init_db()
+        with get_db() as c:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(model_costs)").fetchall()}
+        assert "project" in cols
+        init_db()  # re-run migration must not raise
+        init_db()
+
+    def test_cost_auto_attributed_to_project(self):
+        create_project("demo")
+        assign_resource_to_project("demo", "model", "JPCP")
+        record_model_cost("JPCP", 1, None, None, 2.5, 10.0)
+        with get_db() as c:
+            row = c.execute("SELECT project FROM model_costs WHERE model_name='JPCP'").fetchone()
+        assert row["project"] == "demo"
+
+    def test_gwt5_consumption_union_counts_namespace_only_model(self):
+        create_project("demo")
+        with get_db() as c:
+            c.execute("INSERT INTO namespace_models (namespace, model) VALUES ('demo', 'LEGACY')")
+        record_model_cost("LEGACY", 1, None, None, 3.0, 12.0, project=None)
+        consumption = get_project_consumption("demo")
+        assert consumption["gpu_hours"] == pytest.approx(3.0)
+        assert consumption["cost_usd"] == pytest.approx(12.0)
+
+    def test_gwt6_active_project_env_overrides(self, tmp_path, monkeypatch):
+        from examlops.cli import _config
+
+        monkeypatch.setattr(_config, "CONFIG_PATH", tmp_path / "config.toml")
+        _config.set_active_project("demo")
+        assert _config.active_project() == "demo"
+        monkeypatch.setenv("EXAMLOPS_PROJECT", "other")
+        assert _config.active_project() == "other"
+
+    def test_cli_assign_and_members_flow(self):
+        runner.invoke(app, ["project", "create", "flow"])
+        assert (
+            runner.invoke(app, ["project", "assign", "flow", "JPCP", "--kind", "model"]).exit_code
+            == 0
+        )
+        assert (
+            runner.invoke(
+                app, ["project", "add-member", "flow", "alice", "--role", "editor"]
+            ).exit_code
+            == 0
+        )
+        res = runner.invoke(app, ["--json", "project", "show", "flow"])
+        assert res.exit_code == 0
+        import json
+
+        data = json.loads(res.output)
+        assert data["resources"]["model"] == ["JPCP"]
+        assert data["members"][0]["subject"] == "alice"
