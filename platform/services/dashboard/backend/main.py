@@ -33,6 +33,7 @@ from routers import (
     models,
     modelzoo,
     namespace,
+    nextgen,
     pipelines,
     platform_audit,
     platform_data,
@@ -135,6 +136,7 @@ app.include_router(hpo.router, prefix="/api")
 app.include_router(cards.router, prefix="/api")
 app.include_router(features.router, prefix="/api")
 app.include_router(namespace.router, prefix="/api")
+app.include_router(nextgen.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
