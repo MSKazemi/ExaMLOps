@@ -22,6 +22,7 @@ export const COMMANDS: Command[] = [
   { id: 'nav-models', label: 'Go to Models', to: '/models', group: 'Navigate' },
   { id: 'nav-projects', label: 'Go to Projects', to: '/projects', group: 'Navigate' },
   { id: 'nav-mlops', label: 'Go to MLOps Console', to: '/mlops', group: 'Navigate' },
+  { id: 'nav-nextgen', label: 'Go to Next-Gen 40 Console', to: '/nextgen', group: 'Navigate' },
   { id: 'nav-facility', label: 'Go to Facility Console', to: '/facility', group: 'Navigate' },
   { id: 'nav-datasets', label: 'Go to Datasets', to: '/datasets', group: 'Navigate' },
   { id: 'nav-pipelines', label: 'Go to Pipelines', to: '/pipelines', group: 'Navigate' },
