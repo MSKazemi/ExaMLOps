@@ -50,6 +50,9 @@ nav:
   - Guides:
       - Quick Start: guides/quickstart.md
       - Architecture: guides/architecture.md
+      - Project Workspace Architecture: architecture/project-workspace.md
+      - Projects & Workspaces: guides/projects-workspaces.md
+      - Project Anatomy (storage · pipelines · view): guides/project-anatomy.md
       - All Interfaces: guides/interfaces.md
       - Add a New Model: guides/add-a-new-model.md
       - Control Plane (Retraining API): guides/control-plane.md

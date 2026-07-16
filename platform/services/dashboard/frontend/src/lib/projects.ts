@@ -41,6 +41,40 @@ export interface ProjectConsumption {
   cost_usd: number
 }
 
+// ── Project Anatomy (P6/P7/P8) ────────────────────────────────────────────────
+
+export interface ProjectStorage {
+  bucket: string
+  prefix: string
+  quotaGb: number | null
+  usedBytes: number
+  connectionRef: string | null
+}
+
+export interface ProjectConnectionView {
+  name: string
+  kind: string
+  hasSecret: boolean
+}
+
+export interface PrefectPipeline {
+  deployments: string[]
+  schedule: string | null
+  lastRunAt: string | null
+  status: string
+}
+
+export interface RayServePipeline {
+  models: string[]
+  traffic: Record<string, Record<string, number>>
+  status: string
+}
+
+export interface ProjectPipelines {
+  prefect: PrefectPipeline | null
+  rayserve: RayServePipeline | null
+}
+
 export interface ProjectDetail {
   name: string
   description: string
@@ -52,6 +86,29 @@ export interface ProjectDetail {
   consumption: ProjectConsumption
   createdAt: string
   createdBy: string
+  // P8 anatomy (optional — older backends omit them)
+  storage?: ProjectStorage | null
+  connections?: ProjectConnectionView[]
+  pipelines?: ProjectPipelines
+}
+
+/** Storage usage as a percentage of quota (0 when no quota). Pure. */
+export function storageUsagePct(s: ProjectStorage): number {
+  const quotaBytes = (s.quotaGb ?? 0) * 1e9
+  if (quotaBytes <= 0) return 0
+  return Math.min(100, Math.round((s.usedBytes / quotaBytes) * 100))
+}
+
+/** Human GB label for a byte count. Pure. */
+export function bytesToGb(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(2)} GB`
+}
+
+/** Colour-blind-safe token for a pipeline surface status. Pure. */
+export function pipelineToken(status: string): 'ok' | 'warn' | 'unknown' {
+  if (status === 'healthy') return 'ok'
+  if (status === 'degraded') return 'warn'
+  return 'unknown'
 }
 
 // ── request bodies (admin-only mutations) ────────────────────────────────────

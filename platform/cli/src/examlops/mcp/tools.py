@@ -379,6 +379,93 @@ def hpc_approve_cluster(name: str) -> dict[str, Any]:
         return _err(str(exc))
 
 
+# ── Projects & Workspaces tools (ADR 0086–0090) ───────────────────────────────
+
+
+def project_list() -> dict[str, Any]:
+    """List ExaMLOps Projects (workspaces) with their status and resource quota.
+
+    A Project groups models/pipelines/serving/connections + members (owner/editor/viewer).
+    Reads the ``projects`` table.
+    """
+    try:
+        from examlops.platform_db import init_db, list_projects
+
+        init_db()
+        return {"ok": True, "projects": list_projects()}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def project_detail(name: str) -> dict[str, Any]:
+    """Full anatomy of one Project: quota, resources by kind, members, budget, consumption."""
+    try:
+        from examlops.platform_db import get_project_full, init_db
+
+        init_db()
+        full = get_project_full(name)
+        if full is None:
+            return _err(f"project not found: {name}")
+        return {"ok": True, "project": full}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def project_cost(name: str) -> dict[str, Any]:
+    """Per-project cost attribution (GPU-hours, USD, carbon) and budget/quota breach status."""
+    try:
+        from examlops.platform_db import get_project, init_db
+        from examlops.project_finops import budget_status, cost_summary
+
+        init_db()
+        if get_project(name) is None:
+            return _err(f"project not found: {name}")
+        return {"ok": True, "cost": cost_summary(name), "budget": budget_status(name)}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def project_assign_model(project: str, model: str) -> dict[str, Any]:
+    """Assign a model to a Project (mutating, audited). Only registered when writes are enabled."""
+    gate = _agent_write_gate("project_assign_model", {"project": project, "model": model})
+    if gate is not None:
+        return gate
+    try:
+        from examlops.platform_db import assign_resource_to_project, init_db, write_audit_event
+
+        init_db()
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        if not assign_resource_to_project(project, "model", model, added_by=actor):
+            return _err(f"project not found: {project}")
+        write_audit_event("mcp", actor, "project_model_assigned", model, {"project": project})
+        return {"ok": True, "project": project, "model": model}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
+def project_add_member(project: str, subject: str, role: str = "viewer") -> dict[str, Any]:
+    """Add a person to a Project with an owner/editor/viewer role (mutating, audited)."""
+    gate = _agent_write_gate("project_add_member", {"project": project, "subject": subject})
+    if gate is not None:
+        return gate
+    if role not in {"owner", "editor", "viewer"}:
+        return _err("role must be one of: owner, editor, viewer")
+    try:
+        from examlops.platform_db import add_project_member, get_project, init_db, write_audit_event
+
+        init_db()
+        if get_project(project) is None:
+            return _err(f"project not found: {project}")
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        add_project_member(project, subject, role, actor=actor)
+        write_audit_event(
+            "mcp", actor, "project_member_added", subject, {"project": project, "role": role}
+        )
+        return {"ok": True, "project": project, "subject": subject, "role": role}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Metadata describing one agent-callable tool."""
@@ -413,6 +500,11 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(hpc_place, tags=("read", "hpc")),
     ToolSpec(hpc_jobs, tags=("read", "hpc")),
     ToolSpec(hpc_approve_cluster, mutating=True, tags=("write", "hpc", "governance")),
+    ToolSpec(project_list, tags=("read", "projects")),
+    ToolSpec(project_detail, tags=("read", "projects")),
+    ToolSpec(project_cost, tags=("read", "projects", "finops")),
+    ToolSpec(project_assign_model, mutating=True, tags=("write", "projects")),
+    ToolSpec(project_add_member, mutating=True, tags=("write", "projects", "governance")),
 )
 
 
