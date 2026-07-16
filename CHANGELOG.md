@@ -5,6 +5,94 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-07-16
+
+### Added — Next-Gen 40 wave 6 (LLMOps: fine-tuning)
+
+- **B7 — fine-tuning / PEFT / multi-LoRA serving (ADR 0044).** `examlops.finetuning` — a
+  PEFT/LoRA (and full-FT) workflow producing **versioned, signed, eval-gated,
+  lineage-linked adapters** served multi-LoRA on a shared base. `finetune(base, method,
+  dataset_rev)` (`lora`/`qlora`/`full`) registers a first-class adapter recording base ref,
+  rank, training dataset revision, and eval score — signed with the D3 HMAC key (degrades
+  to unsigned+marked), A2 lineage-linked, cost-recorded. `promote_adapter` enforces a **C3
+  eval-gate** (below-floor adapters cannot be promoted; R2). `MultiLoRARouter` loads a base
+  **once** and serves many adapters selected per-request by id, with an **LRU hot set**
+  bounding memory (R5) and **refusal** of an adapter whose recorded base ref ≠ the serving
+  base (R4). CLI `exa finetune <base>` + `exa serve adapter add|list|promote|route`. New
+  `lora_adapters` table. Pure-Python (no HF PEFT/TRL/GPU/engine needed to register, gate,
+  or route). Guide `docs/guides/fine-tuning.md`. 11 tests.
+
+### Added — Next-Gen 40 wave 5 (feature store / train-serve consistency)
+
+- **A8 — signed reproducibility bundles (ADR 0038).** `examlops.reproducibility` — a signed
+  **bundle** manifest captures every input to a model version (code commit, A1 dataset
+  revision, A3 feature-view versions, resolved env = uv.lock sha256 + image digest,
+  hyperparameters, scheduler resources + hardware, RNG seeds, A2 lineage). `build_bundle`
+  hashes the canonical manifest and signs it with the D3 HMAC key (degrades to **unsigned +
+  marked** when no key — honesty applies to signing too), versioned + audited (D4).
+  `reproduce` documents the rebuild plan and metric-matches re-observed metrics within a
+  **documented relative tolerance**, never claiming bit-exactness (GPU/kernel
+  non-determinism is called out; R4/GWT-3). `verify_bundle` checks referenced inputs still
+  exist and hashes match — flagging a rotted bundle (purged dataset, moved commit,
+  changed lockfile; R5/GWT-4). `technical_evidence` shapes it for D1 docs / D2 evidence.
+  CLI `exa reproduce build|run|verify|list` (`verify` exits 1 on rot — CI gate). New
+  `repro_bundles` table. Guide `docs/guides/reproducibility-bundles.md`. 11 tests.
+- **A4 — declarative asset-centric pipelines (ADR 0036).** `examlops.assets` — an
+  asset-centric layer over the existing Prefect orchestration. Datasets/features/models are
+  declared as **assets** via an `@asset(deps=[...])` decorator (or `declare_asset`); the
+  platform builds the asset DAG (coincident with the A2 lineage graph), tracks each asset's
+  materialized version against the **upstream versions it was built from**, and reports
+  staleness transitively (R3). `materialize(name)` rebuilds **only** the target + its stale
+  ancestors, dependencies-first (R4 — selective/incremental). Engine behind an
+  `AssetOrchestrator` seam (thin-over-Prefect default / Dagster); `exa pipeline run` is
+  untouched (R2). Each materialization emits OpenLineage (A2), is policy-governed (D5 —
+  a deny blocks the run), and audited (D4). CLI `exa assets declare|list|status|materialize|
+  source-changed|graph`. New `assets` + `asset_materializations` tables. Pure-Python (no
+  Prefect/Dagster needed to declare, compute freshness, or run in-process). Guide
+  `docs/guides/asset-pipelines.md`. 11 tests.
+- **A3 — feature store & train/serve consistency (ADR 0017).** `examlops.feature_store` —
+  one feature-view definition serves both training (offline, point-in-time) and inference
+  (online, low-latency), eliminating train/serve skew. Reference target is Feast (MinIO
+  offline + Redis online); implemented with **identical semantics in pure Python** over
+  `platform.db` so it works and is fully testable with no Feast/Redis. Guarantees:
+  single definition (R1, values projected to the view's declared features); **zero skew**
+  (R2 — the online value is exactly the latest offline value as-of the entity's event
+  time); **point-in-time** historical retrieval with no future leakage (R4/R5); A1 dataset
+  revision pin (R4); materialization + freshness/staleness monitoring vs TTL (R6). CLI
+  `exa feature apply|list|ingest|materialize|get|skew|freshness`. New `feature_views` /
+  `feature_records` (offline log) / `online_features` (materialized snapshot) /
+  `feature_view_materializations` tables. Guide `docs/guides/feature-store.md`. 10 tests.
+
+### Added — Next-Gen 40 wave 4 (governance evidence + GPU sharing)
+
+- **E3 — GPU sharing & fractional allocation (ADR 0030).** `examlops.gpu_sharing` —
+  capability-aware mechanism selection (`select_mechanism`: MIG hardware-isolation →
+  time-slice soft-isolation → whole-GPU) with **honest fallback** (a sub-1.0 fraction on a
+  non-fractional cluster rounds up to a whole GPU and surfaces the wasted capacity — never
+  silently faked); first-fit-decreasing `bin_pack` of fractional asks onto whole GPUs;
+  `fractional_gpu_hours` accounting; isolation-level surfacing. New `gpu_allocations` table.
+  CLI `exa hpc gpu-share plan|pack|accounting`. Pure-Python (no GPU required). 10 tests.
+- **A6 — Croissant dataset metadata & structured model cards (ADR 0037).** `examlops.cards`
+  — `croissant_record`/`validate_croissant` (JSON-LD dataset card mapping the real FData
+  columns pclass/mbwidth/embedding, license + provenance, validated against a pinned spec);
+  `build_model_card` auto-populates a structured governance card from live data (intended
+  use + risk class from D1, dataset revision from A1, metrics from C2 eval, fairness from
+  C8, lineage from A2) with explicit **"not provided"** for gaps — never fabricated (R4);
+  `card_completeness` scores the card for the D5/C3 promotion gate. New `dataset_cards` +
+  `model_card_records` tables (versioned). CLI `exa cards dataset|model|completeness`.
+  Feeds D1 docs + D2 evidence. Guide `docs/guides/cards.md`. 10 tests.
+- **E5 — autoscaling & scale-to-zero (ADR 0031).** `examlops.autoscale` — a **pure**
+  `decide_scale` function (current replicas + observed metric + policy + clock → decision)
+  that scales toward the replica count meeting a target metric, scales to zero on idle
+  (respecting a warm pool), and resists thrashing with stabilization + cooldown windows;
+  GPU-fraction-aware (E3). Scale events are audited (D4) via `apply_scale`; measured
+  cold-start times surface to C6 SLOs (`cold_start_seconds`); scale-to-zero windows feed
+  FinOps (`scale_to_zero_savings`). Same logic can drive a KEDA/Knative generator or an
+  in-process controller — no cluster required. New `scale_events` table + richer policy
+  columns on the Phase-24 `autoscale_config` stub (backward-compatible helper). CLI
+  `exa serve autoscale set|simulate|status|savings|record`. Guide
+  `docs/guides/autoscaling.md`. 11 tests.
+
 ## [0.34.0] — 2026-07-16
 
 ### Added — Next-Gen 40 wave 3 (C-track observability complete: C4–C8; D1/D2/D4 governance)
