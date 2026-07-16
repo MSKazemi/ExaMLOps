@@ -25,10 +25,13 @@ from examlops.cli.commands import (
     challenger_cmd,
     compliance_cmd,
     config_cmd,
+    connection_cmd,
     data_cmd,
+    distributed_cmd,
     docs_cmd,
     doctor,
     drift,
+    embedding_cmd,
     engines_cmd,
     env_cmd,
     eval_cmd,
@@ -37,6 +40,7 @@ from examlops.cli.commands import (
     fairness_cmd,
     feature_cmd,
     features_cmd,
+    federated_cmd,
     feedback_cmd,
     finetune_cmd,
     finops_cmd,
@@ -45,6 +49,7 @@ from examlops.cli.commands import (
     governance_cmd,
     gpu_share_cmd,
     guardrails_cmd,
+    hardware_cmd,
     hpc_cmd,
     hpo_cmd,
     mcp_cmd,
@@ -64,6 +69,7 @@ from examlops.cli.commands import (
     reproduce_cmd,
     retrain,
     rollback_cmd,
+    routing_cmd,
     scaffold,
     seanerbus_cmd,
     secrets_cmd,
@@ -74,6 +80,7 @@ from examlops.cli.commands import (
     status,
     supplychain_cmd,
     vector_cmd,
+    workbench_cmd,
 )
 from examlops.cli.commands import (
     audit as audit_cmd,
@@ -214,6 +221,9 @@ app.add_typer(production.app, name="production", help="Production deployment and
 app.add_typer(serve.app, name="serve", help="Ray Serve operations")
 app.add_typer(pipeline.app, name="pipeline", help="Prefect training pipeline")
 pipeline.app.add_typer(quality_cmd.app, name="quality", help="Data quality validation gates")
+pipeline.app.add_typer(
+    distributed_cmd.app, name="distributed", help="Distributed training + checkpoint/resume (E6)"
+)
 app.add_typer(stack.app, name="stack", help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config", help="CLI configuration")
 app.add_typer(seanerbus_cmd.app, name="seanerbus", help="SeanerBUS bridge UUID management")
@@ -221,11 +231,22 @@ app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isola
 app.add_typer(
     project_cmd.app, name="project", help="ExaMLOps Projects (CPU/memory/storage/GPU quotas)"
 )
+app.add_typer(
+    connection_cmd.app, name="connection", help="Named Connections — reusable data sources (P2)"
+)
+app.add_typer(
+    workbench_cmd.app,
+    name="workbench",
+    help="Project Workbenches — on-demand dev environments (P5)",
+)
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
 serve.app.add_typer(
     challenger_cmd.app, name="challenger", help="Champion-challenger scoreboard & promotion"
 )
 serve.app.add_typer(autoscale_cmd.app, name="autoscale", help="Autoscaling & scale-to-zero (E5)")
+serve.app.add_typer(
+    routing_cmd.app, name="routing", help="KV/prefix-cache-aware inference routing (E4)"
+)
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
 serve.app.add_typer(
@@ -255,7 +276,22 @@ app.add_typer(
     name="reproduce",
     help="Reproducibility bundles — signed manifest + verify (A8)",
 )
+app.add_typer(
+    embedding_cmd.app,
+    name="embedding",
+    help="Embedding lifecycle — encoders + blue-green reindex (B6)",
+)
 app.command("finetune", epilog=finetune_cmd._EXAMPLES)(finetune_cmd.finetune)
+app.add_typer(
+    federated_cmd.app,
+    name="federated",
+    help="Federated & privacy-preserving training — FedAvg/DP/secure-agg (E7)",
+)
+app.add_typer(
+    hardware_cmd.app,
+    name="hardware",
+    help="Heterogeneous hardware & hybrid HPC↔cloud placement (E8)",
+)
 app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
 
 # Continuous evaluation & the ground-truth feedback loop (#9/#14).

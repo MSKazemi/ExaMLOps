@@ -5,6 +5,142 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Projects & Workspaces roadmap P2–P5 (RHOAI-inspired, ADRs 0087–0090)
+
+Completes the Projects initiative: all four roadmap features shipped on top of the P1 unified
+workspace. Additive · test-backed (88 project/authz tests) · back-compat preserved.
+
+- **feat(projects): P2 Named Connections (ADR 0087)** — `examlops.connections` package: reusable,
+  project-scoped data connections (S3/URI/dataplane). Non-secret config inline; credentials only in
+  the D7 secrets client via `secret_ref` (never in the DB); registers as a project resource. CLI
+  `exa connection create|list|show|test|delete` (test = read-only reachability probe, never prints
+  secrets).
+- **feat(projects): P3 project-scoped serving & pipelines (ADR 0088)** — `examlops.project_scope`
+  pure helpers; `ModelInfo.project` on `GET /models`; Prefect deployments tagged `project:<name>`;
+  optional model-YAML `project:` field; `exa pipeline run --project` (attributes cost via P1).
+- **feat(projects): P4 project FinOps & monitoring (ADR 0089)** — `examlops.project_finops`: direct
+  `model_costs.project` cost + carbon attribution (closes finops.py:102) and budget/quota breach
+  detection → governance audit event. CLI `exa project cost|budget` (budget exits 1 on breach).
+- **feat(projects): P5 Project Workbenches (ADR 0090)** — `examlops.workbenches`: on-demand,
+  project-bound dev environments that inject the project's Named Connections (P2) as env vars; spawn
+  behind a runtime seam (JupyterHub/Docker). CLI `exa workbench create|list|start|stop|delete`.
+- ADRs 0087–0090 flipped Proposed→Accepted. Deferred (need a live runtime): Prometheus `project`
+  metric label, dashboard Connections/Workbenches tabs, actual JupyterHub spawn.
+
+### Added — Next-Gen 40 wave 13 (serving/infra: heterogeneous HW & hybrid HPC↔cloud) — **NEXT-GEN 40 COMPLETE (40/40)**
+
+- **E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).** `examlops.hardware` — a
+  workload declares its device need **neutrally** (`accelerator` ∈ nvidia|amd|intel-gaudi|tpu|cpu
+  + capability tags + optional `target` hpc|cloud + `engine`), and `place()` selects the
+  **best-available compatible** device across HPC + cloud pools. A **portability check** gates the
+  engine against the accelerator's backend (cuda/rocm/ipex/xla/cpu) and **rejects** an
+  incompatible placement with a clear error — never silently scheduled (R4/GWT-2). **Honest
+  fallback**: an unavailable accelerator falls back to another engine-compatible one, flagged; a
+  sub-1.0 fraction on a vendor without MIG gets a whole device, flagged (R3/GWT-3). Cheapest
+  eligible pool wins. **Governed cloud bursting** (`plan_burst`) is opt-in and residency-checked —
+  `no-egress`/`eu-only`→non-EU is **blocked + audited**, data movement explicit (R5/GWT-4; D4/D6).
+  Device type + region flow into cost + carbon via `device_accounting` (R6/GWT-5). Pure-Python;
+  degrades to CPU + mocked pools with no vendor SDK. CLI `exa hardware add-pool|pools|place|
+  portable|burst|decisions`. New `device_pools` / `placement_decisions` / `burst_events` tables.
+  Guide `docs/guides/heterogeneous-hardware.md`. 13 tests. ADR 0041 Accepted.
+
+### Added — Next-Gen 40 wave 12 (training: federated & privacy-preserving)
+
+- **E7 — federated & privacy-preserving training (ADR 0040).** `examlops.federated` — trains
+  across sites that **cannot share raw data**: a coordinator drives rounds, each site trains
+  locally, and only **signed model updates** (never raw data/PII) are aggregated via **FedAvg**
+  (sample-weighted mean), **FedProx**, or a Byzantine-robust **trimmed mean** (`robust` drops
+  the per-coordinate min+max; R2/GWT-6). Optional **differential privacy** tracks an honest
+  (ε, δ) budget by basic composition and claims **nothing** when off (R3/R5/GWT-3/GWT-5);
+  optional **secure aggregation** hides per-site updates from the coordinator (R4/GWT-7).
+  Sites authenticate + sign (D3); unauthorized/unsigned participation is **rejected and audited**
+  (D4; R6/GWT-4) — the loop never aggregates a site it can't attribute. Pure-Python and testable
+  with no Flower/Opacus/mTLS. CLI `exa federated init|round|budget|status`. New `federated_runs`
+  / `federated_sites` / `federated_rounds` tables. Guide `docs/guides/federated-training.md`.
+  12 tests.
+
+### Added — Next-Gen 40 wave 11 (serving: inference gateway & KV routing)
+
+- **E4 — inference gateway & KV-cache-aware routing (ADR 0039).** `examlops.inference_gateway`
+  — routes LLM requests to the engine replica most likely to already hold their KV/prefix
+  cache (**affinity**), falling back to **load-aware** routing (queue depth + KV utilization
+  + latency) when there is no affinity, and to plain **round-robin** by default (cache-aware
+  is opt-in; R1/R2/R3). SLO-breaching replicas are avoided (`slo_latency_ms`; R6/GWT-5) and
+  unhealthy replicas excluded, always with a never-route-to-nothing fallback. Optional
+  prefill/decode **disaggregation** (`disaggregated_route`) splits pools with identical
+  output (R4/GWT-4). `prefix_key` hashes system prompt + session + RAG context. Routing is a
+  **pure function** — `measure_hit_rate` proves cache-aware beats round-robin (GWT-1) with no
+  engine/GPU/K8s. Persisted routing events feed hit-rate/decision metrics. CLI
+  `exa serve routing set|simulate|stats`. New `inference_gateway_config` / `routing_events`
+  tables. Guide `docs/guides/inference-gateway.md`. 11 tests.
+
+### Added — Next-Gen 40 wave 10 (LLMOps: structured output & reasoning)
+
+- **B8 — structured output & reasoning ops (ADR 0035).** `examlops.structured` — two gateway
+  (B2)/engine (E2) capabilities. **Structured output**: `generate_structured` validates a
+  generation against a JSON Schema and on the rare invalid output **repairs** (coerce scalar
+  types, drop unknown props, fill required) and retries before failing explicitly — so agent
+  tool-call args and RAG citations are **guaranteed valid** (R1/R2/GWT-1/GWT-2). Uses
+  `jsonschema` when installed, degrades to a built-in validator. Every attempt is metered
+  (valid/repaired/failed, R8). **Reasoning ops**: `ReasoningBudget.enforce` cuts thinking
+  off at the per-request limit (R4/GWT-4); `account_reasoning` records reasoning vs output
+  tokens/cost **separately** for C1/FinOps (R5/GWT-5); `capture_reasoning_trace` stores
+  traces **redacted** (D8), **TTL'd**, and **tenant-scoped** (R6/GWT-6). CLI
+  `exa gateway schema test` + `exa gateway reasoning account|budget|stats`. New
+  `reasoning_usage` / `reasoning_traces` / `structured_output_events` tables. Guide
+  `docs/guides/structured-output-reasoning.md`. 10 tests.
+
+### Added — Next-Gen 40 wave 9 (LLMOps: embedding lifecycle)
+
+- **B6 — embedding lifecycle & reindexing (ADR 0043).** `examlops.embeddings` — governs the
+  embeddings the B3 cache / B4 RAG / B5 vector store rely on. **Versioned encoders**
+  (content-addressed `encoder_id` over name/version/dim/metric/normalization; R1). A
+  **compatibility guard** refuses any similarity comparison across different `encoder_id`s
+  (`EncoderMismatchError`, never silently computed; R3/GWT-2). **Blue-green reindex**: build
+  a staging index → re-embed → **verify recall** against a floor → **atomic switch**,
+  retaining the old index until confirmed then pruning it; a below-floor recall **aborts**
+  and keeps the old index (R4/R5/GWT-3/GWT-4). After a switch, input-embedding **drift
+  baselines are rebaselined** (C5, since the space changed; R6/GWT-5). Encoder changes are
+  audited (D4) and per-tenant collections reindex independently (D6). CLI
+  `exa embedding register|list|set-encoder|reindex|status`. New `encoders` /
+  `embedding_collections` / `reindex_jobs` tables. Pure-Python (no encoder model/GPU/vector
+  DB). Guide `docs/guides/embedding-lifecycle.md`. 10 tests.
+
+### Added — Next-Gen 40 wave 8 (training: distributed & fault-tolerant)
+
+- **E6 — distributed & fault-tolerant training (ADR 0032).** `examlops.distributed` —
+  multi-GPU/multi-node training (FSDP / DeepSpeed ZeRO / Megatron) launched through the
+  phase-23 scheduler abstraction with **automatic sharded checkpoint/resume**.
+  `launch_distributed` derives a torchrun/elastic rendezvous from the scheduler node list
+  (degrades to localhost/mock — CPU gloo in CI) and emits the real `torchrun` command;
+  strategy is selectable (R2/GWT-4). `write_checkpoint` writes an **integrity-hashed**
+  sharded checkpoint keyed by run, linked to MLflow/A1/A2 (R3/R5). `resume_from_checkpoint`
+  returns the **last integrity-valid** checkpoint so a resubmitted job resumes from
+  step/epoch + optimizer state rather than restarting — and **refuses a corrupt** one,
+  falling back to the previous valid checkpoint (R4/GWT-3/GWT-5). Failures/resumes are
+  audited (D4), resume count tracked, per-run cost recorded (R7). CLI
+  `exa pipeline distributed launch|checkpoint|resume|status|list`. New `distributed_runs` +
+  `training_checkpoints` tables. Pure-Python (no GPU/torch/scheduler needed). Guide
+  `docs/guides/distributed-training.md`. 11 tests.
+
+### Added — Next-Gen 40 wave 7 (governance: policy-as-code)
+
+- **D5 — policy-as-code governance (OPA/Rego) (ADR 0029).** `examlops.policy_engine` — a
+  `PolicyEngine` seam over structured input (`PolicyInput{subject, resource, action,
+  context}`) evaluating governed decisions with `{allow, reasons}`. Layers **on top of** the
+  existing ADR-0079 YAML engine rather than replacing it: `YamlPolicyEngine` (default)
+  delegates to `examlops.policy.decide`; `RegoPolicyEngine` shells to the `opa` binary when
+  present + selected (`EXAMLOPS_POLICY_ENGINE=opa`) and **degrades** to YAML otherwise.
+  **Fail-closed** on engine error for security-critical decisions (supply_chain/deploy/
+  budget/tenancy), monitor/fail-open for the rest (R4). **Domain gates** encode built-in
+  default-deny a bundle can only tighten: `supply_chain_gate` (unsigned artifact → deny,
+  GWT-4), `budget_gate` (over-budget GPU → deny, GWT-3), `card_gate` (model-card
+  completeness floor). **Signed, versioned, per-tenant policy bundles** (`sign_bundle`/
+  `verify_bundle` via the D3 HMAC key; base `policy.yaml` + `policy.<tenant>.yaml` overlay;
+  tamper-detected). Every decision audited (D4) with tenant scope. CLI `exa policy eval`
+  (structured, `--dry-run` default) + `exa policy bundle sign|verify|list`. New
+  `policy_bundles` table. Guide `docs/guides/policy-as-code.md`. 14 tests.
+
 ## [0.35.0] — 2026-07-16
 
 ### Added — Next-Gen 40 wave 6 (LLMOps: fine-tuning)

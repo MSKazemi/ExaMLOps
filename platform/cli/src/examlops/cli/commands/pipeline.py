@@ -162,10 +162,25 @@ def run(
     gpus: int = typer.Option(
         0, "--gpus", "-g", help="GPUs to request (for --cluster auto placement)"
     ),
+    project: str | None = typer.Option(
+        None,
+        "--project",
+        "-p",
+        help="Scope the run to a Project (ADR 0088): tags the run and attributes its cost",
+    ),
 ):
     """Run training pipeline(s) locally via Prefect."""
     if cluster and not _resolve_cluster_env(cluster, gpus):
         return  # resolution failed / not approved — message already printed
+    # P3 (ADR 0088): scope the run to a Project so its MLflow run + recorded cost are attributed.
+    if project:
+        os.environ["EXAMLOPS_PROJECT"] = project
+        if model:
+            from examlops.platform_db import assign_resource_to_project
+            from examlops.platform_db import init_db as _init_db
+
+            _init_db()
+            assign_resource_to_project(project, "model", model, added_by=os.getenv("USER"))
     # A1 (spec R12): a pinned revision must be materialisable — verify it was
     # recorded before we launch, and exit non-zero otherwise.
     if dataset_revision:

@@ -47,6 +47,7 @@ class ModelYAMLConfig:
     prefect: dict[str, Any] = field(default_factory=dict)
     inference: dict[str, Any] = field(default_factory=dict)
     seanerbus_uuid: str | None = None
+    project: str | None = None  # owning Project (ADR 0088), optional default membership
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -106,6 +107,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         prefect=raw.get("prefect", {}),
         inference=raw.get("inference", {}),
         seanerbus_uuid=raw.get("seanerbus_uuid") or None,
+        project=raw.get("project") or None,
     )
 
 

@@ -88,6 +88,53 @@ project's anatomy (resources, members, quota, budget, consumption). Viewers can 
 create/assign/add-member actions require the `project.manage` capability (admin). Every mutation is
 audited and visible under `exa audit` and the dashboard Audit page.
 
+## 8. Named Connections (P2, ADR 0087)
+
+Reusable, project-scoped data connections (S3 / URI / dataplane). Non-secret config is stored in
+`platform.db`; credentials live only in the D7 secrets client (referenced by `secret_ref`, never
+copied). A connection is also a project resource.
+
+```bash
+exa connection create minio --kind s3 --project research \
+    --config '{"endpoint":"http://localhost:19000","bucket":"data","access_key":"minioadmin"}' \
+    --secret-value minioadmin
+exa connection list --project research
+exa connection show minio --project research      # never prints the secret value
+exa connection test minio --project research      # read-only reachability probe (exit 1 if unreachable)
+exa connection delete minio --project research
+```
+
+## 9. Project-scoped serving & pipelines (P3, ADR 0088)
+
+A model's owning project is threaded into serving and pipelines. `GET /models` includes each model's
+`project`; Prefect deployments are tagged `project:<name>`; a model YAML may declare a default
+`project:`; and a scoped run attributes its cost:
+
+```bash
+exa pipeline run --model JPCP --project research   # tags the run + attributes recorded cost
+```
+
+## 10. Project FinOps (P4, ADR 0089)
+
+```bash
+exa project cost research      # attributed GPU-hours · USD · carbon (model_costs.project)
+exa project budget research    # budget/quota status; exits 1 and audits a breach if over budget
+```
+
+## 11. Workbenches (P5, ADR 0090)
+
+On-demand, project-bound dev environments. Starting one injects the project's Named Connections (P2)
+as `EXA_CONN_<name>_<key>` / `EXA_CONN_<name>_SECRET` env vars; the actual spawn is delegated to the
+runtime (JupyterHub/Docker).
+
+```bash
+exa workbench create nb --project research --image jupyter/scipy-notebook:latest
+exa workbench start nb --project research     # marks RUNNING, prints launch spec + injected env count
+exa workbench list --project research
+exa workbench stop nb --project research
+exa workbench delete nb --project research
+```
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -99,9 +146,8 @@ audited and visible under `exa audit` and the dashboard Audit page.
 
 ## Related
 
-- ADR 0086 (unified workspace), 0084 (Docker resource envelopes), 0057 (authn/authz/multitenancy)
-- Spec `design/vision/specs/P1-unified-project-workspace.md`
-- SoA dossier `design/vision/library/rhoai-soa-projects.md`
-- Roadmap: `docs/guides/*` for P2 Named Connections, P3 project-scoped serving/pipelines, P4 project
-  FinOps, P5 workbenches (written as each ships) · plan `.claude/plans/projects-workspace/`
+- ADRs 0086 (unified workspace), 0087–0090 (P2–P5, all Accepted), 0084 (Docker resource envelopes),
+  0057 (authn/authz/multitenancy)
+- Specs `design/vision/specs/P1`–`P5-*.md`
+- SoA dossier `design/vision/library/rhoai-soa-projects.md` · plan `.claude/plans/projects-workspace/`
 - `docs/reference/commands.md`, `docs/guides/rbac-multi-tenancy.md`
