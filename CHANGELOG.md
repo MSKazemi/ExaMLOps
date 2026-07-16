@@ -7,6 +7,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added — Next-Gen 40 dashboard surface + public docs
 
+- **feat(dashboard): Next-Gen 40 console (`/nextgen`).** New `pages/NextGen.tsx` + `lib/
+  nextgen.ts` render the `/api/nextgen/*` data: a summary KPI row plus federated-run (E7),
+  device-pool, placement-decision, and governed-cloud-burst (E8) tables. Honest privacy
+  labels (DP off → "no DP", secure-agg off → "updates visible"), colour-blind-safe status
+  tokens for placements/bursts, and per-panel EmptyStates so it degrades when a feature is
+  unexercised. Wired into the sidebar nav + command palette. tsc + eslint clean; 6 new vitest
+  cases (256 frontend tests green); production build verified.
 - **feat(dashboard): Next-Gen 40 read API (`/api/nextgen/*`).** New `routers/nextgen.py`
   surfaces the newest Next-Gen 40 platform.db tables to the dashboard: federated runs +
   detail (E7), device pools / placement decisions / burst events (E8), autoscale config +
