@@ -417,6 +417,69 @@ def current() -> None:
         _output.info("No active project. Set one: exa project use <name>")
 
 
+# --- Project FinOps & monitoring (P4, ADR 0089) -------------------------------
+
+
+@app.command()
+def cost(
+    name: str = typer.Argument(..., help="Project name"),
+) -> None:
+    """Show per-project cost attribution (GPU-hours · USD · carbon)."""
+    from examlops.project_finops import cost_summary
+
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    s = cost_summary(name)
+    if _output.json_mode:
+        _output.print_json(s)
+        return
+    _output.print_table(
+        f"Cost — {name}",
+        ["Field", "Value"],
+        [
+            ["GPU-hours (attributed)", f"{s['gpu_hours']:.2f}"],
+            ["Cost USD (attributed)", f"${s['cost_usd']:.2f}"],
+            ["Carbon (g CO2e)", f"{s['carbon_grams_co2e']:.1f}"],
+            ["Cost records", str(s["records"])],
+            ["GPU-hours (union w/ legacy)", f"{s['union_gpu_hours']:.2f}"],
+        ],
+    )
+
+
+@app.command()
+def budget(
+    name: str = typer.Argument(..., help="Project name"),
+) -> None:
+    """Show budget/quota status and flag breaches (exit 1 if over budget)."""
+    from examlops.project_finops import budget_status
+
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    st = budget_status(name, actor=_actor(), audit=True)
+    if _output.json_mode:
+        _output.print_json(st)
+    else:
+        cons = st["consumption"]
+        _output.print_table(
+            f"Budget — {name}",
+            ["Field", "Value"],
+            [
+                ["Consumed GPU-h", f"{cons['gpu_hours']:.2f}"],
+                ["Consumed USD", f"${cons['cost_usd']:.2f}"],
+                ["Budget", str(st["budget"] or "(none)")],
+                ["Over budget", "YES" if st["over_budget"] else "no"],
+            ],
+        )
+        for b in st["breaches"]:
+            _output.warning(f"BREACH: {b}")
+    if st["over_budget"]:
+        raise typer.Exit(1)
+
+
 @app.command(epilog=_EXAMPLES_COMPOSE)
 def compose(
     name: str = typer.Argument(..., help="Project name"),

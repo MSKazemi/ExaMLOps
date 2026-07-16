@@ -1108,6 +1108,197 @@ def init_db() -> None:
                 actor           TEXT,
                 ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Next-Gen 40 · E7 — federated & privacy-preserving training (ADR 0040).
+            CREATE TABLE IF NOT EXISTS federated_runs (
+                run_id           TEXT PRIMARY KEY,
+                strategy         TEXT NOT NULL DEFAULT 'fedavg',
+                dp_enabled       INTEGER NOT NULL DEFAULT 0,
+                secure_agg       INTEGER NOT NULL DEFAULT 0,
+                epsilon          REAL NOT NULL DEFAULT 0,
+                delta            REAL NOT NULL DEFAULT 0,
+                epsilon_per_round REAL NOT NULL DEFAULT 0,
+                rounds_completed INTEGER NOT NULL DEFAULT 0,
+                status           TEXT NOT NULL DEFAULT 'initialized',
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS federated_sites (
+                run_id     TEXT NOT NULL,
+                site       TEXT NOT NULL,
+                authorized INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (run_id, site)
+            );
+            CREATE TABLE IF NOT EXISTS federated_rounds (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id             TEXT NOT NULL,
+                round_num          INTEGER NOT NULL,
+                global_metric      REAL,
+                sites_participated INTEGER NOT NULL DEFAULT 0,
+                epsilon            REAL,
+                created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).
+            CREATE TABLE IF NOT EXISTS device_pools (
+                name              TEXT PRIMARY KEY,
+                target            TEXT NOT NULL DEFAULT 'hpc',      -- hpc|cloud
+                accelerator       TEXT NOT NULL DEFAULT 'nvidia',   -- nvidia|amd|intel-gaudi|tpu|cpu
+                capabilities      TEXT,                             -- JSON list of capability tags
+                count             INTEGER NOT NULL DEFAULT 0,
+                region            TEXT,
+                cost_per_hour     REAL NOT NULL DEFAULT 0,
+                carbon_factor     REAL NOT NULL DEFAULT 0,          -- gCO2e per device-hour
+                supports_fractions INTEGER NOT NULL DEFAULT 0,
+                status            TEXT NOT NULL DEFAULT 'active',
+                created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS placement_decisions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                workload              TEXT NOT NULL,
+                accelerator_requested TEXT,
+                device_chosen         TEXT,
+                pool                  TEXT,
+                target                TEXT,
+                region                TEXT,
+                decision              TEXT NOT NULL,   -- placed|fallback|rejected
+                fraction_honored      INTEGER NOT NULL DEFAULT 1,
+                reason                TEXT,
+                created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS burst_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                workload      TEXT NOT NULL,
+                from_pool     TEXT,
+                to_pool       TEXT,
+                residency     TEXT,
+                allowed       INTEGER NOT NULL DEFAULT 0,
+                reason        TEXT,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E4 — inference gateway & KV-cache-aware routing (ADR 0039).
+            CREATE TABLE IF NOT EXISTS inference_gateway_config (
+                model         TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                mode          TEXT NOT NULL DEFAULT 'round_robin',  -- round_robin|cache_aware
+                slo_latency_ms REAL,
+                disaggregate  INTEGER NOT NULL DEFAULT 0,
+                prefill_pool  TEXT,
+                decode_pool   TEXT,
+                updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS routing_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                prefix_key TEXT,
+                replica    TEXT,
+                decision   TEXT NOT NULL,   -- affinity|load_aware|round_robin
+                hit        INTEGER NOT NULL DEFAULT 0,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B8 — structured output & reasoning ops (ADR 0035).
+            CREATE TABLE IF NOT EXISTS reasoning_usage (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                request_id      TEXT,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                reasoning_cost  REAL NOT NULL DEFAULT 0,
+                output_cost     REAL NOT NULL DEFAULT 0,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS reasoning_traces (
+                request_id     TEXT PRIMARY KEY,
+                tenant         TEXT NOT NULL DEFAULT 'default',
+                redacted_trace TEXT NOT NULL,
+                expires_at     REAL,
+                ts             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS structured_output_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                outcome    TEXT NOT NULL,   -- valid | repaired | failed
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B6 — embedding lifecycle & reindexing (ADR 0043).
+            CREATE TABLE IF NOT EXISTS encoders (
+                encoder_id    TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                version       TEXT NOT NULL,
+                dim           INTEGER NOT NULL,
+                metric        TEXT NOT NULL DEFAULT 'cosine',
+                normalization TEXT NOT NULL DEFAULT 'l2',
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- B6 encoder-lifecycle state per collection (distinct from the B5
+            -- `vector_collections` store table, which has a different schema).
+            CREATE TABLE IF NOT EXISTS embedding_collections (
+                collection         TEXT NOT NULL,
+                tenant             TEXT NOT NULL DEFAULT 'default',
+                active_encoder_id  TEXT,
+                staging_encoder_id TEXT,
+                status             TEXT NOT NULL DEFAULT 'active',  -- active|building|switching
+                updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (collection, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS reindex_jobs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection    TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                from_encoder  TEXT,
+                to_encoder    TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'building',  -- building|verified|switched|aborted
+                recall        REAL,
+                docs_reindexed INTEGER NOT NULL DEFAULT 0,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
+            CREATE TABLE IF NOT EXISTS distributed_runs (
+                run_id           TEXT PRIMARY KEY,
+                model            TEXT NOT NULL,
+                nodes            INTEGER NOT NULL DEFAULT 1,
+                gpus_per_node    INTEGER NOT NULL DEFAULT 1,
+                strategy         TEXT NOT NULL DEFAULT 'fsdp',   -- fsdp | zero | megatron
+                status           TEXT NOT NULL DEFAULT 'running', -- running|failed|resumed|complete
+                dataset_revision TEXT,
+                checkpoint_every TEXT,
+                cost_gpu_hours   REAL,
+                resumes          INTEGER NOT NULL DEFAULT 0,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS training_checkpoints (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id         TEXT NOT NULL,
+                step           INTEGER NOT NULL,
+                epoch          INTEGER NOT NULL,
+                shard_count    INTEGER NOT NULL DEFAULT 1,
+                uri            TEXT,
+                state_json     TEXT NOT NULL,
+                integrity_hash TEXT NOT NULL,
+                mlflow_run_id  TEXT,
+                created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_training_checkpoints_run
+                ON training_checkpoints (run_id, step);
+            -- Next-Gen 40 · D5 — signed, versioned policy bundles (ADR 0029).
+            CREATE TABLE IF NOT EXISTS policy_bundles (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                content_hash TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                signature    TEXT,
+                algo         TEXT,
+                signed_by    TEXT,
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_policy_bundles_tenant ON policy_bundles (tenant, version);
             -- Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
             CREATE TABLE IF NOT EXISTS lora_adapters (
                 adapter_id       TEXT PRIMARY KEY,
@@ -4232,3 +4423,703 @@ def set_adapter_promoted(adapter_id: str, promoted: bool) -> None:
             "UPDATE lora_adapters SET promoted=?, updated_at=CURRENT_TIMESTAMP WHERE adapter_id=?",
             (1 if promoted else 0, adapter_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D5 — signed, versioned policy bundles (ADR 0029).
+# ---------------------------------------------------------------------------
+def store_policy_bundle(
+    tenant: str,
+    content: str,
+    content_hash: str,
+    *,
+    signature: str | None = None,
+    algo: str | None = None,
+    signed_by: str | None = None,
+) -> int:
+    """Persist a signed policy bundle version for a tenant (R2). Returns the version."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT MAX(version) AS mx FROM policy_bundles WHERE tenant=?", (tenant,)
+        ).fetchone()
+        version = (row["mx"] or 0) + 1
+        conn.execute(
+            """INSERT INTO policy_bundles
+                   (tenant, version, content_hash, content, signature, algo, signed_by)
+               VALUES (?,?,?,?,?,?,?)""",
+            (tenant, version, content_hash, content, signature, algo, signed_by),
+        )
+    return version
+
+
+def get_policy_bundle(tenant: str = "default", version: int | None = None) -> dict[str, Any] | None:
+    """Return a policy bundle (latest for the tenant, or a specific version)."""
+    init_db()
+    with get_db() as conn:
+        if version is not None:
+            row = conn.execute(
+                "SELECT * FROM policy_bundles WHERE tenant=? AND version=?", (tenant, version)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM policy_bundles WHERE tenant=? ORDER BY version DESC LIMIT 1",
+                (tenant,),
+            ).fetchone()
+    return dict(row) if row else None
+
+
+def list_policy_bundles(tenant: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        if tenant:
+            rows = conn.execute(
+                "SELECT * FROM policy_bundles WHERE tenant=? ORDER BY version DESC", (tenant,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM policy_bundles ORDER BY tenant, version DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
+# ---------------------------------------------------------------------------
+def create_distributed_run(
+    run_id: str,
+    model: str,
+    *,
+    nodes: int = 1,
+    gpus_per_node: int = 1,
+    strategy: str = "fsdp",
+    dataset_revision: str | None = None,
+    checkpoint_every: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO distributed_runs
+                   (run_id, model, nodes, gpus_per_node, strategy, status,
+                    dataset_revision, checkpoint_every, updated_at)
+               VALUES (?,?,?,?,?, 'running', ?,?, CURRENT_TIMESTAMP)""",
+            (run_id, model, nodes, gpus_per_node, strategy, dataset_revision, checkpoint_every),
+        )
+
+
+def get_distributed_run(run_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM distributed_runs WHERE run_id=?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_distributed_runs(model: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        if model:
+            rows = conn.execute(
+                "SELECT * FROM distributed_runs WHERE model=? ORDER BY created_at DESC", (model,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM distributed_runs ORDER BY created_at DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_distributed_run(
+    run_id: str,
+    *,
+    status: str | None = None,
+    cost_gpu_hours: float | None = None,
+    bump_resumes: bool = False,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        if status is not None:
+            conn.execute(
+                "UPDATE distributed_runs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE run_id=?",
+                (status, run_id),
+            )
+        if cost_gpu_hours is not None:
+            conn.execute(
+                "UPDATE distributed_runs SET cost_gpu_hours=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE run_id=?",
+                (cost_gpu_hours, run_id),
+            )
+        if bump_resumes:
+            conn.execute(
+                "UPDATE distributed_runs SET resumes=resumes+1, updated_at=CURRENT_TIMESTAMP "
+                "WHERE run_id=?",
+                (run_id,),
+            )
+
+
+def write_training_checkpoint(
+    run_id: str,
+    step: int,
+    epoch: int,
+    state_json: str,
+    integrity_hash: str,
+    *,
+    shard_count: int = 1,
+    uri: str | None = None,
+    mlflow_run_id: str | None = None,
+) -> int:
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO training_checkpoints
+                   (run_id, step, epoch, shard_count, uri, state_json, integrity_hash,
+                    mlflow_run_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (run_id, step, epoch, shard_count, uri, state_json, integrity_hash, mlflow_run_id),
+        )
+        return int(cur.lastrowid)
+
+
+def list_training_checkpoints(run_id: str) -> list[dict[str, Any]]:
+    """Checkpoints for a run, newest (highest step) first."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM training_checkpoints WHERE run_id=? ORDER BY step DESC, id DESC",
+            (run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B6 — embedding lifecycle & reindexing (ADR 0043).
+# ---------------------------------------------------------------------------
+def register_encoder_row(
+    encoder_id: str, name: str, version: str, dim: int, metric: str, normalization: str
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO encoders
+                   (encoder_id, name, version, dim, metric, normalization)
+               VALUES (?,?,?,?,?,?)""",
+            (encoder_id, name, version, dim, metric, normalization),
+        )
+
+
+def get_encoder(encoder_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM encoders WHERE encoder_id=?", (encoder_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_encoders() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM encoders ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_collection(collection: str, tenant: str = "default") -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM embedding_collections WHERE collection=? AND tenant=?",
+            (collection, tenant),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+_UNSET = object()  # sentinel: distinguish "don't change" from "set to NULL"
+
+
+def upsert_collection(
+    collection: str,
+    tenant: str = "default",
+    *,
+    active_encoder_id: Any = _UNSET,
+    staging_encoder_id: Any = _UNSET,
+    status: str | None = None,
+) -> None:
+    init_db()
+    existing = get_collection(collection, tenant) or {}
+    active = existing.get("active_encoder_id") if active_encoder_id is _UNSET else active_encoder_id
+    staging = (
+        existing.get("staging_encoder_id") if staging_encoder_id is _UNSET else staging_encoder_id
+    )
+    st = status if status is not None else existing.get("status", "active")
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO embedding_collections
+                   (collection, tenant, active_encoder_id, staging_encoder_id, status, updated_at)
+               VALUES (?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(collection, tenant) DO UPDATE SET
+                   active_encoder_id=excluded.active_encoder_id,
+                   staging_encoder_id=excluded.staging_encoder_id,
+                   status=excluded.status, updated_at=CURRENT_TIMESTAMP""",
+            (collection, tenant, active, staging, st),
+        )
+
+
+def create_reindex_job(
+    collection: str, tenant: str, from_encoder: str | None, to_encoder: str
+) -> int:
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO reindex_jobs (collection, tenant, from_encoder, to_encoder, status)
+               VALUES (?,?,?,?, 'building')""",
+            (collection, tenant, from_encoder, to_encoder),
+        )
+        return int(cur.lastrowid)
+
+
+def update_reindex_job(
+    job_id: int,
+    *,
+    status: str | None = None,
+    recall: float | None = None,
+    docs_reindexed: int | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        if status is not None:
+            conn.execute(
+                "UPDATE reindex_jobs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (status, job_id),
+            )
+        if recall is not None:
+            conn.execute(
+                "UPDATE reindex_jobs SET recall=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (recall, job_id),
+            )
+        if docs_reindexed is not None:
+            conn.execute(
+                "UPDATE reindex_jobs SET docs_reindexed=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (docs_reindexed, job_id),
+            )
+
+
+def list_reindex_jobs(collection: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        if collection:
+            rows = conn.execute(
+                "SELECT * FROM reindex_jobs WHERE collection=? ORDER BY id DESC", (collection,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM reindex_jobs ORDER BY id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B8 — structured output & reasoning ops (ADR 0035).
+# ---------------------------------------------------------------------------
+def record_reasoning_usage(
+    model: str,
+    reasoning_tokens: int,
+    output_tokens: int,
+    reasoning_cost: float,
+    output_cost: float,
+    *,
+    tenant: str = "default",
+    request_id: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO reasoning_usage
+                   (model, tenant, request_id, reasoning_tokens, output_tokens,
+                    reasoning_cost, output_cost)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                model,
+                tenant,
+                request_id,
+                reasoning_tokens,
+                output_tokens,
+                reasoning_cost,
+                output_cost,
+            ),
+        )
+
+
+def reasoning_usage_summary(model: str | None = None, tenant: str | None = None) -> dict[str, Any]:
+    init_db()
+    clauses, params = [], []
+    if model:
+        clauses.append("model=?")
+        params.append(model)
+    if tenant:
+        clauses.append("tenant=?")
+        params.append(tenant)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        row = conn.execute(
+            f"""SELECT COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens,
+                       COALESCE(SUM(output_tokens),0) AS output_tokens,
+                       COALESCE(SUM(reasoning_cost),0) AS reasoning_cost,
+                       COALESCE(SUM(output_cost),0) AS output_cost
+                FROM reasoning_usage{where}""",
+            tuple(params),
+        ).fetchone()
+    return dict(row)
+
+
+def store_reasoning_trace(
+    request_id: str,
+    redacted_trace: str,
+    *,
+    tenant: str = "default",
+    expires_at: float | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO reasoning_traces
+                   (request_id, tenant, redacted_trace, expires_at)
+               VALUES (?,?,?,?)""",
+            (request_id, tenant, redacted_trace, expires_at),
+        )
+
+
+def get_reasoning_trace(request_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM reasoning_traces WHERE request_id=?", (request_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_structured_output_event(
+    outcome: str, *, model: str | None = None, tenant: str = "default"
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO structured_output_events (model, tenant, outcome) VALUES (?,?,?)",
+            (model, tenant, outcome),
+        )
+
+
+def structured_output_stats() -> dict[str, int]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT outcome, COUNT(*) AS n FROM structured_output_events GROUP BY outcome"
+        ).fetchall()
+    return {r["outcome"]: r["n"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E4 — inference gateway & KV-cache-aware routing (ADR 0039).
+# ---------------------------------------------------------------------------
+def set_gateway_config(
+    model: str,
+    *,
+    tenant: str = "default",
+    mode: str = "round_robin",
+    slo_latency_ms: float | None = None,
+    disaggregate: bool = False,
+    prefill_pool: str | None = None,
+    decode_pool: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO inference_gateway_config
+                   (model, tenant, mode, slo_latency_ms, disaggregate, prefill_pool,
+                    decode_pool, updated_at)
+               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(model, tenant) DO UPDATE SET
+                   mode=excluded.mode, slo_latency_ms=excluded.slo_latency_ms,
+                   disaggregate=excluded.disaggregate, prefill_pool=excluded.prefill_pool,
+                   decode_pool=excluded.decode_pool, updated_at=CURRENT_TIMESTAMP""",
+            (
+                model,
+                tenant,
+                mode,
+                slo_latency_ms,
+                1 if disaggregate else 0,
+                prefill_pool,
+                decode_pool,
+            ),
+        )
+
+
+def get_gateway_config(model: str, tenant: str = "default") -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM inference_gateway_config WHERE model=? AND tenant=?", (model, tenant)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_routing_event(
+    model: str,
+    prefix_key: str | None,
+    replica: str,
+    decision: str,
+    hit: bool,
+    *,
+    tenant: str = "default",
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO routing_events (model, tenant, prefix_key, replica, decision, hit)
+               VALUES (?,?,?,?,?,?)""",
+            (model, tenant, prefix_key, replica, decision, 1 if hit else 0),
+        )
+
+
+def routing_stats(model: str, tenant: str | None = None) -> dict[str, Any]:
+    init_db()
+    clauses = ["model=?"]
+    params: list[Any] = [model]
+    if tenant:
+        clauses.append("tenant=?")
+        params.append(tenant)
+    where = " AND ".join(clauses)
+    with get_db() as conn:
+        row = conn.execute(
+            f"""SELECT COUNT(*) AS total, COALESCE(SUM(hit),0) AS hits
+                FROM routing_events WHERE {where}""",
+            tuple(params),
+        ).fetchone()
+        by_decision = conn.execute(
+            f"SELECT decision, COUNT(*) AS n FROM routing_events WHERE {where} GROUP BY decision",
+            tuple(params),
+        ).fetchall()
+    total = row["total"]
+    return {
+        "total": total,
+        "hits": row["hits"],
+        "hit_rate": (row["hits"] / total) if total else 0.0,
+        "by_decision": {r["decision"]: r["n"] for r in by_decision},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E7 — federated & privacy-preserving training (ADR 0040).
+# ---------------------------------------------------------------------------
+def create_federated_run(
+    run_id: str,
+    strategy: str,
+    *,
+    dp_enabled: bool = False,
+    secure_agg: bool = False,
+    delta: float = 0.0,
+    epsilon_per_round: float = 0.0,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO federated_runs
+                   (run_id, strategy, dp_enabled, secure_agg, delta, epsilon_per_round, status)
+               VALUES (?,?,?,?,?,?, 'initialized')""",
+            (
+                run_id,
+                strategy,
+                1 if dp_enabled else 0,
+                1 if secure_agg else 0,
+                delta,
+                epsilon_per_round,
+            ),
+        )
+
+
+def get_federated_run(run_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM federated_runs WHERE run_id=?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def register_federated_site(run_id: str, site: str, authorized: bool) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO federated_sites (run_id, site, authorized)
+               VALUES (?,?,?)""",
+            (run_id, site, 1 if authorized else 0),
+        )
+
+
+def get_federated_sites(run_id: str) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM federated_sites WHERE run_id=? ORDER BY site", (run_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_federated_round(
+    run_id: str,
+    round_num: int,
+    global_metric: float | None,
+    sites_participated: int,
+    epsilon: float,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO federated_rounds
+                   (run_id, round_num, global_metric, sites_participated, epsilon)
+               VALUES (?,?,?,?,?)""",
+            (run_id, round_num, global_metric, sites_participated, epsilon),
+        )
+        conn.execute(
+            """UPDATE federated_runs SET rounds_completed=?, epsilon=?, status='running',
+                   updated_at=CURRENT_TIMESTAMP WHERE run_id=?""",
+            (round_num, epsilon, run_id),
+        )
+
+
+def list_federated_rounds(run_id: str) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM federated_rounds WHERE run_id=? ORDER BY round_num", (run_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).
+# ---------------------------------------------------------------------------
+def register_device_pool(
+    name: str,
+    *,
+    target: str = "hpc",
+    accelerator: str = "nvidia",
+    capabilities: list[str] | None = None,
+    count: int = 0,
+    region: str | None = None,
+    cost_per_hour: float = 0.0,
+    carbon_factor: float = 0.0,
+    supports_fractions: bool = False,
+    status: str = "active",
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO device_pools
+                   (name, target, accelerator, capabilities, count, region, cost_per_hour,
+                    carbon_factor, supports_fractions, status, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            (
+                name,
+                target,
+                accelerator,
+                json.dumps(capabilities or []),
+                count,
+                region,
+                cost_per_hour,
+                carbon_factor,
+                1 if supports_fractions else 0,
+                status,
+            ),
+        )
+
+
+def get_device_pools(
+    target: str | None = None,
+    accelerator: str | None = None,
+    status: str | None = "active",
+) -> list[dict[str, Any]]:
+    init_db()
+    q = "SELECT * FROM device_pools WHERE 1=1"
+    params: list[Any] = []
+    if target:
+        q += " AND target=?"
+        params.append(target)
+    if accelerator:
+        q += " AND accelerator=?"
+        params.append(accelerator)
+    if status:
+        q += " AND status=?"
+        params.append(status)
+    q += " ORDER BY cost_per_hour, name"
+    with get_db() as conn:
+        rows = conn.execute(q, params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["capabilities"] = json.loads(d["capabilities"]) if d.get("capabilities") else []
+        d["supports_fractions"] = bool(d["supports_fractions"])
+        out.append(d)
+    return out
+
+
+def record_placement_decision(
+    workload: str,
+    *,
+    accelerator_requested: str | None,
+    device_chosen: str | None,
+    pool: str | None,
+    target: str | None,
+    region: str | None,
+    decision: str,
+    fraction_honored: bool = True,
+    reason: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO placement_decisions
+                   (workload, accelerator_requested, device_chosen, pool, target, region,
+                    decision, fraction_honored, reason)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                workload,
+                accelerator_requested,
+                device_chosen,
+                pool,
+                target,
+                region,
+                decision,
+                1 if fraction_honored else 0,
+                reason,
+            ),
+        )
+
+
+def list_placement_decisions(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM placement_decisions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_burst_event(
+    workload: str,
+    *,
+    from_pool: str | None,
+    to_pool: str | None,
+    residency: str | None,
+    allowed: bool,
+    reason: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO burst_events
+                   (workload, from_pool, to_pool, residency, allowed, reason)
+               VALUES (?,?,?,?,?,?)""",
+            (workload, from_pool, to_pool, residency, 1 if allowed else 0, reason),
+        )
+
+
+def list_burst_events(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM burst_events ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]

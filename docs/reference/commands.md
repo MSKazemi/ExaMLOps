@@ -312,8 +312,28 @@ exa project current
 exa project set-quota research --cpu-limit 8 --memory-gb 16
 exa project compose research --out docker-compose.project.yml  # quota-bounded Compose (ADR 0084)
 exa project grant alice owner project:research       # low-level RBAC grant (also on assign path)
+exa project cost research                             # per-project cost/carbon attribution (P4)
+exa project budget research                           # budget/quota status; exit 1 + audit on breach (P4)
 exa project archive research
 exa project delete research
+
+# Named Connections (P2, ADR 0087) — reusable project-scoped data sources
+exa connection create minio --kind s3 --project research \
+    --config '{"endpoint":"http://localhost:19000","bucket":"data"}' --secret-value minioadmin
+exa connection list --project research
+exa connection show minio --project research          # never prints the secret
+exa connection test minio --project research          # read-only reachability probe (exit 1 if down)
+exa connection delete minio --project research
+
+# Project-scoped training run (P3, ADR 0088)
+exa pipeline run --model JPCP --project research       # tag + attribute cost to the project
+
+# Workbenches (P5, ADR 0090) — on-demand project dev environments
+exa workbench create nb --project research --image jupyter/scipy-notebook:latest
+exa workbench start nb --project research              # injects project connections as env vars
+exa workbench list --project research
+exa workbench stop nb --project research
+exa workbench delete nb --project research
 ```
 
 A **Project** is ExaMLOps's canonical *workspace* (RHOAI-inspired, ADR 0086): one named unit that
