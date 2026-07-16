@@ -512,6 +512,102 @@ def promote(
         )
         _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
 
+    # C6 — SLO error-budget gate: when EXAMLOPS_SLO_GATE_ENABLED and a gate-flagged SLO
+    # has an exhausted budget, refuse to promote (unless --force, audited). No-op otherwise.
+    from examlops.cli.commands.slo_cmd import gate_enabled as _slo_gate_enabled
+
+    if _slo_gate_enabled():
+        from examlops.platform_db import list_slo_specs
+        from examlops.slo import budget_exhausted
+
+        exhausted = [
+            s["name"]
+            for s in list_slo_specs(model=model)
+            if s["gate_promotion"] and budget_exhausted(model, s["name"], tenant=s["tenant"])
+        ]
+        if exhausted:
+            actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+            if not force:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "promotion_blocked_by_slo",
+                    model,
+                    {"version": version, "exhausted_slos": exhausted},
+                )
+                _output.error(
+                    f"SLO budget exhausted for {model}: {', '.join(exhausted)}. "
+                    "Use --force to override (audited).",
+                )
+                return
+            write_audit_event(
+                "cli",
+                actor,
+                "slo_gate_override",
+                model,
+                {"version": version, "to": to_alias, "exhausted_slos": exhausted, "forced": True},
+            )
+            _output.warning(
+                f"SLO budget exhausted but --force set; overriding: {', '.join(exhausted)}"
+            )
+
+    # D1 — EU AI Act classification gate (R2): an in-scope system with no risk tier
+    # MUST NOT be promoted until it is classified (unconditional; --force-overridable, audited).
+    from examlops.compliance import promotion_blocked_reason
+
+    compliance_reason = promotion_blocked_reason(model)
+    if compliance_reason:
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_compliance",
+                model,
+                {"version": version, "reason": compliance_reason},
+            )
+            _output.error(
+                f"Promotion blocked: {compliance_reason}. Use --force to override (audited).",
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "compliance_gate_override",
+            model,
+            {"version": version, "reason": compliance_reason, "forced": True},
+        )
+        _output.warning(f"Compliance gate ({compliance_reason}) overridden with --force.")
+
+    # C8 — fairness gate: when EXAMLOPS_FAIRNESS_GATE_ENABLED and a gate-flagged model
+    # exceeds its disparity threshold, refuse to promote (unless --force, audited).
+    if os.getenv("EXAMLOPS_FAIRNESS_GATE_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+        from examlops.fairness import fairness_gate
+
+        if fairness_gate(model):
+            actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+            if not force:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "promotion_blocked_by_fairness",
+                    model,
+                    {"version": version},
+                )
+                _output.error(
+                    f"Fairness disparity exceeds threshold for {model}. "
+                    "Use --force to override (audited).",
+                )
+                return
+            write_audit_event(
+                "cli",
+                actor,
+                "fairness_gate_override",
+                model,
+                {"version": version, "to": to_alias, "forced": True},
+            )
+            _output.warning("Fairness disparity exceeded but --force set; overriding.")
+
     if not _output.confirm(
         f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
     ):
