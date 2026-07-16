@@ -1,0 +1,202 @@
+"""B3 — Semantic caching for the model gateway (ADR 0018).
+
+Returns a stored completion for an embedding-**similar**, cacheable prompt, with
+per-tenant + per-params isolation, safe bypass, TTL/size eviction, and measured savings.
+The production embedder is a local model (Ollama `nomic-embed` / sentence-transformers, as
+in Phase 25) and the ANN store is Redis/Qdrant (B5); the **fallback** is an in-process
+cosine search over a deterministic token-hash embedding, so the cache logic is exercisable
+with no vector DB and no embedding service.
+
+Wires into the B2 gateway via its existing ``cache_lookup``/``cache_store`` hooks
+(:func:`bind_to_gateway`).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+_EMBED_DIM = 64
+
+
+# ── Embedding (pluggable; deterministic token-hash fallback) ──────────────────
+
+
+def _default_embed(text: str) -> list[float]:
+    """Bag-of-tokens hashing embedding — paraphrases sharing tokens land close (cosine)."""
+    vec = [0.0] * _EMBED_DIM
+    tokens = [t for t in text.lower().split() if t]
+    for tok in tokens:
+        h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+        vec[h % _EMBED_DIM] += 1.0
+    return vec
+
+
+def _embed(text: str) -> list[float]:
+    """Try a real local embedder; fall back to the deterministic token-hash vector."""
+    try:  # pragma: no cover - optional local embedding backend
+        import os
+
+        if os.getenv("EXAMLOPS_CACHE_EMBED_BACKEND"):
+            from examlops.skipper.embeddings import embed_text  # type: ignore
+
+            return list(embed_text(text))
+    except Exception:
+        pass
+    return _default_embed(text)
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+# ── Cache ─────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class CacheEntry:
+    embedding: list[float]
+    prompt: str
+    completion: Any
+    namespace: str
+    created_at: float
+    tokens: int = 0
+    cost_usd: float = 0.0
+
+
+def _params_key(model: str, params: dict[str, Any]) -> str:
+    temp = params.get("temperature", 0.0)
+    max_tokens = params.get("max_tokens", 0)
+    return f"{model}|t={temp}|m={max_tokens}"
+
+
+def namespace(model: str, params: dict[str, Any], tenant: str) -> str:
+    """Cache namespace: model + normalized params + tenant (R3) — prevents cross-collision."""
+    return f"{tenant}::{_params_key(model, params)}"
+
+
+def is_cacheable(
+    params: dict[str, Any] | None = None,
+    *,
+    no_cache: bool = False,
+    side_effecting: bool = False,
+    bypass_temperature: float = 0.5,
+) -> bool:
+    """A request bypasses the cache above the temp threshold, on no-cache, or side-effects (R5)."""
+    if no_cache or side_effecting:
+        return False
+    temp = float((params or {}).get("temperature", 0.0))
+    return temp <= bypass_temperature
+
+
+@dataclass
+class SemanticCache:
+    threshold: float = 0.85  # conservative default (R4)
+    ttl_seconds: float = 3600.0
+    max_size: int = 1000
+    bypass_temperature: float = 0.5
+    embed_fn: Callable[[str], list[float]] = _embed
+    _entries: list[CacheEntry] = field(default_factory=list)
+
+    def _now(self) -> float:
+        return time.time()
+
+    def _evict(self) -> None:
+        now = self._now()
+        # Drop expired, then trim to max_size (oldest-first).
+        self._entries = [e for e in self._entries if now - e.created_at <= self.ttl_seconds]
+        if len(self._entries) > self.max_size:
+            self._entries.sort(key=lambda e: e.created_at)
+            self._entries = self._entries[-self.max_size :]
+
+    def lookup(
+        self, prompt: str, model: str, params: dict[str, Any], tenant: str = "default"
+    ) -> tuple[Any | None, float]:
+        """Return (completion, similarity) on a hit within threshold + namespace, else (None, best)."""
+        self._evict()
+        ns = namespace(model, params, tenant)
+        q = self.embed_fn(prompt)
+        best_sim = 0.0
+        best: CacheEntry | None = None
+        for e in self._entries:
+            if e.namespace != ns:  # tenant + params isolation (R3/GWT-3/GWT-4)
+                continue
+            sim = cosine(q, e.embedding)
+            if sim > best_sim:
+                best_sim, best = sim, e
+        if best is not None and best_sim >= self.threshold:
+            self._record(tenant, model, hit=True, similarity=best_sim, entry=best)
+            return best.completion, best_sim
+        self._record(tenant, model, hit=False, similarity=best_sim, entry=None)
+        return None, best_sim
+
+    def store(
+        self,
+        prompt: str,
+        completion: Any,
+        model: str,
+        params: dict[str, Any],
+        tenant: str = "default",
+        *,
+        tokens: int = 0,
+        cost_usd: float = 0.0,
+    ) -> None:
+        ns = namespace(model, params, tenant)
+        self._entries.append(
+            CacheEntry(self.embed_fn(prompt), prompt, completion, ns, self._now(), tokens, cost_usd)
+        )
+        self._evict()
+
+    def _record(
+        self, tenant: str, model: str, *, hit: bool, similarity: float, entry: CacheEntry | None
+    ) -> None:
+        try:
+            from examlops.platform_db import record_cache_event
+
+            record_cache_event(
+                tenant,
+                model,
+                hit=hit,
+                similarity=similarity,
+                tokens_saved=(entry.tokens if (hit and entry) else 0),
+                cost_saved=(entry.cost_usd if (hit and entry) else 0.0),
+            )
+        except Exception:
+            pass
+
+
+def bind_to_gateway(cache: SemanticCache, tenant: str = "default"):
+    """Return (cache_lookup, cache_store) callables matching the B2 gateway hook signatures.
+
+    The gateway calls ``cache_lookup(model, messages)`` and
+    ``cache_store(model, messages, completion)``; params default to temperature 0.
+    """
+
+    def _prompt(messages: list) -> str:
+        return messages[-1].get("content", "") if messages else ""
+
+    def lookup(model: str, messages: list) -> Any | None:
+        comp, _sim = cache.lookup(_prompt(messages), model, {"temperature": 0.0}, tenant)
+        return getattr(comp, "text", comp) if comp is not None else None
+
+    def store(model: str, messages: list, completion: Any) -> None:
+        cache.store(
+            _prompt(messages),
+            getattr(completion, "text", completion),
+            model,
+            {"temperature": 0.0},
+            tenant,
+            tokens=getattr(completion, "completion_tokens", 0),
+            cost_usd=getattr(completion, "cost_usd", 0.0),
+        )
+
+    return lookup, store

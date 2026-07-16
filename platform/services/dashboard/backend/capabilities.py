@@ -27,6 +27,7 @@ DRIFT_BASELINE = "drift.baseline"
 CONFIG_WRITE = "config.write"
 SECRET_REVEAL = "secret.reveal"
 SERVICE_CONTROL = "service.control"
+PROJECT_MANAGE = "project.manage"  # ADR 0086 — create/assign/member/quota on a Project
 
 # Actions that additionally require step-up/MFA (F15 R6 / F16). Enforcement is deferred; the flag
 # is surfaced so the UI can prompt and the audit trail can record it.
@@ -42,6 +43,7 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
         CONFIG_WRITE,
         SECRET_REVEAL,
         SERVICE_CONTROL,
+        PROJECT_MANAGE,
     }
 )
 

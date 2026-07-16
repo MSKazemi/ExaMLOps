@@ -33,6 +33,7 @@ FLAG_DEFS: dict[str, FlagDef] = {
     "facilityConsole": FlagDef("facilityConsole", "F6 exascale facility console", default=True),
     "commandPalette": FlagDef("commandPalette", "F2 ⌘K command palette", default=True),
     "llmopsConsole": FlagDef("llmopsConsole", "F10 LLMOps console", default=True),
+    "projectsConsole": FlagDef("projectsConsole", "Projects workspace console (ADR 0086)", default=True),
     # Example staged rollout: admins always, everyone else at 50%.
     "incidentTimeline": FlagDef(
         "incidentTimeline",

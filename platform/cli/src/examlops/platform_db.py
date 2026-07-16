@@ -764,6 +764,76 @@ def init_db() -> None:
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 ts                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Next-Gen 40 · B3 — semantic-cache hit/miss + measured savings (ADR 0018).
+            CREATE TABLE IF NOT EXISTS cache_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                model         TEXT NOT NULL,
+                hit           INTEGER NOT NULL,
+                similarity    REAL,
+                tokens_saved  INTEGER NOT NULL DEFAULT 0,
+                cost_saved    REAL NOT NULL DEFAULT 0,
+                ts            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B5 — vector store (pgvector-default; SQLite fallback) (ADR 0020).
+            CREATE TABLE IF NOT EXISTS vector_collections (
+                name       TEXT NOT NULL,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                dim        INTEGER NOT NULL,
+                metric     TEXT NOT NULL DEFAULT 'cosine',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (name, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS vector_items (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection    TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                item_id       TEXT NOT NULL,
+                vector_json   TEXT NOT NULL,
+                metadata_json TEXT,
+                ts            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (collection, tenant, item_id)
+            );
+            CREATE TABLE IF NOT EXISTS vector_metrics (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection  TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                operation   TEXT NOT NULL,
+                latency_ms  REAL NOT NULL DEFAULT 0,
+                item_count  INTEGER NOT NULL DEFAULT 0,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B4 — RAG knowledge-base versioning (ADR 0019). One row per
+            -- (kb, tenant); ingest bumps chunk_count + records the A1 source revision.
+            CREATE TABLE IF NOT EXISTS rag_kbs (
+                kb             TEXT NOT NULL,
+                tenant         TEXT NOT NULL DEFAULT 'default',
+                source_revision TEXT,
+                encoder        TEXT,
+                chunk_count    INTEGER NOT NULL DEFAULT 0,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (kb, tenant)
+            );
+            -- Next-Gen 40 · D8 — guardrail violations (metrics + audit trail) (ADR 0026).
+            CREATE TABLE IF NOT EXISTS guardrail_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                direction  TEXT NOT NULL,      -- input | output | tool
+                action     TEXT NOT NULL,      -- allow | redact | block
+                rule       TEXT NOT NULL,
+                mode       TEXT NOT NULL DEFAULT 'enforce',
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Unified Project workspace (ADR 0086): generic resource membership.
+            -- ``kind`` ∈ model | pipeline | serving_endpoint | connection | dataset | storage.
+            CREATE TABLE IF NOT EXISTS project_resources (
+                project   TEXT NOT NULL,
+                kind      TEXT NOT NULL,
+                ref       TEXT NOT NULL,
+                added_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                added_by  TEXT,
+                PRIMARY KEY (project, kind, ref)
+            );
         """)
         _migrate_columns(conn)
 
@@ -792,6 +862,10 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "revision": "TEXT",
         "stage": "TEXT NOT NULL DEFAULT 'train'",
         "score": "REAL",
+    },
+    # Unified Project workspace (ADR 0086): per-project cost attribution anchor.
+    "model_costs": {
+        "project": "TEXT",
     },
 }
 
@@ -947,16 +1021,20 @@ def record_model_cost(
     job_id: str | None,
     gpu_hours: float | None,
     cost_usd: float | None,
+    project: str | None = None,
 ) -> None:
     import datetime
 
+    # Attribute the cost to the model's project (ADR 0086) when not passed explicitly.
+    if project is None:
+        project = get_project_for_model(model_name)
     recorded_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
     with get_db() as conn:
         conn.execute(
             """INSERT INTO model_costs
-               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at),
+               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project),
         )
 
 
@@ -1377,19 +1455,26 @@ def list_project_budgets() -> list[dict[str, Any]]:
 
 
 def get_project_consumption(project: str) -> dict[str, float]:
-    """Sum recorded GPU-hours and cost for all models in a namespace (= project).
+    """Sum recorded GPU-hours and cost attributed to a project (ADR 0086).
 
-    Joins ``namespace_models`` → ``model_costs`` so budgets enforce against the real
-    training spend already tracked by ``exa models cost``.
+    Resolves the project's models from the unified membership tables — ``project_resources``
+    (kind='model') ∪ ``project_models`` ∪ ``namespace_models`` (back-compat alias) — so budgets
+    enforce against the real training spend tracked by ``exa models cost``, whether a model was
+    grouped via the new Projects surface or the legacy namespace surface.
     """
+    init_db()
     with get_db() as conn:
         row = conn.execute(
-            """SELECT COALESCE(SUM(c.gpu_hours), 0) AS gpu_hours,
+            """WITH members(model) AS (
+                   SELECT ref  FROM project_resources WHERE project = ? AND kind = 'model'
+                   UNION SELECT model FROM project_models   WHERE project   = ?
+                   UNION SELECT model FROM namespace_models WHERE namespace = ?
+               )
+               SELECT COALESCE(SUM(c.gpu_hours), 0) AS gpu_hours,
                       COALESCE(SUM(c.cost_usd), 0)  AS cost_usd
-               FROM namespace_models nm
-               JOIN model_costs c ON c.model_name = nm.model
-               WHERE nm.namespace = ?""",
-            (project,),
+               FROM members m
+               JOIN model_costs c ON c.model_name = m.model""",
+            (project, project, project),
         ).fetchone()
     return {"gpu_hours": float(row["gpu_hours"]), "cost_usd": float(row["cost_usd"])}
 
@@ -1519,12 +1604,17 @@ def delete_project(name: str) -> bool:
         if not row:
             return False
         conn.execute("DELETE FROM project_models WHERE project=?", (name,))
+        conn.execute("DELETE FROM project_resources WHERE project=?", (name,))
         conn.execute("DELETE FROM projects WHERE name=?", (name,))
     return True
 
 
-def assign_model_to_project(project: str, model: str) -> bool:
-    """Assign a model to a project. Returns False if project not found."""
+def assign_model_to_project(project: str, model: str, added_by: str | None = None) -> bool:
+    """Assign a model to a project. Returns False if project not found.
+
+    Dual-writes the legacy ``project_models`` table and the unified ``project_resources``
+    membership (ADR 0086, ``kind='model'``) so both stay consistent during the transition.
+    """
     init_db()
     with get_db() as conn:
         row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
@@ -1534,17 +1624,163 @@ def assign_model_to_project(project: str, model: str) -> bool:
             "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)",
             (project, model),
         )
+        conn.execute(
+            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
+               VALUES (?, 'model', ?, ?)""",
+            (project, model, added_by),
+        )
     return True
 
 
 def list_project_models(project: str) -> list[str]:
-    """Return model names assigned to a project."""
+    """Return model names assigned to a project (unified: project_resources ∪ project_models)."""
     init_db()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT model FROM project_models WHERE project=? ORDER BY model", (project,)
+            """SELECT ref AS model FROM project_resources WHERE project=? AND kind='model'
+               UNION SELECT model FROM project_models WHERE project=?
+               ORDER BY model""",
+            (project, project),
         ).fetchall()
     return [r["model"] for r in rows]
+
+
+# ── Unified Project workspace: generic resource membership (ADR 0086) ─────────
+
+
+_RESOURCE_KINDS = {"model", "pipeline", "serving_endpoint", "connection", "dataset", "storage"}
+
+
+def assign_resource_to_project(
+    project: str, kind: str, ref: str, added_by: str | None = None
+) -> bool:
+    """Attach any resource (by ``kind``/``ref``) to a project. False if project not found.
+
+    ``kind='model'`` also mirrors into the legacy ``project_models`` table for back-compat.
+    """
+    if kind not in _RESOURCE_KINDS:
+        raise ValueError(
+            f"unknown resource kind: {kind!r} (expected one of {sorted(_RESOURCE_KINDS)})"
+        )
+    if kind == "model":
+        return assign_model_to_project(project, ref, added_by=added_by)
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
+               VALUES (?,?,?,?)""",
+            (project, kind, ref, added_by),
+        )
+    return True
+
+
+def remove_project_resource(project: str, kind: str, ref: str) -> bool:
+    """Detach a resource from a project. Returns True if a row was removed."""
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM project_resources WHERE project=? AND kind=? AND ref=?",
+            (project, kind, ref),
+        )
+        if kind == "model":
+            conn.execute("DELETE FROM project_models WHERE project=? AND model=?", (project, ref))
+        removed = cur.rowcount > 0
+    return removed
+
+
+def list_project_resources(project: str, kind: str | None = None) -> dict[str, list[str]]:
+    """Return a project's resources grouped by kind ({kind: [ref, ...]})."""
+    init_db()
+    with get_db() as conn:
+        if kind:
+            rows = conn.execute(
+                "SELECT kind, ref FROM project_resources WHERE project=? AND kind=? ORDER BY ref",
+                (project, kind),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT kind, ref FROM project_resources WHERE project=? ORDER BY kind, ref",
+                (project,),
+            ).fetchall()
+    grouped: dict[str, list[str]] = {}
+    for r in rows:
+        grouped.setdefault(r["kind"], []).append(r["ref"])
+    # models also come from the legacy table (union)
+    if kind in (None, "model"):
+        legacy = {m for m in list_project_models(project)}
+        grouped["model"] = sorted(set(grouped.get("model", [])) | legacy)
+        if not grouped["model"]:
+            grouped.pop("model", None)
+    return grouped
+
+
+def get_project_for_model(model: str) -> str | None:
+    """Return the first project a model belongs to, or None (used for cost attribution)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT project FROM project_resources WHERE kind='model' AND ref=?
+               UNION SELECT project FROM project_models WHERE model=?
+               LIMIT 1""",
+            (model, model),
+        ).fetchone()
+    return row["project"] if row else None
+
+
+# ── People membership + permissions via D6 authz (ADR 0086, no new ACL table) ─
+
+
+def add_project_member(project: str, subject: str, role: str, actor: str | None = None) -> None:
+    """Add a person to a project with an ``owner|editor|viewer`` role (wraps authz.grant)."""
+    if role not in {"owner", "editor", "viewer"}:
+        raise ValueError("role must be one of: owner, editor, viewer")
+    from examlops.authz import grant as _grant
+
+    _grant(subject, role, f"project:{project}", actor=actor)
+
+
+def remove_project_member(
+    project: str, subject: str, role: str | None = None, actor: str | None = None
+) -> int:
+    """Remove a person's grant(s) on a project (wraps authz.revoke). Returns rows removed."""
+    from examlops.authz import revoke as _revoke
+
+    roles = [role] if role else ["owner", "editor", "viewer"]
+    return sum(_revoke(subject, r, f"project:{project}", actor=actor) for r in roles)
+
+
+def list_project_members(project: str) -> list[dict[str, Any]]:
+    """Return the people granted a relation directly on ``project:<name>``."""
+    rows = list_relations(obj=f"project:{project}")
+    return [
+        {
+            "subject": r["subject"],
+            "role": r["relation"],
+            "granted_by": r.get("actor"),
+            "when": r.get("created_at"),
+        }
+        for r in rows
+    ]
+
+
+def get_project_full(name: str) -> dict[str, Any] | None:
+    """Full project anatomy for ``exa project show`` and the dashboard detail endpoint.
+
+    Returns None for an unknown project (ADR 0086 R5).
+    """
+    project = get_project(name)
+    if not project:
+        return None
+    return {
+        **project,
+        "resources": list_project_resources(name),
+        "members": list_project_members(name),
+        "budget": get_project_budget(name),
+        "consumption": get_project_consumption(name),
+    }
 
 
 # ── Autopilot (ADR 0085): self-driving closed-loop detect→retrain→promote ────
@@ -2329,3 +2565,51 @@ def total_gateway_cost(key_hash: str | None = None) -> float:
                 "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls"
             ).fetchone()
     return float(row["t"])
+
+
+# ── B3 — semantic-cache savings (ADR 0018) ────────────────────────────────────
+
+
+def record_cache_event(
+    tenant: str,
+    model: str,
+    *,
+    hit: bool,
+    similarity: float | None = None,
+    tokens_saved: int = 0,
+    cost_saved: float = 0.0,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO cache_events (tenant, model, hit, similarity, tokens_saved, cost_saved)
+               VALUES (?,?,?,?,?,?)""",
+            (tenant, model, 1 if hit else 0, similarity, tokens_saved, cost_saved),
+        )
+
+
+def cache_stats(tenant: str | None = None) -> dict[str, Any]:
+    """Aggregate hit-rate + measured savings (R7) — for the dashboard caching panel."""
+    init_db()
+    where = "WHERE tenant=?" if tenant else ""
+    params = (tenant,) if tenant else ()
+    with get_db() as conn:
+        row = conn.execute(
+            f"""SELECT
+                    COALESCE(SUM(hit),0)              AS hits,
+                    COALESCE(SUM(1-hit),0)            AS misses,
+                    COUNT(*)                          AS total,
+                    COALESCE(SUM(tokens_saved),0)     AS tokens_saved,
+                    COALESCE(SUM(cost_saved),0)       AS cost_saved
+                FROM cache_events {where}""",
+            params,
+        ).fetchone()
+    hits, total = int(row["hits"]), int(row["total"])
+    return {
+        "hits": hits,
+        "misses": int(row["misses"]),
+        "total": total,
+        "hit_rate": (hits / total) if total else 0.0,
+        "tokens_saved": int(row["tokens_saved"]),
+        "cost_saved": float(row["cost_saved"]),
+    }
