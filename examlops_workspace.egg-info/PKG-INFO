@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: examlops-workspace
-Version: 0.24.0
+Version: 0.32.0
 Requires-Python: >=3.12
 Requires-Dist: examlops
 Requires-Dist: setuptools<80,>=65
@@ -32,3 +32,4 @@ Requires-Dist: ruff==0.15.6; extra == "dev"
 Requires-Dist: mypy>=1.8; extra == "dev"
 Requires-Dist: pandas-stubs>=2.0; extra == "dev"
 Requires-Dist: paramiko>=3.5.0; extra == "dev"
+Requires-Dist: simpleeval>=1.0; extra == "dev"

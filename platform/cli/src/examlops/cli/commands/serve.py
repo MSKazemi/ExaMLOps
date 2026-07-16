@@ -299,3 +299,64 @@ def _render_traffic_list() -> None:
             [item["model"], rules_str, (item["updated_at"] or "—")[:19], item["updated_by"] or "—"]
         )
     _output.print_table("Traffic Rules", ["Model", "Split", "Updated At", "Updated By"], table_rows)
+
+
+# ── E1 — Kubernetes-native serving (ADR 0015) ─────────────────────────────────
+
+_EXAMPLES_MANIFEST = (
+    "Examples:\n\n"
+    "  exa serve manifest JPCP --alias Production\n\n"
+    "  exa serve manifest JPCP --alias Canary --canary 10 --out ./k8s/jpcp.yaml\n\n"
+    "  exa --json serve manifest JPCP"
+)
+
+
+@app.command("manifest", epilog=_EXAMPLES_MANIFEST)
+def manifest(
+    model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
+    alias: str = typer.Option("Production", "--alias", help="MLflow alias to serve"),
+    canary: int | None = typer.Option(None, "--canary", help="Canary traffic percent (0..100)"),
+    out: str | None = typer.Option(None, "--out", help="Write manifest YAML to this file"),
+    registry_dir: str | None = typer.Option(
+        None, "--registry-dir", help="Dir of per-model YAML (default: RAY_MODELS_DIR)"
+    ),
+) -> None:
+    """Generate a schema-valid KServe InferenceService manifest from the model registry (E1)."""
+    from pathlib import Path
+
+    import yaml
+
+    from examlops.serving_backends import registry_to_kserve, validate_manifest
+
+    reg = registry_dir or os.getenv("RAY_MODELS_DIR", "pipelines/models")
+    yaml_path = Path(reg) / f"{model.lower()}.yaml"
+    if not yaml_path.is_file():
+        _output.error(f"Model YAML not found: {yaml_path}")
+    model_yaml = yaml.safe_load(yaml_path.read_text())
+    m = registry_to_kserve(model_yaml, alias, canary_pct=canary)
+    errors = validate_manifest(m)
+    if errors:
+        _output.error(f"Generated manifest failed validation: {errors}")
+    rendered = yaml.safe_dump(m, sort_keys=False)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(rendered)
+        _output.ok(f"KServe manifest written to {out} ({m['kind']})")
+        return
+    if _output.json_mode:
+        _output.print_json(m)
+        return
+    typer.echo(rendered)
+    _output.ok(f"Generated {m['kind']} for {model}@{alias}")
+
+
+@app.command("backend")
+def backend() -> None:
+    """Show the active serving backend (ray-compose default | kserve-k8s)."""
+    from examlops.serving_backends import select_backend
+
+    b = select_backend()
+    if _output.json_mode:
+        _output.print_json({"backend": b.name})
+        return
+    _output.ok(f"Active serving backend: {b.name}  (EXAMLOPS_SERVING_BACKEND)")
