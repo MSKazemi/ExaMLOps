@@ -3,6 +3,10 @@ import {
   statusToken,
   quotaSummary,
   budgetUsage,
+  storageUsagePct,
+  bytesToGb,
+  pipelineToken,
+  type ProjectStorage,
   type ProjectQuota,
   type ProjectBudget,
   type ProjectConsumption,
@@ -40,5 +44,33 @@ describe('budgetUsage', () => {
   it('computes the consumed ratio against the GPU-hour budget', () => {
     const budget: ProjectBudget = { gpuHours: 100, costUsd: 500 }
     expect(budgetUsage(budget, consumption)).toBeCloseTo(0.25)
+  })
+})
+
+describe('storageUsagePct (P6)', () => {
+  const base: ProjectStorage = { bucket: 'examlops-projects', prefix: 'demo/', quotaGb: 100, usedBytes: 0, connectionRef: null }
+  it('is 0 with no usage', () => {
+    expect(storageUsagePct(base)).toBe(0)
+  })
+  it('computes a percentage of the GB quota', () => {
+    expect(storageUsagePct({ ...base, usedBytes: 25e9 })).toBe(25)
+  })
+  it('caps at 100 and is 0 without a quota', () => {
+    expect(storageUsagePct({ ...base, usedBytes: 500e9 })).toBe(100)
+    expect(storageUsagePct({ ...base, quotaGb: 0, usedBytes: 5e9 })).toBe(0)
+  })
+})
+
+describe('bytesToGb', () => {
+  it('formats bytes as GB', () => {
+    expect(bytesToGb(1_500_000_000)).toBe('1.50 GB')
+  })
+})
+
+describe('pipelineToken (P7)', () => {
+  it('maps pipeline status to colourblind-safe tokens', () => {
+    expect(pipelineToken('healthy')).toBe('ok')
+    expect(pipelineToken('degraded')).toBe('warn')
+    expect(pipelineToken('unknown')).toBe('unknown')
   })
 })

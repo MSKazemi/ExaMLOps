@@ -834,6 +834,27 @@ def init_db() -> None:
                 added_by  TEXT,
                 PRIMARY KEY (project, kind, ref)
             );
+            -- Project Anatomy · P6 — per-project storage location (ADR 0091).
+            CREATE TABLE IF NOT EXISTS project_storage (
+                project        TEXT PRIMARY KEY,
+                bucket         TEXT NOT NULL,
+                prefix         TEXT NOT NULL,       -- '<project>/'
+                connection_ref TEXT,                -- optional P2 s3 connection name
+                quota_gb       REAL,
+                used_bytes     INTEGER NOT NULL DEFAULT 0,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Project Anatomy · P7 — the project's two pipeline surfaces (ADR 0092).
+            CREATE TABLE IF NOT EXISTS project_pipelines (
+                project      TEXT NOT NULL,
+                kind         TEXT NOT NULL,         -- 'prefect' | 'rayserve'
+                ref          TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'unknown',
+                schedule     TEXT,
+                last_run_at  DATETIME,
+                updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, kind)
+            );
             -- Next-Gen 40 · C4 — AgentOps: per-session agent traces (ADR 0021).
             CREATE TABLE IF NOT EXISTS agent_sessions (
                 session_id  TEXT PRIMARY KEY,
@@ -2331,12 +2352,37 @@ def get_project_full(name: str) -> dict[str, Any] | None:
     project = get_project(name)
     if not project:
         return None
+
+    # P8 anatomy (ADR 0093): storage / connections / pipelines are fail-open and secret-safe —
+    # a missing or unreachable source yields empty/None, never an exception. Storage is ensured
+    # lazily so a real project always shows its location (idempotent; project is known here).
+    try:
+        storage = get_project_storage(name) or ensure_project_storage(name)
+    except Exception:
+        storage = None
+    try:
+        from examlops.connections import list_connections
+
+        connections = [
+            {"name": c["name"], "kind": c.get("kind"), "has_secret": bool(c.get("has_secret"))}
+            for c in list_connections(project=name)
+        ]
+    except Exception:
+        connections = []
+    try:
+        pipelines = get_project_pipelines(name)
+    except Exception:
+        pipelines = {"prefect": None, "rayserve": None}
+
     return {
         **project,
         "resources": list_project_resources(name),
         "members": list_project_members(name),
         "budget": get_project_budget(name),
         "consumption": get_project_consumption(name),
+        "storage": storage,
+        "connections": connections,
+        "pipelines": pipelines,
     }
 
 
@@ -5123,3 +5169,211 @@ def list_burst_events(limit: int = 50) -> list[dict[str, Any]]:
             "SELECT * FROM burst_events ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Project Anatomy · P6 — per-project storage location (ADR 0091).
+# ---------------------------------------------------------------------------
+def projects_bucket() -> str:
+    """The shared bucket that holds every project's prefix (env-overridable)."""
+    return os.getenv("EXAMLOPS_PROJECTS_BUCKET", "examlops-projects")
+
+
+def project_experiment(project: str) -> str:
+    """Stable MLflow experiment name whose artifact_location is the project prefix."""
+    return f"project/{project}"
+
+
+def ensure_project_storage(project: str) -> dict[str, Any] | None:
+    """Upsert the default storage record for a *known* project; idempotent.
+
+    Returns the record, or None if the project does not exist (never creates a row for an
+    unknown project — R4). The default location is ``s3://<projects_bucket>/<project>/`` with a
+    ``quota_gb`` mirrored from ``projects.storage_gb``.
+    """
+    init_db()
+    proj = get_project(project)
+    if not proj:
+        return None
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT connection_ref, used_bytes FROM project_storage WHERE project=?", (project,)
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO project_storage
+                   (project, bucket, prefix, connection_ref, quota_gb, used_bytes, updated_at)
+               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(project) DO UPDATE SET
+                   bucket=excluded.bucket, prefix=excluded.prefix,
+                   quota_gb=excluded.quota_gb, updated_at=CURRENT_TIMESTAMP""",
+            (
+                project,
+                projects_bucket(),
+                f"{project}/",
+                existing["connection_ref"] if existing else None,
+                proj.get("storage_gb"),
+                existing["used_bytes"] if existing else 0,
+            ),
+        )
+    return get_project_storage(project)
+
+
+def get_project_storage(project: str) -> dict[str, Any] | None:
+    """Return the storage record for a project, or None."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM project_storage WHERE project=?", (project,)).fetchone()
+    return dict(row) if row else None
+
+
+def bind_project_connection(project: str, connection_ref: str, actor: str | None = None) -> bool:
+    """Bind an existing P2 S3 connection as the project's storage backend.
+
+    Validates the ref against the project's connections (kind ``s3``); the effective bucket then
+    comes from the connection config. Never copies a secret. Returns False if the project has no
+    storage record or the connection is missing/not s3.
+    """
+    from examlops.connections import get_connection
+
+    init_db()
+    if get_project_storage(project) is None and ensure_project_storage(project) is None:
+        return False
+    conn_rec = get_connection(connection_ref, project=project)
+    if not conn_rec or conn_rec.get("kind") != "s3":
+        return False
+    bucket = str(conn_rec.get("config", {}).get("bucket") or projects_bucket())
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE project_storage SET connection_ref=?, bucket=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE project=?",
+            (connection_ref, bucket, project),
+        )
+    write_audit_event(
+        "cli", actor, "project_storage_bind", project, {"connection_ref": connection_ref}
+    )
+    return True
+
+
+def set_project_usage(project: str, used_bytes: int) -> None:
+    """Record a measured usage figure (called by refresh_project_usage / probes)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE project_storage SET used_bytes=?, updated_at=CURRENT_TIMESTAMP WHERE project=?",
+            (int(used_bytes), project),
+        )
+
+
+def refresh_project_usage(project: str) -> int:
+    """Probe MinIO for the bytes under the project prefix and store them; fail-open.
+
+    Sums object sizes under ``<prefix>`` via S3 ListObjectsV2 (boto3, lazily imported). If MinIO
+    or boto3 is unavailable, the prior ``used_bytes`` is kept and returned — the platform never
+    raises on a missing backend (R5/R11).
+    """
+    rec = get_project_storage(project)
+    if rec is None:
+        return 0
+    prior = int(rec.get("used_bytes") or 0)
+    try:
+        import boto3  # noqa: PLC0415  (lazy — MinIO/boto3 is optional)
+
+        endpoint = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000")
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        )
+        total = 0
+        token = None
+        while True:
+            kw = {"Bucket": rec["bucket"], "Prefix": rec["prefix"]}
+            if token:
+                kw["ContinuationToken"] = token
+            resp = s3.list_objects_v2(**kw)
+            total += sum(o.get("Size", 0) for o in resp.get("Contents", []))
+            if not resp.get("IsTruncated"):
+                break
+            token = resp.get("NextContinuationToken")
+        set_project_usage(project, total)
+        return total
+    except Exception:
+        return prior
+
+
+# ---------------------------------------------------------------------------
+# Project Anatomy · P7 — the project's two pipeline surfaces (ADR 0092).
+# ---------------------------------------------------------------------------
+_PIPELINE_KINDS = ("prefect", "rayserve")
+
+
+def upsert_project_pipeline(
+    project: str,
+    kind: str,
+    ref: str,
+    *,
+    status: str = "unknown",
+    schedule: str | None = None,
+    last_run_at: str | None = None,
+) -> None:
+    """Register/update one of a project's two pipeline surfaces (PK project+kind = one-each)."""
+    if kind not in _PIPELINE_KINDS:
+        raise ValueError(f"kind must be one of {_PIPELINE_KINDS}, got {kind!r}")
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO project_pipelines
+                   (project, kind, ref, status, schedule, last_run_at, updated_at)
+               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(project, kind) DO UPDATE SET
+                   ref=excluded.ref, status=excluded.status, schedule=excluded.schedule,
+                   last_run_at=excluded.last_run_at, updated_at=CURRENT_TIMESTAMP""",
+            (project, kind, ref, status, schedule, last_run_at),
+        )
+
+
+def get_project_pipelines(project: str) -> dict[str, Any]:
+    """Return the project's two pipeline surfaces (aggregation over existing state + registry).
+
+    Fail-open: if a live source is unavailable the registry row is used; an empty project yields
+    both surfaces as None (never an error). The Prefect surface's members are the project's models
+    (their per-model deployments); the Ray Serve surface's members are the same models with their
+    traffic split from ``traffic_rules``.
+    """
+    init_db()
+    models = list_project_models(project)
+    with get_db() as conn:
+        reg = {
+            r["kind"]: dict(r)
+            for r in conn.execute(
+                "SELECT * FROM project_pipelines WHERE project=?", (project,)
+            ).fetchall()
+        }
+
+    prefect_reg = reg.get("prefect")
+    rayserve_reg = reg.get("rayserve")
+
+    prefect = None
+    if models or prefect_reg:
+        prefect = {
+            "deployments": [f"examlops-{m.lower()}" for m in models],
+            "schedule": (prefect_reg or {}).get("schedule"),
+            "last_run_at": (prefect_reg or {}).get("last_run_at"),
+            "status": (prefect_reg or {}).get("status", "unknown"),
+        }
+
+    rayserve = None
+    if models or rayserve_reg:
+        traffic: dict[str, Any] = {}
+        for m in models:
+            rules = get_traffic_rules(m)
+            if rules:
+                traffic[m] = rules
+        rayserve = {
+            "models": models,
+            "traffic": traffic,
+            "status": (rayserve_reg or {}).get("status", "unknown"),
+        }
+
+    return {"prefect": prefect, "rayserve": rayserve}
