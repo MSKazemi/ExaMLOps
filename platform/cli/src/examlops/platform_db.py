@@ -999,6 +999,148 @@ def init_db() -> None:
             CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
                 BEFORE DELETE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'audit_events is append-only (D4)'); END;
+            -- Next-Gen 40 · A6 — Croissant dataset cards + structured model cards (ADR 0037).
+            CREATE TABLE IF NOT EXISTS dataset_cards (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset        TEXT NOT NULL,
+                revision       TEXT,
+                version        INTEGER NOT NULL DEFAULT 1,
+                croissant_json TEXT NOT NULL,
+                created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS model_card_records (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                model        TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                completeness REAL NOT NULL DEFAULT 0,
+                card_json    TEXT NOT NULL,
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by   TEXT
+            );
+            -- Next-Gen 40 · E3 — fractional GPU allocations (ADR 0030).
+            CREATE TABLE IF NOT EXISTS gpu_allocations (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                mechanism  TEXT NOT NULL,      -- mig | timeslice | whole
+                fraction   REAL NOT NULL,
+                isolation  TEXT NOT NULL,      -- hardware | soft | exclusive
+                gpu_index  INTEGER,
+                note       TEXT,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E5 — per-model autoscaling scale events (ADR 0031).
+            -- (autoscale_config predates this; new policy columns are added via
+            --  _COLUMN_MIGRATIONS below to preserve the Phase-24 stub table.)
+            CREATE TABLE IF NOT EXISTS scale_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                model         TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                from_replicas INTEGER NOT NULL,
+                to_replicas   INTEGER NOT NULL,
+                reason        TEXT,
+                metric_value  REAL,
+                cold_start_s  REAL,
+                ts            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · A3 — feature store (single train/serve definition; ADR 0017).
+            -- Feast-compatible semantics with a pure-Python fallback (no Feast/Redis required).
+            CREATE TABLE IF NOT EXISTS feature_views (
+                name             TEXT PRIMARY KEY,
+                entity           TEXT NOT NULL,
+                features_json    TEXT NOT NULL,      -- ["embedding","pclass",...]
+                source           TEXT,               -- offline source hint (parquet/table)
+                ttl_seconds      INTEGER NOT NULL DEFAULT 0,
+                dataset_revision TEXT,               -- A1 revision this view was applied against
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Offline store: append-only event log (point-in-time source of truth).
+            CREATE TABLE IF NOT EXISTS feature_records (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                view        TEXT NOT NULL,
+                entity_id   TEXT NOT NULL,
+                event_ts    DATETIME NOT NULL,
+                values_json TEXT NOT NULL,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_feature_records_lookup
+                ON feature_records (view, entity_id, event_ts);
+            -- Online store: latest materialized snapshot per entity (low-latency read).
+            CREATE TABLE IF NOT EXISTS online_features (
+                view            TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                event_ts        DATETIME NOT NULL,
+                values_json     TEXT NOT NULL,
+                materialized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (view, entity_id)
+            );
+            -- A3 materialization runs (freshness monitoring → C5). Distinct from the
+            -- Phase-24 `feature_materializations` stub (different schema).
+            CREATE TABLE IF NOT EXISTS feature_view_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                view            TEXT NOT NULL,
+                start_ts        DATETIME,
+                end_ts          DATETIME,
+                rows            INTEGER NOT NULL DEFAULT 0,
+                materialized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · A4 — declarative asset-centric pipelines (ADR 0036).
+            -- Asset registry + freshness state; the DAG coincides with the A2 lineage graph.
+            CREATE TABLE IF NOT EXISTS assets (
+                name             TEXT PRIMARY KEY,
+                kind             TEXT NOT NULL DEFAULT 'model',  -- dataset | feature | model
+                deps_json        TEXT NOT NULL DEFAULT '[]',
+                description      TEXT,
+                current_version  INTEGER NOT NULL DEFAULT 0,
+                built_from_json  TEXT,                           -- {upstream: version_at_build}
+                last_materialized_at DATETIME,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS asset_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                version         INTEGER NOT NULL,
+                built_from_json TEXT,
+                run_id          TEXT,
+                actor           TEXT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
+            CREATE TABLE IF NOT EXISTS lora_adapters (
+                adapter_id       TEXT PRIMARY KEY,
+                base_ref         TEXT NOT NULL,
+                method           TEXT NOT NULL DEFAULT 'lora',   -- lora | qlora | full
+                rank             INTEGER,
+                target_modules   TEXT,
+                dataset_revision TEXT,
+                eval_score       REAL,
+                eval_floor       REAL,
+                promoted         INTEGER NOT NULL DEFAULT 0,
+                signature        TEXT,
+                signed_by        TEXT,
+                cost_gpu_hours   REAL,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_lora_adapters_base ON lora_adapters (base_ref);
+            -- Next-Gen 40 · A8 — signed reproducibility bundles (ADR 0038).
+            CREATE TABLE IF NOT EXISTS repro_bundles (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                model         TEXT NOT NULL,
+                version       TEXT NOT NULL,
+                bundle_version INTEGER NOT NULL DEFAULT 1,
+                manifest_json TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                signature     TEXT,             -- NULL when no signing key (degraded)
+                algo          TEXT,
+                signed_by     TEXT,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_repro_bundles_mv
+                ON repro_bundles (model, version, bundle_version);
         """)
         _migrate_columns(conn)
 
@@ -1012,6 +1154,18 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "tenant": "TEXT NOT NULL DEFAULT 'default'",
         "prev_hash": "TEXT",
         "hash": "TEXT",
+    },
+    # E5 autoscaling (ADR 0031): richer policy columns on the Phase-24 autoscale_config stub.
+    "autoscale_config": {
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        "target_metric": "TEXT NOT NULL DEFAULT 'queue_depth'",
+        "target_value": "REAL NOT NULL DEFAULT 10",
+        "scale_to_zero_after_s": "INTEGER NOT NULL DEFAULT 0",
+        "warm_pool": "INTEGER NOT NULL DEFAULT 0",
+        "stabilization_s": "INTEGER NOT NULL DEFAULT 30",
+        "cooldown_s": "INTEGER NOT NULL DEFAULT 60",
+        "gpu_fraction": "REAL NOT NULL DEFAULT 1.0",
+        "enabled": "INTEGER NOT NULL DEFAULT 1",
     },
     # #8 Real HPO/AutoML: Optuna study bookkeeping on the existing hpo tables.
     "hpo_studies": {
@@ -1510,26 +1664,8 @@ def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
 
 
 # ---- #3 Elastic autoscaling --------------------------------------------------
-def set_autoscale_config(
-    model: str,
-    min_replicas: int,
-    max_replicas: int,
-    target_ongoing: int = 8,
-    updated_by: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO autoscale_config
-               (model, min_replicas, max_replicas, target_ongoing, updated_by)
-               VALUES (?,?,?,?,?)""",
-            (model, min_replicas, max_replicas, target_ongoing, updated_by),
-        )
-
-
-def get_autoscale_config(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM autoscale_config WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
+# E5 (ADR 0031): set_autoscale_config / get_autoscale_config are defined near the end of
+# this module with the full policy schema (min/max/target/scale-to-zero/warm-pool/etc.).
 
 
 # ---- #9 Ground-truth feedback loop -------------------------------------------
@@ -3561,3 +3697,538 @@ def export_audit_events(*, before_ts: str | None = None) -> list[dict[str, Any]]
             f"SELECT * FROM audit_events {clause} ORDER BY id ASC", params
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A6 — Croissant dataset cards + structured model cards (ADR 0037).
+# ---------------------------------------------------------------------------
+def save_dataset_card(dataset: str, croissant_json: str, *, revision: str | None = None) -> int:
+    init_db()
+    with get_db() as conn:
+        prev = conn.execute(
+            "SELECT MAX(version) AS v FROM dataset_cards WHERE dataset=?", (dataset,)
+        ).fetchone()
+        version = (prev["v"] or 0) + 1
+        conn.execute(
+            "INSERT INTO dataset_cards (dataset, revision, version, croissant_json) "
+            "VALUES (?,?,?,?)",
+            (dataset, revision, version, croissant_json),
+        )
+    return version
+
+
+def get_dataset_card(dataset: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM dataset_cards WHERE dataset=? ORDER BY version DESC LIMIT 1",
+            (dataset,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def save_model_card(
+    model: str,
+    card_json: str,
+    completeness: float,
+    *,
+    tenant: str = "default",
+    created_by: str | None = None,
+) -> int:
+    init_db()
+    with get_db() as conn:
+        prev = conn.execute(
+            "SELECT MAX(version) AS v FROM model_card_records WHERE model=?", (model,)
+        ).fetchone()
+        version = (prev["v"] or 0) + 1
+        conn.execute(
+            "INSERT INTO model_card_records (model, tenant, version, completeness, card_json, "
+            "created_by) VALUES (?,?,?,?,?,?)",
+            (model, tenant, version, completeness, card_json, created_by),
+        )
+    return version
+
+
+def get_model_card(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM model_card_records WHERE model=? ORDER BY version DESC LIMIT 1",
+            (model,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E5 — autoscaling & scale-to-zero (ADR 0031).
+# ---------------------------------------------------------------------------
+def set_autoscale_config(
+    model: str,
+    min_replicas: int | None = None,
+    max_replicas: int | None = None,
+    **kw: Any,
+) -> None:
+    """Upsert a per-model autoscale policy (R1).
+
+    Backward-compatible with the Phase-24 positional stub
+    (``set_autoscale_config(model, min_replicas, max_replicas, target_ongoing=..., updated_by=...)``)
+    and the E5 keyword form (``set_autoscale_config(model, target_metric=..., warm_pool=..., ...)``).
+    """
+    init_db()
+    if min_replicas is not None:
+        kw["min_replicas"] = min_replicas
+    if max_replicas is not None:
+        kw["max_replicas"] = max_replicas
+    defaults = {
+        "tenant": "default",
+        "min_replicas": 1,
+        "max_replicas": 4,
+        "target_ongoing": 8,
+        "target_metric": "queue_depth",
+        "target_value": 10.0,
+        "scale_to_zero_after_s": 0,
+        "warm_pool": 0,
+        "stabilization_s": 30,
+        "cooldown_s": 60,
+        "gpu_fraction": 1.0,
+        "enabled": 1,
+        "updated_by": None,
+    }
+    existing = get_autoscale_config(model) or {}
+    cfg = {**defaults, **{k: existing.get(k) for k in defaults if k in existing}, **kw}
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO autoscale_config
+                   (model, tenant, min_replicas, max_replicas, target_ongoing, target_metric,
+                    target_value, scale_to_zero_after_s, warm_pool, stabilization_s, cooldown_s,
+                    gpu_fraction, enabled, updated_by, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
+            (
+                model,
+                cfg["tenant"],
+                cfg["min_replicas"],
+                cfg["max_replicas"],
+                cfg["target_ongoing"],
+                cfg["target_metric"],
+                cfg["target_value"],
+                cfg["scale_to_zero_after_s"],
+                cfg["warm_pool"],
+                cfg["stabilization_s"],
+                cfg["cooldown_s"],
+                cfg["gpu_fraction"],
+                int(cfg["enabled"]),
+                cfg["updated_by"],
+            ),
+        )
+
+
+def get_autoscale_config(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM autoscale_config WHERE model=?", (model,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_autoscale_configs() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM autoscale_config ORDER BY model").fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_scale_event(
+    model: str,
+    from_replicas: int,
+    to_replicas: int,
+    *,
+    tenant: str = "default",
+    reason: str | None = None,
+    metric_value: float | None = None,
+    cold_start_s: float | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO scale_events
+                   (model, tenant, from_replicas, to_replicas, reason, metric_value, cold_start_s)
+               VALUES (?,?,?,?,?,?,?)""",
+            (model, tenant, from_replicas, to_replicas, reason, metric_value, cold_start_s),
+        )
+
+
+def list_scale_events(model: str, *, last_n: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scale_events WHERE model=? ORDER BY id DESC LIMIT ?", (model, last_n)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A3 — feature store (single train/serve definition; ADR 0017).
+# ---------------------------------------------------------------------------
+def upsert_feature_view(
+    name: str,
+    entity: str,
+    features: list[str],
+    *,
+    source: str | None = None,
+    ttl_seconds: int = 0,
+    dataset_revision: str | None = None,
+) -> None:
+    """Register/patch a feature view (single definition for train + serve) (R1)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO feature_views
+                   (name, entity, features_json, source, ttl_seconds, dataset_revision, updated_at)
+               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(name) DO UPDATE SET
+                   entity=excluded.entity, features_json=excluded.features_json,
+                   source=excluded.source, ttl_seconds=excluded.ttl_seconds,
+                   dataset_revision=excluded.dataset_revision, updated_at=CURRENT_TIMESTAMP""",
+            (name, entity, json.dumps(features), source, ttl_seconds, dataset_revision),
+        )
+
+
+def get_feature_view(name: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM feature_views WHERE name=?", (name,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["features"] = json.loads(d.pop("features_json"))
+    return d
+
+
+def list_feature_views() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM feature_views ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["features"] = json.loads(d.pop("features_json"))
+        out.append(d)
+    return out
+
+
+def write_feature_record(view: str, entity_id: str, event_ts: str, values: dict[str, Any]) -> None:
+    """Append an offline feature observation (point-in-time source of truth)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO feature_records (view, entity_id, event_ts, values_json)
+               VALUES (?,?,?,?)""",
+            (view, entity_id, event_ts, json.dumps(values)),
+        )
+
+
+def get_offline_features_asof(view: str, entity_id: str, asof_ts: str) -> dict[str, Any] | None:
+    """Latest offline feature values for an entity **as of** ``asof_ts`` (R4/R5, no leakage)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT values_json FROM feature_records
+               WHERE view=? AND entity_id=? AND event_ts<=?
+               ORDER BY event_ts DESC, id DESC LIMIT 1""",
+            (view, entity_id, asof_ts),
+        ).fetchone()
+    return json.loads(row["values_json"]) if row else None
+
+
+def materialize_online(view: str, *, start_ts: str | None = None, end_ts: str | None = None) -> int:
+    """Copy the latest offline value per entity into the online store (R6). Returns row count."""
+    init_db()
+    with get_db() as conn:
+        clauses = ["view=?"]
+        params: list[Any] = [view]
+        if start_ts:
+            clauses.append("event_ts>=?")
+            params.append(start_ts)
+        if end_ts:
+            clauses.append("event_ts<=?")
+            params.append(end_ts)
+        where = " AND ".join(clauses)
+        # Latest row per entity within the window.
+        rows = conn.execute(
+            f"""SELECT fr.entity_id, fr.event_ts, fr.values_json
+                FROM feature_records fr
+                JOIN (SELECT entity_id, MAX(event_ts) AS mx FROM feature_records
+                      WHERE {where} GROUP BY entity_id) g
+                  ON fr.entity_id=g.entity_id AND fr.event_ts=g.mx
+                WHERE fr.view=?""",
+            (*params, view),
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                """INSERT INTO online_features (view, entity_id, event_ts, values_json,
+                                                materialized_at)
+                   VALUES (?,?,?,?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(view, entity_id) DO UPDATE SET
+                       event_ts=excluded.event_ts, values_json=excluded.values_json,
+                       materialized_at=CURRENT_TIMESTAMP""",
+                (view, r["entity_id"], r["event_ts"], r["values_json"]),
+            )
+        conn.execute(
+            """INSERT INTO feature_view_materializations (view, start_ts, end_ts, rows)
+               VALUES (?,?,?,?)""",
+            (view, start_ts, end_ts, len(rows)),
+        )
+    return len(rows)
+
+
+def get_online_feature(view: str, entity_id: str) -> dict[str, Any] | None:
+    """Low-latency online read of the materialized feature vector (R3)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT values_json FROM online_features WHERE view=? AND entity_id=?",
+            (view, entity_id),
+        ).fetchone()
+    return json.loads(row["values_json"]) if row else None
+
+
+def last_materialization(view: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM feature_view_materializations WHERE view=?
+               ORDER BY id DESC LIMIT 1""",
+            (view,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A4 — declarative asset-centric pipelines (ADR 0036).
+# ---------------------------------------------------------------------------
+def register_asset(
+    name: str,
+    kind: str = "model",
+    deps: list[str] | None = None,
+    *,
+    description: str | None = None,
+) -> None:
+    """Register/patch an asset declaration (R1). Preserves version + freshness state."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO assets (name, kind, deps_json, description, updated_at)
+               VALUES (?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(name) DO UPDATE SET
+                   kind=excluded.kind, deps_json=excluded.deps_json,
+                   description=excluded.description, updated_at=CURRENT_TIMESTAMP""",
+            (name, kind, json.dumps(deps or []), description),
+        )
+
+
+def get_asset(name: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM assets WHERE name=?", (name,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["deps"] = json.loads(d.pop("deps_json"))
+    d["built_from"] = json.loads(d["built_from_json"]) if d.get("built_from_json") else {}
+    d.pop("built_from_json", None)
+    return d
+
+
+def list_assets() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM assets ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["deps"] = json.loads(d.pop("deps_json"))
+        d["built_from"] = json.loads(d["built_from_json"]) if d.get("built_from_json") else {}
+        d.pop("built_from_json", None)
+        out.append(d)
+    return out
+
+
+def bump_asset_version(
+    name: str,
+    built_from: dict[str, int],
+    *,
+    run_id: str | None = None,
+    actor: str | None = None,
+) -> int:
+    """Record a new materialized version of an asset + the upstream versions it built from (R3)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT current_version FROM assets WHERE name=?", (name,)).fetchone()
+        new_version = (row["current_version"] if row else 0) + 1
+        conn.execute(
+            """UPDATE assets SET current_version=?, built_from_json=?,
+                   last_materialized_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+               WHERE name=?""",
+            (new_version, json.dumps(built_from), name),
+        )
+        conn.execute(
+            """INSERT INTO asset_materializations (name, version, built_from_json, run_id, actor)
+               VALUES (?,?,?,?,?)""",
+            (name, new_version, json.dumps(built_from), run_id, actor),
+        )
+    return new_version
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A8 — signed reproducibility bundles (ADR 0038).
+# ---------------------------------------------------------------------------
+def store_repro_bundle(
+    model: str,
+    version: str,
+    manifest: dict[str, Any],
+    manifest_hash: str,
+    *,
+    signature: str | None = None,
+    algo: str | None = None,
+    signed_by: str | None = None,
+) -> int:
+    """Persist a reproducibility bundle manifest (versioned; audited by the caller) (R2)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT MAX(bundle_version) AS mx FROM repro_bundles WHERE model=? AND version=?",
+            (model, version),
+        ).fetchone()
+        bundle_version = (row["mx"] or 0) + 1
+        conn.execute(
+            """INSERT INTO repro_bundles
+                   (model, version, bundle_version, manifest_json, manifest_hash,
+                    signature, algo, signed_by)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                model,
+                version,
+                bundle_version,
+                json.dumps(manifest),
+                manifest_hash,
+                signature,
+                algo,
+                signed_by,
+            ),
+        )
+    return bundle_version
+
+
+def get_repro_bundle(model: str, version: str) -> dict[str, Any] | None:
+    """Return the latest bundle for a model version (with parsed manifest), or None."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM repro_bundles WHERE model=? AND version=?
+               ORDER BY bundle_version DESC LIMIT 1""",
+            (model, version),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["manifest"] = json.loads(d["manifest_json"])
+    return d
+
+
+def list_repro_bundles(model: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        if model:
+            rows = conn.execute(
+                """SELECT model, version, MAX(bundle_version) AS bundle_version,
+                          manifest_hash, signature, created_at
+                   FROM repro_bundles WHERE model=?
+                   GROUP BY model, version ORDER BY created_at DESC""",
+                (model,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT model, version, MAX(bundle_version) AS bundle_version,
+                          manifest_hash, signature, created_at
+                   FROM repro_bundles
+                   GROUP BY model, version ORDER BY created_at DESC"""
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
+# ---------------------------------------------------------------------------
+def register_adapter(
+    adapter_id: str,
+    base_ref: str,
+    *,
+    method: str = "lora",
+    rank: int | None = None,
+    target_modules: str | None = None,
+    dataset_revision: str | None = None,
+    eval_score: float | None = None,
+    eval_floor: float | None = None,
+    signature: str | None = None,
+    signed_by: str | None = None,
+    cost_gpu_hours: float | None = None,
+) -> None:
+    """Register/patch a LoRA adapter as a first-class artifact (R3)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO lora_adapters
+                   (adapter_id, base_ref, method, rank, target_modules, dataset_revision,
+                    eval_score, eval_floor, signature, signed_by, cost_gpu_hours, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(adapter_id) DO UPDATE SET
+                   base_ref=excluded.base_ref, method=excluded.method, rank=excluded.rank,
+                   target_modules=excluded.target_modules,
+                   dataset_revision=excluded.dataset_revision, eval_score=excluded.eval_score,
+                   eval_floor=excluded.eval_floor, signature=excluded.signature,
+                   signed_by=excluded.signed_by, cost_gpu_hours=excluded.cost_gpu_hours,
+                   updated_at=CURRENT_TIMESTAMP""",
+            (
+                adapter_id,
+                base_ref,
+                method,
+                rank,
+                target_modules,
+                dataset_revision,
+                eval_score,
+                eval_floor,
+                signature,
+                signed_by,
+                cost_gpu_hours,
+            ),
+        )
+
+
+def get_adapter(adapter_id: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM lora_adapters WHERE adapter_id=?", (adapter_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_adapters(base_ref: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        if base_ref:
+            rows = conn.execute(
+                "SELECT * FROM lora_adapters WHERE base_ref=? ORDER BY created_at DESC",
+                (base_ref,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM lora_adapters ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_adapter_promoted(adapter_id: str, promoted: bool) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE lora_adapters SET promoted=?, updated_at=CURRENT_TIMESTAMP WHERE adapter_id=?",
+            (1 if promoted else 0, adapter_id),
+        )

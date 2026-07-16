@@ -16,8 +16,11 @@ from examlops.cli.commands import (
     agentops_cmd,
     approvals,
     ask_cmd,
+    assets_cmd,
     autopilot_cmd,
+    autoscale_cmd,
     batch_cmd,
+    cards_a6_cmd,
     cards_cmd,
     challenger_cmd,
     compliance_cmd,
@@ -32,12 +35,15 @@ from examlops.cli.commands import (
     explain_cmd,
     explain_command,
     fairness_cmd,
+    feature_cmd,
     features_cmd,
     feedback_cmd,
+    finetune_cmd,
     finops_cmd,
     gateway_cmd,
     genai_cmd,
     governance_cmd,
+    gpu_share_cmd,
     guardrails_cmd,
     hpc_cmd,
     hpo_cmd,
@@ -55,6 +61,7 @@ from examlops.cli.commands import (
     providers_cmd,
     quality_cmd,
     rag_cmd,
+    reproduce_cmd,
     retrain,
     rollback_cmd,
     scaffold,
@@ -218,8 +225,14 @@ serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traff
 serve.app.add_typer(
     challenger_cmd.app, name="challenger", help="Champion-challenger scoreboard & promotion"
 )
+serve.app.add_typer(autoscale_cmd.app, name="autoscale", help="Autoscaling & scale-to-zero (E5)")
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
+serve.app.add_typer(
+    finetune_cmd.adapter_app,
+    name="adapter",
+    help="Multi-LoRA adapters (add/list/promote/route) (B7)",
+)
 models.app.add_typer(cards_cmd.app, name="card", help="Generate model cards")
 # D3 — merge sign/verify/bom directly into the `exa models` group (not a sub-group).
 models.app.registered_commands.extend(supplychain_cmd.app.registered_commands)
@@ -231,6 +244,18 @@ models.app.add_typer(
 )
 serve.app.add_typer(explain_cmd.app, name="explain", help="Feature importance explanations (XAI)")
 pipeline.app.add_typer(hpo_cmd.app, name="hpo", help="Hyperparameter optimisation")
+app.add_typer(
+    feature_cmd.app, name="feature", help="Feature store — one train/serve definition, no skew (A3)"
+)
+app.add_typer(
+    assets_cmd.app, name="assets", help="Asset-centric pipelines — freshness DAG + rebuild (A4)"
+)
+app.add_typer(
+    reproduce_cmd.app,
+    name="reproduce",
+    help="Reproducibility bundles — signed manifest + verify (A8)",
+)
+app.command("finetune", epilog=finetune_cmd._EXAMPLES)(finetune_cmd.finetune)
 app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
 
 # Continuous evaluation & the ground-truth feedback loop (#9/#14).
@@ -274,12 +299,18 @@ app.add_typer(
     governance_cmd.app, name="governance", help="NIST AI RMF control coverage & crosswalk"
 )
 app.add_typer(
+    cards_a6_cmd.app, name="cards", help="Croissant dataset cards + structured model cards"
+)
+app.add_typer(
     prompt_cmd.app, name="prompt", help="Prompt registry — versioned templates + labels (dev/prod)"
 )
 app.add_typer(
     secrets_cmd.app, name="secrets", help="Secrets management, rotation, and leak scanning"
 )
 app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
+hpc_cmd.app.add_typer(
+    gpu_share_cmd.app, name="gpu-share", help="Fractional GPU allocation & bin-packing (E3)"
+)
 app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
 app.add_typer(
     providers_cmd.app, name="providers", help="Pluggable calculation providers (all domains)"
