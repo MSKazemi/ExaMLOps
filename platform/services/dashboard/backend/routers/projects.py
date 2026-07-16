@@ -105,7 +105,12 @@ def _members(conn: sqlite3.Connection, project: str) -> list[dict]:
         (f"project:{project}",),
     ).fetchall()
     return [
-        {"subject": r["subject"], "role": r["relation"], "grantedBy": r["actor"], "when": r["created_at"]}
+        {
+            "subject": r["subject"],
+            "role": r["relation"],
+            "grantedBy": r["actor"],
+            "when": r["created_at"],
+        }
         for r in rows
     ]
 
@@ -261,8 +266,13 @@ async def assign_resource_view(
         conn.execute(
             "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)", (name, ref)
         )
-    _audit(conn, principal.get("sub", "?"), "project_resource_assigned", ref,
-           {"project": name, "kind": kind})
+    _audit(
+        conn,
+        principal.get("sub", "?"),
+        "project_resource_assigned",
+        ref,
+        {"project": name, "kind": kind},
+    )
     conn.commit()
     conn.close()
     return {"project": name, "kind": kind, "ref": ref}
@@ -287,8 +297,13 @@ async def add_member_view(
         "INSERT INTO authz_relations (subject, relation, object, actor) VALUES (?,?,?,?)",
         (subject, role, f"project:{name}", principal.get("sub")),
     )
-    _audit(conn, principal.get("sub", "?"), "project_member_added", subject,
-           {"project": name, "role": role})
+    _audit(
+        conn,
+        principal.get("sub", "?"),
+        "project_member_added",
+        subject,
+        {"project": name, "role": role},
+    )
     conn.commit()
     conn.close()
     return {"project": name, "subject": subject, "role": role}
