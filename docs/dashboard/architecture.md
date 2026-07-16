@@ -701,7 +701,7 @@ lib/grafana.ts: GRAFANA_PANELS registry {name → {uid, panelId}}  +  base URL (
 - **`<GrafanaPanel>`** — builds the `d-solo` iframe URL from the registry, shows a `<Skeleton>` while
   the frame loads, and an accessible `<EmptyState>` fallback when Grafana isn't configured/reachable.
   Lazy-loaded (`loading="lazy"`), theme + time-range + template-vars driven (R1/R4).
-- **Auth/security** — internal/lxp deployments may use anonymous Viewer; exposed deployments use a
+- **Auth/security** — internal/remote deployments may use anonymous Viewer; exposed deployments use a
   service-account token/proxy, and the embed origin is scoped by `frame-ancestors` (owned by F16).
 
 ## Sequence: login

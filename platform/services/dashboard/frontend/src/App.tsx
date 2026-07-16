@@ -22,7 +22,7 @@ const Datasets = lazy(() => import('@/pages/Datasets').then((m) => ({ default: m
 const Config = lazy(() => import('@/pages/Config').then((m) => ({ default: m.Config })))
 const Audit = lazy(() => import('@/pages/Audit').then((m) => ({ default: m.Audit })))
 const Docs = lazy(() => import('@/pages/Docs').then((m) => ({ default: m.Docs })))
-const SeanerBus = lazy(() => import('./pages/SeanerBus'))
+const DataPlane = lazy(() => import('./pages/DataPlane'))
 const Approvals = lazy(() => import('@/pages/Approvals').then((m) => ({ default: m.Approvals })))
 const Pipelines = lazy(() => import('@/pages/Pipelines').then((m) => ({ default: m.Pipelines })))
 const Jupyter = lazy(() => import('@/pages/Jupyter').then((m) => ({ default: m.Jupyter })))
@@ -111,7 +111,7 @@ export default function App() {
                       <Route path="/config" element={<Config />} />
                       <Route path="/audit" element={<Audit />} />
                       <Route path="/docs" element={<Docs />} />
-                      <Route path="/seanerbus" element={<SeanerBus />} />
+                      <Route path="/dataplane" element={<DataPlane />} />
                       <Route path="/approvals" element={<Approvals />} />
                       <Route path="/pipelines" element={<Pipelines />} />
                       <Route path="/jupyter" element={<Jupyter />} />

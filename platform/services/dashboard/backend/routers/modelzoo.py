@@ -28,8 +28,8 @@ def _http_client() -> httpx.AsyncClient:
 
 
 # Paths within the standalone modelzoo repo (e.g. software/modelzoo on GitLab)
-_TASKS_PATH = "seanergys_modelzoo/models/tasks"
-_DATASETS_PATH = "seanergys_modelzoo/datasets"
+_TASKS_PATH = "modelzoo/models/tasks"
+_DATASETS_PATH = "modelzoo/datasets"
 _DATASET_EXCLUDES = {"__init__.py", "_backends.py"}
 
 

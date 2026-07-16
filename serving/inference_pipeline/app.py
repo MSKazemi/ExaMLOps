@@ -27,8 +27,8 @@ except Exception:  # pragma: no cover - examlops always present in the serving i
 
 _log = logging.getLogger("inference_pipeline")
 
-_DEFAULT_MODEL = os.getenv("SEANERBUS_DEFAULT_MODEL", "JPCP")
-_DEFAULT_ALIAS = os.getenv("SEANERBUS_DEFAULT_ALIAS", "Production")
+_DEFAULT_MODEL = os.getenv("DATAPLANE_DEFAULT_MODEL", "JPCP")
+_DEFAULT_ALIAS = os.getenv("DATAPLANE_DEFAULT_ALIAS", "Production")
 _RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:8001").rstrip("/")
 # Transient-error retries for the ingress→MultiModelServer hop.
 _ROUTE_RETRIES = int(os.getenv("INFERENCE_ROUTE_RETRIES", "2"))

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Zap, KeyRound } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
-import seanergysLogo from '@/assets/seanergys.jpg'
+import dataplaneLogo from '@/assets/dataplane.jpg'
 import { getAuth, setAuth } from '@/lib/auth'
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
@@ -89,7 +89,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-center gap-3 pt-1">
             <img src={uniboLogo} alt="University of Bologna" className="h-6 w-6 object-contain opacity-60" />
             <div className="h-4 w-px bg-border" />
-            <img src={seanergysLogo} alt="SEANERGYS" className="h-5 object-contain max-w-[72px] opacity-60" />
+            <img src={dataplaneLogo} alt="DATAPLANE" className="h-5 object-contain max-w-[72px] opacity-60" />
           </div>
         </div>
 

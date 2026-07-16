@@ -1,6 +1,6 @@
 # ExaMLOps
 
-End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a SeanerBUS HPC message bridge, **Skipper** (a LangGraph management agent with a kube-q chat frontend), and the `exa` platform CLI for operator use.
+End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a DataPlane HPC message bridge, **Skipper** (a LangGraph management agent with a kube-q chat frontend), and the `exa` platform CLI for operator use.
 
 ## Quick Start
 
@@ -66,8 +66,8 @@ make stack-wipe             # DESTRUCTIVE: remove containers, volumes, images
 make stack-restart          # restart without rebuild
 make stack-logs             # tail docker-compose logs
 make monitoring-up          # start Prometheus + Grafana + Loki + Promtail
-# cd ../seanerbus && docker compose up -d   # start real SeanerBUS + reqgen
-make seanerbus-up           # start bridge (connects to real SeanerBUS)
+# cd ../dataplane && docker compose up -d   # start real DataPlane + reqgen
+make dataplane-up           # start bridge (connects to real DataPlane)
 
 # Exa CLI: pipelines, deployments, serving, and production state
 exa pipeline list
@@ -88,9 +88,9 @@ make dashboard-up           # build + start dashboard on :18099
 make dashboard-logs         # tail dashboard logs
 make dashboard-check        # run backend pytest + frontend npm test
 
-# SeanerBUS bridge
-make seanerbus-up           # start SeanerBUS bridge
-make seanerbus-down         # stop SeanerBUS bridge
+# DataPlane bridge
+make dataplane-up           # start DataPlane bridge
+make dataplane-down         # stop DataPlane bridge
 
 # Approval gate (Phase 11)
 exa approvals list
@@ -131,15 +131,15 @@ exa status                  # show services, approvals, and production state
 | Ray Serve API | http://localhost:18001 |
 | Ray Dashboard | http://localhost:18265 |
 | Control Plane | http://localhost:18002 |
-| SeanerBUS Bridge Status | http://localhost:18003 |
+| DataPlane Bridge Status | http://localhost:18003 |
 | JupyterHub | http://localhost:18888 |
 | MinIO Console | http://localhost:19001 |
 | Prometheus | http://localhost:19090 |
 | Grafana | http://localhost:13000 |
 
-### Remote Server lxp-cpu01 (23.109.46.77)
+### Remote Server remote-cpu01 (<DATAPLANE_HOST>)
 
-Same ports as local — e.g. http://23.109.46.77:18099 for the Dashboard. Accessible via `ssh lxp` with all ports forwarded to localhost.
+Same ports as local — e.g. http://<DATAPLANE_HOST>:18099 for the Dashboard. Accessible via `ssh remote` with all ports forwarded to localhost.
 
 ## Adding a New Model
 
@@ -151,7 +151,7 @@ exa scaffold DemoAD --task anomaly_detection --type classification
 This produces a model file, config file, and unit test wired for the Phase 1 backend kwarg and Phase 3 multi-stage lifecycle. See [docs/guides/add-a-new-model.md](docs/guides/add-a-new-model.md) for the walkthrough.
 
 **Manual path:**
-1. Implement `SeanergysSklearnModel` (or `SeanergysPyTorchModel` / `SeanergysHuggingFaceModel`) under `modelzoo/seanergys_modelzoo/models/tasks/`.
+1. Implement `DataplaneSklearnModel` (or `DataplanePyTorchModel` / `DataplaneHuggingFaceModel`) under `modelzoo/modelzoo/models/tasks/`.
 2. Create `pipelines/model_configs/<model>_config.py` with `MODEL_CLASS`, `SUPPORTED_DATASETS`, `get_train_components(..., backend_name=None)`, and `get_inference_params()`.
 
 The pipeline discovers and runs it automatically; CI enforces registry integrity.
@@ -162,12 +162,12 @@ The pipeline discovers and runs it automatically; CI enforces registry integrity
 ExaMLOps/
 ├── docs/                       # Documentation
 │   ├── components/             # Per-service component docs
-│   ├── guides/                 # Quickstart, add-a-model, SeanerBUS, etc.
+│   ├── guides/                 # Quickstart, add-a-model, DataPlane, etc.
 │   └── reference/              # Commands, env vars, CLI, API reference
-├── modelzoo/                   # seanergys-modelzoo model library (poetry)
-│   └── seanergys_modelzoo/
+├── modelzoo/                   # modelzoo model library (poetry)
+│   └── modelzoo/
 │       ├── models/             # Concrete model implementations + framework adapters
-│       └── datasets/           # SeanergysDataset subclasses + pluggable backends
+│       └── datasets/           # DataplaneDataset subclasses + pluggable backends
 ├── pipelines/
 │   ├── pipeline_generator.py   # Auto-discovery orchestration (Prefect flows)
 │   ├── model_loader.py         # Typed YAML loader + scan_model_yamls()
@@ -178,10 +178,10 @@ ExaMLOps/
 │   ├── ray_serving/            # Multi-model Ray Serve inference :18001
 │   └── inference_pipeline/     # Ray Serve DeploymentGraph (Phase 10)
 └── platform/                   # Platform area (workspace coordinator: examlops-workspace)
-    ├── clients/                # SeanerBUS bridge + seanerbus_sim.py + dummy client
+    ├── clients/                # DataPlane bridge + dataplane_sim.py + dummy client
     ├── ci/                     # CI helper scripts (notify_model_changes.py)
     ├── infra/
-    │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / seanerbus / dev)
+    │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / dataplane / dev)
     │   └── slurm-adapter/      # HPC/Slurm integration (mock + real)
     ├── services/
     │   ├── agent/              # LangGraph management agent + skipper/ package
@@ -189,7 +189,7 @@ ExaMLOps/
     │   └── dashboard/          # React 19 + FastAPI dashboard :18099
     └── cli/                    # Installable `examlops` dist (uv pip install -e ".[dev]")
         └── src/examlops/       # Shared schemas + `exa` platform CLI (Typer)
-            └── cli/            # exa CLI: approvals/models/retrain/predict/serve/pipeline/seanerbus/stack/config
+            └── cli/            # exa CLI: approvals/models/retrain/predict/serve/pipeline/dataplane/stack/config
 ```
 
 ## Python Environments
@@ -199,14 +199,14 @@ Two separate environments coexist:
 | Directory | Toolchain | Purpose |
 |---|---|---|
 | repo root (`.venv/`) | `uv` | Pipeline orchestration, Ray Serve, CI |
-| `modelzoo/` | `poetry` | Model library (`seanergys-modelzoo` package) |
+| `modelzoo/` | `poetry` | Model library (`modelzoo` package) |
 
 Activate root env: `source .venv/bin/activate`
 
 ## CI/CD
 
 - `.github/workflows/ci.yml` — three parallel jobs (`modelzoo`, `infra`, `examlops`) on PRs and main
-- `.github/workflows/deploy.yml` — retired (commented out); `.gitlab-ci.yml` deploys to `lxp-cpu01` via `deploy:lxp`
+- `.github/workflows/deploy.yml` — retired (commented out); `.gitlab-ci.yml` deploys to `remote-cpu01` via `deploy:remote`
 - `.gitlab-ci.yml` — GitLab mirror of the GitHub workflow
 
 Run all CI checks locally: `make ci`
@@ -217,7 +217,7 @@ Run all CI checks locally: `make ci`
 - [System Overview](docs/architecture/system-overview.md)
 - [Command Reference](docs/reference/commands.md)
 - [Environment Variables](docs/reference/env-vars.md)
-- [SeanerBUS Integration](docs/guides/seanerbus.md)
+- [DataPlane Integration](docs/guides/dataplane.md)
 - [Add a New Model](docs/guides/add-a-new-model.md)
 - [exa CLI Reference](docs/reference/commands.md#exa-cli)
 - [Approval Gate](docs/guides/control-plane.md#approval-gate-phase-11)

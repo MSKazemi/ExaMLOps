@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# firewall-fix — self-healing Docker-bridge egress sidecar for lxp-cpu01
+# firewall-fix — self-healing Docker-bridge egress sidecar for remote-cpu01
 #
 # Run once with:   make firewall-fix-up        (or: docker compose -f this up -d)
 # It then survives, with `restart: unless-stopped`:
@@ -10,7 +10,7 @@
 #
 # Requires Docker access only (no host sudo). See ensure-egress.sh for the why.
 # Durable replacement = a sysadmin-owned systemd unit; see the email draft in
-# .claude/plans/sysadmin-email-lxp-docker-egress.txt.
+# internal design notes
 # ──────────────────────────────────────────────────────────────────────────────
 name: examlops-firewall-fix
 

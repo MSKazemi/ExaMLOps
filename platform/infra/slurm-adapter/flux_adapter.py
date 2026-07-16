@@ -4,7 +4,7 @@ Flux scheduler adapter for ExaMLOps.
 Submits training jobs to a Flux instance (flux-core) via ``flux batch`` and monitors them
 with ``flux jobs`` / ``flux job info``. Commands run through a ``RemoteExecutor`` so the
 same adapter works locally (worker on the Flux node) or over SSH (Docker worker → remote
-login node such as lxp-cpu01, which runs flux-core with no shared filesystem).
+login node such as remote-cpu01, which runs flux-core with no shared filesystem).
 
 Flux has no stable REST daemon, so CLI-over-SSH is the realistic integration path.
 

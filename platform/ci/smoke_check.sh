@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Post-deploy smoke / health check for ExaMLOps on lxp-cpu01.
-# Runs ON lxp-cpu01 via SSH — uses localhost ports.
+# Post-deploy smoke / health check for ExaMLOps on remote-cpu01.
+# Runs ON remote-cpu01 via SSH — uses localhost ports.
 # Exit 0 = all critical services healthy.  Exit 1 = at least one failure.
 #
-# Called by smoke:lxp in .gitlab-ci.yml.
+# Called by smoke:remote in .gitlab-ci.yml.
 set -uo pipefail
 
-DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/nfs/share01/examlops}"
+DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/<DATA_DIR>/examlops}"
 COMPOSE_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.yml"
-COMPOSE_LXP_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.lxp.yml"
+COMPOSE_REMOTE_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.remote.yml"
 
 FAILURES=0
 WARNINGS=0
@@ -31,7 +31,7 @@ probe() {
 check_container_health() {
     local service="$1" critical="${2:-true}"
     local health
-    health=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LXP_FILE" \
+    health=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_REMOTE_FILE" \
         ps --format json "$service" 2>/dev/null \
         | python3 -c "import sys,json; data=sys.stdin.read().strip(); obj=json.loads(data) if data else {}; print(obj.get('Health','unknown'))" \
         2>/dev/null || echo "unknown")

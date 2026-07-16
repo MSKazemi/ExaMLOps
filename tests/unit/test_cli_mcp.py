@@ -74,11 +74,11 @@ def test_hpc_clusters_and_approve_via_mcp(db, monkeypatch):
     from examlops.hpc_registry import register_pending
     from examlops.mcp.tools import hpc_approve_cluster, hpc_clusters
 
-    register_pending("lxp", "flux", host="lxp-login")
+    register_pending("remote", "flux", host="remote-login")
     res = hpc_clusters()
     assert res["ok"] and res["clusters"][0]["state"] == "PENDING"
 
-    approved = hpc_approve_cluster("lxp")
+    approved = hpc_approve_cluster("remote")
     assert approved["ok"] and approved["state"] == "ACTIVE"
     assert hpc_approve_cluster("ghost")["ok"] is False
 

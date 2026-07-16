@@ -1350,7 +1350,7 @@ def get_model_meta_endpoint(name: str) -> dict[str, Any]:
         "path_in_repo": m.path_in_repo,
         "bundled_images": m.bundled_images,
         # Extended fields for dashboard display
-        "seanerbus_uuid": m.seanerbus_uuid,
+        "dataplane_uuid": m.dataplane_uuid,
         "hyperparameters": m.hyperparameters,
         "prefect": m.prefect,
         "enabled": m.enabled,

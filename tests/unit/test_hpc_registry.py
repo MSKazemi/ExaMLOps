@@ -22,7 +22,7 @@ def registry_env(tmp_path, monkeypatch):
     return hpc_registry, tmp_path
 
 
-def _register_flux(reg, name="lxp", host="lxp-login"):
+def _register_flux(reg, name="remote", host="remote-login"):
     reg.register_pending(
         name,
         "flux",
@@ -44,17 +44,17 @@ def test_register_pending_creates_pending_in_both_sources(registry_env):
     clusters = reg.list_clusters()
     assert len(clusters) == 1
     c = clusters[0]
-    assert c["name"] == "lxp"
+    assert c["name"] == "remote"
     assert c["scheduler"] == "flux"
     assert c["state"] == "PENDING"
-    assert c["host"] == "lxp-login"
+    assert c["host"] == "remote-login"
 
 
 def test_pending_cluster_is_not_usable(registry_env):
     reg, _ = registry_env
     _register_flux(reg)
     with pytest.raises(reg.ClusterNotActiveError):
-        reg.require_active("lxp")
+        reg.require_active("remote")
 
 
 def test_unknown_cluster_raises(registry_env):
@@ -68,15 +68,15 @@ def test_approve_flips_to_active_and_resolves_env(registry_env):
     from examlops.platform_db import set_cluster_state
 
     _register_flux(reg)
-    assert set_cluster_state("lxp", "ACTIVE", approved_by="admin") is True
+    assert set_cluster_state("remote", "ACTIVE", approved_by="admin") is True
 
-    merged = reg.require_active("lxp")
+    merged = reg.require_active("remote")
     assert merged["state"] == "ACTIVE"
 
-    env = reg.resolve_env("lxp")
+    env = reg.resolve_env("remote")
     assert env["EXAMLOPS_HPC_SCHEDULER"] == "flux"
     assert env["EXAMLOPS_HPC_TRANSPORT"] == "ssh"
-    assert env["EXAMLOPS_HPC_SSH_HOST"] == "lxp-login"
+    assert env["EXAMLOPS_HPC_SSH_HOST"] == "remote-login"
     assert env["EXAMLOPS_HPC_SSH_USER"] == "hpcuser"
     assert env["EXAMLOPS_HPC_SSH_PORT"] == "22"
 
@@ -86,10 +86,10 @@ def test_reject_blocks_scheduling(registry_env):
     from examlops.platform_db import set_cluster_state
 
     _register_flux(reg)
-    set_cluster_state("lxp", "REJECTED", approved_by="admin", reason="wrong account")
+    set_cluster_state("remote", "REJECTED", approved_by="admin", reason="wrong account")
     with pytest.raises(reg.ClusterNotActiveError):
-        reg.require_active("lxp")
-    assert reg.get_merged("lxp")["reason"] == "wrong account"
+        reg.require_active("remote")
+    assert reg.get_merged("remote")["reason"] == "wrong account"
 
 
 def test_reprobe_preserves_approved_state(registry_env):
@@ -98,9 +98,9 @@ def test_reprobe_preserves_approved_state(registry_env):
     from examlops.platform_db import set_cluster_state
 
     _register_flux(reg)
-    set_cluster_state("lxp", "ACTIVE", approved_by="admin")
+    set_cluster_state("remote", "ACTIVE", approved_by="admin")
     _register_flux(reg)  # re-probe / re-register
-    assert reg.get_merged("lxp")["state"] == "ACTIVE"
+    assert reg.get_merged("remote")["state"] == "ACTIVE"
 
 
 def test_yaml_is_source_of_truth_for_connection(registry_env):
@@ -112,18 +112,18 @@ def test_yaml_is_source_of_truth_for_connection(registry_env):
 
     path = tmp / "clusters.yaml"
     data = yaml.safe_load(path.read_text())
-    data["clusters"]["lxp"]["host"] = "new-host"
+    data["clusters"]["remote"]["host"] = "new-host"
     path.write_text(yaml.safe_dump(data))
 
-    assert reg.get_merged("lxp")["host"] == "new-host"
+    assert reg.get_merged("remote")["host"] == "new-host"
 
 
 def test_unmanaged_resolves_to_mock_scheduler(registry_env):
     reg, _ = registry_env
     from examlops.platform_db import set_cluster_state
 
-    reg.register_pending("gpubox", "unmanaged", transport="ssh", host="lxp-gpu01")
+    reg.register_pending("gpubox", "unmanaged", transport="ssh", host="remote-gpu01")
     set_cluster_state("gpubox", "ACTIVE", approved_by="admin")
     env = reg.resolve_env("gpubox")
     assert env["EXAMLOPS_HPC_SCHEDULER"] == "mock"
-    assert env["EXAMLOPS_HPC_SSH_HOST"] == "lxp-gpu01"
+    assert env["EXAMLOPS_HPC_SSH_HOST"] == "remote-gpu01"

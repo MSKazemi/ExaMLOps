@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Trigger retraining for a configured list of models via the Control Plane API.
-Called from post-deploy:lxp:retrain-push-models in .gitlab-ci.yml.
+Called from post-deploy:remote:retrain-push-models in .gitlab-ci.yml.
 
 Required env vars (set as GitLab CI variables):
-  CONTROL_PLANE_URL   — e.g. http://lxp-cpu01:18002
+  CONTROL_PLANE_URL   — e.g. http://remote-cpu01:18002
   CONTROL_PLANE_TOKEN — bearer token for /retrain
 
 Optional env vars:

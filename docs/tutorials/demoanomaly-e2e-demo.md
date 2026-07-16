@@ -7,7 +7,7 @@ ExaMLOps, so you can prove the whole platform works on a fresh checkout.
 
 ```
 author model → push to ModelZoo (merge request) → AI-production reacts →
-retrain (Prefect) → register (MLflow) → serve (Ray) → infer (SeanerBUS) →
+retrain (Prefect) → register (MLflow) → serve (Ray) → infer (DataPlane) →
 drift → make it "stale" again → retrain → diff versions
 ```
 
@@ -28,7 +28,7 @@ is the story to lead with.
 |---|---|---|
 | **Act 0 — Pre-flight** | The model is wired in and trains offline on a fresh checkout | nothing (offline) |
 | **Act 1 — The headline** | A ModelZoo merge drives production: detect → retrain → register → serve → diff | `make stack-up` + control plane |
-| **Going deeper** | Live inference over SeanerBUS, drift, serving internals | the bus + monitoring |
+| **Going deeper** | Live inference over DataPlane, drift, serving internals | the bus + monitoring |
 
 > Run Act 0 first as a 30-second sanity check so a live demo never dies on stage,
 > then make Act 1 the main event.
@@ -71,12 +71,12 @@ develop model in ModelZoo → push + merge request → merge to ModelZoo main
       → AI-production detects the new commit → retrains locally → serves
 ```
 
-**A. ModelZoo repo** — `git@gitlab.seanergys.fz-juelich.de:software/modelzoo.git`:
+**A. ModelZoo repo** — `git@gitlab.dataplane.example.org:software/modelzoo.git`:
 
 | What | Path (inside the ModelZoo repo) |
 |---|---|
-| **Model** — IsolationForest wrapper + `MODEL_VERSION` knob | `seanergys_modelzoo/models/tasks/anomaly_detection/demoanomaly/demoanomaly_model.py` |
-| **Synthetic dataset** — generates dummy data in-code | `seanergys_modelzoo/datasets/synthetic_anomaly.py` |
+| **Model** — IsolationForest wrapper + `MODEL_VERSION` knob | `modelzoo/models/tasks/anomaly_detection/demoanomaly/demoanomaly_model.py` |
+| **Synthetic dataset** — generates dummy data in-code | `modelzoo/datasets/synthetic_anomaly.py` |
 | **Dataset + model test** | `tests/unit/test_synthetic_anomaly.py` |
 
 **B. AI-production repo** (this repo) — consumes the ModelZoo model:
@@ -85,7 +85,7 @@ develop model in ModelZoo → push + merge request → merge to ModelZoo main
 |---|---|
 | **Config shim** — model-bound transforms + inference contract | `pipelines/model_configs/demoanomaly_config.py` |
 | **YAML registry** — single source of truth (datasets, lifecycle, serving, UUID) | `pipelines/models/demoanomaly.yaml` |
-| **SeanerBUS request generator** | `platform/clients/seanerbus_demoanomaly_req.py` |
+| **DataPlane request generator** | `platform/clients/dataplane_demoanomaly_req.py` |
 | **Pipeline glue** — register dataset, pass `split` through, log `MODEL_VERSION` | `pipelines/pipeline_generator.py` |
 | **Pipeline-side test** | `tests/unit/test_demoanomaly.py` |
 | **This walkthrough** | `docs/tutorials/demoanomaly-e2e-demo.md` |
@@ -109,16 +109,16 @@ Develop the model in the ModelZoo repo and bump its staleness knob so the
 downstream platform has a reason to react:
 
 ```python
-# (ModelZoo) seanergys_modelzoo/models/tasks/anomaly_detection/demoanomaly/demoanomaly_model.py
+# (ModelZoo) modelzoo/models/tasks/anomaly_detection/demoanomaly/demoanomaly_model.py
 MODEL_VERSION = "v2"     # was "v1" — the human-readable marker logged to MLflow
 ```
 
 Then push and open a merge request, and merge to `main`:
 
 ```bash
-git -C /home/mohsen/scratch/seanergys/modelzoo add -A
-git -C /home/mohsen/scratch/seanergys/modelzoo commit -m "DemoAnomaly v2"
-git -C /home/mohsen/scratch/seanergys/modelzoo push                  # → open MR → merge to main
+git -C /home/mohsen/scratch/dataplane/modelzoo add -A
+git -C /home/mohsen/scratch/dataplane/modelzoo commit -m "DemoAnomaly v2"
+git -C /home/mohsen/scratch/dataplane/modelzoo push                  # → open MR → merge to main
 ```
 
 ### 1.3 AI-production reacts — three ways to pick up the merge
@@ -174,7 +174,7 @@ exa modelzoo config                           # confirm: auto_retrain=true, poll
 **Inference path** (a job arrives on the bus):
 
 ```
-SeanerBUS ──HpcJobV1──▶ seanerbus-bridge ──POST /infer-pipeline/infer──▶ InferencePipelineIngress
+DataPlane ──HpcJobV1──▶ dataplane-bridge ──POST /infer-pipeline/infer──▶ InferencePipelineIngress
                                                                               │
                                                        FeatureTransformer  (checks 384 dims)
                                                                               │
@@ -201,7 +201,7 @@ training_flow (Prefect):
 |---|---|
 | Act 0 (offline) | repo bootstrapped: `uv pip install -e ".[dev]"` (root) + `poetry install --with ci` (in `modelzoo/`) |
 | Act 1 (headline) | `make stack-up` (MLflow, Ray, MinIO, Prefect) + `make control-plane-up` |
-| SeanerBUS loop | the `../seanerbus` repo running + `make seanerbus-up` |
+| DataPlane loop | the `../dataplane` repo running + `make dataplane-up` |
 
 ---
 
@@ -233,11 +233,11 @@ exa serve infer-check    # POST a synthetic job to /infer-pipeline/infer
 
 ---
 
-## Drive live inference over SeanerBUS (needs the bridge)
+## Drive live inference over DataPlane (needs the bridge)
 
 ```bash
 # 20 requests at 5/s, ~30% of them anomalous embeddings:
-python platform/clients/seanerbus_demoanomaly_req.py --rate 5 --count 20 --anomaly-frac 0.3
+python platform/clients/dataplane_demoanomaly_req.py --rate 5 --count 20 --anomaly-frac 0.3
 ```
 
 Each line prints the job, whether the model flagged it, the serving version, and
@@ -316,13 +316,13 @@ longer shows it.
 # Remove the AI-production glue (this repo). The ModelZoo source is NOT touched.
 rm pipelines/models/demoanomaly.yaml                 # YAML registry entry
 rm pipelines/model_configs/demoanomaly_config.py     # config shim
-rm platform/clients/seanerbus_demoanomaly_req.py     # bus request generator
+rm platform/clients/dataplane_demoanomaly_req.py     # bus request generator
 # Then revert the DemoAnomaly-specific lines in pipelines/pipeline_generator.py
 # (dataset registration + split pass-through) and remove tests/unit/test_demoanomaly.py.
 ```
 
-> **Kept on purpose:** `modelzoo/seanergys_modelzoo/models/tasks/anomaly_detection/demoanomaly/`
-> and `modelzoo/seanergys_modelzoo/datasets/synthetic_anomaly.py` (+ their test).
+> **Kept on purpose:** `modelzoo/modelzoo/models/tasks/anomaly_detection/demoanomaly/`
+> and `modelzoo/modelzoo/datasets/synthetic_anomaly.py` (+ their test).
 > That is the "model lives in the ModelZoo" end-state you want for the tutorial.
 
 ### Verify the clean slate

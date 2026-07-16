@@ -27,7 +27,7 @@ import {
   MoonStar,
 } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
-import seanergysLogo from '@/assets/seanergys.jpg'
+import dataplaneLogo from '@/assets/dataplane.jpg'
 import { clearAuth, getRole } from '@/lib/auth'
 import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
@@ -50,7 +50,7 @@ const BASE_NAV = [
   { path: '/facility',  label: 'Facility',  icon: Cpu,           adminOnly: false },
   { path: '/finops',    label: 'FinOps',    icon: DollarSign,    adminOnly: false },
   { path: '/jupyter',   label: 'Jupyter',   icon: NotebookPen,   adminOnly: false },
-  { path: '/seanerbus', label: 'SeanerBUS', icon: Zap,           adminOnly: false },
+  { path: '/dataplane', label: 'DataPlane', icon: Zap,           adminOnly: false },
   { path: '/drift',     label: 'Drift',     icon: Activity,      adminOnly: false },
   { path: '/alerts',    label: 'Alerts',    icon: BellRing,      adminOnly: false },
   { path: '/preferences', label: 'Preferences', icon: SlidersHorizontal, adminOnly: false },
@@ -110,7 +110,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2.5 px-0.5">
             <img src={uniboLogo} alt="University of Bologna" className="h-7 w-7 object-contain opacity-75" />
             <div className="h-4 w-px bg-border" />
-            <img src={seanergysLogo} alt="SEANERGYS" className="h-6 object-contain max-w-[90px] opacity-75" />
+            <img src={dataplaneLogo} alt="DATAPLANE" className="h-6 object-contain max-w-[90px] opacity-75" />
           </div>
         </div>
 
@@ -216,7 +216,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </div>
           )}
           <p className="text-[10px] text-muted-foreground/50 tracking-wide">
-            SEANERGYS · EuroHPC-JU
+            DATAPLANE · EuroHPC-JU
           </p>
         </div>
       </aside>

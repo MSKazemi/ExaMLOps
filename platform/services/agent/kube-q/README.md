@@ -62,4 +62,4 @@ KUBE_Q_PROFILE=examlops kq          # or: kq --profile examlops
 The chat client is domain-agnostic; only the tools/prompts are ExaMLOps-specific,
 and those already live server-side. Forking into every agentic app creates N-way
 drift — one client + one SSE contract per backend scales, N forks don't. See
-`.claude/plans/kube-q-agent-chat-bridge.md` for the full rationale.
+`internal design notes` for the full rationale.

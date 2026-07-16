@@ -33,7 +33,7 @@ def test_gate_blocks_require_approval_for_agent(monkeypatch):
         "_load_policies",
         lambda path=None: [{"action": "agent_write", "effect": "require_approval"}],
     )
-    out = tools._agent_write_gate("approve_cluster", {"target": "lxp"})
+    out = tools._agent_write_gate("approve_cluster", {"target": "remote"})
     assert out is not None and out["ok"] is False
     assert "human approval" in out["error"]
 
@@ -48,7 +48,7 @@ def test_gate_allows_retrain_but_denies_others(monkeypatch):
     ]
     monkeypatch.setattr(policy, "_load_policies", lambda path=None: rules)
     assert tools._agent_write_gate("retrain", {"model": "JPCP"}) is None
-    blocked = tools._agent_write_gate("approve_cluster", {"target": "lxp"})
+    blocked = tools._agent_write_gate("approve_cluster", {"target": "remote"})
     assert blocked is not None and blocked["ok"] is False
 
 

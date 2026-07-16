@@ -28,7 +28,7 @@ exa pipeline run --model JPCP --dataset PM100Dataset --dummy
 
 ## Adding a New Model
 
-1. Create `pipelines/model_configs/<model>_config.py` implementing `SeanergysModelConfiguration` with `get_train_components()` and `get_inference_params()`
+1. Create `pipelines/model_configs/<model>_config.py` implementing `DataplaneModelConfiguration` with `get_train_components()` and `get_inference_params()`
 2. Set `MODEL_CLASS = <ModelClass>` on the config class
 
 That's all — the new model appears in all pipelines automatically.

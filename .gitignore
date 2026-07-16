@@ -9,8 +9,7 @@ secrets.yaml
 secrets.yml
 
 # ── Claude Code artifacts ────────────────────────────────────────────────────
-.claude/
-docs/superpowers/
+internal design notes
 
 # ── Python ───────────────────────────────────────────────────────────────────
 .venv/

@@ -32,12 +32,12 @@ app = typer.Typer(
 
 _EXAMPLES = (
     "Examples:\n\n"
-    "  exa hpc detect lxp-login          # probe a host, suggest scheduler config\n\n"
+    "  exa hpc detect remote-login          # probe a host, suggest scheduler config\n\n"
     "  exa hpc detect                    # probe the local machine (or env transport)\n\n"
-    "  exa hpc nodes --host lxp-login    # list nodes + state\n\n"
-    "  exa hpc nodes --save --cluster lxp   # persist inventory snapshot to platform.db\n\n"
-    "  exa hpc gpus --host lxp-gpu01     # GPU devices via nvidia-smi\n\n"
-    "  exa --json hpc detect lxp-login"
+    "  exa hpc nodes --host remote-login    # list nodes + state\n\n"
+    "  exa hpc nodes --save --cluster remote   # persist inventory snapshot to platform.db\n\n"
+    "  exa hpc gpus --host remote-gpu01     # GPU devices via nvidia-smi\n\n"
+    "  exa --json hpc detect remote-login"
 )
 
 
@@ -261,11 +261,11 @@ def _key_fingerprint(key_path: str | None) -> str | None:
 
 _CONNECT_EXAMPLES = (
     "Examples:\n\n"
-    "  exa hpc connect lxp-login --name lxp\n\n"
-    "  exa hpc connect lxp-login --name lxp --user hpcuser --key ~/.ssh/id_ed25519\n\n"
+    "  exa hpc connect remote-login --name remote\n\n"
+    "  exa hpc connect remote-login --name remote --user hpcuser --key ~/.ssh/id_ed25519\n\n"
     "  exa hpc clusters\n\n"
-    "  exa hpc approve lxp        # sysadmin: authorize scheduling on the cluster\n\n"
-    '  exa hpc reject lxp --reason "wrong account"'
+    "  exa hpc approve remote        # sysadmin: authorize scheduling on the cluster\n\n"
+    '  exa hpc reject remote --reason "wrong account"'
 )
 
 
@@ -419,9 +419,9 @@ def _executor_for_cluster(name: str):
 _PLACE_EXAMPLES = (
     "Examples:\n\n"
     "  exa hpc place --gpus 4               # which ACTIVE cluster should run this?\n\n"
-    "  exa hpc queue --cluster lxp          # live scheduler queue\n\n"
+    "  exa hpc queue --cluster remote          # live scheduler queue\n\n"
     "  exa hpc jobs --model JPCP            # tracked submissions from platform.db\n\n"
-    "  exa hpc preflight lxp --gpus 4       # fail-fast pre-submit checks"
+    "  exa hpc preflight remote --gpus 4       # fail-fast pre-submit checks"
 )
 
 

@@ -350,6 +350,9 @@ def promote(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show outcome without promoting"),
     save: bool = typer.Option(False, "--save", help="Save rule to DB for future reference"),
     list_rules: bool = typer.Option(False, "--list", help="List saved promotion rules"),
+    force: bool = typer.Option(
+        False, "--force", help="Override a failing C3 eval gate (audited, D4)"
+    ),
 ):
     """Promote a model alias when a metric threshold passes (rule-based gate).
 
@@ -478,6 +481,37 @@ def promote(
         _output.ok(f"Not promoted: {model} v{version}: {status_str}  (threshold not met)")
         return
 
+    # C3 — eval regression gate: refuse to move the alias when a block-mode gate fails,
+    # unless --force (which is audited). No configured gate → this is a no-op.
+    from examlops.evaluation.gate import run_eval_gate
+
+    higher_better = operator in ("gt", "gte")
+    gate_result = run_eval_gate(model, str(version), higher_is_better=higher_better)
+    if gate_result is not None and not gate_result.passed:
+        failing = [m.name for m in gate_result.metrics if m.failed]
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_gate",
+                model,
+                {"version": version, "failing_metrics": failing},
+            )
+            _output.error(
+                f"Eval gate FAILED for {model} v{version}: {', '.join(failing)}. "
+                "Use --force to override (audited).",
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "eval_gate_override",
+            model,
+            {"version": version, "to": to_alias, "failing_metrics": failing, "forced": True},
+        )
+        _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
+
     if not _output.confirm(
         f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
     ):
@@ -546,7 +580,7 @@ def add_model(
 
     Unlike [bold]exa scaffold[/bold], this command does NOT create a new model class.
     It only generates the pipeline YAML and config shim for a model class that
-    already lives in modelzoo/seanergys_modelzoo/models/tasks/.
+    already lives in modelzoo/modelzoo/models/tasks/.
 
     Use this when you have written a model class by hand or imported one from
     the modelzoo and want to wire it into ExaMLOps training and inference.
@@ -556,14 +590,14 @@ def add_model(
     # Verify the model class exists in modelzoo before generating pipeline files.
     import os as _os
 
-    modelzoo_tasks = _os.path.join("modelzoo", "seanergys_modelzoo", "models", "tasks")
+    modelzoo_tasks = _os.path.join("modelzoo", "modelzoo", "models", "tasks")
     found_files = _glob.glob(
         _os.path.join(modelzoo_tasks, "**", f"{name.lower()}_model.py"), recursive=True
     )
     if not found_files:
         _output.error(
             f"Model class not found: expected a file matching "
-            f"modelzoo/seanergys_modelzoo/models/tasks/**/{name.lower()}_model.py\n"
+            f"modelzoo/modelzoo/models/tasks/**/{name.lower()}_model.py\n"
             f"  → Use [bold]exa scaffold {name}[/bold] to create a new model from scratch."
         )
         raise typer.Exit(1)

@@ -3,7 +3,7 @@
 The **first consumer** of the general ``examlops.providers`` substrate. Each provider is a swappable
 methodology for turning GPU-hours (and optional coefficients) into ``{kwh, co2e_g}``; the platform
 picks one by config, and users/sysadmins can add their own via an entry-point plugin or a declarative
-YAML formula (see ``.claude/plans/finops-plugins/``).
+YAML formula (see ``internal design notes``).
 
 Providers registered here:
 

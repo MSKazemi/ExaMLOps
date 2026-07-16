@@ -57,10 +57,10 @@ Three metrics are computed from SQLite on each `/metrics` scrape:
 
 | Responsibility | Where it actually lives |
 |---|---|
-| Write to `platform.db` (audit, drift, traffic, costs) | CLI commands and SeanerBUS bridge |
+| Write to `platform.db` (audit, drift, traffic, costs) | CLI commands and DataPlane bridge |
 | MLflow registry operations (alias promotion, version listing) | CLI-side only |
 | Ray Serve beyond a liveness probe | CLI (`exa serve *`) and Ray Serve itself |
-| SeanerBUS bridge state or inference stats | SeanerBUS bridge (`platform/clients/seanerbus_bridge.py`) |
+| DataPlane bridge state or inference stats | DataPlane bridge (`platform/clients/dataplane_bridge.py`) |
 | Drift detection or auto-retrain scheduling | `platform_db.py` drift tables + `exa drift *` CLI |
 | Traffic split management | `platform_db.py` `traffic_rules` + `exa serve traffic` |
 | Persisting its own config across restarts | Not implemented; `PUT /modelzoo/config` is in-memory |

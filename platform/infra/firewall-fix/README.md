@@ -1,7 +1,7 @@
-# firewall-fix — self-healing Docker egress (lxp-cpu01 stopgap)
+# firewall-fix — self-healing Docker egress (remote-cpu01 stopgap)
 
 Keeps ExaMLOps containers able to reach the network (internal GitLab, MinIO,
-external APIs) on `lxp-cpu01`, where a firewalld quirk otherwise drops all
+external APIs) on `remote-cpu01`, where a firewalld quirk otherwise drops all
 Docker-bridge egress.
 
 ## The problem it solves
@@ -48,7 +48,7 @@ Verify egress is restored:
 
 ```bash
 docker exec examlops-control-plane python3 -c \
-  "import socket; socket.create_connection(('134.94.199.214',443),timeout=6); print('GitLab REACHABLE')"
+  "import socket; socket.create_connection(('<GITLAB_HOST>',443),timeout=6); print('GitLab REACHABLE')"
 exa modelzoo sync          # should report the latest commit, not an error
 ```
 
@@ -66,7 +66,7 @@ docker run --rm --privileged --network=host alpine sh -c \
 The durable fix is a host-level **systemd one-shot** (ordered after
 `firewalld.service` and `docker.service`) owned by the cluster sysadmin. The
 request, with commands and verification, is drafted at
-`.claude/plans/sysadmin-email-lxp-docker-egress.txt`. Keep this sidecar running
+`internal design notes`. Keep this sidecar running
 until that unit is installed; once it is, `make firewall-fix-down` and remove it.
 
 > ⚠️ Privileged + host-network container. Review before deploying. If you do not

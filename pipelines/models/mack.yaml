@@ -4,7 +4,7 @@ config_class: mack_config.MACKConfiguration
 task_type: classification
 framework: sklearn
 enabled: true
-seanerbus_uuid: 65611ddc-2a9c-4b88-bcc7-2f11684eb649
+dataplane_uuid: <UUID>
 
 model:
   embedding_type: SB

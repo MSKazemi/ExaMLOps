@@ -22,10 +22,10 @@ def test_defaults(tmp_path, monkeypatch):
 
 
 def test_env_overrides_defaults():
-    env = {"CONTROL_PLANE_URL": "http://n1:18002", "CONTROL_PLANE_TOKEN": "secret"}
+    env = {"CONTROL_PLANE_URL": "http://<host>:18002", "CONTROL_PLANE_TOKEN": "secret"}
     with patch.dict(os.environ, env):
         cfg = load_config()
-    assert cfg.control_plane_url == "http://n1:18002"
+    assert cfg.control_plane_url == "http://<host>:18002"
     assert cfg.control_plane_token == "secret"
 
 

@@ -4,7 +4,7 @@ config_class: mcbound_config.MCBoundConfiguration
 task_type: classification
 framework: sklearn
 enabled: true
-seanerbus_uuid: 1a2c3b5d-6873-41cb-b221-1612a8787e2c
+dataplane_uuid: <UUID>
 
 model:
   embedding_type: NONE

@@ -16,23 +16,23 @@ connected or submitted — these commands only run side-effect-free query comman
 
 ```bash
 # Probe a host over SSH and get a suggested configuration
-exa hpc detect lxp-login
-exa hpc detect lxp-login --user hpcuser --key ~/.ssh/id_ed25519
+exa hpc detect remote-login
+exa hpc detect remote-login --user hpcuser --key ~/.ssh/id_ed25519
 
 # Probe the local machine (or the env-configured transport)
 exa hpc detect
 
 # List compute nodes with CPUs / memory / GPUs and normalized state
-exa hpc nodes --host lxp-login
+exa hpc nodes --host remote-login
 
 # Persist the current inventory as a snapshot in platform.db
-exa hpc nodes --host lxp-login --save --cluster lxp
+exa hpc nodes --host remote-login --save --cluster remote
 
 # List GPU devices (model, memory, utilization, online status)
-exa hpc gpus --host lxp-gpu01
+exa hpc gpus --host remote-gpu01
 
 # JSON for scripting / agents
-exa --json hpc detect lxp-login
+exa --json hpc detect remote-login
 ```
 
 `detect` prints a **suggested config** — the scheduler it found, the transport, and the
@@ -70,14 +70,14 @@ A discovered cluster is *registered*, never auto-connected. It lands in the regi
 
 ```bash
 # Probe a host and register it as PENDING
-exa hpc connect lxp-login --name lxp --user hpcuser --key ~/.ssh/id_ed25519
+exa hpc connect remote-login --name remote --user hpcuser --key ~/.ssh/id_ed25519
 
 # See all registered clusters and their state
 exa hpc clusters
 
 # Sysadmin: authorize (or block) scheduling on the cluster — audited
-exa hpc approve lxp
-exa hpc reject lxp --reason "wrong account"
+exa hpc approve remote
+exa hpc reject remote --reason "wrong account"
 ```
 
 Two sources of truth, by design:
@@ -98,7 +98,7 @@ and live capacity (idle/total GPUs, utilization %, GPU-hours used); admins get i
 admin-gated, audited). Viewers see the list read-only.
 
 Once a cluster is `ACTIVE`, exaMLOps resolves it into the `EXAMLOPS_HPC_*` environment the
-scheduler adapter already reads — so `exa pipeline run --cluster lxp` (Phase 35c) targets it
+scheduler adapter already reads — so `exa pipeline run --cluster remote` (Phase 35c) targets it
 without any manual env plumbing.
 
 ## 3. Schedule with placement, queue & preflight
@@ -111,23 +111,23 @@ and fail fast before submitting.
 exa hpc place --gpus 4
 
 # Live scheduler queue for a cluster (squeue / flux jobs, normalized)
-exa hpc queue --cluster lxp
+exa hpc queue --cluster remote
 
 # Tracked submissions from platform.db (hpc_jobs)
 exa hpc jobs --model JPCP
 
 # Fail-fast pre-submit checks (exit 1 on any failure) — safe as a CI gate
-exa hpc preflight lxp --gpus 4
+exa hpc preflight remote --gpus 4
 
 # Run training on a specific cluster, or let placement choose
-exa pipeline run --model JPCP --dataset PM100Dataset --cluster lxp
+exa pipeline run --model JPCP --dataset PM100Dataset --cluster remote
 exa pipeline run --model JPCP --dataset PM100Dataset --cluster auto --gpus 4
 ```
 
 **Placement** (`exa hpc place`, and `--cluster auto`) scores every `ACTIVE` cluster by
 matching headroom — it filters to clusters that *can* satisfy the ask (by total GPUs/nodes),
 then prefers the one with the most idle capacity, and explains its choice (e.g. *"chose
-flux@lxp — 6/8 idle GPUs, 2/2 idle nodes"*). It reads node snapshots from `hpc_nodes`
+flux@remote — 6/8 idle GPUs, 2/2 idle nodes"*). It reads node snapshots from `hpc_nodes`
 (refresh them with `exa hpc nodes --save --cluster <n>`), falling back to each cluster's
 declared capabilities when no snapshot exists.
 

@@ -42,10 +42,10 @@ The graph is the standard ReAct cycle — the LLM reasons, emits tool calls, the
 
 ## Prerequisites
 
-If you have `ollama-tunnel` configured (Omega server, port 11436), start the tunnel first:
+If you have `ollama-tunnel` configured (<OLLAMA_HOST> server, port 11436), start the tunnel first:
 
 ```bash
-ollama-tunnel start          # starts Omega tunnel → localhost:11436 (default)
+ollama-tunnel start          # starts <OLLAMA_HOST> tunnel → localhost:11436 (default)
 ollama-tunnel status         # verify: shows models + connection state
 ```
 
@@ -65,7 +65,7 @@ At least one ExaMLOps service must be running. The agent gracefully reports when
 ## Quick Start
 
 ```bash
-ollama-tunnel start   # ensure Omega tunnel is up (if using tunnel; skip for local ollama)
+ollama-tunnel start   # ensure <OLLAMA_HOST> tunnel is up (if using tunnel; skip for local ollama)
 make skipper            # reads AGENT_OLLAMA_URL + AGENT_MODEL from .env automatically
 ```
 
@@ -173,9 +173,9 @@ Retraining has been triggered:
 - **model**: JPCP
 - **dataset**: PM100Dataset
 - **dummy data**: yes
-- **flow_run_id**: f3a9c21b-4d0e-4c12-a8f1-7b3e592d1a40
+- **flow_run_id**: <UUID>
 
-You can poll the run state at: GET http://localhost:18002/retrain/f3a9c21b-4d0e-4c12-a8f1-7b3e592d1a40
+You can poll the run state at: GET http://localhost:18002/retrain/<UUID>
 
 skipper > What happens if I retrain with real Zenodo data?
 
@@ -219,7 +219,7 @@ The report is plain Markdown — you can pipe the session output to a file or pa
 
 ## Changing the Model
 
-The following models are available on the **Omega** tunnel (port 11436) via `ollama-tunnel`. No pull required:
+The following models are available on the **<OLLAMA_HOST>** tunnel (port 11436) via `ollama-tunnel`. No pull required:
 
 | Model | Size | Notes |
 |---|---|---|
@@ -242,10 +242,10 @@ AGENT_MODEL=llama3.1:70b make skipper     # best Llama quality
 AGENT_MODEL=qwen3-coder:30b make skipper  # strong reasoning
 ```
 
-To use the **Kapa** tunnel instead (16 models, via Monte Cimone SSH, port 11437):
+To use the **<OLLAMA_HOST>** tunnel instead (16 models, via Monte Cimone SSH, port 11437):
 
 ```bash
-ollama-tunnel start kapa
+ollama-tunnel start <ollama-host>
 AGENT_OLLAMA_URL=http://localhost:11437 make skipper
 ```
 
@@ -402,7 +402,7 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 | `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when Azure is not configured. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking enabled, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback backend). Must support tool/function calling. Set in `.env`. |
-| `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel Omega; `11434` for local `ollama serve`. |
+| `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel <OLLAMA_HOST>; `11434` for local `ollama serve`. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids 30–60 s reloads on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | `false` disables thinking models' extra reasoning tokens (snappier); `true` forces it on; `default`/`none` leaves the model default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
@@ -423,7 +423,7 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Error: Ollama is not running at http://localhost:11436` at startup | Omega tunnel is not active | Run `ollama-tunnel start` and verify with `ollama-tunnel status`. |
+| `Error: Ollama is not running at http://localhost:11436` at startup | <OLLAMA_HOST> tunnel is not active | Run `ollama-tunnel start` and verify with `ollama-tunnel status`. |
 | `Error: Ollama is not running at http://localhost:11434` | Using local Ollama URL but `ollama serve` is not running | Run `ollama serve`, or switch to the tunnel: `AGENT_OLLAMA_URL=http://localhost:11436 make skipper`. |
 | `Error: Cannot reach MLflow at http://localhost:15000 — ...` in a tool response | MLflow container not running | Run `make stack-up` or `exa status` to check which services are up. |
 | `Error: Cannot reach Ray Serve at http://localhost:18001 — ...` | Ray Serve not started | Run `make stack-up` or `exa stack up --service ray-serving`. |

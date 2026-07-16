@@ -568,7 +568,7 @@ function GitLabSection({
               style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}
             />
             <p className="text-[10px] text-muted-foreground/60">
-              Self-hosted? Use your instance URL, e.g. <code className="px-1 rounded" style={{ background: 'var(--surface-2)' }}>https://gitlab.seanergys.fz-juelich.de</code>
+              Self-hosted? Use your instance URL, e.g. <code className="px-1 rounded" style={{ background: 'var(--surface-2)' }}>https://gitlab.dataplane.example.org</code>
             </p>
           </div>
 
@@ -581,7 +581,7 @@ function GitLabSection({
               id="gitlab_project_id"
               value={projectId}
               onChange={e => onProjectIdChange(e.target.value)}
-              placeholder="e.g. my-group/seanergys-modelzoo  or  12345678"
+              placeholder="e.g. my-group/modelzoo  or  12345678"
               readOnly={readOnly}
               className="w-full rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none"
               style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}
@@ -798,28 +798,28 @@ function ModelzooWebhookSection({
   )
 }
 
-// ── SeanerBUS Bridge ──────────────────────────────────────────────────────────
+// ── DataPlane Bridge ──────────────────────────────────────────────────────────
 
-const SEANERBUS_CONN_KEYS = [
-  { key: 'seanerbus_host', label: 'Host' },
-  { key: 'seanerbus_port', label: 'Port' },
-  { key: 'seanerbus_mode', label: 'Mode (pubsub | reqres | both)' },
+const DATAPLANE_CONN_KEYS = [
+  { key: 'dataplane_host', label: 'Host' },
+  { key: 'dataplane_port', label: 'Port' },
+  { key: 'dataplane_mode', label: 'Mode (pubsub | reqres | both)' },
 ]
 
-const SEANERBUS_UUID_KEYS = [
-  { key: 'seanerbus_job_topic_uuid',    label: 'Job Topic UUID' },
-  { key: 'seanerbus_result_topic_uuid', label: 'Result Topic UUID' },
-  { key: 'seanerbus_inference_uuid',    label: 'Inference Handler UUID' },
-  { key: 'seanerbus_retrain_uuid',      label: 'Retrain Handler UUID' },
+const DATAPLANE_UUID_KEYS = [
+  { key: 'dataplane_job_topic_uuid',    label: 'Job Topic UUID' },
+  { key: 'dataplane_result_topic_uuid', label: 'Result Topic UUID' },
+  { key: 'dataplane_inference_uuid',    label: 'Inference Handler UUID' },
+  { key: 'dataplane_retrain_uuid',      label: 'Retrain Handler UUID' },
 ]
 
-const SEANERBUS_DEFAULT_KEYS = [
-  { key: 'seanerbus_default_model',      label: 'Default Model' },
-  { key: 'seanerbus_default_alias',      label: 'Default Alias' },
-  { key: 'seanerbus_bridge_status_url',  label: 'Bridge Status URL' },
+const DATAPLANE_DEFAULT_KEYS = [
+  { key: 'dataplane_default_model',      label: 'Default Model' },
+  { key: 'dataplane_default_alias',      label: 'Default Alias' },
+  { key: 'dataplane_bridge_status_url',  label: 'Bridge Status URL' },
 ]
 
-function SeanerBUSSection({
+function DataPlaneSection({
   values,
   onChange,
   readOnly,
@@ -830,7 +830,7 @@ function SeanerBUSSection({
 }) {
   const [open, setOpen] = useState(false)
 
-  const isConfigured = !!(values['seanerbus_job_topic_uuid'] || values['seanerbus_inference_uuid'])
+  const isConfigured = !!(values['dataplane_job_topic_uuid'] || values['dataplane_inference_uuid'])
   const badge = isConfigured ? (
     <span
       className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
@@ -859,8 +859,8 @@ function SeanerBUSSection({
     <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
       <SectionHeader
         icon={Zap}
-        title="SeanerBUS Bridge"
-        note="Bridge connecting SeanerBUS HPC job messages to Ray Serve inference"
+        title="DataPlane Bridge"
+        note="Bridge connecting DataPlane HPC job messages to Ray Serve inference"
         open={open}
         onToggle={() => setOpen(o => !o)}
         badge={badge}
@@ -868,7 +868,7 @@ function SeanerBUSSection({
       {open && (
         <div className="p-4 space-y-4" style={{ background: 'var(--surface-0)' }}>
           <p className="text-xs text-muted-foreground">
-            Configure the bridge that connects SeanerBUS HPC job messages to Ray Serve inference.
+            Configure the bridge that connects DataPlane HPC job messages to Ray Serve inference.
             The bridge receives <code className="text-xs px-1 rounded" style={{ background: 'var(--surface-2)' }}>HpcJobV1</code> messages
             and returns <code className="text-xs px-1 rounded" style={{ background: 'var(--surface-2)' }}>HpcInferenceResV1</code> results.
           </p>
@@ -879,7 +879,7 @@ function SeanerBUSSection({
               Connection
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {SEANERBUS_CONN_KEYS.map(({ key, label }) => (
+              {DATAPLANE_CONN_KEYS.map(({ key, label }) => (
                 <EndpointField
                   key={key}
                   fieldKey={key}
@@ -898,7 +898,7 @@ function SeanerBUSSection({
               Topic &amp; Handler UUIDs
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {SEANERBUS_UUID_KEYS.map(({ key, label }) => (
+              {DATAPLANE_UUID_KEYS.map(({ key, label }) => (
                 <EndpointField
                   key={key}
                   fieldKey={key}
@@ -917,7 +917,7 @@ function SeanerBUSSection({
               Defaults &amp; Status Server
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {SEANERBUS_DEFAULT_KEYS.map(({ key, label }) => (
+              {DATAPLANE_DEFAULT_KEYS.map(({ key, label }) => (
                 <EndpointField
                   key={key}
                   fieldKey={key}
@@ -1264,7 +1264,7 @@ export function Config() {
           readOnly={readOnly}
         />
 
-        <SeanerBUSSection
+        <DataPlaneSection
           values={plain}
           onChange={handlePlainChange}
           readOnly={readOnly}

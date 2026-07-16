@@ -379,8 +379,8 @@ services:
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: dashboard
-      SEANERBUS_BRIDGE_STATUS_URL: http://seanerbus-bridge:8003
-      PUBLIC_SEANERBUS_BRIDGE_URL: http://${PUBLIC_HOST:-localhost}:18003
+      DATAPLANE_BRIDGE_STATUS_URL: http://dataplane-bridge:8003
+      PUBLIC_DATAPLANE_BRIDGE_URL: http://${PUBLIC_HOST:-localhost}:18003
       LOKI_URL: http://loki:3100
       PUBLIC_LOKI_URL: http://${PUBLIC_HOST:-localhost}:13100
       JUPYTERHUB_URL: http://jupyterhub:8000
@@ -437,34 +437,34 @@ services:
       retries: 10
       start_period: 20s
 
-  # ── SeanerBUS bridge ─────────────────────────────────────────────────────────
-  # Connects to the real SeanerBUS (seanerbus repo docker-compose, port 5398).
-  # Start with: make seanerbus-up
-  # Real SeanerBUS must be running first: cd ../seanerbus && docker compose up -d
-  seanerbus-bridge:
+  # ── DataPlane bridge ─────────────────────────────────────────────────────────
+  # Connects to the real DataPlane (dataplane repo docker-compose, port <PORT>).
+  # Start with: make dataplane-up
+  # Real DataPlane must be running first: cd ../dataplane && docker compose up -d
+  dataplane-bridge:
     build:
-      # context is the parent seanergys/ dir so both repos are accessible
+      # context is the parent dataplane/ dir so both repos are accessible
       context: ../../../..
       dockerfile: ai-productions/platform/infra/docker-compose/Dockerfile.bridge
-    container_name: examlops-seanerbus-bridge
+    container_name: examlops-dataplane-bridge
     mem_limit: ${BRIDGE_MEM_LIMIT:-1g}
     networks:
       - default
-      - seanerbus-net     # shared with seanerbus repo — allows direct container-to-container connection
-    # Lets SEANERBUS_HOST=host.docker.internal reach a SeanerBUS running bare-metal on the host (Linux needs host-gateway)
+      - dataplane-net     # shared with dataplane repo — allows direct container-to-container connection
+    # Lets DATAPLANE_HOST=host.docker.internal reach a DataPlane running bare-metal on the host (Linux needs host-gateway)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      SEANERBUS_HOST: "${SEANERBUS_HOST:-seanerbus-reqgen}"
-      SEANERBUS_PORT: "${SEANERBUS_PORT:-5398}"
-      SEANERBUS_MODE: "reqres"
-      SEANERBUS_RETRAIN_UUID: "${SEANERBUS_RETRAIN_UUID:-}"
-      SEANERBUS_VECTOR_UUID: "${SEANERBUS_VECTOR_UUID:-}"
+      DATAPLANE_HOST: "${DATAPLANE_HOST:-dataplane-reqgen}"
+      DATAPLANE_PORT: "${DATAPLANE_PORT:-<PORT>}"
+      DATAPLANE_MODE: "reqres"
+      DATAPLANE_RETRAIN_UUID: "${DATAPLANE_RETRAIN_UUID:-}"
+      DATAPLANE_VECTOR_UUID: "${DATAPLANE_VECTOR_UUID:-}"
       RAY_SERVE_URL: "http://ray-serving:8001"
       CONTROL_PLANE_URL: "http://control-plane:8002"
       CONTROL_PLANE_TOKEN: "${CONTROL_PLANE_TOKEN:-}"
-      SEANERBUS_DEFAULT_MODEL: "${SEANERBUS_DEFAULT_MODEL:-JPCP}"
-      SEANERBUS_DEFAULT_ALIAS: "${SEANERBUS_DEFAULT_ALIAS:-Production}"
+      DATAPLANE_DEFAULT_MODEL: "${DATAPLANE_DEFAULT_MODEL:-JPCP}"
+      DATAPLANE_DEFAULT_ALIAS: "${DATAPLANE_DEFAULT_ALIAS:-Production}"
       MODELS_YAML_DIR: "/app/pipelines/models"
     env_file:
       - path: .env
@@ -474,7 +474,7 @@ services:
     ports:
       - "18003:8003"   # bridge HTTP status server — probed by dashboard
     profiles:
-      - seanerbus
+      - dataplane
     depends_on:
       ray-serving:
         condition: service_healthy
@@ -503,5 +503,5 @@ volumes:
   control_plane_data:
 
 networks:
-  seanerbus-net:
-    external: true        # created once: docker network create seanerbus-net
+  dataplane-net:
+    external: true        # created once: docker network create dataplane-net

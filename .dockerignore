@@ -21,7 +21,6 @@ env
 .DS_Store
 
 # Docs served via /api/docs — keep docs/ and component READMEs
-docs/superpowers/
 
 # Temp / logs
 temp

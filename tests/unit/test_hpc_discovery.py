@@ -45,7 +45,7 @@ def _cc(rc=0, out="", err=""):
 # ── fixtures: canned cluster shapes ──────────────────────────────────────────────
 
 
-def _flux_executor(ngpus=0, nodelist="lxp-cpu[01-02]", accounting=False):
+def _flux_executor(ngpus=0, nodelist="remote-cpu[01-02]", accounting=False):
     return FakeExecutor(
         [
             (("flux", "version"), _cc(0, "commands: 0.85.0\nlibflux-core: 0.85.0")),
@@ -76,7 +76,7 @@ def _slurm_executor(accounting=True):
     )
 
 
-def _nvidia_executor(host="lxp-gpu01"):
+def _nvidia_executor(host="remote-gpu01"):
     query = "0, NVIDIA A16, 16384, 512, 12\n1, NVIDIA A16, 16384, 0, 0"
     return FakeExecutor(
         [
@@ -94,7 +94,7 @@ def _nvidia_executor(host="lxp-gpu01"):
 
 
 def test_expand_hostlist():
-    assert discovery.expand_hostlist("lxp-cpu[01-02]") == ["lxp-cpu01", "lxp-cpu02"]
+    assert discovery.expand_hostlist("remote-cpu[01-02]") == ["remote-cpu01", "remote-cpu02"]
     assert discovery.expand_hostlist("a,b") == ["a", "b"]
     assert discovery.expand_hostlist("node[1,3-4]") == ["node1", "node3", "node4"]
     assert discovery.expand_hostlist("(null)") == []
@@ -135,7 +135,7 @@ def test_flux_probe_detects_and_lists_nodes():
     assert caps["has_accounting"] is False
 
     nodes = discovery.FluxProbe().list_nodes(ex)
-    assert [n.name for n in nodes] == ["lxp-cpu01", "lxp-cpu02"]
+    assert [n.name for n in nodes] == ["remote-cpu01", "remote-cpu02"]
     assert all(n.state == "idle" and n.cpus == 32 for n in nodes)
 
 
@@ -182,7 +182,7 @@ def test_nvidia_smi_probe():
     assert gpus[0].memory_mb == 16384 and gpus[0].used_memory_mb == 512
     assert gpus[0].utilization_pct == 12.0 and gpus[0].state == "online"
     nodes = discovery.NvidiaSmiProbe().list_nodes(ex)
-    assert len(nodes) == 1 and nodes[0].name == "lxp-gpu01" and nodes[0].gpus == 2
+    assert len(nodes) == 1 and nodes[0].name == "remote-gpu01" and nodes[0].gpus == 2
 
 
 # ── top-level detection ──────────────────────────────────────────────────────────
@@ -336,11 +336,11 @@ def test_node_snapshot_roundtrip(tmp_path, monkeypatch):
             "partition": "gpu",
         }
     ]
-    assert platform_db.record_node_snapshot("lxp", "flux", nodes) == 1
-    rows = platform_db.get_node_snapshot("lxp")
+    assert platform_db.record_node_snapshot("remote", "flux", nodes) == 1
+    rows = platform_db.get_node_snapshot("remote")
     assert len(rows) == 1
     assert rows[0]["node"] == "n1" and rows[0]["gpus"] == 4 and rows[0]["scheduler"] == "flux"
 
     # Snapshot replaces (latest wins).
-    assert platform_db.record_node_snapshot("lxp", "flux", []) == 0
-    assert platform_db.get_node_snapshot("lxp") == []
+    assert platform_db.record_node_snapshot("remote", "flux", []) == 0
+    assert platform_db.get_node_snapshot("remote") == []

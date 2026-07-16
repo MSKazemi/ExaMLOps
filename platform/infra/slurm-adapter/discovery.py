@@ -456,7 +456,7 @@ class SlurmProbe:
 
 
 class NvidiaSmiProbe:
-    """Live GPU inventory for hosts with no scheduler (e.g. lxp-gpu01, 4× A16)."""
+    """Live GPU inventory for hosts with no scheduler (e.g. remote-gpu01, 4× A16)."""
 
     name = "nvidia-smi"
 
@@ -539,7 +539,7 @@ register_probe(NvidiaSmiProbe())
 def probe_scheduler(executor: RemoteExecutor) -> ClusterCaps:
     """Detect which scheduler runs on the host and return its capabilities.
 
-    Tries real schedulers in :data:`_DETECT_ORDER` (Flux first — it owns the lxp nodes),
+    Tries real schedulers in :data:`_DETECT_ORDER` (Flux first — it owns the remote nodes),
     then falls back to the ``nvidia-smi`` unmanaged probe, then to ``unknown``. Read-only.
     """
     for name in _DETECT_ORDER:

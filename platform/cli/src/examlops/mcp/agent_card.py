@@ -57,7 +57,7 @@ def build_agent_card(
             "agents and MCP clients."
         ),
         "version": _version(),
-        "provider": {"organization": "SEANERGYS", "url": "https://seanergys.eu"},
+        "provider": {"organization": "DATAPLANE", "url": "https://dataplane.eu"},
         "capabilities": {
             "streaming": False,
             "pushNotifications": False,

@@ -1,8 +1,8 @@
-"""scaffold_model — generate a new SeanergysModel from the template tree.
+"""scaffold_model — generate a new DataplaneModel from the template tree.
 
 Adds three files to the repo:
 
-  modelzoo/seanergys_modelzoo/models/tasks/<task>/<name_lower>/
+  modelzoo/modelzoo/models/tasks/<task>/<name_lower>/
       __init__.py
       <name_lower>_model.py
 
@@ -84,7 +84,7 @@ def main() -> int:
     defaults = json.loads((TEMPLATE_DIR / "cookiecutter.json").read_text())
     defaults.pop("_doc", None)
 
-    parser = argparse.ArgumentParser(description="Scaffold a new SeanergysModel.")
+    parser = argparse.ArgumentParser(description="Scaffold a new DataplaneModel.")
     parser.add_argument("--name", required=True, help="PascalCase model name (e.g. DemoAD)")
     parser.add_argument(
         "--task",
@@ -164,7 +164,7 @@ def main() -> int:
     model_dir = (
         write_root
         / "modelzoo"
-        / "seanergys_modelzoo"
+        / "modelzoo"
         / "models"
         / "tasks"
         / args.task
@@ -188,7 +188,7 @@ def main() -> int:
         f"task_type: {args.task_type}\n"
         f"framework: sklearn\n"
         f"enabled: true\n"
-        f"seanerbus_uuid: {_uuid_mod.uuid4()}\n"
+        f"dataplane_uuid: {_uuid_mod.uuid4()}\n"
         f"\n"
         f"model:\n"
         f"  embedding_type: NONE\n"

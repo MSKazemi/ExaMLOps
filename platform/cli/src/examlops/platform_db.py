@@ -21,7 +21,7 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
     Uses the shared :mod:`examlops.resilience.db` helper so every one of the ~170
     call sites (and the 3 concurrent long-lived writers: CLI, agent service,
-    seanerbus bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
+    dataplane bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
     waits out lock contention instead of raising ``database is locked`` immediately,
     plus ``check_same_thread=False`` for the threaded services.
     """
@@ -599,6 +599,68 @@ def init_db() -> None:
                 value       TEXT NOT NULL,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013).
+            CREATE TABLE IF NOT EXISTS model_signatures (
+                model       TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                digest      TEXT NOT NULL,
+                algo        TEXT NOT NULL DEFAULT 'hmac-sha256',
+                signature   TEXT NOT NULL,
+                cert        TEXT,
+                signed_by   TEXT,
+                signed_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, version)
+            );
+            CREATE TABLE IF NOT EXISTS model_boms (
+                model       TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                bom_json    TEXT NOT NULL,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, version)
+            );
+            -- Next-Gen 40 · D6 — relationship-based authz (ADR 0014). Default-deny;
+            -- relations owner⊇editor⊇viewer between a subject and an object.
+            CREATE TABLE IF NOT EXISTS authz_relations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject     TEXT NOT NULL,
+                relation    TEXT NOT NULL,
+                object      TEXT NOT NULL,
+                actor       TEXT,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (subject, relation, object)
+            );
+            -- Next-Gen 40 · D7 — local encrypted secrets store (ADR 0011). Fallback
+            -- when OpenBao/SOPS is not deployed; values are Fernet-encrypted at rest.
+            CREATE TABLE IF NOT EXISTS secrets_store (
+                path        TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                ciphertext  TEXT NOT NULL,
+                version     INTEGER NOT NULL DEFAULT 1,
+                updated_by  TEXT,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (path, tenant)
+            );
+            -- Next-Gen 40 · B1 — prompt registry (ADR 0009). Versions are immutable;
+            -- labels are moving pointers (dev/staging/prod) to a specific version.
+            CREATE TABLE IF NOT EXISTS prompt_versions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                template    TEXT NOT NULL,
+                variables   TEXT,
+                tags        TEXT,
+                actor       TEXT,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (name, version)
+            );
+            CREATE TABLE IF NOT EXISTS prompt_labels (
+                name        TEXT NOT NULL,
+                label       TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                updated_by  TEXT,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (name, label)
+            );
             -- Next-Gen 40 · A1 — immutable, run-pinned dataset revisions (ADR 0003).
             -- Idempotent on (backend, dataset, revision_id): re-recording a revision is a no-op.
             CREATE TABLE IF NOT EXISTS dataset_revisions (
@@ -615,6 +677,92 @@ def init_db() -> None:
                 actor         TEXT,
                 created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (backend, dataset, revision_id)
+            );
+            -- Next-Gen 40 · A2 — OpenLineage run events + I/O nodes (ADR 0004).
+            -- platform_db is the operational source of truth; Marquez (if configured)
+            -- holds the queryable graph. emit_lineage() dual-writes both.
+            CREATE TABLE IF NOT EXISTS lineage_events (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id           TEXT NOT NULL,
+                job              TEXT NOT NULL,
+                event_type       TEXT NOT NULL,       -- START | COMPLETE | FAIL
+                dataset_revision TEXT,
+                mlflow_run_id    TEXT,
+                model            TEXT,
+                model_version    TEXT,
+                trace_id         TEXT,
+                facets_json      TEXT,
+                ts               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS lineage_io (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT NOT NULL,
+                direction   TEXT NOT NULL,             -- input | output
+                node_type   TEXT NOT NULL,             -- dataset | model | deployment
+                node_name   TEXT NOT NULL,             -- namespaced, e.g. examlops://model/jpcp/18
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (run_id, direction, node_name)
+            );
+            -- Next-Gen 40 · C2 — continuous-eval suite results (ADR 0007). One row per
+            -- (suite, model version, run, metric); idempotent via the UNIQUE constraint.
+            CREATE TABLE IF NOT EXISTS eval_suite_results (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                suite                 TEXT NOT NULL,
+                model                 TEXT NOT NULL,
+                model_version         TEXT,
+                alias                 TEXT,
+                metric                TEXT NOT NULL,
+                score                 REAL NOT NULL,
+                sample_size           INTEGER NOT NULL DEFAULT 0,
+                judge_model           TEXT,
+                judge_prompt_version  TEXT,
+                dataset_revision      TEXT,
+                run_id                TEXT NOT NULL,
+                ts                    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (suite, model_version, run_id, metric)
+            );
+            -- Next-Gen 40 · C3 — eval regression gate config + reports (ADR 0008).
+            CREATE TABLE IF NOT EXISTS eval_gates (
+                model          TEXT PRIMARY KEY,
+                suite          TEXT NOT NULL,
+                baseline_alias TEXT NOT NULL DEFAULT 'Production',
+                metrics_json   TEXT NOT NULL,           -- [{name,min?,max_drop?}]
+                mode           TEXT NOT NULL DEFAULT 'block',   -- block | warn
+                updated_by     TEXT,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS gate_reports (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                model         TEXT NOT NULL,
+                candidate     TEXT,
+                baseline      TEXT,
+                passed        INTEGER NOT NULL,
+                mode          TEXT NOT NULL,
+                report_json   TEXT NOT NULL,
+                ts            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B2 — model gateway virtual keys + per-call cost (ADR 0010).
+            -- Only the key hash is stored (never the raw key). budget_usd NULL = unlimited.
+            CREATE TABLE IF NOT EXISTS virtual_keys (
+                key_hash    TEXT PRIMARY KEY,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                project     TEXT NOT NULL DEFAULT 'default',
+                models_json TEXT NOT NULL DEFAULT '[]',   -- allow-list; [] = all models
+                budget_usd  REAL,
+                spent_usd   REAL NOT NULL DEFAULT 0,
+                created_by  TEXT,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                revoked     INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS gateway_calls (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_hash          TEXT,
+                model             TEXT NOT NULL,
+                backend           TEXT,
+                cost_usd          REAL NOT NULL DEFAULT 0,
+                prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                ts                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         """)
         _migrate_columns(conn)
@@ -638,6 +786,12 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # FinOps pluggable providers (ADR 0074): which carbon provider produced each record.
     "carbon_records": {
         "provider": "TEXT",
+    },
+    # A5 data contracts (ADR 0005): revision/stage/score facets on the quality table.
+    "data_quality_checks": {
+        "revision": "TEXT",
+        "stage": "TEXT NOT NULL DEFAULT 'train'",
+        "score": "REAL",
     },
 }
 
@@ -1542,3 +1696,636 @@ def get_dataset_revision(
         if row["revision_id"] == revision_id:
             return row
     return None
+
+
+# --- Next-Gen 40 · A5 — data contracts / quality gates (ADR 0005) ------------
+
+
+def record_data_quality_check(
+    dataset: str,
+    result: Any,
+    *,
+    revision: str | None = None,
+    stage: str = "train",
+    model: str = "-",
+    actor: str | None = None,
+) -> None:
+    """Record a contract-validation outcome (spec R7).
+
+    ``result`` is a QualityResult-like object exposing ``passed``, ``score``, and
+    ``checks`` (kept duck-typed so this layer never imports the pipelines package).
+    """
+    init_db()
+    checks = list(getattr(result, "checks", []))
+    passed_n = sum(1 for c in checks if c.get("passed"))
+    failed_n = len(checks) - passed_n
+    status = "PASS" if getattr(result, "passed", False) else "FAIL"
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO data_quality_checks
+                   (model, dataset, status, passed, failed, details_json, actor,
+                    revision, stage, score)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                model,
+                dataset,
+                status,
+                passed_n,
+                failed_n,
+                json.dumps(checks),
+                actor,
+                revision,
+                stage,
+                float(getattr(result, "score", 0.0)),
+            ),
+        )
+
+
+def get_data_quality_checks(dataset: str, last_n: int = 20) -> list[dict[str, Any]]:
+    """Return recent quality-check rows for ``dataset``, newest first."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM data_quality_checks WHERE dataset=? ORDER BY id DESC LIMIT ?",
+            (dataset, last_n),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Next-Gen 40 · B1 — prompt registry (ADR 0009) ---------------------------
+
+
+def create_prompt_version(
+    name: str,
+    template: str,
+    *,
+    variables: list[str] | None = None,
+    tags: dict[str, Any] | None = None,
+    actor: str | None = None,
+) -> int:
+    """Create a new immutable prompt version (spec R1). Returns the new version number."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS v FROM prompt_versions WHERE name=?", (name,)
+        ).fetchone()
+        version = int(row["v"]) + 1
+        conn.execute(
+            """INSERT INTO prompt_versions (name, version, template, variables, tags, actor)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                name,
+                version,
+                template,
+                json.dumps(variables or []),
+                json.dumps(tags or {}),
+                actor,
+            ),
+        )
+    return version
+
+
+def get_prompt_version(name: str, version: int) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM prompt_versions WHERE name=? AND version=?", (name, version)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_prompt_versions(name: str) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM prompt_versions WHERE name=? ORDER BY version DESC", (name,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_prompt_names() -> list[str]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT DISTINCT name FROM prompt_versions ORDER BY name").fetchall()
+    return [r["name"] for r in rows]
+
+
+def set_prompt_label(name: str, label: str, version: int) -> None:
+    """Point a label at a version (spec R8). Caller writes the audit event (R9)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO prompt_labels (name, label, version, updated_at)
+               VALUES (?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(name, label) DO UPDATE SET
+                   version=excluded.version, updated_at=CURRENT_TIMESTAMP""",
+            (name, label, version),
+        )
+
+
+def get_prompt_by_label(name: str, label: str) -> dict[str, Any] | None:
+    """Resolve ``name@label`` to its pinned prompt version (spec R3)."""
+    init_db()
+    with get_db() as conn:
+        lab = conn.execute(
+            "SELECT version FROM prompt_labels WHERE name=? AND label=?", (name, label)
+        ).fetchone()
+    if lab is None:
+        return None
+    return get_prompt_version(name, int(lab["version"]))
+
+
+def list_prompt_labels(name: str) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM prompt_labels WHERE name=? ORDER BY label", (name,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Next-Gen 40 · D7 — local encrypted secrets store (ADR 0011) --------------
+# Stores/returns opaque ciphertext only; encryption/decryption lives in the
+# examlops.secrets client so this DB layer never sees a plaintext secret.
+
+
+def put_secret_ciphertext(
+    path: str, tenant: str, ciphertext: str, *, updated_by: str | None = None
+) -> int:
+    """Upsert an encrypted secret, bumping its version. Returns the new version."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT version FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
+        ).fetchone()
+        version = (int(row["version"]) + 1) if row else 1
+        conn.execute(
+            """INSERT INTO secrets_store (path, tenant, ciphertext, version, updated_by, updated_at)
+               VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(path, tenant) DO UPDATE SET
+                   ciphertext=excluded.ciphertext, version=excluded.version,
+                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
+            (path, tenant, ciphertext, version, updated_by),
+        )
+    return version
+
+
+def get_secret_ciphertext(path: str, tenant: str) -> str | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT ciphertext FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
+        ).fetchone()
+    return row["ciphertext"] if row else None
+
+
+def list_secret_paths(tenant: str | None = None) -> list[dict[str, Any]]:
+    """List secret metadata (path/tenant/version/updated_at) — never values."""
+    init_db()
+    with get_db() as conn:
+        if tenant:
+            rows = conn.execute(
+                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
+                "WHERE tenant=? ORDER BY path",
+                (tenant,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
+                "ORDER BY tenant, path"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Next-Gen 40 · D6 — authz relations (ADR 0014) ---------------------------
+
+
+def grant_relation(subject: str, relation: str, obj: str, *, actor: str | None = None) -> None:
+    """Grant ``subject`` a ``relation`` on ``obj`` (idempotent)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO authz_relations (subject, relation, object, actor)
+               VALUES (?,?,?,?)
+               ON CONFLICT(subject, relation, object) DO NOTHING""",
+            (subject, relation, obj, actor),
+        )
+
+
+def revoke_relation(subject: str, relation: str, obj: str) -> int:
+    """Revoke a relation. Returns rows deleted (0 if none)."""
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM authz_relations WHERE subject=? AND relation=? AND object=?",
+            (subject, relation, obj),
+        )
+        return cur.rowcount
+
+
+def get_relations_for(subject: str, obj: str) -> list[str]:
+    """Return the relations ``subject`` holds directly on ``obj``."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT relation FROM authz_relations WHERE subject=? AND object=?", (subject, obj)
+        ).fetchall()
+    return [r["relation"] for r in rows]
+
+
+def list_relations(subject: str | None = None, obj: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    clauses, params = [], []
+    if subject:
+        clauses.append("subject=?")
+        params.append(subject)
+    if obj:
+        clauses.append("object=?")
+        params.append(obj)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM authz_relations{where} ORDER BY object, subject", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_objects_for(subject: str) -> list[dict[str, Any]]:
+    """All (object, relation) pairs granted to ``subject``."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT object, relation FROM authz_relations WHERE subject=? ORDER BY object",
+            (subject,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013) --------------------
+
+
+def store_model_signature(
+    model: str,
+    version: str,
+    digest: str,
+    signature: str,
+    *,
+    algo: str = "hmac-sha256",
+    cert: str | None = None,
+    signed_by: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO model_signatures
+                   (model, version, digest, algo, signature, cert, signed_by, signed_at)
+               VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(model, version) DO UPDATE SET
+                   digest=excluded.digest, algo=excluded.algo, signature=excluded.signature,
+                   cert=excluded.cert, signed_by=excluded.signed_by, signed_at=CURRENT_TIMESTAMP""",
+            (model, version, digest, algo, signature, cert, signed_by),
+        )
+
+
+def get_model_signature(model: str, version: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM model_signatures WHERE model=? AND version=?", (model, version)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def store_model_bom(model: str, version: str, bom: dict[str, Any]) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO model_boms (model, version, bom_json, created_at)
+               VALUES (?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(model, version) DO UPDATE SET
+                   bom_json=excluded.bom_json, created_at=CURRENT_TIMESTAMP""",
+            (model, version, json.dumps(bom)),
+        )
+
+
+def get_model_bom(model: str, version: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT bom_json FROM model_boms WHERE model=? AND version=?", (model, version)
+        ).fetchone()
+    return json.loads(row["bom_json"]) if row else None
+
+
+# ── A2 — OpenLineage dual-write + graph/impact queries (ADR 0004) ─────────────
+
+
+def record_lineage_event(
+    run_id: str,
+    job: str,
+    event_type: str,
+    *,
+    inputs: list[dict[str, str]] | None = None,
+    outputs: list[dict[str, str]] | None = None,
+    dataset_revision: str | None = None,
+    mlflow_run_id: str | None = None,
+    model: str | None = None,
+    model_version: str | None = None,
+    trace_id: str | None = None,
+    facets: dict[str, Any] | None = None,
+) -> None:
+    """Upsert a lineage run event + its I/O nodes (the operational source of truth)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO lineage_events
+                   (run_id, job, event_type, dataset_revision, mlflow_run_id,
+                    model, model_version, trace_id, facets_json)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id,
+                job,
+                event_type,
+                dataset_revision,
+                mlflow_run_id,
+                model,
+                model_version,
+                trace_id,
+                json.dumps(facets) if facets else None,
+            ),
+        )
+        for direction, nodes in (("input", inputs or []), ("output", outputs or [])):
+            for node in nodes:
+                conn.execute(
+                    """INSERT OR IGNORE INTO lineage_io
+                           (run_id, direction, node_type, node_name)
+                       VALUES (?,?,?,?)""",
+                    (run_id, direction, node.get("type", "dataset"), node["name"]),
+                )
+
+
+def lineage_graph(model: str) -> dict[str, Any]:
+    """Return upstream (datasets/runs) + downstream (deployments) nodes for a model."""
+    init_db()
+    with get_db() as conn:
+        runs = conn.execute(
+            "SELECT * FROM lineage_events WHERE model=? ORDER BY ts DESC", (model,)
+        ).fetchall()
+        run_ids = [r["run_id"] for r in runs]
+        io_rows: list[dict[str, Any]] = []
+        for rid in run_ids:
+            io_rows.extend(
+                dict(r)
+                for r in conn.execute("SELECT * FROM lineage_io WHERE run_id=?", (rid,)).fetchall()
+            )
+    return {
+        "model": model,
+        "runs": [dict(r) for r in runs],
+        "upstream": [r for r in io_rows if r["direction"] == "input"],
+        "downstream": [r for r in io_rows if r["direction"] == "output"],
+    }
+
+
+def lineage_impact(dataset_revision: str) -> list[dict[str, Any]]:
+    """List every model version derived (transitively) from a dataset revision."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT model, model_version, run_id, mlflow_run_id
+               FROM lineage_events
+               WHERE dataset_revision=? AND model IS NOT NULL
+               ORDER BY model, model_version""",
+            (dataset_revision,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── C2 — continuous-eval suite results (ADR 0007) ─────────────────────────────
+
+
+def record_eval_result(
+    suite: str,
+    model: str,
+    scores: dict[str, float],
+    *,
+    run_id: str,
+    model_version: str | None = None,
+    alias: str | None = None,
+    sample_size: int = 0,
+    judge: dict[str, str] | None = None,
+    dataset_revision: str | None = None,
+) -> None:
+    """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8)."""
+    init_db()
+    judge_model = (judge or {}).get("model")
+    judge_prompt = (judge or {}).get("prompt_version")
+    with get_db() as conn:
+        for metric, score in scores.items():
+            conn.execute(
+                """INSERT OR IGNORE INTO eval_suite_results
+                       (suite, model, model_version, alias, metric, score, sample_size,
+                        judge_model, judge_prompt_version, dataset_revision, run_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    suite,
+                    model,
+                    model_version,
+                    alias,
+                    metric,
+                    float(score),
+                    sample_size,
+                    judge_model,
+                    judge_prompt,
+                    dataset_revision,
+                    run_id,
+                ),
+            )
+
+
+def get_eval_results(
+    model: str, suite: str | None = None, *, alias: str | None = None
+) -> list[dict[str, Any]]:
+    init_db()
+    q = "SELECT * FROM eval_suite_results WHERE model=?"
+    params: list[Any] = [model]
+    if suite:
+        q += " AND suite=?"
+        params.append(suite)
+    if alias:
+        q += " AND alias=?"
+        params.append(alias)
+    q += " ORDER BY ts DESC"
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+# ── C3 — eval regression gate config + reports (ADR 0008) ─────────────────────
+
+
+def set_eval_gate(
+    model: str,
+    suite: str,
+    metrics: list[dict[str, Any]],
+    *,
+    baseline_alias: str = "Production",
+    mode: str = "block",
+    updated_by: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO eval_gates (model, suite, baseline_alias, metrics_json, mode, updated_by)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(model) DO UPDATE SET
+                   suite=excluded.suite, baseline_alias=excluded.baseline_alias,
+                   metrics_json=excluded.metrics_json, mode=excluded.mode,
+                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
+            (model, suite, baseline_alias, json.dumps(metrics), mode, updated_by),
+        )
+
+
+def get_eval_gate(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM eval_gates WHERE model=?", (model,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["metrics"] = json.loads(d.pop("metrics_json"))
+    return d
+
+
+def record_gate_report(
+    model: str,
+    passed: bool,
+    mode: str,
+    report: dict[str, Any],
+    *,
+    candidate: str | None = None,
+    baseline: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO gate_reports (model, candidate, baseline, passed, mode, report_json)
+               VALUES (?,?,?,?,?,?)""",
+            (model, candidate, baseline, 1 if passed else 0, mode, json.dumps(report)),
+        )
+
+
+def get_gate_reports(model: str, limit: int = 20) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM gate_reports WHERE model=? ORDER BY ts DESC LIMIT ?", (model, limit)
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["report"] = json.loads(d.pop("report_json"))
+        out.append(d)
+    return out
+
+
+# ── B2 — model-gateway virtual keys + per-call cost (ADR 0010) ────────────────
+
+
+def create_virtual_key(
+    key_hash: str,
+    *,
+    tenant: str = "default",
+    project: str = "default",
+    models: list[str] | None = None,
+    budget_usd: float | None = None,
+    created_by: str | None = None,
+) -> None:
+    """Store a virtual key (only its hash — never the raw key)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO virtual_keys
+                   (key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by)
+               VALUES (?,?,?,?,?,
+                   COALESCE((SELECT spent_usd FROM virtual_keys WHERE key_hash=?), 0), ?)""",
+            (
+                key_hash,
+                tenant,
+                project,
+                json.dumps(models or []),
+                budget_usd,
+                key_hash,
+                created_by,
+            ),
+        )
+
+
+def get_virtual_key(key_hash: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["models"] = json.loads(d.pop("models_json"))
+    return d
+
+
+def list_virtual_keys() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM virtual_keys ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["models"] = json.loads(d.pop("models_json"))
+        out.append(d)
+    return out
+
+
+def add_key_spend(key_hash: str, cost_usd: float) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE virtual_keys SET spent_usd = spent_usd + ? WHERE key_hash=?",
+            (cost_usd, key_hash),
+        )
+
+
+def revoke_virtual_key(key_hash: str) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute("UPDATE virtual_keys SET revoked=1 WHERE key_hash=?", (key_hash,))
+
+
+def record_gateway_call(
+    key_hash: str | None,
+    model: str,
+    *,
+    backend: str | None = None,
+    cost_usd: float = 0.0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO gateway_calls
+                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens)
+               VALUES (?,?,?,?,?,?)""",
+            (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens),
+        )
+
+
+def total_gateway_cost(key_hash: str | None = None) -> float:
+    init_db()
+    with get_db() as conn:
+        if key_hash:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls WHERE key_hash=?",
+                (key_hash,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls"
+            ).fetchone()
+    return float(row["t"])

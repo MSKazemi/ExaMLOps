@@ -17,8 +17,8 @@ for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from seanergys_modelzoo.datasets.f_data import FDataDataset
-from seanergys_modelzoo.models.tasks.performance_prediction.mcbound.mcbound_model import (
+from modelzoo.datasets.f_data import FDataDataset
+from modelzoo.models.tasks.performance_prediction.mcbound.mcbound_model import (
     Embedding,
     MCBound,
 )

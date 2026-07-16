@@ -1,9 +1,9 @@
 #!/bin/sh
 # ──────────────────────────────────────────────────────────────────────────────
-# ensure-egress.sh — self-healing Docker-bridge egress for lxp-cpu01
+# ensure-egress.sh — self-healing Docker-bridge egress for remote-cpu01
 #
 # WHY THIS EXISTS
-#   On lxp-cpu01, firewalld leaves a stray nftables chain `ip filter forward`
+#   On remote-cpu01, firewalld leaves a stray nftables chain `ip filter forward`
 #   with `policy drop`. Docker's own FORWARD-accept rules are evaluated first,
 #   but this leftover chain runs second and drops new outbound packets from the
 #   Docker bridges, so containers lose all egress (DNS + TCP). firewalld also
@@ -23,7 +23,7 @@
 #   edit the host ruleset. Requires only Docker access — no host sudo.
 #
 #   This is a STOPGAP. The durable fix is a host-level systemd unit owned by the
-#   sysadmin (see .claude/plans/sysadmin-email-lxp-docker-egress.txt). Keep this
+#   sysadmin (see internal design notes). Keep this
 #   running until that lands.
 # ──────────────────────────────────────────────────────────────────────────────
 set -u

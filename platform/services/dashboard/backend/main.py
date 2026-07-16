@@ -40,7 +40,7 @@ from routers import (
     quality,
     rollback,
     scaffold,
-    seanerbus,
+    dataplane,
     search,
     selfobs,
     shadow,
@@ -116,7 +116,7 @@ app.include_router(proxy.router, prefix="/api")
 app.include_router(docs.router, prefix="/api")
 app.include_router(models.router, prefix="/api")
 app.include_router(modelzoo.router, prefix="/api")
-app.include_router(seanerbus.router, prefix="/api")
+app.include_router(dataplane.router, prefix="/api")
 app.include_router(containers.router, prefix="/api")
 app.include_router(approvals.router, prefix="/api")
 app.include_router(pipelines.router, prefix="/api")

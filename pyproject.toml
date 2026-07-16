@@ -11,7 +11,7 @@ py-modules = []
 # `make install-dev` (uv pip install -e ".[dev]") bootstraps the whole dev env.
 [project]
 name = "examlops-workspace"
-version = "0.31.0"
+version = "0.32.0"
 requires-python = ">=3.12"
 dependencies = [
     # workspace members — installs exa CLI entry point
@@ -38,16 +38,16 @@ dependencies = [
     # CLI
     "typer>=0.12",
     "prometheus-client>=0.20",
-    # SeanerBUS bridge (runtime transport only; pycapnp is the C extension)
+    # DataPlane bridge (runtime transport only; pycapnp is the C extension)
     "pycapnp>=2.0",
     "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-# Local path — only resolved when explicitly requested (make seanerbus-install).
-# Not installed in CI; unit tests stub out the seanerbus package entirely.
-seanerbus = [
-    "seanerbus @ file:///home/mohsen/seanergys/seanerbus/bindings/python",
+# Local path — only resolved when explicitly requested (make dataplane-install).
+# Not installed in CI; unit tests stub out the dataplane package entirely.
+dataplane = [
+    "dataplane @ file:///home/mohsen/dataplane/dataplane/bindings/python",
 ]
 dev = [
     "pytest>=7.4",

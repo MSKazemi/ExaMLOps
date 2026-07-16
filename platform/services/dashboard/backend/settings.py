@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     control_plane_url: str = "http://localhost:18002"
     jupyterhub_url: str = "http://localhost:18888"
     loki_url: str = "http://localhost:13100"
-    seanerbus_bridge_status_url: str = "http://localhost:8003"
+    dataplane_bridge_status_url: str = "http://localhost:8003"
 
     # ── Browser-facing URLs ──
     public_mlflow_url: str = "http://localhost:15000"
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     public_control_plane_url: str = "http://localhost:18002"
     public_jupyterhub_url: str = "http://localhost:18888"
     public_loki_url: str = "http://localhost:13100"
-    public_seanerbus_bridge_url: str = "http://localhost:18003"
+    public_dataplane_bridge_url: str = "http://localhost:18003"
     public_dashboard_url: str = "http://localhost:18099"
     slurm_mode: str = "mock"
 
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # ── Scaffold (model generation) ──
     repo_root: str | None = None
 
-    # Shared platform SQLite database (written by CLI and SeanerBUS bridge)
+    # Shared platform SQLite database (written by CLI and DataPlane bridge)
     platform_db: str = "/repo/platform.db"
 
 

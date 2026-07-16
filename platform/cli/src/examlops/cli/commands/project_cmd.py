@@ -400,3 +400,81 @@ def delete(
         raise typer.Exit(1)
     write_audit_event("cli", _actor(), "project_deleted", name, {})
     _output.ok(f"Project '{name}' deleted")
+
+
+# --- D6 RBAC (ADR 0014): relationship grants over projects/objects -----------
+
+_EX_GRANT = (
+    "Examples:\n\n"
+    "  exa project grant alice owner project:acme\n\n"
+    "  exa project grant bob editor project:acme/model:JPCP"
+)
+
+
+@app.command("grant", epilog=_EX_GRANT)
+def grant(
+    subject: str = typer.Argument(..., help="User/subject id"),
+    relation: str = typer.Argument(..., help="owner | editor | viewer"),
+    obj: str = typer.Argument(
+        ..., metavar="OBJECT", help="Object id (e.g. project:acme/model:JPCP)"
+    ),
+) -> None:
+    """Grant a subject a relation on an object (RBAC, audited, spec D6)."""
+    from examlops.authz import grant as authz_grant
+
+    if relation not in {"owner", "editor", "viewer"}:
+        _output.error("relation must be one of: owner, editor, viewer")
+    authz_grant(subject, relation, obj, actor=_actor())
+    _output.ok(f"Granted [bold]{subject}[/bold] '{relation}' on {obj}")
+
+
+@app.command(
+    "revoke", epilog="Examples:\n\n  exa project revoke bob editor project:acme/model:JPCP"
+)
+def revoke(
+    subject: str = typer.Argument(..., help="User/subject id"),
+    relation: str = typer.Argument(..., help="owner | editor | viewer"),
+    obj: str = typer.Argument(..., metavar="OBJECT", help="Object id"),
+) -> None:
+    """Revoke a subject's relation on an object (audited)."""
+    from examlops.authz import revoke as authz_revoke
+
+    n = authz_revoke(subject, relation, obj, actor=_actor())
+    if n:
+        _output.ok(f"Revoked '{relation}' from {subject} on {obj}")
+    else:
+        _output.info("No such relation.")
+
+
+@app.command(
+    "access",
+    epilog="Examples:\n\n  exa project access --object project:acme\n\n  exa project access --subject alice",
+)
+def access(
+    subject: str | None = typer.Option(None, "--subject", help="Show all grants for a subject"),
+    obj: str | None = typer.Option(None, "--object", help="Show all grants on an object"),
+) -> None:
+    """List RBAC relations (by subject and/or object)."""
+    from examlops.platform_db import list_relations
+
+    rows = list_relations(subject=subject, obj=obj)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No relations.")
+        return
+    _output.print_table(
+        "RBAC relations",
+        ["Subject", "Relation", "Object", "Granted by", "When"],
+        [
+            [
+                r["subject"],
+                r["relation"],
+                r["object"],
+                r["actor"] or "-",
+                (r["created_at"] or "")[:19],
+            ]
+            for r in rows
+        ],
+    )

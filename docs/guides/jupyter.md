@@ -10,7 +10,7 @@ Each user who logs in gets a **dedicated JupyterLab container** spawned automati
 make jupyter-up
 ```
 
-Open **http://localhost:18888** (or **http://23.109.46.77:18888** on remote server `lxp-cpu01`, or use `ssh lxp` port-forward).
+Open **http://localhost:18888** (or **http://<DATAPLANE_HOST>:18888** on remote server `remote-cpu01`, or use `ssh remote` port-forward).
 
 ## First-Time Login (Admin Account)
 
@@ -93,7 +93,7 @@ with mlflow.start_run(experiment_id="1", run_name="notebook-test"):
     print("Run logged:", mlflow.active_run().info.run_id)
 ```
 
-MLflow UI is also reachable in the browser at **http://localhost:15000** (host) or **http://23.109.46.77:15000** (lxp-cpu01).
+MLflow UI is also reachable in the browser at **http://localhost:15000** (host) or **http://<DATAPLANE_HOST>:15000** (remote-cpu01).
 
 ---
 
@@ -156,7 +156,7 @@ resp = requests.post(
 print(resp.json())
 ```
 
-Ray Dashboard: **http://localhost:18265** (local) / **http://23.109.46.77:18265** (lxp-cpu01).
+Ray Dashboard: **http://localhost:18265** (local) / **http://<DATAPLANE_HOST>:18265** (remote-cpu01).
 
 ---
 
@@ -187,7 +187,7 @@ async def trigger_run(deployment_name: str):
 asyncio.run(trigger_run("jpcp-nightly"))
 ```
 
-Prefect UI: **http://localhost:14200** (local) / **http://23.109.46.77:14200** (lxp-cpu01).
+Prefect UI: **http://localhost:14200** (local) / **http://<DATAPLANE_HOST>:14200** (remote-cpu01).
 
 ---
 
@@ -331,11 +331,11 @@ Files outside `~/work/` are lost on container restart. In future, save everythin
 
 ## Ports Quick Reference
 
-| Service | Local | Remote (lxp-cpu01) |
+| Service | Local | Remote (remote-cpu01) |
 |---|---|---|
-| JupyterHub | http://localhost:18888 | http://23.109.46.77:18888 |
-| MLflow | http://localhost:15000 | http://23.109.46.77:15000 |
-| MinIO Console | http://localhost:19001 | http://23.109.46.77:19001 |
-| Prefect UI | http://localhost:14200 | http://23.109.46.77:14200 |
-| Ray Dashboard | http://localhost:18265 | http://137.204.56.169:18265 |
-| Grafana | http://localhost:13000 | http://137.204.56.169:13000 |
+| JupyterHub | http://localhost:18888 | http://<DATAPLANE_HOST>:18888 |
+| MLflow | http://localhost:15000 | http://<DATAPLANE_HOST>:15000 |
+| MinIO Console | http://localhost:19001 | http://<DATAPLANE_HOST>:19001 |
+| Prefect UI | http://localhost:14200 | http://<DATAPLANE_HOST>:14200 |
+| Ray Dashboard | http://localhost:18265 | http://<CONTROL_PLANE_HOST>:18265 |
+| Grafana | http://localhost:13000 | http://<CONTROL_PLANE_HOST>:13000 |

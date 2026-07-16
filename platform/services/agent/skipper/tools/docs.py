@@ -32,7 +32,7 @@ _HOWTO = {
     "add a dataset backend": (
         "components/modelzoo.md",
         "Pass --backend minio|dataplane to exa pipeline run.",
-        "Backends live in modelzoo/seanergys_modelzoo/datasets/_backends.py.",
+        "Backends live in modelzoo/modelzoo/datasets/_backends.py.",
     ),
 }
 

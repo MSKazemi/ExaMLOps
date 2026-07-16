@@ -18,7 +18,7 @@ table. They are edited at runtime through the Config page (admin only).
 | `minio_url`         | `http://localhost:9000` | Config → Endpoints | Health, Services card (S3 API) |
 | `minio_console_url` | `http://localhost:9001` | Config → Endpoints | Services card (Console) |
 | `dataplane_sim_url` | `http://localhost:8010` | Config → Endpoints | Health, Services card |
-| `seanerbus_bridge_status_url` | `$SEANERBUS_BRIDGE_STATUS_URL` env var (Docker default: `http://seanerbus-bridge:8003`) | Config → SeanerBUS | Bridge `/health` and `/stats` probe on the SeanerBUS page; when unset falls back to the env var |
+| `dataplane_bridge_status_url` | `$DATAPLANE_BRIDGE_STATUS_URL` env var (Docker default: `http://dataplane-bridge:8003`) | Config → DataPlane | Bridge `/health` and `/stats` probe on the DataPlane page; when unset falls back to the env var |
 
 ### Credentials (secret — Fernet-encrypted)
 

@@ -31,7 +31,7 @@ scrape_configs:
     static_configs:
       - targets: ['tempo:3200']
 
-  - job_name: seanerbus_bridge
+  - job_name: dataplane_bridge
     static_configs:
-      - targets: ['seanerbus-bridge:8003']
+      - targets: ['dataplane-bridge:8003']
     metrics_path: /metrics

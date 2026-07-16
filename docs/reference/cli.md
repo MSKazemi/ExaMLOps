@@ -101,7 +101,7 @@ Set a single config key without the interactive wizard.
 | `control_plane_token` | Bearer token for `POST /retrain` |
 
 ```bash
-exa config set control_plane http://137.204.56.169:18002
+exa config set control_plane http://<CONTROL_PLANE_HOST>:18002
 exa config set control_plane_token mysecrettoken
 ```
 
@@ -194,7 +194,7 @@ The scheduler is read from the MLflow run's `hpc_scheduler` tag (falling back to
 
 - **Slurm** — `gpu_hours × GPU_COST_PER_HOUR` via `sacct` (`gpu_hours` from `gres/gpu`).
 - **Flux** — `gpu_hours × GPU_COST_PER_HOUR + cpu_hours × CPU_COST_PER_HOUR` via
-  `flux job info R`/`eventlog`, so CPU-only Flux runs (e.g. lxp, 0 GPUs) still show a cost.
+  `flux job info R`/`eventlog`, so CPU-only Flux runs (e.g. remote, 0 GPUs) still show a cost.
 - **Mock** — synthetic GPU-hours, deterministic on model name + version.
 
 Defaults: `GPU_COST_PER_HOUR=$2.50/hr`, `CPU_COST_PER_HOUR=$0.05/hr` (both env-overridable).
@@ -302,7 +302,7 @@ exa drift input baseline JPCP
 
 ## exa audit
 
-Platform audit log — who did what and when. Events are written by the CLI (`exa approvals approve/reject`, `exa serve traffic`, `exa pipeline promote`), the SeanerBUS bridge (every inference), and the agent.
+Platform audit log — who did what and when. Events are written by the CLI (`exa approvals approve/reject`, `exa serve traffic`, `exa pipeline promote`), the DataPlane bridge (every inference), and the agent.
 
 ```bash
 exa audit                              # last 30 days, all events
@@ -642,47 +642,47 @@ exa scaffold DemoAD --force          # overwrite existing files
 | `--type TYPE`, `-T TYPE` | ML task type — choices: `regression` \| `classification` (default: `regression`) |
 | `--force` | Overwrite existing files |
 
-After scaffolding: edit `modelzoo/seanergys_modelzoo/models/tasks/<name>.py` and `pipelines/models/<NAME>.yaml`. The CI guard `tests/unit/test_registry_integrity.py` will fail if scaffolding is half-applied.
+After scaffolding: edit `modelzoo/modelzoo/models/tasks/<name>.py` and `pipelines/models/<NAME>.yaml`. The CI guard `tests/unit/test_registry_integrity.py` will fail if scaffolding is half-applied.
 
 ---
 
-## exa seanerbus
+## exa dataplane
 
-SeanerBUS bridge UUID management. Each model has a stable UUID used as its identity on the SeanerBUS. Run these commands from the repo root.
+DataPlane bridge UUID management. Each model has a stable UUID used as its identity on the DataPlane. Run these commands from the repo root.
 
-### `exa seanerbus list`
+### `exa dataplane list`
 
-Show all models and their SeanerBUS UUIDs. Reads directly from `pipelines/models/*.yaml` — no dashboard required.
+Show all models and their DataPlane UUIDs. Reads directly from `pipelines/models/*.yaml` — no dashboard required.
 
 ```bash
-exa seanerbus list
-exa --json seanerbus list | jq '.[] | select(.uuid != "(not assigned)")'
+exa dataplane list
+exa --json dataplane list | jq '.[] | select(.uuid != "(not assigned)")'
 ```
 
-### `exa seanerbus init-uuids`
+### `exa dataplane init-uuids`
 
 Assign a UUID to every model that doesn't have one. Idempotent — safe to run multiple times. Commit the resulting YAML changes to git so HPC teams can see the stable UUIDs.
 
 ```bash
-exa seanerbus init-uuids
+exa dataplane init-uuids
 git add pipelines/models/
-git commit -m "feat: assign SeanerBUS UUIDs"
+git commit -m "feat: assign DataPlane UUIDs"
 ```
 
-### `exa seanerbus regen-uuid <model>`
+### `exa dataplane regen-uuid <model>`
 
 Regenerate the UUID for a single model. **HPC teams must be notified** — the old UUID will no longer be registered by the bridge.
 
 ```bash
-exa seanerbus regen-uuid JPCP
+exa dataplane regen-uuid JPCP
 ```
 
-### `exa seanerbus status`
+### `exa dataplane status`
 
-Probe the SeanerBUS bridge `/health` and `/stats` endpoints and print the combined response.
+Probe the DataPlane bridge `/health` and `/stats` endpoints and print the combined response.
 
 ```bash
-exa seanerbus status
+exa dataplane status
 ```
 
 ---
@@ -698,7 +698,7 @@ The `--service` option accepts any of these values (tab-completes after `--insta
 ```
 postgres  minio  mlflow  orchestrator  ray-serving  control-plane
 prometheus  alertmanager  tempo  grafana  loki  promtail
-dashboard  jupyterhub  seanerbus-bridge
+dashboard  jupyterhub  dataplane-bridge
 ```
 
 ### `exa stack up`

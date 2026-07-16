@@ -1,16 +1,16 @@
 # ModelZoo — Model Library
 
-The ModelZoo (`seanergys-modelzoo` package) is the model library. It defines the abstract model interface, the sklearn base class, datasets, and the `@pipeline_step` decorator that the orchestration layer hooks into.
+The ModelZoo (`modelzoo` package) is the model library. It defines the abstract model interface, the sklearn base class, datasets, and the `@pipeline_step` decorator that the orchestration layer hooks into.
 
 ## Package structure
 
 ```
-modelzoo/seanergys_modelzoo/
+modelzoo/modelzoo/
 ├── models/
 │   ├── common/
-│   │   ├── seanergys_model.py          # Abstract base — SeanergysModel
-│   │   ├── sklearn_seanergys_model.py  # Concrete base — SeanergysSklearnModel
-│   │   └── seanergys_configurator.py   # Pipeline config — SeanergysModelConfiguration
+│   │   ├── dataplane_model.py          # Abstract base — DataplaneModel
+│   │   ├── sklearn_dataplane_model.py  # Concrete base — DataplaneSklearnModel
+│   │   └── dataplane_configurator.py   # Pipeline config — DataplaneModelConfiguration
 │   └── tasks/
 │       ├── power_consumption_prediction/
 │       │   └── jpcp/jpcp_model.py      # JPCP model (sklearn)
@@ -18,19 +18,19 @@ modelzoo/seanergys_modelzoo/
 │           ├── mack/mack_model.py      # MACK model
 │           └── mcbound/mcbound_model.py
 ├── datasets/
-│   └── common/seanergys_dataset.py     # Dataset base class
+│   └── common/dataplane_dataset.py     # Dataset base class
 ├── dataloader/
-│   └── seanergys_dataloader.py         # Dataloader wrapping datasets
+│   └── dataplane_dataloader.py         # Dataloader wrapping datasets
 └── decorators.py                       # @pipeline_step decorator
 ```
 
 ## The model interface
 
-All models inherit from `SeanergysModel` (Pydantic v2 `BaseModel` + `ABC`). The key abstract methods:
+All models inherit from `DataplaneModel` (Pydantic v2 `BaseModel` + `ABC`). The key abstract methods:
 
 ```python
-class SeanergysModel(BaseModel, ABC):
-    task_type: SeanergysModelTask   # REGRESSION or CLASSIFICATION
+class DataplaneModel(BaseModel, ABC):
+    task_type: DataplaneModelTask   # REGRESSION or CLASSIFICATION
 
     @abstractmethod
     def build_model(self) -> None: ...
@@ -49,20 +49,20 @@ class SeanergysModel(BaseModel, ABC):
 
     @classmethod
     @abstractmethod
-    def load(cls, path, ...) -> SeanergysModel: ...
+    def load(cls, path, ...) -> DataplaneModel: ...
 ```
 
 Pipeline-facing steps (`train_step`, `evaluate_step`, `predict_step`) are already implemented on the base class using the `@pipeline_step` decorator. Subclasses only need to implement the abstract ML methods.
 
-## SeanergysSklearnModel
+## DataplaneSklearnModel
 
-For sklearn-based models, subclass `SeanergysSklearnModel` instead:
+For sklearn-based models, subclass `DataplaneSklearnModel` instead:
 
 ```python
-from seanergys_modelzoo.models.common.sklearn_seanergys_model import SeanergysSklearnModel
+from modelzoo.models.common.sklearn_dataplane_model import DataplaneSklearnModel
 
-class MyModel(SeanergysSklearnModel):
-    task_type: SeanergysModelTask = SeanergysModelTask.REGRESSION
+class MyModel(DataplaneSklearnModel):
+    task_type: DataplaneModelTask = DataplaneModelTask.REGRESSION
 
     def build_model(self):
         from sklearn.ensemble import GradientBoostingRegressor
@@ -75,14 +75,14 @@ class MyModel(SeanergysSklearnModel):
         return {"train_samples": len(y)}
 ```
 
-`SeanergysSklearnModel` provides `self.estimator`, `_extract_data_from_loader()`, and default `predict`, `evaluate`, `save`, `load` implementations.
+`DataplaneSklearnModel` provides `self.estimator`, `_extract_data_from_loader()`, and default `predict`, `evaluate`, `save`, `load` implementations.
 
 ## The @pipeline_step decorator
 
 `@pipeline_step` marks a method so the pipeline generator can discover and wrap it into a Prefect task:
 
 ```python
-from seanergys_modelzoo.decorators import pipeline_step
+from modelzoo.decorators import pipeline_step
 
 @pipeline_step(name="train_step", retries=1)
 def train_step(self, train_loader, val_loader=None):
@@ -93,7 +93,7 @@ The decorator is framework-agnostic — it adds `_is_pipeline_step`, `_step_name
 
 ## Model configuration
 
-Every model needs a matching Python shim in `pipelines/model_configs/`. In Phase 14 the shim is a **plain class** (not inheriting `SeanergysModelConfiguration`) — it provides only the callables that cannot be expressed in YAML. All declarative config (datasets, features, lifecycle, serving, prefect) lives in `pipelines/models/<name>.yaml`.
+Every model needs a matching Python shim in `pipelines/model_configs/`. In Phase 14 the shim is a **plain class** (not inheriting `DataplaneModelConfiguration`) — it provides only the callables that cannot be expressed in YAML. All declarative config (datasets, features, lifecycle, serving, prefect) lives in `pipelines/models/<name>.yaml`.
 
 ```python
 # pipelines/model_configs/mymodel_config.py
@@ -122,10 +122,10 @@ class MyModelConfiguration:
 **Step 1** — Create the model file:
 
 ```
-modelzoo/seanergys_modelzoo/models/tasks/my_task/my_model/my_model.py
+modelzoo/modelzoo/models/tasks/my_task/my_model/my_model.py
 ```
 
-Implement `SeanergysSklearnModel` (or `SeanergysModel` for non-sklearn frameworks).
+Implement `DataplaneSklearnModel` (or `DataplaneModel` for non-sklearn frameworks).
 
 **Step 2** — Create the YAML config file: `pipelines/models/<name_lower>.yaml` with datasets, lifecycle, serving, prefect, and inference sections (generated automatically by `exa scaffold`).
 
@@ -166,7 +166,7 @@ cd modelzoo && poetry install
 make modelzoo-test
 ```
 
-The package is installed into the root `.venv` as `seanergys-modelzoo` so the pipeline generator can import it directly.
+The package is installed into the root `.venv` as `modelzoo` so the pipeline generator can import it directly.
 
 ## Control Plane integration (Phase 12)
 

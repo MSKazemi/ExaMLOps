@@ -53,8 +53,8 @@ async def test_health_degraded_when_service_down(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "degraded"
-    # Synthetic services are not HTTP-pinged: postgres (DB), dashboard (self), slurm (mock), seanerbus_sim (proxied).
-    _SYNTHETIC = {"postgres", "dashboard", "slurm", "seanerbus_sim"}
+    # Synthetic services are not HTTP-pinged: postgres (DB), dashboard (self), slurm (mock), dataplane_sim (proxied).
+    _SYNTHETIC = {"postgres", "dashboard", "slurm", "dataplane_sim"}
     for key, svc in body["services"].items():
         if key not in _SYNTHETIC:
             assert svc["status"] == "down", f"{key} expected down, got {svc['status']}"
@@ -98,9 +98,9 @@ async def test_health_contains_all_services(client):
         "control_plane",
         "postgres",
         "loki",
-        "seanerbus",
+        "dataplane",
         "jupyterhub",
         "dashboard",
         "slurm",
-        "seanerbus_sim",
+        "dataplane_sim",
     }

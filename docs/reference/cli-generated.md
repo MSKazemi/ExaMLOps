@@ -533,7 +533,7 @@ Register an existing modelzoo model into the training pipeline.
 
 Unlike exa scaffold, this command does NOT create a new model class.
 It only generates the pipeline YAML and config shim for a model class that
-already lives in modelzoo/seanergys_modelzoo/models/tasks/.
+already lives in modelzoo/modelzoo/models/tasks/.
 
 Use this when you have written a model class by hand or imported one from
 the modelzoo and want to wire it into ExaMLOps training and inference.
@@ -719,25 +719,25 @@ Scaffold a new model: model class, config, unit test, and YAML.
 - `--type, -T` — ML task type
 - `--force` — Overwrite existing files
 
-## `exa seanerbus`
+## `exa dataplane`
 
-SeanerBUS bridge UUID management
+DataPlane bridge UUID management
 
-### `exa seanerbus init-uuids`
+### `exa dataplane init-uuids`
 
-Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent.
+Assign a DataPlane UUID to every model that doesn't have one. Idempotent.
 
-### `exa seanerbus list`
+### `exa dataplane list`
 
-Show all models and their SeanerBUS UUIDs.
+Show all models and their DataPlane UUIDs.
 
-### `exa seanerbus regen-uuid`
+### `exa dataplane regen-uuid`
 
-Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.
+Regenerate the DataPlane UUID for one model. Notify HPC teams of the change.
 
-### `exa seanerbus status`
+### `exa dataplane status`
 
-Probe the SeanerBUS bridge health and runtime stats endpoints.
+Probe the DataPlane bridge health and runtime stats endpoints.
 
 ## `exa serve`
 

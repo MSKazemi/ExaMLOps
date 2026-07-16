@@ -27,10 +27,10 @@ _SERVICES = {
     "minio": (settings.minio_url, "/minio/health/live", settings.public_minio_console_url),
     "control_plane": (settings.control_plane_url, "/health", settings.public_control_plane_url),
     "loki": (settings.loki_url, "/ready", settings.public_loki_url),
-    "seanerbus": (
-        settings.seanerbus_bridge_status_url,
+    "dataplane": (
+        settings.dataplane_bridge_status_url,
         "/health",
-        settings.public_seanerbus_bridge_url,
+        settings.public_dataplane_bridge_url,
     ),
     "jupyterhub": (settings.jupyterhub_url, "/hub/api/", settings.public_jupyterhub_url),
 }
@@ -93,8 +93,8 @@ async def _do_health_check() -> dict:
     slurm_status = "ok" if settings.slurm_mode == "mock" else "down"
     services["slurm"] = {"status": slurm_status, "url": ""}
 
-    # SeanerBUS Sim is an external Cap'n Proto bus — proxy its reachability from bridge health.
-    services["seanerbus_sim"] = {"status": services["seanerbus"]["status"], "url": ""}
+    # DataPlane Sim is an external Cap'n Proto bus — proxy its reachability from bridge health.
+    services["dataplane_sim"] = {"status": services["dataplane"]["status"], "url": ""}
 
     overall = "ok" if all(s["status"] == "ok" for s in services.values()) else "degraded"
     return {"status": overall, "checked_at": now, "services": services}

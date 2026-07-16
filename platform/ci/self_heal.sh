@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ExaMLOps runtime self-healer — runs on lxp-cpu01 via systemd timer.
+# ExaMLOps runtime self-healer — runs on remote-cpu01 via systemd timer.
 # Scans all compose-managed containers; restarts any that are exited or
 # report "unhealthy" from their Docker healthcheck.
 #
@@ -7,9 +7,9 @@
 # Check logs:                 journalctl -t examlops-selfheal -f
 set -uo pipefail
 
-DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/nfs/share01/examlops}"
+DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/<DATA_DIR>/examlops}"
 COMPOSE_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.yml"
-COMPOSE_LXP_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.lxp.yml"
+COMPOSE_REMOTE_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.remote.yml"
 LOG_TAG="examlops-selfheal"
 
 log() {
@@ -36,7 +36,7 @@ while IFS=$'\t' read -r service state health; do
 
     if [ "$state" = "exited" ] || [ "$state" = "dead" ]; then
         # Skip one-shot init containers (restart policy = "no")
-        restart_policy=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LXP_FILE" \
+        restart_policy=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_REMOTE_FILE" \
             ps --format json "$service" 2>/dev/null \
             | python3 -c "
 import sys, json
@@ -45,7 +45,7 @@ if data:
     print(json.loads(data).get('ExitCode', 0))
 " 2>/dev/null || echo "0")
         # Check the actual restart policy from container config
-        container_name=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LXP_FILE" \
+        container_name=$(docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_REMOTE_FILE" \
             ps -q "$service" 2>/dev/null | head -1)
         if [ -n "$container_name" ]; then
             policy=$(docker inspect --format='{{.HostConfig.RestartPolicy.Name}}' \
@@ -58,7 +58,7 @@ if data:
 
     if [ "$needs_restart" = "true" ]; then
         log "Service '$service' is degraded (state=$state health=$health) — restarting"
-        if docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LXP_FILE" \
+        if docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_REMOTE_FILE" \
                 restart "$service" 2>&1 | logger -t "$LOG_TAG" 2>/dev/null; then
             log "Restarted '$service' successfully"
             HEALED=$((HEALED + 1))
@@ -68,7 +68,7 @@ if data:
         fi
     fi
 done < <(
-    docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LXP_FILE" \
+    docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_REMOTE_FILE" \
         ps --format json 2>/dev/null \
     | python3 - <<'PYEOF'
 import sys, json

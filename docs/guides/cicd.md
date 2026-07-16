@@ -1,6 +1,6 @@
 # CI/CD — GitLab Pipeline
 
-ExaMLOps uses GitLab as its primary CI/CD host. The pipeline runs on every push and merge request, covers all four source areas (modelzoo, infra, examlops, integration), and deploys automatically to `lxp-cpu01` after a successful run on `main`.
+ExaMLOps uses GitLab as its primary CI/CD host. The pipeline runs on every push and merge request, covers all four source areas (modelzoo, infra, examlops, integration), and deploys automatically to `remote-cpu01` after a successful run on `main`.
 
 The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions workflows (`.github/workflows/`) remain in the repo as a reference but are no longer the source of truth.
 
@@ -14,8 +14,8 @@ Four stages arranged as a DAG. The six test jobs run in parallel; deploy and pos
 sanity:python-syntax  ─┐
 sanity:check-structure ─┼─► test:modelzoo          ─┐
                         │   test:infra:compose      │
-                        │   test:infra:slurm-lint   ├─► deploy:lxp ──► post-deploy:lxp:notify-model-changes
-                        │   test:infra:alert-rules  │                 └► post-deploy:lxp:retrain-push-models
+                        │   test:infra:slurm-lint   ├─► deploy:remote ──► post-deploy:remote:notify-model-changes
+                        │   test:infra:alert-rules  │                 └► post-deploy:remote:retrain-push-models
                         └─► test:examlops           │
                             test:integration        ─┘
 ```
@@ -24,7 +24,7 @@ sanity:check-structure ─┼─► test:modelzoo          ─┐
 |---|---|---|
 | `sanity` | all branches + MRs | Syntax check + directory structure guard — blocks everything on failure |
 | `test` | all branches + MRs | Six parallel jobs covering all test types |
-| `deploy` | `main` only | SSH deploy to lxp-cpu01 after all tests pass |
+| `deploy` | `main` only | SSH deploy to remote-cpu01 after all tests pass |
 | `post-deploy` | `main` only | Notify Control Plane of model changes + trigger Prefect retraining |
 
 Push-cancellation: `workflow: auto_cancel: on_new_commit: interruptible` cancels in-progress runs when a new commit arrives on the same branch. All test jobs are marked `interruptible: true`.
@@ -35,7 +35,7 @@ Push-cancellation: `workflow: auto_cancel: on_new_commit: interruptible` cancels
 
 ### sanity:python-syntax
 Runs `python -m py_compile` over every `.py` file in:
-`platform/`, `pipelines/`, `serving/`, `tests/`, `tools/`, `modelzoo/seanergys_modelzoo/`
+`platform/`, `pipelines/`, `serving/`, `tests/`, `tools/`, `modelzoo/modelzoo/`
 
 Catches bare syntax errors before installing any dependencies.
 
@@ -57,21 +57,21 @@ pipelines/models/                  (per-model YAML configs)
 ### test:modelzoo
 **Image:** `python:3.12-slim` | **Toolchain:** Poetry
 
-Installs the `seanergys-modelzoo` package with dev + ci extras from `modelzoo/`, then runs:
+Installs the `modelzoo` package with dev + ci extras from `modelzoo/`, then runs:
 
 | Check | Command |
 |---|---|
-| Lint | `ruff check seanergys_modelzoo ci tests` |
+| Lint | `ruff check modelzoo ci tests` |
 | Format | `ruff format --check …` |
 | Type check | `mypy … --ignore-missing-imports` (informational, `\|\| true`) |
 | Unit tests | `pytest tests/unit/` — 7 files |
 | Smoke tests | `pytest tests/smoke/` — 2 files (datasets + models, no network) |
 | Integration tests | `pytest tests/integration/` — 3 files (see note below) |
-| Import check | `from seanergys_modelzoo.logger …` |
+| Import check | `from modelzoo.logger …` |
 
 > `test:modelzoo` is `allow_failure: true`: `modelzoo/` is a read-only mirror of the upstream
-> `seanergys-modelzoo` repo (which owns its own formatting and tests), so its result surfaces
-> problems without gating the ExaMLOps deploy — matching the `optional: true` in `deploy:lxp`'s needs.
+> `modelzoo` repo (which owns its own formatting and tests), so its result surfaces
+> problems without gating the ExaMLOps deploy — matching the `optional: true` in `deploy:remote`'s needs.
 
 **Integration test behaviour:**
 - `test_model_pipeline.py` — uses `is_dummy=True`, always runs fully offline.
@@ -146,30 +146,30 @@ Runs `test_inference_pipeline_e2e.py`, which:
 
 ## Stage: deploy
 
-### deploy:lxp
+### deploy:remote
 **Image:** `ubuntu:22.04` | **Runs on:** `main` only
 
-Connects to `lxp-cpu01` via SSH and runs a rolling deploy:
+Connects to `remote-cpu01` via SSH and runs a rolling deploy:
 
 ```bash
 # If repo not cloned yet
-git clone $LXP_DEPLOY_REPO $LXP_DEPLOY_PATH
+git clone $REMOTE_DEPLOY_REPO $REMOTE_DEPLOY_PATH
 
 # Else update
-cd $LXP_DEPLOY_PATH && git pull origin main
+cd $REMOTE_DEPLOY_PATH && git pull origin main
 
 # Restart services
 docker compose -f platform/infra/docker-compose/docker-compose.yml \
-               -f platform/infra/docker-compose/docker-compose.lxp.yml up --build -d
+               -f platform/infra/docker-compose/docker-compose.remote.yml up --build -d
 ```
 
-The job registers a GitLab **Environment** (`production-lxp`) so every deploy is recorded in the GitLab UI under **Deployments → Environments**, with a link to the dashboard at `http://$LXP_HOST:18099`.
+The job registers a GitLab **Environment** (`production-remote`) so every deploy is recorded in the GitLab UI under **Deployments → Environments**, with a link to the dashboard at `http://$REMOTE_HOST:18099`.
 
 ---
 
 ## Stage: post-deploy
 
-Both jobs run in parallel after `deploy:lxp`.
+Both jobs run in parallel after `deploy:remote`.
 
 ### post-deploy:notify-model-changes
 Calls `platform/ci/notify_model_changes.py` to detect which model files changed in this push and POST them to `Control Plane /api/changes` as pending approvals.
@@ -195,65 +195,65 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 
 | Variable | Mask | Protect | Value |
 |---|---|---|---|
-| `LXP_SSH_KEY` | ✅ | ✅ | ED25519 private key for lxp-cpu01 (see setup below) |
-| `LXP_HOST_KEY` | ✅ | | One line from `ssh-keyscan 23.109.46.77` |
-| `LXP_USER` | | | SSH username on lxp-cpu01 (e.g. `u1002`) |
-| `LXP_HOST` | | | `23.109.46.77` |
-| `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `/nfs/share01/examlops` |
-| `LXP_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
-| `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
-| `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
+| `REMOTE_SSH_KEY` | ✅ | ✅ | ED25519 private key for remote-cpu01 (see setup below) |
+| `REMOTE_HOST_KEY` | ✅ | | One line from `ssh-keyscan <DATAPLANE_HOST>` |
+| `REMOTE_USER` | | | SSH username on remote-cpu01 (e.g. `u1002`) |
+| `REMOTE_HOST` | | | `<DATAPLANE_HOST>` |
+| `REMOTE_DEPLOY_PATH` | | | Absolute repo path on remote-cpu01, e.g. `/<DATA_DIR>/examlops` |
+| `REMOTE_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
+| `REMOTE_CONTROL_PLANE_URL` | | | `http://remote-cpu01:18002` |
+| `REMOTE_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
 
 **Masked** variables are hidden in job logs. **Protected** variables are only injected into pipelines running on protected branches (e.g. `main`).
 
 ---
 
-## One-time lxp-cpu01 server setup
+## One-time remote-cpu01 server setup
 
-The deploy job SSHes into lxp-cpu01 and the server must be able to pull from the GitLab repo. Two keys are involved:
+The deploy job SSHes into remote-cpu01 and the server must be able to pull from the GitLab repo. Two keys are involved:
 
-### 1. CI runner → lxp-cpu01 (deploy SSH key)
+### 1. CI runner → remote-cpu01 (deploy SSH key)
 
 ```bash
 # On your local machine: generate a dedicated deploy key
 ssh-keygen -t ed25519 -C "gitlab-ci-deploy" -f ~/.ssh/examlops_deploy
 
-# Add the PUBLIC key to lxp-cpu01
-ssh-copy-id -i ~/.ssh/examlops_deploy.pub u1002@23.109.46.77
+# Add the PUBLIC key to remote-cpu01
+ssh-copy-id -i ~/.ssh/examlops_deploy.pub u1002@<DATAPLANE_HOST>
 
-# Store the PRIVATE key in GitLab CI variable LXP_SSH_KEY
+# Store the PRIVATE key in GitLab CI variable REMOTE_SSH_KEY
 cat ~/.ssh/examlops_deploy
 ```
 
-Grab the host key for `LXP_HOST_KEY`:
+Grab the host key for `REMOTE_HOST_KEY`:
 ```bash
-ssh-keyscan 23.109.46.77
-# Copy one ed25519 or ecdsa line → store as LXP_HOST_KEY
+ssh-keyscan <DATAPLANE_HOST>
+# Copy one ed25519 or ecdsa line → store as REMOTE_HOST_KEY
 ```
 
-### 2. lxp-cpu01 → GitLab (deploy read key)
+### 2. remote-cpu01 → GitLab (deploy read key)
 
-lxp-cpu01 needs to `git clone / git pull` from the GitLab repo. The cleanest way is a GitLab deploy key:
+remote-cpu01 needs to `git clone / git pull` from the GitLab repo. The cleanest way is a GitLab deploy key:
 
 ```bash
-# On lxp-cpu01: generate a key if one doesn't exist
-ssh-keygen -t ed25519 -C "lxp-deploy" -f ~/.ssh/gitlab_deploy
+# On remote-cpu01: generate a key if one doesn't exist
+ssh-keygen -t ed25519 -C "remote-deploy" -f ~/.ssh/gitlab_deploy
 
 # Copy the PUBLIC key
 cat ~/.ssh/gitlab_deploy.pub
 ```
 
-Register this public key in **GitLab → Project → Settings → Repository → Deploy keys** (read-only access). Then on lxp-cpu01:
+Register this public key in **GitLab → Project → Settings → Repository → Deploy keys** (read-only access). Then on remote-cpu01:
 
 ```bash
 # ~/.ssh/config
-Host gitlab.seanergys.fz-juelich.de
-  HostName gitlab.seanergys.fz-juelich.de
+Host gitlab.dataplane.example.org
+  HostName gitlab.dataplane.example.org
   User git
   IdentityFile ~/.ssh/gitlab_deploy
 ```
 
-Test with: `ssh -T git@gitlab.seanergys.fz-juelich.de`
+Test with: `ssh -T git@gitlab.dataplane.example.org`
 
 ---
 
@@ -273,10 +273,10 @@ test:integration:
 
 The deploy stage will then only proceed if the Ray Serve end-to-end test passes.
 
-To register a self-hosted runner on lxp-cpu01:
+To register a self-hosted runner on remote-cpu01:
 
 ```bash
-# On lxp-cpu01
+# On remote-cpu01
 docker run --rm -it \
   -v /srv/gitlab-runner/config:/etc/gitlab-runner \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -339,11 +339,11 @@ The runner is not running in privileged mode. Edit the runner's `config.toml`:
 **`test:integration` times out or crashes with OOM**
 The runner has fewer than 4 CPUs or < 4 GB RAM. Either increase runner resources or leave `allow_failure: true` in place.
 
-**`deploy:lxp` fails with "Host key verification failed"**
-The `LXP_HOST_KEY` variable is empty or contains the wrong host key. Re-run `ssh-keyscan 23.109.46.77` and update the variable.
+**`deploy:remote` fails with "Host key verification failed"**
+The `REMOTE_HOST_KEY` variable is empty or contains the wrong host key. Re-run `ssh-keyscan <DATAPLANE_HOST>` and update the variable.
 
-**`post-deploy:lxp:retrain-push-models` fails with connection refused**
-The Control Plane container on lxp-cpu01 did not start. Check `docker compose logs control-plane` on lxp-cpu01. The deploy job starts the stack with `up --build -d` but does not wait for health checks; a brief startup delay can cause this. Re-running the job manually after a minute usually succeeds.
+**`post-deploy:remote:retrain-push-models` fails with connection refused**
+The Control Plane container on remote-cpu01 did not start. Check `docker compose logs control-plane` on remote-cpu01. The deploy job starts the stack with `up --build -d` but does not wait for health checks; a brief startup delay can cause this. Re-running the job manually after a minute usually succeeds.
 
 **`sanity:check-structure` fails after a refactor**
 The job asserts the Phase 15/16 directory layout. If you move or rename a top-level area, update the `script:` section of `sanity:check-structure` in `.gitlab-ci.yml` to match.

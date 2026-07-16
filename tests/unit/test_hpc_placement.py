@@ -57,9 +57,9 @@ def test_choose_with_no_clusters():
 
 def test_choose_falls_back_to_declared_capabilities_without_snapshot():
     # No node snapshot, but capabilities declare 8 GPUs → still a valid candidate.
-    c = _cluster("lxp", "flux", nodes=[], caps={"total_gpus": 8, "total_nodes": 2})
+    c = _cluster("remote", "flux", nodes=[], caps={"total_gpus": 8, "total_nodes": 2})
     result = choose_cluster(ResourceAsk(gpus=4, nodes=1), [c])
-    assert result.cluster == "lxp"
+    assert result.cluster == "remote"
 
 
 def test_cpu_only_ask_places_on_gpuless_cluster():

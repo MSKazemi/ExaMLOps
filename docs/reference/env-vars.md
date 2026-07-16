@@ -92,14 +92,14 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 |---|---|---|
 | `EXAMLOPS_HPC_SCHEDULER` | derived from `EXAMLOPS_SLURM_MODE` | `mock` \| `slurm` \| `flux` — which scheduler backend to submit to |
 | `EXAMLOPS_HPC_TRANSPORT` | `ssh` if `EXAMLOPS_HPC_SSH_HOST` set, else `local` | `local` (subprocess/shared-FS) \| `ssh` (paramiko + SFTP) |
-| `EXAMLOPS_HPC_SSH_HOST` | unset | SSH host of the cluster login node (e.g. `lxp-cpu01`) |
+| `EXAMLOPS_HPC_SSH_HOST` | unset | SSH host of the cluster login node (e.g. `remote-cpu01`) |
 | `EXAMLOPS_HPC_SSH_USER` | unset | SSH username (falls back to agent/default) |
 | `EXAMLOPS_HPC_SSH_KEY` | unset | Path to the SSH private key (else agent/default keys) |
 | `EXAMLOPS_HPC_SSH_PORT` | `22` | SSH port |
 | `EXAMLOPS_HPC_REMOTE_REPO` | repo root | Path to the deployed ExaMLOps repo on the cluster |
 | `EXAMLOPS_HPC_REMOTE_PYTHON` | `<remote_repo>/.venv/bin/python` | Remote interpreter that runs the training script |
 | `EXAMLOPS_HPC_REMOTE_WORKDIR` | adapter working dir | Root for per-job dirs on the cluster |
-| `EXAMLOPS_HPC_GPUS` | unset | GPUs per job (`0`/unset ⇒ no GPU flag; lxp Flux has 0 enrolled) |
+| `EXAMLOPS_HPC_GPUS` | unset | GPUs per job (`0`/unset ⇒ no GPU flag; remote Flux has 0 enrolled) |
 | `EXAMLOPS_HPC_ACCOUNT` | unset | Account/bank (`--account` for Slurm, `--bank` for flux-accounting) |
 | `EXAMLOPS_HPC_QOS` | unset | QoS/queue (`--qos` for Slurm, `--queue` for Flux) |
 | `EXAMLOPS_HPC_CONSTRAINT` | unset | Node constraint (`--constraint` / `--requires`) |
@@ -158,7 +158,7 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `MODELZOO_AUTO_RETRAIN` | `false` | When `true`, a confirmed push event automatically triggers `POST /retrain` for every registered model. Takes effect at runtime — changes via `PUT /modelzoo/config` are picked up immediately without restart. |
 | `MODELZOO_POLL_SECONDS` | `300` | Background GitLab poller interval in seconds. The poller checks for new commits on `MODELZOO_WATCH_BRANCH` and records them as push events. Set to `0` to disable polling entirely. Changes via `PUT /modelzoo/config` take effect immediately. |
 | `MODELZOO_WATCH_BRANCH` | `main` | Branch that both the poller and webhooks watch. Push events for other branches are silently ignored. |
-| `GITLAB_PROJECT_ID` | unset | GitLab project ID (integer) or namespace/path (e.g. `my-group/seanergys-modelzoo`) used by the background poller. Required for polling; webhooks do not need it. |
+| `GITLAB_PROJECT_ID` | unset | GitLab project ID (integer) or namespace/path (e.g. `my-group/modelzoo`) used by the background poller. Required for polling; webhooks do not need it. |
 | `GITLAB_TOKEN` | unset | GitLab Personal Access Token or Project Access Token with `read_repository` scope. Required for the background poller. Webhooks do not use this. |
 | `AI_PROD_GITLAB_PROJECT_ID` | unset | ai-production GitLab project ID (e.g. `88`). When set together with `AI_PROD_PIPELINE_TRIGGER_TOKEN`, the control plane automatically triggers an ai-production CI pipeline run whenever a new modelzoo commit is detected (webhook or poller path). |
 | `AI_PROD_PIPELINE_TRIGGER_TOKEN` | unset | GitLab pipeline trigger token for the ai-production project. Created under ai-production → Settings → CI/CD → Pipeline trigger tokens. Causes `_trigger_ci_pipeline()` to fire `POST /api/v4/projects/<AI_PROD_GITLAB_PROJECT_ID>/trigger/pipeline` on every new modelzoo commit. |
@@ -183,7 +183,7 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `AI_PROD_PIPELINE_TRIGGER_TOKEN` | unset | GitLab pipeline trigger token for the ai-production project. When set, "Run CI Pipeline" on the Datasets page uses this token to fire the ai-production pipeline (which runs `test:modelzoo`). Takes priority over the `GITLAB_TOKEN` PAT fallback. |
 | `AI_PROD_GITLAB_PROJECT_ID` | unset | ai-production project ID (e.g. `88`). Used together with `AI_PROD_PIPELINE_TRIGGER_TOKEN` for the "Run CI Pipeline" fallback. |
 | `EXAMLOPS_DOCS_ROOT` | auto-detected | Project root for the docs tree endpoint; set explicitly in Docker if needed |
-| `SEANERBUS_BRIDGE_STATUS_URL` | `http://localhost:8003` | URL the dashboard backend uses to probe the bridge `/health` and `/stats`. In Docker set to `http://seanerbus-bridge:8003` (the docker-compose default); in bare-metal dev keep the default `http://localhost:8003`. The DB config key `seanerbus_bridge_status_url` overrides this env var. |
+| `DATAPLANE_BRIDGE_STATUS_URL` | `http://localhost:8003` | URL the dashboard backend uses to probe the bridge `/health` and `/stats`. In Docker set to `http://dataplane-bridge:8003` (the docker-compose default); in bare-metal dev keep the default `http://localhost:8003`. The DB config key `dataplane_bridge_status_url` overrides this env var. |
 
 Generate the required secrets:
 ```bash
@@ -196,19 +196,19 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ---
 
-## SeanerBUS Bridge
+## DataPlane Bridge
 
-The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerBUS (from the seanerbus repo, TCP :5398) in `reqres` mode. Per-model handler UUIDs are read automatically from `pipelines/models/*.yaml` (`seanerbus_uuid` field). No topic UUIDs need to be set.
+The bridge (`platform/clients/dataplane_bridge.py`) connects to the real DataPlane (from the dataplane repo, TCP :<PORT>) in `reqres` mode. Per-model handler UUIDs are read automatically from `pipelines/models/*.yaml` (`dataplane_uuid` field). No topic UUIDs need to be set.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SEANERBUS_HOST` | `seanerbus-reqgen` | Where the bridge finds SeanerBUS. Container on `seanerbus-net` → its container name (default). **Bare-metal on the host** → `host.docker.internal` (needs the bridge's `extra_hosts: host.docker.internal:host-gateway`) or the Docker bridge gateway IP (e.g. `172.19.0.1`). Not `localhost` (that's the container, not the host). For `make stack-up` this is interpolated from the **root** `.env`. See `docs/guides/seanerbus-sim.md`. |
-| `SEANERBUS_PORT` | `5398` | SeanerBUS TCP port. Bare-metal SeanerBUS must bind `0.0.0.0:<port>`, not `127.0.0.1`. |
-| `SEANERBUS_MODE` | `reqres` | Bridge mode — always `reqres` with the real SeanerBUS |
-| `SEANERBUS_RETRAIN_UUID` | unset | Optional: req/res UUID for `RetrainReqV1 → RetrainResV1` |
-| `SEANERBUS_VECTOR_UUID` | unset | Optional: req/res UUID for `VectorReqV1 → VectorResV1` |
-| `SEANERBUS_DEFAULT_MODEL` | `JPCP` | Fallback model name when `HpcJobV1.modelName` is empty |
-| `SEANERBUS_DEFAULT_ALIAS` | `Production` | Fallback MLflow alias when `HpcJobV1.alias` is empty |
+| `DATAPLANE_HOST` | `dataplane-reqgen` | Where the bridge finds DataPlane. Container on `dataplane-net` → its container name (default). **Bare-metal on the host** → `host.docker.internal` (needs the bridge's `extra_hosts: host.docker.internal:host-gateway`) or the Docker bridge gateway IP (e.g. `172.19.0.1`). Not `localhost` (that's the container, not the host). For `make stack-up` this is interpolated from the **root** `.env`. See `docs/guides/dataplane-sim.md`. |
+| `DATAPLANE_PORT` | `<PORT>` | DataPlane TCP port. Bare-metal DataPlane must bind `0.0.0.0:<port>`, not `127.0.0.1`. |
+| `DATAPLANE_MODE` | `reqres` | Bridge mode — always `reqres` with the real DataPlane |
+| `DATAPLANE_RETRAIN_UUID` | unset | Optional: req/res UUID for `RetrainReqV1 → RetrainResV1` |
+| `DATAPLANE_VECTOR_UUID` | unset | Optional: req/res UUID for `VectorReqV1 → VectorResV1` |
+| `DATAPLANE_DEFAULT_MODEL` | `JPCP` | Fallback model name when `HpcJobV1.modelName` is empty |
+| `DATAPLANE_DEFAULT_ALIAS` | `Production` | Fallback MLflow alias when `HpcJobV1.alias` is empty |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve URL used by the bridge to forward inference requests |
 | `MODELS_YAML_DIR` | unset | Directory of per-model YAMLs for `ModelSchemaRegistry`; defaults to `pipelines/models/` |
 | `DRIFT_WINDOW` | `50` | Rolling-window length for the bridge drift tracker |
@@ -219,7 +219,7 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 
 ## Management Agent
 
-The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skipper` (CLI) or `agent_server.py` (HTTP/WebSocket, port 18004). The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using `ollama-tunnel` (Omega server, port 11436), start the tunnel first. Vars are set in `.env` and sourced automatically.
+The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skipper` (CLI) or `agent_server.py` (HTTP/WebSocket, port 18004). The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using `ollama-tunnel` (<OLLAMA_HOST> server, port 11436), start the tunnel first. Vars are set in `.env` and sourced automatically.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -228,8 +228,8 @@ The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skippe
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4-mini` | Foundry deployment name, used as the model id. |
 | `ANTHROPIC_API_KEY` | unset | Claude backend key. Used when Azure is not configured. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking, `max_tokens=16000`). |
-| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback). Via ollama-tunnel: any model from the Omega/Kapa list. Must support tool calling. |
-| `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. Omega tunnel default. Use `localhost:11434` for a local `ollama serve`. |
+| `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback). Via ollama-tunnel: any model from the <OLLAMA_HOST>/<OLLAMA_HOST> list. Must support tool calling. |
+| `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. <OLLAMA_HOST> tunnel default. Use `localhost:11434` for a local `ollama serve`. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids reload latency on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | Disable (`false`) / force (`true`) / leave-default (`default`) thinking models' extra reasoning tokens. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
@@ -290,13 +290,13 @@ Override the URLs sent to the browser when the dashboard is accessed from a remo
 | `PUBLIC_PROMETHEUS_URL` | `http://localhost:19090` | Clickable Prometheus URL returned to the browser |
 | `PUBLIC_GRAFANA_URL` | `http://localhost:13000` | Clickable Grafana URL returned to the browser |
 
-Example for remote server access (lxp-cpu01 at 23.109.46.77):
+Example for remote server access (remote-cpu01 at <DATAPLANE_HOST>):
 ```bash
-PUBLIC_MLFLOW_URL=http://23.109.46.77:15000
-PUBLIC_PREFECT_URL=http://23.109.46.77:14200
-PUBLIC_RAY_DASHBOARD_URL=http://23.109.46.77:18265
-PUBLIC_PROMETHEUS_URL=http://23.109.46.77:19090
-PUBLIC_GRAFANA_URL=http://23.109.46.77:13000
+PUBLIC_MLFLOW_URL=http://<DATAPLANE_HOST>:15000
+PUBLIC_PREFECT_URL=http://<DATAPLANE_HOST>:14200
+PUBLIC_RAY_DASHBOARD_URL=http://<DATAPLANE_HOST>:18265
+PUBLIC_PROMETHEUS_URL=http://<DATAPLANE_HOST>:19090
+PUBLIC_GRAFANA_URL=http://<DATAPLANE_HOST>:13000
 ```
 
 ---

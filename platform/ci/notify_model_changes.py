@@ -28,7 +28,7 @@ from pathlib import Path
 # Patterns that identify model-related source files
 # ---------------------------------------------------------------------------
 MODEL_FILE_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^modelzoo/seanergys_modelzoo/models/tasks/[^/]+\.py$"),
+    re.compile(r"^modelzoo/modelzoo/models/tasks/[^/]+\.py$"),
     re.compile(r"^pipelines/model_configs/[^/]+_config\.py$"),
     re.compile(r"^pipelines/model_registry\.yaml$"),
 ]

@@ -37,8 +37,8 @@ FAKE_MODELZOO = {
     "last_event": None,
 }
 FAKE_DASHBOARD_HEALTH = {"status": "ok", "services": {}}
-FAKE_SEANERBUS_HEALTH = {"status": "ok"}
-FAKE_SEANERBUS_STATS = {"inferences_total": 42, "per_model": {"JPCP": {"errors": 0}}}
+FAKE_DATAPLANE_HEALTH = {"status": "ok"}
+FAKE_DATAPLANE_STATS = {"inferences_total": 42, "per_model": {"JPCP": {"errors": 0}}}
 
 
 def _fake_get(url: str, token: str = ""):
@@ -53,9 +53,9 @@ def _fake_get(url: str, token: str = ""):
     if url.endswith("/api/health"):
         return FAKE_DASHBOARD_HEALTH
     if url.endswith("/stats"):
-        return FAKE_SEANERBUS_STATS
+        return FAKE_DATAPLANE_STATS
     if url.endswith("/health") and ":18003" in url:
-        return FAKE_SEANERBUS_HEALTH
+        return FAKE_DATAPLANE_HEALTH
     raise AssertionError(f"unexpected URL: {url}")
 
 

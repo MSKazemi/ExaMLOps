@@ -1,4 +1,4 @@
-"""YAML-driven per-model feature schema registry for the SeanerBUS bridge."""
+"""YAML-driven per-model feature schema registry for the DataPlane bridge."""
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ _DEFAULT_YAML_DIR = _REPO_ROOT / "pipelines" / "models"
 
 
 class ModelSchemaRegistry:
-    """YAML-driven per-model input feature schema for the SeanerBUS bridge.
+    """YAML-driven per-model input feature schema for the DataPlane bridge.
 
     Usage::
 

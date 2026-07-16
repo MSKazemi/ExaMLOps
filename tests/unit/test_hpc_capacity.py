@@ -20,7 +20,7 @@ def test_gpu_hours_by_scheduler():
 def test_capacity_report_joins_inventory_and_cost():
     clusters = [
         {
-            "name": "lxp",
+            "name": "remote",
             "scheduler": "flux",
             "capabilities": {"total_gpus": 8},
             "nodes": [

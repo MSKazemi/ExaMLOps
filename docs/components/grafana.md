@@ -1,6 +1,6 @@
 # Grafana — Monitoring Dashboards
 
-Grafana visualises the real-time metrics that Ray Serve, the control plane, and the SeanerBUS bridge export to Prometheus. Seven dashboards are provisioned automatically when the monitoring stack starts.
+Grafana visualises the real-time metrics that Ray Serve, the control plane, and the DataPlane bridge export to Prometheus. Seven dashboards are provisioned automatically when the monitoring stack starts.
 
 ## Start / stop
 
@@ -55,7 +55,7 @@ Prediction drift (median/p95/p05), input embedding norm/mean/std vs baseline, au
 
 Queue depth gauges, approval funnel gauge, SLA risk gauge (oldest pending in days), event rate time series by model and action, auto-expiry trend, and a Loki approval event log.
 
-### SeanerBUS Bridge (`examlops-seanerbus`)
+### DataPlane Bridge (`examlops-dataplane`)
 
 Bridge health status, total inferences, per-model error rate %, combined p50/p95/p99 latency, per-model p99, retrain trigger rate, and a collapsible bridge log panel.
 
@@ -135,9 +135,9 @@ Rules are defined in `platform/infra/docker-compose/alert_rules.yml`, mounted in
 | `RayServeReloadFailures` | `examlops-serving` | warning | Reload errors in last 15m |
 | `SLOErrorBudgetFastBurn` | `examlops-serving` | critical | 1h burn rate > 14.4× (budget expires in < 2h) |
 | `SLOErrorBudgetSlowBurn` | `examlops-serving` | warning | 6h burn rate > 3× for 60m |
-| `SeanerBUSBridgeDown` | `examlops-seanerbus` | critical | `seanerbus_bridge_up == 0` for 2m |
-| `SeanerBUSHighErrorRate` | `examlops-seanerbus` | warning | Bridge inference error ratio > 5% for 5m |
-| `SeanerBUSHighLatencyP99` | `examlops-seanerbus` | warning | Bridge p99 latency > 500ms for 10m |
+| `DataPlaneBridgeDown` | `examlops-dataplane` | critical | `dataplane_bridge_up == 0` for 2m |
+| `DataPlaneHighErrorRate` | `examlops-dataplane` | warning | Bridge inference error ratio > 5% for 5m |
+| `DataPlaneHighLatencyP99` | `examlops-dataplane` | warning | Bridge p99 latency > 500ms for 10m |
 | `ControlPlaneDown` | `examlops-control-plane` | critical | `up{job="control_plane"} == 0` for 2m |
 | `ApprovalsStale` | `examlops-control-plane` | warning | Oldest pending approval > 24h for 30m |
 | `ApprovalsStaleUrgent` | `examlops-control-plane` | critical | Oldest pending approval > 72h (auto-expiry imminent) |
@@ -247,7 +247,7 @@ Default: `admin` / `admin`. You will be prompted to change the password on first
 Prometheus evaluates `platform/infra/docker-compose/alert_rules.yml` and routes firing alerts to
 **Alertmanager** (`prom/alertmanager`, http://localhost:19093). 25 rules span four groups:
 `examlops-serving` (SLO burn-rate, error rate, latency, model count),
-`examlops-seanerbus` (bridge up, error rate, p99),
+`examlops-dataplane` (bridge up, error rate, p99),
 `examlops-control-plane` (retrain errors, CB open, approval SLA, auto-expiry),
 and `examlops-platform` (Loki, Tempo, Alertmanager, Ray Serve target health).
 Validate the rules with `make alerts-check`.
