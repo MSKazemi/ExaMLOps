@@ -5,6 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-07-16
+
+### Added — Next-Gen 40 wave 2 (RAG cluster + guardrails)
+
+Four more Next-Gen 40 features, same discipline (additive · GWT-tested · CI-gated · graceful
+degradation). The B-track RAG cluster (B3+B5+B4) plus the D8 safety layer it depends on.
+
+- **B5 — Vector DB & embedding store (ADR 0020).** `examlops.vector_store` — `VectorStore`
+  seam; `SqliteVectorStore` (persistent, dependency-free, Python-computed cosine/l2/dot)
+  default fallback + lazy `PgVectorStore`; fixed-dim collections (rejection on mismatch),
+  metadata-filtered top-k, per-tenant isolation (D6), blue-green reindex (B6 hook),
+  index/latency metrics. `exa vector create/upsert/search/reindex/stats`. Guide
+  `docs/guides/vector-store.md`.
+- **B3 — Semantic caching (ADR 0018).** `examlops.semantic_cache` — cosine cache over
+  pluggable embeddings (local-embedder/Redis prod, token-hash fallback), namespace isolation
+  (`tenant :: model | params`), temperature/no-cache/side-effect bypass, TTL + max-size
+  eviction, measured savings; `bind_to_gateway` wires the B2 hooks. `exa gateway cache stats`,
+  `exa gateway chat --cache`. Caching section in `docs/guides/model-gateway.md`.
+- **B4 — RAG pipeline & retrieval ops (ADR 0019).** `examlops.rag` — ingest
+  (chunk→embed→index into B5, versioned against A1) + query
+  (embed→retrieve→rerank→assemble→generate) citing chunks; pluggable reranker, RETRIEVER span
+  (C1), per-tenant isolation, gateway-routed generation (B2) with optional B1 prompt, D8
+  guardrail seam over untrusted content; `context_precision/recall` for C2. `exa rag
+  ingest/query/list`. Guide `docs/guides/rag.md`.
+- **D8 — Guardrails / safety / PII defense (ADR 0026).** `examlops.guardrails` — injection
+  block, PII detect+redact (Presidio fallback = regex), secret-leak defense (D7), toxicity
+  moderation, per-tenant tool allow-list; `off/monitor/enforce` modes with fail-closed
+  enforcement; every block/redact audited (D4). `exa guardrails test/check-tool/stats`. Guide
+  `docs/guides/guardrails.md`.
+
+### Fixed
+
+- **`exa project` refactor completion.** Restored a dropped `list_project_models` import
+  (F821 that failed the ruff CI gate) and its `active_project`/`set_active_project` +
+  `PROJECT_MANAGE` companions, so `exa project show/compose` work and the CI gate is green.
+
 ## [0.32.0] — 2026-07-16
 
 ### Added — Next-Gen 40 implementation wave (MVP slice: A1→A2 · C1→C2→C3 · B1→B2 · E2→E1, + governance/security roots)

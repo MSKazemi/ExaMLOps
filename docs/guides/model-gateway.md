@@ -51,5 +51,37 @@ Key issuance and revocation are audited (D4).
 
 Each successful call emits a C1 GenAI span (`gen_ai.*` + `examlops.cost.usd`), records the
 per-call cost to `platform_db.gateway_calls`, and increments the key's `spent_usd` so the
-budget is enforced on the next call. The B3 semantic-cache hook (`cache_lookup`/`cache_store`)
-short-circuits without changing the caller API.
+budget is enforced on the next call.
+
+## Semantic caching (B3)
+
+The gateway can return a stored completion for an embedding-**similar**, cacheable prompt
+via the `cache_lookup`/`cache_store` hooks — no change to the caller API. Design: ADR 0018 ·
+spec `design/vision/specs/B3-semantic-caching.md`.
+
+- **Similarity**: the prompt is embedded and cosine-compared against stored entries; a hit
+  requires similarity ≥ threshold (conservative default 0.85). Production uses a local
+  embedder + Redis/Qdrant (B5); the fallback is an in-process cosine search over a
+  deterministic token-hash embedding (no vector DB needed).
+- **Isolation** (R3): the cache namespace is `tenant :: model | temperature | max_tokens`, so
+  different tenants (D6), models, or params never collide.
+- **Bypass** (R5): requests above the bypass temperature (default 0.5), with an explicit
+  no-cache signal, or any side-effecting agent turn are neither served from nor written to
+  the cache.
+- **Eviction**: entries have a TTL and the cache enforces a max size (oldest-first).
+- **Savings** (R7): every hit/miss is recorded to `platform_db.cache_events` with tokens +
+  cost saved; C1 spans carry `cache_hit`.
+
+```python
+from examlops.gateway import GatewayClient
+from examlops.semantic_cache import SemanticCache, bind_to_gateway
+
+lookup, store = bind_to_gateway(SemanticCache(threshold=0.9), tenant="acme")
+client = GatewayClient(router, cache_lookup=lookup, cache_store=store)
+```
+
+```bash
+exa gateway chat chat-default --message "capital of France?" --cache
+exa gateway cache stats                    # hit-rate + token/cost savings
+exa gateway cache stats --tenant acme
+```

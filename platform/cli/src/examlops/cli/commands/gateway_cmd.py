@@ -101,22 +101,72 @@ def key_revoke(key_hash: str = typer.Argument(..., help="Key hash prefix or full
     _output.ok(f"Revoked key {kh[:16]}…")
 
 
+cache_app = typer.Typer(
+    help="Semantic cache (B3) — hit-rate + measured savings",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(cache_app, name="cache")
+
+
+@cache_app.command("stats")
+def cache_stats_cmd(
+    tenant: str | None = typer.Option(None, "--tenant", help="Filter to one tenant"),
+) -> None:
+    """Show semantic-cache hit-rate and token/cost savings (B3)."""
+    from examlops.platform_db import cache_stats
+
+    stats = cache_stats(tenant)
+    if _output.json_mode:
+        _output.print_json(stats)
+        return
+    _output.print_table(
+        "Semantic Cache" + (f" — {tenant}" if tenant else ""),
+        ["Hits", "Misses", "Hit rate", "Tokens saved", "Cost saved"],
+        [
+            [
+                str(stats["hits"]),
+                str(stats["misses"]),
+                f"{stats['hit_rate'] * 100:.1f}%",
+                str(stats["tokens_saved"]),
+                f"${stats['cost_saved']:.6f}",
+            ]
+        ],
+    )
+
+
 @app.command("chat", epilog=_EXAMPLES)
 def chat(
     model: str = typer.Argument("default", help="Logical model name to route"),
     message: str = typer.Option(..., "--message", help="User message"),
     key: str | None = typer.Option(None, "--key", help="Virtual key to authenticate with"),
+    cache: bool = typer.Option(False, "--cache", help="Route through the B3 semantic cache"),
 ) -> None:
     """Send one chat message through the gateway (uses the default echo route)."""
     from examlops.gateway import GatewayClient, GatewayError, build_default_router
 
-    client = GatewayClient(build_default_router(), virtual_key=key)
+    cache_lookup = cache_store = None
+    if cache:
+        from examlops.semantic_cache import SemanticCache, bind_to_gateway
+
+        cache_lookup, cache_store = bind_to_gateway(SemanticCache())
+    client = GatewayClient(
+        build_default_router(), virtual_key=key, cache_lookup=cache_lookup, cache_store=cache_store
+    )
     try:
         comp = client.chat(model, [{"role": "user", "content": message}])
     except GatewayError as exc:
         _output.error(f"{type(exc).__name__}: {exc}")
         return
     if _output.json_mode:
-        _output.print_json({"text": comp.text, "backend": comp.backend, "cost_usd": comp.cost_usd})
+        _output.print_json(
+            {
+                "text": comp.text,
+                "backend": comp.backend,
+                "cost_usd": comp.cost_usd,
+                "cached": comp.cached,
+            }
+        )
         return
-    _output.ok(f"[{comp.backend}] {comp.text}  (cost ${comp.cost_usd:.6f})")
+    tag = " (cached)" if comp.cached else ""
+    _output.ok(f"[{comp.backend}] {comp.text}  (cost ${comp.cost_usd:.6f}){tag}")

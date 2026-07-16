@@ -33,6 +33,7 @@ from examlops.cli.commands import (
     finops_cmd,
     gateway_cmd,
     genai_cmd,
+    guardrails_cmd,
     hpc_cmd,
     hpo_cmd,
     mcp_cmd,
@@ -48,6 +49,7 @@ from examlops.cli.commands import (
     prompt_cmd,
     providers_cmd,
     quality_cmd,
+    rag_cmd,
     retrain,
     rollback_cmd,
     scaffold,
@@ -58,6 +60,7 @@ from examlops.cli.commands import (
     stack,
     status,
     supplychain_cmd,
+    vector_cmd,
 )
 from examlops.cli.commands import (
     audit as audit_cmd,
@@ -240,6 +243,13 @@ app.add_typer(
 )
 app.add_typer(
     genai_cmd.app, name="genai", help="GenAI observability (OpenTelemetry semconv) + token cost"
+)
+app.add_typer(
+    vector_cmd.app, name="vector", help="Vector store — collections, upsert, search, reindex"
+)
+app.add_typer(rag_cmd.app, name="rag", help="RAG — ingest knowledge bases and query with citations")
+app.add_typer(
+    guardrails_cmd.app, name="guardrails", help="Guardrails — injection/PII/toxicity defense"
 )
 app.add_typer(
     prompt_cmd.app, name="prompt", help="Prompt registry — versioned templates + labels (dev/prod)"
