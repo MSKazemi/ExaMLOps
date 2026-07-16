@@ -1527,7 +1527,7 @@ List RBAC relations (by subject and/or object).
 
 ### `exa project add-member`
 
-Add a person to a project (owner ⊇ editor ⊇ viewer; RHOAI Admin/Edit/View).
+Add a person to a project (owner ⊇ editor ⊇ viewer).
 
 - `--role, -r` — owner | editor | viewer
 
@@ -1602,6 +1602,10 @@ List all projects with their resource quotas.
 
 List the people who have a role on a project.
 
+### `exa project pipelines`
+
+Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7).
+
 ### `exa project remove-member`
 
 Remove a person's role(s) from a project.
@@ -1625,6 +1629,13 @@ Update resource quotas for an existing project.
 ### `exa project show`
 
 Show the full project anatomy: quota, resources by kind, members, budget, consumption.
+
+### `exa project storage`
+
+Show (or bind/refresh) the project's MinIO storage location (P6).
+
+- `--bind-connection` — Point storage at a P2 S3 connection (by name)
+- `--refresh` — Re-probe used bytes from MinIO
 
 ### `exa project use`
 

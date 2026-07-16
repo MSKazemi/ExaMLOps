@@ -31,6 +31,25 @@ def test_resources_registry():
     assert all(r.description for r in specs)
 
 
+def test_project_resources_registered(tmp_path, monkeypatch):
+    """Projects are addressable MCP resources reusing the project_* tools (ADR 0086)."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    from examlops.mcp.resources import iter_resources
+
+    specs = iter_resources()
+    uris = {r.uri for r in specs}
+    assert "examlops://projects" in uris
+    assert "examlops://project/{name}" in uris
+    listing = next(r for r in specs if r.uri == "examlops://projects")
+    assert listing.templated is False
+    anatomy = next(r for r in specs if r.uri == "examlops://project/{name}")
+    assert anatomy.templated is True
+    # The listing resource returns the same envelope shape as the project_list tool.
+    out = listing.fn()
+    assert out["ok"] is True
+    assert out["projects"] == []
+
+
 def test_resource_fn_reuses_tools(monkeypatch):
     # examlops://status should return the same envelope shape as the platform_status tool.
     monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:1")
@@ -48,8 +67,19 @@ def test_prompts_registry():
     from examlops.mcp.prompts import iter_prompts
 
     names = {p.name for p in iter_prompts()}
-    assert {"diagnose_drift", "promote_safely", "platform_triage"} <= names
+    assert {"diagnose_drift", "promote_safely", "platform_triage", "review_project"} <= names
     assert all(p.description for p in iter_prompts())
+
+
+def test_review_project_prompt_mentions_project_context():
+    from examlops.mcp.prompts import review_project
+
+    text = review_project("research")
+    assert "research" in text
+    assert "examlops://project/research" in text
+    assert "project_cost" in text
+    # It must steer the agent away from unsanctioned writes.
+    assert "unless explicitly asked" in text
 
 
 def test_prompt_text_mentions_model_and_tools():

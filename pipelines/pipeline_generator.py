@@ -985,7 +985,30 @@ def log_mlflow_task(
     registered_model_name = inference_params["model_id"]
 
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000"))
-    mlflow.set_experiment(f"{model_name.lower()}_{dataset_name.lower()}")
+    # Project Anatomy P6 (ADR 0091): when the model belongs to a project, route its artifacts into
+    # the project's own storage prefix via a per-project MLflow experiment. Fail-open — any error
+    # (no project, MLflow unavailable) falls back to the default per-model experiment, so a
+    # non-project run is completely unaffected.
+    _experiment = f"{model_name.lower()}_{dataset_name.lower()}"
+    try:
+        from examlops.platform_db import (  # noqa: PLC0415
+            ensure_project_storage,
+            project_experiment,
+        )
+        from examlops.project_scope import resolve_project  # noqa: PLC0415
+
+        _project = resolve_project(model_name)
+        if _project:
+            _store = ensure_project_storage(_project)
+            _experiment = project_experiment(_project)
+            _artifact_loc = (
+                f"s3://{_store['bucket']}/{_store['prefix']}artifacts" if _store else None
+            )
+            if mlflow.get_experiment_by_name(_experiment) is None and _artifact_loc:
+                mlflow.create_experiment(_experiment, artifact_location=_artifact_loc)
+    except Exception:
+        _experiment = f"{model_name.lower()}_{dataset_name.lower()}"
+    mlflow.set_experiment(_experiment)
 
     registration = {"version": None, "run_id": None, "status": "Staging"}
 

@@ -200,9 +200,80 @@ async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
         "consumption": _consumption(conn, name),
         "createdAt": p["created_at"],
         "createdBy": p["created_by"],
+        # Project Anatomy P8 (ADR 0093): storage · connections · pipelines. Each is fail-open
+        # (a missing table/row yields None/[]) and secret-safe (connections expose hasSecret only).
+        "storage": _storage(conn, name),
+        "connections": _connections(conn, name),
+        "pipelines": _pipelines(conn, name, models),
     }
     conn.close()
     return anatomy
+
+
+def _storage(conn, name: str) -> dict | None:
+    try:
+        r = conn.execute("SELECT * FROM project_storage WHERE project=?", (name,)).fetchone()
+        if not r:
+            return None
+        return {
+            "bucket": r["bucket"],
+            "prefix": r["prefix"],
+            "quotaGb": r["quota_gb"],
+            "usedBytes": r["used_bytes"],
+            "connectionRef": r["connection_ref"],
+        }
+    except Exception:
+        return None
+
+
+def _connections(conn, name: str) -> list[dict]:
+    try:
+        rows = conn.execute(
+            "SELECT name, kind, secret_ref FROM connections WHERE project=? ORDER BY name", (name,)
+        ).fetchall()
+        return [
+            {"name": r["name"], "kind": r["kind"], "hasSecret": bool(r["secret_ref"])} for r in rows
+        ]
+    except Exception:
+        return []
+
+
+def _pipelines(conn, name: str, models: list[str]) -> dict:
+    try:
+        reg = {
+            r["kind"]: r
+            for r in conn.execute(
+                "SELECT * FROM project_pipelines WHERE project=?", (name,)
+            ).fetchall()
+        }
+    except Exception:
+        reg = {}
+    prefect = None
+    if models or reg.get("prefect"):
+        pr = reg.get("prefect")
+        prefect = {
+            "deployments": [f"examlops-{m.lower()}" for m in models],
+            "schedule": pr["schedule"] if pr else None,
+            "lastRunAt": pr["last_run_at"] if pr else None,
+            "status": pr["status"] if pr else "unknown",
+        }
+    rayserve = None
+    if models or reg.get("rayserve"):
+        traffic: dict = {}
+        for m in models:
+            try:
+                tr = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (m,)).fetchone()
+                if tr:
+                    traffic[m] = json.loads(tr["rules"])
+            except Exception:
+                pass
+        rr = reg.get("rayserve")
+        rayserve = {
+            "models": models,
+            "traffic": traffic,
+            "status": rr["status"] if rr else "unknown",
+        }
+    return {"prefect": prefect, "rayserve": rayserve}
 
 
 def _require_manage(principal: dict) -> None:

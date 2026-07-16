@@ -5,6 +5,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Project Anatomy (Increment 2: storage · pipelines · unified view)
+
+- **feat(projects): per-project MinIO storage (P6, ADR 0091).** Each project gets a stable location
+  `s3://$EXAMLOPS_PROJECTS_BUCKET(=examlops-projects)/<project>/{artifacts,datasets,cache}/`. New
+  additive `project_storage` table + helpers (`ensure_project_storage`, `get_project_storage`,
+  `bind_project_connection`, `set_project_usage`, `refresh_project_usage`, `projects_bucket`,
+  `project_experiment`); `exa project storage <name> [--bind-connection <conn>] [--refresh]`. Training
+  routes into the project prefix via a per-project MLflow experiment (`project/<name>`) —
+  `pipeline_generator` sets it automatically, fail-open. `minio-init` provisions the projects bucket.
+  Binding a P2 connection sets the bucket from the connection; the secret is never copied.
+- **feat(projects): two pipeline surfaces (P7, ADR 0092).** A project exposes one **Prefect** training
+  surface (deployments tagged `project:<name>`) and one **Ray Serve** serving surface (models where
+  `resolve_project == <name>`, joined with traffic split), aggregated over existing state. New additive
+  `project_pipelines` registry keyed `(project, kind ∈ prefect|rayserve)` + `upsert_project_pipeline` /
+  `get_project_pipelines`; `exa project pipelines <name>`.
+- **feat(projects): unified anatomy view (P8, ADR 0093).** `get_project_full` now assembles
+  `storage` + `connections` (secret-safe: `has_secret` only) + `pipelines` alongside
+  resources/members/quota/budget/consumption, every source fail-open. `exa project show` renders the
+  full pane; dashboard `GET /api/v1/projects/<name>` returns the extended anatomy with Storage +
+  Pipelines cards on the project detail page.
+- **test:** `tests/unit/test_project_anatomy.py` (16), dashboard `test_projects_anatomy.py` (3),
+  frontend `projects.test.ts` (+3: `storageUsagePct`, `bytesToGb`, `pipelineToken`).
+- **docs:** new guide `docs/guides/project-anatomy.md`; architecture `docs/architecture/project-workspace.md`
+  updated to shipped status.
+
+### Added — Projects & Workspaces cross-cutting (agent + dashboard)
+
+- **feat(mcp): project tools.** `examlops.mcp.tools` now exposes 5 agent-callable Projects tools —
+  reads `project_list`, `project_detail`, `project_cost`; gated writes `project_assign_model` and
+  `project_add_member` (both behind `_agent_write_gate` + `EXAMLOPS_MCP_ALLOW_WRITES`, audited). An
+  agent can now inspect and curate the workspace graph under the same least-privilege policy as the
+  other write tools. `tests/unit/test_mcp_project_tools.py` (7 tests).
+- **feat(dashboard): Connections + Workbenches surfaces.** New `routers/connections.py` (read-only
+  list — never returns a secret value, only `hasSecret`; creation stays CLI-only so credentials go
+  through the D7 secrets client) and `routers/workbenches.py` (viewer list + admin RUNNING/STOPPED
+  status flip, audited, `project.manage`-gated). The frontend renders both as project-scoped sections
+  on the project detail page (`lib/connections.ts`, `lib/workbenches.ts`, `ProjectDetail.tsx`).
+  Backend `tests/test_connections_workbenches.py` (5 tests); frontend 7 new vitest cases (263 green).
+- **test(projects): P1–P5 integration guard.** `tests/unit/test_projects_e2e.py` walks one workspace
+  lifecycle end-to-end — create → named connection (secret to the secrets client, only a ref in the
+  DB) → member grant → workbench (connection env-injection) → cost attribution → budget breach →
+  project resolution — so the five increments stay wired together.
+
 ### Added — Next-Gen 40 dashboard surface + public docs
 
 - **feat(dashboard): Next-Gen 40 console (`/nextgen`).** New `pages/NextGen.tsx` + `lib/

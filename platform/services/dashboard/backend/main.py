@@ -16,6 +16,7 @@ from routers import (
     cards,
     collab,
     config,
+    connections,
     containers,
     copilot,
     docs,
@@ -46,6 +47,7 @@ from routers import (
     search,
     selfobs,
     shadow,
+    workbenches,
 )
 
 
@@ -138,6 +140,8 @@ app.include_router(features.router, prefix="/api")
 app.include_router(namespace.router, prefix="/api")
 app.include_router(nextgen.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(connections.router, prefix="/api")
+app.include_router(workbenches.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
 _dist = Path(__file__).parent.parent / "frontend" / "dist"

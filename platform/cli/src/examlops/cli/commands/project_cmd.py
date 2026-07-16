@@ -1,13 +1,13 @@
-"""``exa project`` — ExaMLOps Projects (modeled on Red Hat OpenShift AI Data Science Projects).
+"""``exa project`` — ExaMLOps Projects (the unified project workspace).
 
 A **Project** is a named resource envelope that groups ML models and services and enforces
-CPU/memory/storage/GPU limits on their Docker containers.  The concept is ported directly from
-RHOAI (Red Hat OpenShift AI):
+CPU/memory/storage/GPU limits on their Docker containers.  It maps the familiar
+namespace/quota/isolation primitives onto ExaMLOps's Docker + SQLite substrate:
 
-* RHOAI ``Namespace`` + ``ResourceQuota`` → ExaMLOps ``Project`` in ``platform.db``
-* RHOAI ``LimitRange`` → Docker Compose ``deploy.resources.limits`` (per-service)
-* RHOAI ``NetworkPolicy`` → Docker ``networks.<project>-network``
-* RHOAI ``PersistentVolumeClaim`` → Docker named ``volumes`` with size annotations
+* Namespace + resource quota → ExaMLOps ``Project`` in ``platform.db``
+* Per-service limit range → Docker Compose ``deploy.resources.limits`` (per-service)
+* Network isolation policy → Docker ``networks.<project>-network``
+* Persistent storage claim → Docker named ``volumes`` with size annotations
 
 Key commands::
 
@@ -33,14 +33,19 @@ from examlops.platform_db import (
     add_project_member,
     archive_project,
     assign_resource_to_project,
+    bind_project_connection,
     create_project,
     delete_project,
+    ensure_project_storage,
     get_project,
     get_project_full,
+    get_project_pipelines,
+    get_project_storage,
     init_db,
     list_project_members,
     list_project_models,
     list_projects,
+    refresh_project_usage,
     remove_project_member,
     update_project_quota,
     write_audit_event,
@@ -229,6 +234,131 @@ def show(
             ],
         )
 
+    # ── P8 anatomy: storage · connections · pipelines ─────────────────────────
+    storage = full.get("storage")
+    if storage:
+        used_gb = (storage.get("used_bytes") or 0) / 1e9
+        quota = storage.get("quota_gb")
+        _output.print_table(
+            "Storage",
+            ["Field", "Value"],
+            [
+                ["Location", f"s3://{storage['bucket']}/{storage['prefix']}"],
+                ["Used", f"{used_gb:.2f} GB" + (f" / {quota:.0f} GB" if quota else "")],
+                ["Connection", storage.get("connection_ref") or "—"],
+            ],
+        )
+    connections = full.get("connections") or []
+    if connections:
+        _output.print_table(
+            "Connections",
+            ["Name", "Kind", "Secret"],
+            [
+                [c["name"], c.get("kind") or "—", "✓" if c.get("has_secret") else "✗"]
+                for c in connections
+            ],
+        )
+    pipelines = full.get("pipelines") or {}
+    pf, ry = pipelines.get("prefect"), pipelines.get("rayserve")
+    if pf or ry:
+        rows = []
+        if pf:
+            rows.append(
+                [
+                    "Prefect (training)",
+                    ", ".join(pf.get("deployments") or []) or "—",
+                    pf.get("schedule") or "—",
+                    pf.get("status") or "unknown",
+                ]
+            )
+        if ry:
+            rows.append(
+                [
+                    "Ray Serve (serving)",
+                    ", ".join(ry.get("models") or []) or "—",
+                    ("split" if ry.get("traffic") else "—"),
+                    ry.get("status") or "unknown",
+                ]
+            )
+        _output.print_table("Pipelines", ["Surface", "Members", "Schedule/Traffic", "Status"], rows)
+
+
+@app.command("storage")
+def storage_cmd(
+    name: str = typer.Argument(..., help="Project name"),
+    bind_connection: str | None = typer.Option(
+        None, "--bind-connection", help="Point storage at a P2 S3 connection (by name)"
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-probe used bytes from MinIO"),
+) -> None:
+    """Show (or bind/refresh) the project's MinIO storage location (P6)."""
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    ensure_project_storage(name)
+    if bind_connection:
+        if bind_project_connection(name, bind_connection, actor=os.getenv("EXAMLOPS_ACTOR")):
+            _output.ok(f"Bound storage of '{name}' to connection '{bind_connection}'")
+        else:
+            _output.error(f"Could not bind '{bind_connection}' (missing or not an s3 connection)")
+            raise typer.Exit(1)
+    if refresh:
+        refresh_project_usage(name)
+    rec = get_project_storage(name)
+    if _output.json_mode:
+        _output.print_json(rec)
+        return
+    used_gb = (rec.get("used_bytes") or 0) / 1e9
+    quota = rec.get("quota_gb")
+    _output.print_table(
+        f"Storage: {name}",
+        ["Field", "Value"],
+        [
+            ["Location", f"s3://{rec['bucket']}/{rec['prefix']}"],
+            ["Subpaths", "artifacts/ · datasets/ · cache/"],
+            ["Used", f"{used_gb:.2f} GB" + (f" / {quota:.0f} GB" if quota else "")],
+            ["Connection", rec.get("connection_ref") or "—"],
+        ],
+    )
+
+
+@app.command("pipelines")
+def pipelines_cmd(name: str = typer.Argument(..., help="Project name")) -> None:
+    """Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7)."""
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    pipes = get_project_pipelines(name)
+    if _output.json_mode:
+        _output.print_json(pipes)
+        return
+    pf, ry = pipes.get("prefect"), pipes.get("rayserve")
+    if not pf and not ry:
+        _output.info(
+            f"No pipelines for '{name}' yet. Assign models: exa project assign {name} <M> --kind model"
+        )
+        return
+    if pf:
+        _output.print_table(
+            "Prefect pipeline (training)",
+            ["Field", "Value"],
+            [
+                ["Deployments", ", ".join(pf.get("deployments") or []) or "—"],
+                ["Schedule", pf.get("schedule") or "—"],
+                ["Last run", pf.get("last_run_at") or "—"],
+                ["Status", pf.get("status") or "unknown"],
+            ],
+        )
+    if ry:
+        _output.print_table(
+            "Ray Serve pipeline (serving)",
+            ["Model", "Traffic split"],
+            [[m, str(ry.get("traffic", {}).get(m, "—"))] for m in (ry.get("models") or [])]
+            or [["—", "—"]],
+        )
+
 
 @app.command("set-quota")
 def set_quota(
@@ -351,7 +481,7 @@ def add_member(
     subject: str = typer.Argument(..., help="User/subject id"),
     role: str = typer.Option("viewer", "--role", "-r", help="owner | editor | viewer"),
 ) -> None:
-    """Add a person to a project (owner ⊇ editor ⊇ viewer; RHOAI Admin/Edit/View)."""
+    """Add a person to a project (owner ⊇ editor ⊇ viewer)."""
     init_db()
     if role not in {"owner", "editor", "viewer"}:
         _output.error("--role must be one of: owner, editor, viewer")

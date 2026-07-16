@@ -300,7 +300,11 @@ status, capacity, and admin approve/reject are also on the dashboard **Facility 
 ```bash
 exa project create research --cpu-limit 4 --memory-gb 8 --storage-gb 100  # create a workspace
 exa project list                                     # all projects + quotas
-exa project show research                            # full anatomy (resources·members·quota·budget·consumption)
+exa project show research                            # full anatomy (storage·connections·pipelines·resources·members·quota·budget)
+exa project storage research                          # per-project MinIO location + usage (P6, ADR 0091)
+exa project storage research --bind-connection raw-s3 # point storage at a P2 S3 connection (dedicated bucket)
+exa project storage research --refresh                # re-probe used bytes from MinIO
+exa project pipelines research                        # Prefect (training) + Ray Serve (serving) surfaces (P7, ADR 0092)
 exa project assign research JPCP --kind model        # attach any resource kind
 exa project assign research jpcp-train --kind pipeline
 exa project assign-model research MACK               # legacy alias for --kind model
@@ -336,7 +340,7 @@ exa workbench stop nb --project research
 exa workbench delete nb --project research
 ```
 
-A **Project** is ExaMLOps's canonical *workspace* (RHOAI-inspired, ADR 0086): one named unit that
+A **Project** is ExaMLOps's canonical *workspace* (ADR 0086): one named unit that
 groups models, pipelines, serving, connections, and datasets, plus its members (owner/editor/viewer
 via the D6 `authz_relations` table) and the quota + cost attributed to it. It unifies the previously
 separate `projects`/`namespaces`/authz/tenant grouping primitives. Kinds: `model`, `pipeline`,
@@ -812,6 +816,8 @@ exa -o csv models cost jpcp > cost.csv
 Install the optional MCP dependency once: `uv pip install 'examlops[mcp]'` (adds FastMCP; the core CLI works without it).
 
 **Write safety.** Read-only tools are always available. Mutating tools are registered only when writes are explicitly enabled — via `exa mcp serve --allow-writes` or `EXAMLOPS_MCP_ALLOW_WRITES=1`. Mutating calls that need `CONTROL_PLANE_TOKEN` return a structured error envelope when it is unset, so an agent can reason about the failure.
+
+**Projects tools.** The agent surface includes the Projects workspace (ADR 0086): read tools `project_list`, `project_detail`, and `project_cost` (GPU-hours · USD · carbon · budget/quota breach status), plus the write tools `project_assign_model` and `project_add_member` (registered only under `--allow-writes`, subject to the same least-privilege `agent_write` policy gate, and audited). An agent can therefore inspect and curate the workspace graph — which models/pipelines belong to a project, who its members are, and whether it is over budget — without ever seeing a secret value.
 
 Example — register ExaMLOps with an MCP client (stdio):
 

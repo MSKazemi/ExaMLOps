@@ -2,15 +2,19 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, FolderKanban, Layers, Users, Cpu, DollarSign, Gauge,
-  PlusCircle, X, Clock, UserPlus,
+  PlusCircle, X, Clock, UserPlus, Plug, FlaskConical, Lock, Check,
+  Play, Square, HardDrive, Workflow,
 } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
 import { isAdmin } from '@/lib/auth'
 import {
   useProject, useAssignResource, useAddMember, statusToken, budgetUsage,
+  storageUsagePct, bytesToGb,
   RESOURCE_KINDS, MEMBER_ROLES,
   type AssignResourceBody, type AddMemberBody,
 } from '@/lib/projects'
+import { useConnections } from '@/lib/connections'
+import { useWorkbenches, useSetWorkbenchStatus, nextStatus } from '@/lib/workbenches'
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   ok:       { bg: 'oklch(0.72 0.18 155 / 12%)', border: 'oklch(0.72 0.18 155 / 30%)', text: 'var(--success-text)' },
@@ -162,6 +166,126 @@ function Modal({ title, cli, onClose, onSubmit, submitting, disabled, error, chi
   )
 }
 
+function ConnectionsCard({ project }: { project: string }) {
+  const { data, isLoading } = useConnections(project)
+
+  return (
+    <SectionCard icon={Plug} title="Connections">
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground italic">Loading connections…</p>
+      ) : data && data.length > 0 ? (
+        <div className="space-y-3">
+          <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-sm)' }}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
+                  {['Name', 'Kind', 'Secret', 'Created by'].map(h => (
+                    <th key={h} className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((c, i) => (
+                  <tr key={c.name} style={{
+                    background: i % 2 === 0 ? 'var(--surface-0)' : 'var(--surface-1)',
+                    borderBottom: '1px solid var(--border-sm)',
+                  }}>
+                    <td className="px-4 py-2.5 font-mono text-xs">{c.name}</td>
+                    <td className="px-4 py-2.5 text-xs">
+                      <span className="text-[11px] px-2 py-0.5 rounded-md font-mono"
+                        style={{ background: 'var(--surface-2)', border: '1px solid var(--border-sm)', color: 'var(--subtle-text)' }}>
+                        {c.kind}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs">
+                      {c.hasSecret ? (
+                        <span className="inline-flex items-center gap-1" style={{ color: 'var(--warning-text)' }}>
+                          <Lock className="w-3 h-3" /> secret set
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-muted-foreground">
+                          <Check className="w-3 h-3" /> none
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">{c.createdBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Connections are created from the CLI (secrets never touch the dashboard):{' '}
+            <code className="font-mono" style={{ color: 'var(--accent-text)' }}>exa connection create</code>.
+          </p>
+        </div>
+      ) : (
+        <EmptyState icon={Plug} title="No connections yet"
+          description="Create one with `exa connection create` — secret-backed connections are managed via the CLI." />
+      )}
+    </SectionCard>
+  )
+}
+
+function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }) {
+  const { data, isLoading } = useWorkbenches(project)
+  const setStatus = useSetWorkbenchStatus(project)
+
+  return (
+    <SectionCard icon={FlaskConical} title="Workbenches">
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground italic">Loading workbenches…</p>
+      ) : data && data.length > 0 ? (
+        <div className="space-y-2">
+          {data.map(wb => {
+            const running = wb.status === 'RUNNING'
+            const next = nextStatus(wb.status)
+            const busy = setStatus.isPending && setStatus.variables?.name === wb.name
+            return (
+              <div key={wb.name}
+                className="flex items-center gap-3 rounded-lg px-3 py-2.5"
+                style={{ background: 'var(--surface-1)', border: '1px solid var(--border-sm)' }}>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-sm">{wb.name}</span>
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full uppercase tracking-wide"
+                      style={running
+                        ? { background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }
+                        : { background: 'var(--surface-2)', border: '1px solid var(--border-md)', color: 'var(--faint-text)' }}>
+                      {wb.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground font-mono truncate">{wb.image}</p>
+                  {admin && (
+                    <p className="text-[11px] font-mono text-muted-foreground">
+                      exa workbench {running ? 'stop' : 'start'} {wb.name} --project {project}
+                    </p>
+                  )}
+                </div>
+                {admin && (
+                  <button
+                    onClick={() => setStatus.mutate({ name: wb.name, status: next })}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={running
+                      ? { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }
+                      : { background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+                    {running ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                    {busy ? '…' : running ? 'Stop' : 'Start'}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <EmptyState icon={FlaskConical} title="No workbenches yet"
+          description="Spin one up with `exa workbench create` to get an interactive environment scoped to this project." />
+      )}
+    </SectionCard>
+  )
+}
+
 export function ProjectDetail() {
   const { name } = useParams<{ name: string }>()
   const { data, isLoading, error } = useProject(name ?? '')
@@ -272,6 +396,55 @@ export function ProjectDetail() {
         )}
       </SectionCard>
 
+      {/* Storage (P6) */}
+      {data.storage && (
+        <SectionCard icon={HardDrive} title="Storage">
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              <QuotaMetric label="Used" value={Number((data.storage.usedBytes / 1e9).toFixed(2))} unit="GB" />
+              <QuotaMetric label="Quota" value={data.storage.quotaGb ?? 0} unit="GB" />
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Connection</p>
+                <p className="text-sm font-mono">{data.storage.connectionRef ?? '—'}</p>
+              </div>
+            </div>
+            <p className="text-xs font-mono text-muted-foreground break-all">
+              s3://{data.storage.bucket}/{data.storage.prefix} · {bytesToGb(data.storage.usedBytes)} used ({storageUsagePct(data.storage)}% of quota)
+            </p>
+            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+              <div className="h-full rounded-full"
+                style={{ width: `${storageUsagePct(data.storage)}%`, background: 'oklch(0.64 0.20 265)' }} />
+            </div>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Pipelines (P7): the project's Prefect training + Ray Serve serving surfaces */}
+      {data.pipelines && (data.pipelines.prefect || data.pipelines.rayserve) && (
+        <SectionCard icon={Workflow} title="Pipelines">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {data.pipelines.prefect && (
+              <div className="rounded-lg p-3" style={{ border: '1px solid var(--border-sm)' }}>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Prefect · training</p>
+                <p className="text-sm">{data.pipelines.prefect.deployments.length} deployment(s)</p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {data.pipelines.prefect.schedule ?? 'no schedule'} · {data.pipelines.prefect.status}
+                </p>
+              </div>
+            )}
+            {data.pipelines.rayserve && (
+              <div className="rounded-lg p-3" style={{ border: '1px solid var(--border-sm)' }}>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Ray Serve · serving</p>
+                <p className="text-sm">{data.pipelines.rayserve.models.length} served model(s)</p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {Object.keys(data.pipelines.rayserve.traffic).length} traffic rule(s) · {data.pipelines.rayserve.status}
+                </p>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      )}
+
       {/* Resources grouped by kind */}
       <SectionCard icon={Layers} title="Resources" action={addResourceBtn}>
         {resourceKinds.length > 0 ? (
@@ -326,6 +499,12 @@ export function ProjectDetail() {
           <EmptyState icon={Users} title="No members yet" description="Add members to grant access to this project." />
         )}
       </SectionCard>
+
+      {/* Connections (read-only — created via CLI) */}
+      <ConnectionsCard project={data.name} />
+
+      {/* Workbenches (viewers see status; admins can start/stop) */}
+      <WorkbenchesCard project={data.name} admin={admin} />
 
       {modal === 'resource' && admin && <AssignResourceModal name={data.name} onClose={() => setModal(null)} />}
       {modal === 'member' && admin && <AddMemberModal name={data.name} onClose={() => setModal(null)} />}
