@@ -19,6 +19,7 @@ from examlops.platform_db import (
     get_dataset_revision,
     get_dataset_revisions,
     init_db,
+    record_data_quality_check,
     record_dataset_revision,
     write_audit_event,
 )
@@ -37,6 +38,11 @@ _EX_SNAPSHOT = (
 _EX_LIST = "Examples:\n\n  exa data list FData\n\n  exa --json data list FData"
 _EX_DIFF = "Examples:\n\n  exa data diff FData <revA> <revB>"
 _EX_CHECKOUT = "Examples:\n\n  exa data checkout FData <rev> --path ./data/FData"
+_EX_VALIDATE = (
+    "Examples:\n\n"
+    "  exa data validate FData --path ./data/FData\n\n"
+    "  exa data validate FData --path ./data/FData --revision <rev>"
+)
 
 
 def _actor() -> str:
@@ -228,3 +234,66 @@ def checkout(
             exit_code=1,
         )
     _output.ok(f"Verified: {path} matches [cyan]{revision_id}[/cyan]")
+
+
+@app.command("validate", epilog=_EX_VALIDATE)
+def validate(
+    dataset: str = typer.Argument(..., help="Dataset name (must have a contract)"),
+    path: str = typer.Option(..., "--path", "-p", help="Local parquet file/dir to validate"),
+    revision: str | None = typer.Option(None, "--revision", help="A1 revision id for provenance"),
+) -> None:
+    """Validate a dataset against its data contract; exit non-zero on error violations (spec R11)."""
+    init_db()
+    repo_root = Path(__file__).resolve().parents[6]
+    for p in (str(repo_root), str(repo_root / "modelzoo")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from pipelines.contracts import load_contract  # noqa: PLC0415
+
+    contract = load_contract(dataset)
+    if contract is None:
+        _output.error(
+            f"No data contract found for [bold]{dataset}[/bold] "
+            f"(expected pipelines/contracts/{dataset.lower()}.py)."
+        )
+        return
+    files = _load_versioning().discover_files(path)
+    if not files:
+        _output.error(f"No parquet files found under {path}.")
+        return
+    import pandas as pd  # noqa: PLC0415
+
+    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    result = contract.validate(df)
+    record_data_quality_check(dataset, result, revision=revision, stage="validate", actor=_actor())
+    write_audit_event(
+        "exa-data",
+        _actor(),
+        "data_validate",
+        dataset,
+        {"passed": result.passed, "score": result.score, "errors": len(result.errors)},
+    )
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "dataset": dataset,
+                "passed": result.passed,
+                "score": result.score,
+                "checks": result.checks,
+            }
+        )
+    else:
+        _output.print_table(
+            f"Data contract — {dataset} (v{contract.version})",
+            ["Check", "Severity", "Result", "Observed"],
+            [
+                [c["name"], c["severity"], "✓" if c["passed"] else "✗", str(c["observed"])[:48]]
+                for c in result.checks
+            ],
+        )
+        _output.info(f"Quality score: {result.score:.2%}")
+    if not result.passed:
+        _output.error(
+            f"Data contract FAILED for {dataset}: {len(result.errors)} error-severity violation(s).",
+            exit_code=1,
+        )

@@ -27,6 +27,7 @@ ruff==0.15.6
 mypy>=1.8
 pandas-stubs>=2.0
 paramiko>=3.5.0
+simpleeval>=1.0
 
 [seanerbus]
 seanerbus @ file:///home/mohsen/seanergys/seanerbus/bindings/python

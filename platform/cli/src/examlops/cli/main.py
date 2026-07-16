@@ -23,12 +23,16 @@ from examlops.cli.commands import (
     docs_cmd,
     doctor,
     drift,
+    engines_cmd,
     env_cmd,
+    eval_cmd,
     explain_cmd,
     explain_command,
     features_cmd,
     feedback_cmd,
     finops_cmd,
+    gateway_cmd,
+    genai_cmd,
     hpc_cmd,
     hpo_cmd,
     mcp_cmd,
@@ -41,16 +45,19 @@ from examlops.cli.commands import (
     predict,
     production,
     project_cmd,
+    prompt_cmd,
     providers_cmd,
     quality_cmd,
     retrain,
     rollback_cmd,
     scaffold,
     seanerbus_cmd,
+    secrets_cmd,
     serve,
     shadow_cmd,
     stack,
     status,
+    supplychain_cmd,
 )
 from examlops.cli.commands import (
     audit as audit_cmd,
@@ -202,6 +209,11 @@ serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traff
 serve.app.add_typer(batch_cmd.app, name="batch", help="Batch inference jobs")
 serve.app.add_typer(ab_cmd.app, name="ab", help="A/B testing experiments")
 models.app.add_typer(cards_cmd.app, name="card", help="Generate model cards")
+# D3 — merge sign/verify/bom directly into the `exa models` group (not a sub-group).
+models.app.registered_commands.extend(supplychain_cmd.app.registered_commands)
+# E2 — `exa models quantize` + `exa models engine …` (validate/list).
+models.app.registered_commands.extend(engines_cmd.app.registered_commands)
+models.app.registered_groups.extend(engines_cmd.app.registered_groups)
 models.app.add_typer(
     rollback_cmd.app, name="rollback", help="Roll back a model alias to a previous version"
 )
@@ -217,9 +229,24 @@ eval_app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 eval_app.add_typer(feedback_cmd.app, name="feedback", help="Ground-truth feedback loop")
+# C2/C3 — `exa eval run` (suites) + `exa eval gate …` (regression gate).
+eval_app.registered_commands.extend(eval_cmd.app.registered_commands)
+eval_app.registered_groups.extend(eval_cmd.app.registered_groups)
 app.add_typer(eval_app, name="eval", help="Continuous evaluation and feedback")
 
 app.add_typer(finops_cmd.app, name="finops", help="FinOps + Green-AI budgets and carbon accounting")
+app.add_typer(
+    gateway_cmd.app, name="gateway", help="Model gateway — virtual keys, routing, and cost"
+)
+app.add_typer(
+    genai_cmd.app, name="genai", help="GenAI observability (OpenTelemetry semconv) + token cost"
+)
+app.add_typer(
+    prompt_cmd.app, name="prompt", help="Prompt registry — versioned templates + labels (dev/prod)"
+)
+app.add_typer(
+    secrets_cmd.app, name="secrets", help="Secrets management, rotation, and leak scanning"
+)
 app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
 app.add_typer(mcp_cmd.app, name="mcp", help="MCP server + Agent-to-Agent (A2A) surface")
 app.add_typer(

@@ -105,6 +105,20 @@ sanity:check-structure:
     - test -d pipelines/models
     - echo "Structure OK"
 
+# D7 (ADR 0011): block any commit that introduces a plaintext secret. Uses the
+# dependency-free built-in scanner (examlops.secrets.scan_text) so no external
+# gitleaks/trufflehog binary is needed in CI. Fails the pipeline on any finding.
+sanity:secret-scan:
+  stage: sanity
+  image: python:3.12-slim
+  interruptible: true
+  script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv --clear .venv
+    - uv pip install -e ".[dev]"
+    - .venv/bin/exa secrets scan platform/
+    - .venv/bin/exa secrets scan pipelines/
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE: TEST — parallel DAG; all jobs need both sanity jobs
 # ═══════════════════════════════════════════════════════════════════════════
