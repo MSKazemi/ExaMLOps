@@ -10,13 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from examlops.platform_db import (
-    get_db,
-    get_project,
-    get_project_budget,
-    get_project_consumption,
-    init_db,
-)
+from examlops.data import get_db, init_db
+from examlops.data.projects import get_project, get_project_budget, get_project_consumption
 
 
 def cost_summary(project: str) -> dict[str, Any]:
@@ -89,7 +84,7 @@ def budget_status(project: str, *, actor: str | None = None, audit: bool = False
         "over_budget": bool(breaches),
     }
     if audit and breaches:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event(
             "exa-finops", actor, "project_budget_breach", project, {"breaches": breaches}

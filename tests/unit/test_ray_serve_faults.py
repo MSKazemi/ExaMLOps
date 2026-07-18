@@ -41,6 +41,7 @@ def _make_server() -> rs_app.MultiModelServer:
         "_latency_hist",
         "_pred_value_hist",
         "_models_gauge",
+        "_version_gauge",
         "_reload_counter",
     ):
         setattr(server, attr, MagicMock())

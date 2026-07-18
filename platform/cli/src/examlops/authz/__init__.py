@@ -13,7 +13,10 @@ parent ``project:acme`` grants the same relation on its children (spec R6).
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -37,7 +40,7 @@ def _parent(obj: str) -> str | None:
 
 
 def _best_rank_on(subject: str, obj: str) -> int:
-    from examlops.platform_db import get_relations_for
+    from examlops.data.governance import get_relations_for
 
     rels = get_relations_for(subject, obj)
     return max((_rank(r) for r in rels), default=0)
@@ -54,11 +57,21 @@ def check(subject: str, relation: str, obj: str, *, actor: str | None = None) ->
     required = _rank(relation)
     node: str | None = obj
     allowed = False
-    while node is not None:
-        if _best_rank_on(subject, node) >= required:
-            allowed = True
-            break
-        node = _parent(node)
+    try:
+        while node is not None:
+            if _best_rank_on(subject, node) >= required:
+                allowed = True
+                break
+            node = _parent(node)
+    except Exception as exc:  # noqa: BLE001 — fail CLOSED on backend error (item 0.7)
+        # A datastore failure must never accidentally grant access. Deny, alert loudly,
+        # and record the error as a security event rather than propagating a 500 (which a
+        # permissive caller might swallow into an allow).
+        logger.error(
+            "authz check failed closed (deny) for %s '%s' on %s: %s", subject, relation, obj, exc
+        )
+        _audit("authz_error", subject, relation, obj, actor)
+        return False
     if not allowed:
         _audit("authz_deny", subject, relation, obj, actor)
     return allowed
@@ -72,14 +85,14 @@ def require(subject: str, relation: str, obj: str, *, actor: str | None = None) 
 
 def grant(subject: str, relation: str, obj: str, *, actor: str | None = None) -> None:
     """Grant a relation (audited, spec: grant)."""
-    from examlops.platform_db import grant_relation
+    from examlops.data.governance import grant_relation
 
     grant_relation(subject, relation, obj, actor=actor)
     _audit("authz_grant", subject, relation, obj, actor)
 
 
 def revoke(subject: str, relation: str, obj: str, *, actor: str | None = None) -> int:
-    from examlops.platform_db import revoke_relation
+    from examlops.data.governance import revoke_relation
 
     n = revoke_relation(subject, relation, obj)
     _audit("authz_revoke", subject, relation, obj, actor)
@@ -88,7 +101,7 @@ def revoke(subject: str, relation: str, obj: str, *, actor: str | None = None) -
 
 def list_objects(subject: str, relation: str | None = None) -> list[dict]:
     """Objects (and relations) granted to ``subject``, optionally filtered by relation."""
-    from examlops.platform_db import list_objects_for
+    from examlops.data.governance import list_objects_for
 
     rows = list_objects_for(subject)
     if relation:
@@ -99,10 +112,19 @@ def list_objects(subject: str, relation: str | None = None) -> list[dict]:
 
 def _audit(action: str, subject: str, relation: str, obj: str, actor: str | None) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event(
             "exa-authz", actor, action, obj, {"subject": subject, "relation": relation}
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — audit is best-effort but must not be silent (0.7)
+        # Never block an authz decision on an audit failure, but never lose it silently either:
+        # a dropped security event is itself a finding, so log it at WARNING for Loki.
+        logger.warning(
+            "authz audit write failed for %s (%s '%s' on %s): %s",
+            action,
+            subject,
+            relation,
+            obj,
+            exc,
+        )

@@ -130,7 +130,8 @@ def status(
     run_id: str = typer.Argument(..., help="Run id"),
 ) -> None:
     """Show a distributed run + its checkpoints."""
-    from examlops.platform_db import get_distributed_run, list_training_checkpoints
+    from examlops.data.audit import list_training_checkpoints
+    from examlops.data.data_assets import get_distributed_run
 
     run = get_distributed_run(run_id)
     if not run:
@@ -168,7 +169,7 @@ def list_cmd(
     model: str = typer.Argument(None, help="Filter by model"),
 ) -> None:
     """List distributed training runs."""
-    from examlops.platform_db import list_distributed_runs
+    from examlops.data.data_assets import list_distributed_runs
 
     runs = list_distributed_runs(model)
     if _output.json_mode:

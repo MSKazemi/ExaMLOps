@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 CROISSANT_CONTEXT = "http://mlcommons.org/croissant/1.0"
 NOT_PROVIDED = "not provided"

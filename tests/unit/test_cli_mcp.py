@@ -91,8 +91,11 @@ def test_hpc_place_tool_no_clusters(db):
     assert res["cluster"] is None  # nothing ACTIVE yet
 
 
-def test_trigger_retrain_without_token_returns_error_envelope(monkeypatch):
+def test_trigger_retrain_without_token_returns_error_envelope(monkeypatch, tmp_path):
     monkeypatch.delenv("CONTROL_PLANE_TOKEN", raising=False)
+    # Hermetic: point config resolution at an empty file so the developer's real
+    # ~/.config/examlops/config.toml (which may hold a token) can't leak in.
+    monkeypatch.setenv("EXAMLOPS_CONFIG", str(tmp_path / "empty.toml"))
     from examlops.mcp.tools import trigger_retrain
 
     res = trigger_retrain("JPCP", "PM100Dataset", dummy=True)
@@ -170,3 +173,35 @@ def test_cli_mcp_serve_without_fastmcp_errors_cleanly(monkeypatch):
     result = runner.invoke(app, ["mcp", "serve", "--transport", "http"])
     assert result.exit_code == 1
     assert "FastMCP is not installed" in result.output
+
+
+def test_fleet_simulate_tool(db):
+    from examlops.mcp.tools import fleet_simulate
+
+    # No clusters registered → jobs project to the queue, but the tool returns a valid envelope.
+    res = fleet_simulate(jobs=3, gpus=2)
+    assert res["ok"] is True
+    assert "projected" in res and res["projected"]["queued"] == 3
+
+
+def test_fleet_simulate_is_registered_as_read_tool():
+    from examlops.mcp.tools import REGISTRY
+
+    spec = next(s for s in REGISTRY if s.name == "fleet_simulate")
+    assert spec.mutating is False and "fleet" in spec.tags
+
+
+def test_agent_card_advertises_security_schemes(monkeypatch):
+    """A2A card must declare securitySchemes (item 2.2) — not imply it's unauthenticated."""
+    from examlops.mcp.agent_card import build_agent_card
+
+    monkeypatch.delenv("EXAMLOPS_OIDC_ISSUER", raising=False)
+    card = build_agent_card(base_url="https://x")
+    assert "securitySchemes" in card
+    assert card["securitySchemes"]["default"]["scheme"] == "bearer"
+
+    monkeypatch.setenv("EXAMLOPS_OIDC_ISSUER", "https://idp.example.org/")
+    oidc_card = build_agent_card(base_url="https://x")
+    scheme = oidc_card["securitySchemes"]["default"]
+    assert scheme["type"] == "openIdConnect"
+    assert "openid-configuration" in scheme["openIdConnectUrl"]

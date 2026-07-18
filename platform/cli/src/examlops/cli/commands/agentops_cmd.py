@@ -31,7 +31,7 @@ def tools(
     tenant: str | None = typer.Option(None, "--tenant", help="Filter to one tenant (D6)"),
 ) -> None:
     """Per-tool success rate, call count, and average latency (R2)."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     rows = platform_db.tool_success_rate(None, tenant=tenant)
     if _output.json_mode:
@@ -64,7 +64,7 @@ def sessions(
     limit: int = typer.Option(50, "--limit", help="Max sessions (newest first)"),
 ) -> None:
     """List recent agent sessions with steps, cost, and status (R6 index)."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     rows = platform_db.list_agent_sessions(tenant=tenant, status=status, limit=limit)
     if _output.json_mode:
@@ -97,7 +97,7 @@ def replay(
     session_id: str = typer.Argument(..., help="Session id to reconstruct"),
 ) -> None:
     """Reconstruct a session's tool-call timeline (R6, GWT-5)."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     trace = platform_db.get_agent_session_trace(session_id)
     if trace["session"] is None:

@@ -197,7 +197,11 @@ services:
     mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
     environment:
       CONTROL_PLANE_PORT: "8002"
-      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-changeme}
+      # No insecure default: unset/placeholder tokens fail closed (write endpoints 503).
+      # Set CONTROL_PLANE_TOKEN in .env to enable POST /retrain (item 0.8 / QW6).
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      # Allowed-hosts scoping (item 0.8): "*"=dev; set a comma-separated allow-list in prod.
+      CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-*}
       PREFECT_API_URL: http://orchestrator:4200/api
       PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-examlops_scheduled_training/nightly}
       MODELZOO_WEBHOOK_SECRET: ${MODELZOO_WEBHOOK_SECRET:-}
@@ -264,6 +268,9 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # Delivery secrets (Slack/PagerDuty/heartbeat) read at notify time; gitignored,
+      # absent files degrade that receiver to a no-op. See alertmanager-secrets/README.md.
+      - ./alertmanager-secrets:/etc/alertmanager/secrets:ro
       - alertmanager_data:/alertmanager
     ports:
       - "19093:9093"
@@ -291,10 +298,12 @@ services:
     profiles: [monitoring]
     container_name: examlops-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Env-driven so production overrides the dev default (item 0.8). In prod set a strong
+      # GRAFANA_ADMIN_PASSWORD and GRAFANA_ANONYMOUS_ENABLED=false — see production-hardening.md.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-true}
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - grafana_data:/var/lib/grafana
@@ -340,6 +349,39 @@ services:
       - loki
     restart: unless-stopped
 
+  # Scoped Docker API proxy (item 0.6). The dashboard needs container start/stop/restart +
+  # logs, but a raw rw /var/run/docker.sock mount is root-equivalent host takeover. This proxy
+  # holds the socket read-only and exposes ONLY the allow-listed API sections (containers + POST
+  # for lifecycle); IMAGES/EXEC/VOLUMES/NETWORKS/SWARM/SECRETS/AUTH are all denied. No published
+  # port — reachable only on the internal compose network.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2.0
+    container_name: examlops-docker-socket-proxy
+    environment:
+      CONTAINERS: "1"   # list/inspect/logs
+      POST: "1"         # allow POST → start/stop/restart (scoped to permitted sections)
+      # Everything else denied (defaults to 0), explicit for auditability:
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      EXEC: "0"
+      INFO: "0"
+      AUTH: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ../../..
@@ -349,6 +391,9 @@ services:
     container_name: examlops-dashboard
     mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}
     environment:
+      # Talk to Docker through the scoped proxy, NOT the raw socket (item 0.6).
+      # docker.from_env() honors DOCKER_HOST, so no code change is needed.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       MLFLOW_URL: http://mlflow:5000
       PREFECT_URL: http://orchestrator:4200
       RAY_SERVE_URL: http://ray-serving:8001
@@ -397,9 +442,13 @@ services:
         condition: service_healthy
       control-plane:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Raw docker.sock replaced by the scoped proxy (DOCKER_HOST above) — item 0.6.
+      # NB (prod): the whole-repo rw bind below is a dev convenience so the host CLI and the
+      # container share one platform.db; K8s (Phase 1.1) replaces it with a least-priv PVC.
       - ../../../:/repo:rw
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]

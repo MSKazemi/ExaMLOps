@@ -5,20 +5,19 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.finops import get_carbon_records, write_carbon_record
+from examlops.data.projects import (
+    get_project_budget,
+    get_project_consumption,
+    list_project_budgets,
+    set_project_budget,
+)
 from examlops.finops.carbon import (
     DEFAULT_GRID_INTENSITY_G_PER_KWH,
     budget_usage_ratio,
     estimate_carbon_via_provider,
-)
-from examlops.platform_db import (
-    get_carbon_records,
-    get_project_budget,
-    get_project_consumption,
-    init_db,
-    list_project_budgets,
-    set_project_budget,
-    write_audit_event,
-    write_carbon_record,
 )
 
 app = typer.Typer(

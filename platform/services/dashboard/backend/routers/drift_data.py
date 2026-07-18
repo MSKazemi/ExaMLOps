@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import math
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends, Query
 
 router = APIRouter(prefix="/drift", tags=["drift"])
@@ -36,8 +36,7 @@ async def drift_status(
 ) -> list[dict]:
     """Prediction drift status for all models (or one model)."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         if model:
             models_list = [model]
         else:
@@ -85,8 +84,7 @@ async def drift_status(
 async def drift_auto_retrain(_=Depends(_viewer)) -> list[dict]:
     """Auto-retrain configuration for all models."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
         conn.close()
         return [dict(r) for r in rows]
@@ -102,8 +100,7 @@ async def input_drift_status(
     """Input embedding distribution drift status."""
     INPUT_WINDOW = 200
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         if model:
             models_list = [model]
         else:

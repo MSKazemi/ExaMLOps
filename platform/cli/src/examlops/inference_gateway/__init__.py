@@ -17,7 +17,7 @@ import hashlib
 from dataclasses import dataclass, field
 from itertools import count
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 MODE_ROUND_ROBIN = "round_robin"
 MODE_CACHE_AWARE = "cache_aware"

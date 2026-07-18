@@ -6,6 +6,7 @@ import os
 import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/batch", tags=["batch"])
@@ -24,8 +25,7 @@ def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
 async def get_all_batch_jobs(_=Depends(_viewer)) -> list[dict]:
     """Last 50 batch inference jobs, most recent first."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             """
             SELECT id, ts, model, alias, input_path, output_path,
@@ -45,8 +45,7 @@ async def get_all_batch_jobs(_=Depends(_viewer)) -> list[dict]:
 async def get_model_batch_jobs(model: str, _=Depends(_viewer)) -> list[dict]:
     """Last 50 batch inference jobs for a specific model, most recent first."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             """
             SELECT id, ts, model, alias, input_path, output_path,

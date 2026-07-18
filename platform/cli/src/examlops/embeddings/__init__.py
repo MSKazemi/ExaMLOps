@@ -25,7 +25,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 
 class EncoderMismatchError(RuntimeError):
@@ -182,7 +182,7 @@ def _rebaseline_input_drift(collection: str, enc_id: str) -> None:
 
 def _audit(collection: str, tenant: str, action: str, extra: dict, actor: str | None) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event("exa-embedding", actor, action, collection, extra, tenant=tenant)
     except Exception:

@@ -75,9 +75,8 @@ def test_condition_is_sandboxed_no_code_execution():
 def test_decision_is_audited(monkeypatch):
     """decide(audit=True) writes exactly one audit_events row with the effect + rule."""
     calls = []
-    import examlops.platform_db as pdb
 
-    monkeypatch.setattr(pdb, "write_audit_event", lambda **kw: calls.append(kw))
+    monkeypatch.setattr("examlops.data.audit.write_audit_event", lambda **kw: calls.append(kw))
     rules = [{"action": "retrain", "effect": "deny", "name": "block"}]
     decide("retrain", {"model": "JPCP"}, policies=rules, audit=True)
     assert len(calls) == 1
@@ -88,12 +87,10 @@ def test_decision_is_audited(monkeypatch):
 
 
 def test_audit_failure_never_raises(monkeypatch):
-    import examlops.platform_db as pdb
-
     def boom(**kw):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(pdb, "write_audit_event", boom)
+    monkeypatch.setattr("examlops.data.audit.write_audit_event", boom)
     # Must still return a decision, not raise.
     d = decide("retrain", {}, policies=[{"action": "retrain", "effect": "allow"}], audit=True)
     assert d.allowed

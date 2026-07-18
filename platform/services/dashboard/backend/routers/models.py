@@ -10,6 +10,7 @@ import httpx
 from auth import require_role
 from control_plane_client import ControlPlaneClient
 from database import get_db
+from dbconn import connect
 from external_links import LinkInputs, build_links
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile, status
 from frontmatter import parse_readme
@@ -640,12 +641,10 @@ async def delete_image(
 async def get_model_costs(name: str, _=Depends(require_role("viewer"))) -> list[dict]:
     """HPC cost history for a model from platform.db."""
     import os as _os
-    import sqlite3 as _sql
 
     db_path = _os.getenv("PLATFORM_DB", "/repo/platform.db")
     try:
-        conn = _sql.connect(db_path)
-        conn.row_factory = _sql.Row
+        conn = connect(db_path)
         rows = conn.execute(
             "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
             "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",

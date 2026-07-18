@@ -345,16 +345,27 @@ class MultiModelServer:
         self._replica_id = _os.getenv("RAY_WORKER_ID", "default")
 
         # ── Online metrics ────────────────────────────────────────────────────
+        # NB: `version` is deliberately NOT a label on the hot-path counter/histogram
+        # (cardinality guard, item 3.2/QW5): a new MLflow version would mint a fresh time
+        # series on every promotion, multiplied by model × alias × status — a Prometheus
+        # OOM bomb. `alias` (Production/Canary/Staging) is bounded and kept; the live
+        # version is surfaced as the *value* of `_version_gauge` below (bounded series).
         self._req_counter = Counter(
             "examlops_predict_requests_total",
-            description="Total prediction requests by model, version and outcome",
-            tag_keys=("model_name", "version", "alias", "status"),
+            description="Total prediction requests by model, alias and outcome",
+            tag_keys=("model_name", "alias", "status"),
         )
         self._latency_hist = Histogram(
             "examlops_predict_latency_seconds",
-            description="End-to-end prediction latency in seconds",
+            description="End-to-end prediction latency in seconds by model and alias",
             boundaries=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
-            tag_keys=("model_name", "version"),
+            tag_keys=("model_name", "alias"),
+        )
+        self._version_gauge = Gauge(
+            "examlops_model_version",
+            description="Live model version currently served per (model, alias) — version as a "
+            "gauge VALUE (not a label) so per-version visibility survives the cardinality guard",
+            tag_keys=("model_name", "alias"),
         )
         self._pred_value_hist = Histogram(
             "examlops_prediction_value",
@@ -753,7 +764,6 @@ class MultiModelServer:
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,
-                    "version": request.version or "",
                     "alias": request.alias or "",
                     "status": "not_found",
                 }
@@ -781,7 +791,6 @@ class MultiModelServer:
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,
-                    "version": version or "",
                     "alias": alias or "",
                     "status": "invalid",
                 }
@@ -801,14 +810,13 @@ class MultiModelServer:
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,
-                    "version": version or "",
                     "alias": alias or "",
                     "status": "timeout",
                 }
             )
             self._latency_hist.observe(
                 time.time() - _t0,
-                tags={"model_name": model_name, "version": version or ""},
+                tags={"model_name": model_name, "alias": alias or ""},
             )
             logger.error(
                 "Prediction TIMEOUT (>%ss) for '%s' v%s",
@@ -823,14 +831,13 @@ class MultiModelServer:
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,
-                    "version": version or "",
                     "alias": alias or "",
                     "status": "error",
                 }
             )
             self._latency_hist.observe(
                 time.time() - _t0,
-                tags={"model_name": model_name, "version": version or ""},
+                tags={"model_name": model_name, "alias": alias or ""},
             )
             logger.error("Prediction error for '%s' (v%s): %s", model_name, version, exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -839,14 +846,19 @@ class MultiModelServer:
         self._req_counter.inc(
             tags={
                 "model_name": model_name,
-                "version": version or "",
                 "alias": alias or "",
                 "status": "success",
             }
         )
-        self._latency_hist.observe(
-            _latency, tags={"model_name": model_name, "version": version or ""}
-        )
+        self._latency_hist.observe(_latency, tags={"model_name": model_name, "alias": alias or ""})
+        # Surface the live version as a bounded gauge value (cardinality-safe, item 3.2/QW5).
+        if version is not None:
+            try:
+                self._version_gauge.set(
+                    float(version), tags={"model_name": model_name, "alias": alias or ""}
+                )
+            except (TypeError, ValueError):
+                pass  # non-numeric version (rare) — skip the gauge, metrics still flow
         if isinstance(prediction, (int, float)):
             self._pred_value_hist.observe(float(prediction), tags={"model_name": model_name})
 

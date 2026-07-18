@@ -5,6 +5,384 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Enterprise-readiness Phase 5 (started)
+
+- **feat(autopilot): predictive pre-emptive drift forecasting + root-cause classifier (item 5.2).** New
+  `examlops.forecast` + `exa drift forecast <model>` turns the reactive autopilot predictive: it fits a
+  trend to a model's recent prediction drift (rolling z vs baseline) and projects **when** it will breach
+  the critical threshold, so a retrain can fire *before* the degradation window instead of after. Adds the
+  missing "decide" stage — `classify_drift_cause` distinguishes input-distribution vs prediction-shift vs
+  data-volume vs concept drift from the input/prediction z-scores + volume ratio — so the response can be
+  targeted. Pure/offline-testable; `test_forecast.py` (13).
+- **feat(mcp): agent-callable `fleet_simulate` tool (item 5.5 slice).** The Fleet Digital Twin is now an
+  MCP read tool, so a governed fleet copilot can compose what-if projections (placements/cost/carbon/queue)
+  into previewed, HITL-gated plans without touching live state — the read-only planning primitive item 5.5
+  builds on. Registered read-only (never mutating). `test_cli_mcp.py` +2.
+- **feat(exchange): signed cross-institution packages (item 5.6).** New `examlops.exchange` +
+  `exa exchange pack|verify|inspect|import` — a portable `.novapack` bundle (stdlib zip) for sharing
+  models/pipelines/providers/policy-packs across institutions on the D3 signing substrate. Every package
+  carries a per-file SHA-256 set + a signature over the bundle digest; **verify-before-import** refuses to
+  extract anything whose signature or integrity fails (tampered file, forged signature, wrong key). Packing
+  without a signing key fails closed. `test_exchange.py` (8). The marketplace discovery surface (MCP/A2A
+  listing, Projects scoping) layers on top.
+- **feat(fleet): FleetScape server-side tile aggregation for the 3D/NOC heatmap (item 5.4).** New
+  `examlops.fleetscape` + `exa fleet heatmap` reduce the fleet registry to a positioned tile grid with a 0–1
+  health per tile (down=0 … idle=1) + per-cluster and fleet rollups — the compact, painted-server-side model
+  the bundled WebGL rack/GPU heatmap and NOC video-wall render (degrading to the existing SVG grid over the
+  same tiles where WebGL is unavailable). Pure over injected nodes → `test_fleetscape.py` (5). The WebGL/
+  video-wall front-end itself is the browser-side follow-up.
+- **feat(fleet): Digital Twin & What-If Studio simulation engine (item 5.1, flagship).** New
+  `examlops.fleet_twin` + `exa fleet simulate` — a *pure* projection of the live fleet: apply a scenario
+  (submit N jobs, add GPUs, shift a cluster's grid-carbon/price) and get back where each job places, the
+  projected GPU-hours / cost / carbon, and the queue depth — plus the delta vs the current baseline. It
+  reuses the production placement scoring fn + capacity model (and any `--optimize` provider incl. the new
+  carbon-aware ones), so the projection matches real scheduler behaviour, and touches nothing live. The 3D
+  NOC view (5.4) will render this state. `test_fleet_twin.py` (6, incl. capacity depletion, queue overflow,
+  carbon-steered placement, cost/carbon rollup).
+- **feat(placement): carbon- and cost-aware fleet placement (item 5.3).** Three new built-in placement
+  providers — `carbon-aware`, `cost-aware`, `carbon-cost-balanced` — factor a cluster's grid carbon
+  intensity (`carbon_intensity` gCO₂e/kWh) and GPU cost (`cost_per_gpu_hour`) into the scoring fn on top
+  of least-loaded headroom, so the fleet steers jobs to the greenest/cheapest cluster that fits. Selected
+  via the existing `exa hpc place --placement-provider …` / `EXAMLOPS_PLACEMENT_PROVIDER` (zero CLI change,
+  ADR 0077). Degrades to least-loaded byte-for-byte where no carbon/cost signal is present.
+  `test_carbon_aware_placement.py` (5).
+
+### Added — Enterprise-readiness Phase 3 (started)
+
+- **feat(observability): HA long-term metrics + tail-sampling collector (item 3.3).** New
+  `otel-collector-config.yml` — an OpenTelemetry Collector with **tail-based sampling** (keep every error +
+  slow (>1s) trace, sample the healthy 5%) so the 48h Tempo isn't firehosed, plus traces→Tempo and
+  metrics→Prometheus-remote-write pipelines targeting Mimir/Thanos on object storage for unlimited retention.
+  Prometheus gains a documented env-driven `remote_write` block. `test_otel_collector_config.py` (4) guards
+  the structure. Standing up Mimir/Thanos + the collector container is the operator deploy step.
+- **feat(observability): Prometheus service-discovery from the fleet registry (item 3.1).** New
+  `examlops.prometheus_sd` + `exa hpc prometheus-sd` generate Prometheus `file_sd` scrape targets
+  (`node_exporter` on every node + NVIDIA `DCGM-exporter` on GPU nodes) directly from the authoritative
+  `hpc_clusters`/`hpc_nodes` registry, each labelled with cluster/scheduler/tenant — so a node joining the
+  registry auto-adds its scrape targets instead of a hand-edited `prometheus.yml`. `test_prometheus_sd.py`
+  (8). The node-agent exporter DaemonSet itself is the operator deploy step.
+- **feat(reporting): offline cost/carbon/project reports (item 3.5).** New `examlops.reporting` +
+  `exa report generate [--format html|pdf|text] [--project N] [--out FILE]` assembles FinOps cost
+  (per-model GPU-hours + $), Green-AI carbon (kg CO₂e), and project consumption into a shareable
+  report. HTML + text render dependency-free; PDF uses WeasyPrint when installed and **degrades to
+  HTML** (with a notice) when not. Each section is fail-open — a broken source degrades only itself.
+  `test_reporting.py` (5).
+
+### Added — Enterprise-readiness Phase 4 (started)
+
+- **feat(config): `exa env --validate` cross-service coherence check (item 4.2 slice).** New
+  `examlops.config_validate` cross-checks the effective environment (130+ vars) and `exa env --validate`
+  fails CI/startup on incoherence: a backend selected without its endpoint (`EXAMLOPS_COORDINATOR=redis`
+  sans `EXAMLOPS_REDIS_URL`, `EVENT_PUBLISHER=nats` sans broker, `DB_BACKEND=postgres` sans DSN), OIDC
+  issuer without a JWKS, malformed URLs, and weak/placeholder secrets (warnings). Pure over an injected env
+  dict → testable. `test_config_validate.py` (9). The full versioned `/api/v1` gateway + one pydantic-settings
+  schema remain the larger 4.2 build.
+- **refactor(data): per-domain `examlops.data.*` facades + COMPLETE platform_db public-API migration (items 4.5/4.1).**
+  New `examlops.data` package splits the 236-helper `platform_db` monolith into **18 owned per-domain modules**
+  (audit/drift/hpc/projects/finops/serving/events/admission/coordination/secrets/autopilot/evaluation/
+  data_assets/governance/prompts/registry/agent/gateway), each a **dynamic `__getattr__` proxy** (PEP 562) that
+  resolves to the current `platform_db` helper — a transparent, non-destructive owned surface that keeps
+  monkeypatching `platform_db.<fn>` working through the facade. **Every public-API call site migrated** (a
+  scripted 76-file sweep + attribute-style swaps), driving the coupling ratchet **99 → 0**; the guard is pinned
+  at 0 so no new code can reach into the monolith's public surface. `test_data_facades.py` (21) + the surface
+  contract harness. Physically relocating each helper body into its module is now a functionally-inert follow-on.
+- **test(arch): cross-surface contract harness (items 4.5/4.8).** `test_surface_contract.py` boots the SDK
+  and MCP surfaces against one ephemeral data plane and asserts they return **identical** results for shared
+  operations (e.g. `sdk.place` and the `hpc_place` MCP tool choose the same cluster with the same reason), so
+  a change that breaks surface parity fails CI. It also pins the item-4.6 contract: every zero-arg MCP read
+  tool must return a `{ok: bool, error?: str, …}` envelope. (3 cases.)
+- **test(arch): data-layer coupling ratchet (item 4.1).** ~96 modules reach directly into `platform_db`
+  instead of the semver'd `examlops.sdk` facade. A full migration is a tracked refactor; this guard stops
+  the coupling from *growing* — `test_platform_db_coupling_ratchet.py` fails CI if a new non-data-layer
+  module imports `platform_db` (route it through the SDK), and enforces the baseline only ever ratchets
+  DOWN as call sites migrate. The data layer (`platform_db.py`, `storage/`, `sdk/`) is exempt.
+- **feat(i18n): shared HPC-unit formatter (item 4.7 slice).** New `examlops.units` — one canonical, locale-aware
+  formatter for GPU-hours, bytes (IEC), SI quantities, cost, carbon, and durations, so every surface renders
+  quantities identically instead of hand-formatting per console (the F19 i18n claim's formatter half). European
+  locales flip decimal/grouping style. `test_units.py` (6). The literal-string lint gate + complete EN/IT across
+  the 27 React consoles is the frontend-host follow-up.
+- **feat(api): keyset (cursor) pagination primitive (item 4.3).** New `examlops.pagination` — constant-cost,
+  stable-under-writes cursor pagination (`WHERE key < :cursor ORDER BY key DESC LIMIT n+1`) to replace
+  linear `OFFSET` scans on fleet-scale list views (DataGrid/fleet/queue/registry). Opaque URL-safe cursors,
+  a hard `MAX_PAGE_SIZE=500` cap, and `seek_clause`/`fetch_limit`/`paginate` helpers. Walking the cursors
+  reconstructs the full set with no gaps/dupes even as the tail is fetched incrementally. `test_pagination.py`
+  (7). Wiring it into the list endpoints + DataGrid virtualization is the frontend follow-up.
+- **feat(sdk): canonical result-envelope contract (item 4.6, foundation).** New `examlops.sdk.Result` +
+  `ok()`/`err()` — one typed `ok`/error shape for every programmatic surface (CLI JSON, MCP, agent,
+  dashboard BFF) so callers stop guessing bespoke dicts. `to_dict()` emits the exact historical wire
+  format (`{"ok": bool, "error"?: str, **data}`), so the MCP `_err` helper now routes through it
+  **byte-identically** (zero wire change) — the first adopter; others convert incrementally. `test_result_envelope.py` (4).
+
+### Added — Enterprise-readiness Phase 2 (started)
+
+- **feat(security): OpenFGA authorization-model export (item 2.5 — RBAC → OpenFGA).** New
+  `examlops.authz.openfga` emits the OpenFGA authorization model (both `.fga` DSL and JSON API shape) that
+  mirrors the D6 relation model — `owner ⊇ editor ⊇ viewer` over `project` → model/pipeline/dataset/… objects
+  with parent inheritance — plus a `relation_tuples()` export of the live `authz_relations`, so RBAC can be
+  lifted out of the shared SQLite into a dedicated OpenFGA service with an *equivalent* (non-drifting) model
+  instead of a hand-authored one. `test_openfga_export.py` (9). Running OpenFGA + tuple sync is the infra step.
+- **feat(security): A2A `securitySchemes` on the agent card (item 2.2 slice).** The Skipper A2A Agent Card now
+  declares how a caller authenticates — an `openIdConnect` scheme when `EXAMLOPS_OIDC_ISSUER` is set (pointing
+  at the IdP's `.well-known/openid-configuration`), else a `bearer` scheme — closing the audit finding that
+  the card lacked `securitySchemes` entirely and implied an unauthenticated agent. Pairs with the 2.1 OIDC
+  validator; route-dependency enforcement on the live Skipper WS/REST/MCP routes is the runtime-wiring step.
+- **feat(security): OIDC/OAuth2 access-token validation + identity propagation (item 2.1).** New
+  `examlops.oidc` accepts IdP-issued **RS256** tokens instead of the shared control-plane token / HS256
+  secret: `verify_bearer`/`verify_token` check the signature against the issuer's JWKS (URL or inline) plus
+  issuer/audience/expiry, then derive a real per-user **subject + tenant** `Identity` whose `.actor`
+  (`tenant/subject`) threads into `EXAMLOPS_ACTOR` + the audit trail. Off by default (`EXAMLOPS_OIDC_ISSUER`
+  unset → single-tenant keeps working); fail-closed on every bad-token path. `test_oidc.py` (10, using a
+  locally-generated RSA key + JWKS — no IdP needed). Route-dependency wiring into the control plane /
+  dashboard / Skipper is the integration step.
+- **feat(security): external WORM anchor for audit checkpoints (item 2.4).** The D4 hash-chain makes
+  tampering *within* `platform.db` detectable, but a full-DB rewrite could re-chain a forged history.
+  New `examlops.audit_worm` anchors each `exa audit checkpoint` to an append-only, **itself-hash-chained**
+  WORM log (`EXAMLOPS_AUDIT_WORM_PATH`; O_APPEND local file for dev, an S3 Object-Lock path or Rekor log in
+  prod). `exa audit verify-worm` checks the anchor chain **and** that every DB checkpoint is anchored —
+  divergence in either store is flagged. No-op when unconfigured. `test_audit_worm.py` (6, incl. tamper +
+  unanchored-checkpoint detection).
+- **test(security): cross-tenant isolation conformance (item 2.6).** `test_tenant_isolation_conformance.py`
+  seeds two tenants into every tenant-scoped store (secrets, SLO specs, policy bundles) and proves tenant A
+  can neither read nor list tenant B's data — same-path secrets resolve to the caller's own tenant, a
+  B-only secret is `SecretNotFound` for A, and every scoped `list_*` is single-tenant. A regression that
+  widens or drops a `WHERE tenant=?` clause fails this gate loudly. (5 cases.)
+- **feat(secrets): envelope encryption with per-secret key_id + online KEK rotation (item 2.3).** The
+  secrets store gains a KEK **keyring** (`EXAMLOPS_SECRETS_KEYS=key_id:fernet_key,…` +
+  `EXAMLOPS_SECRETS_ACTIVE_KEY`): new secrets are wrapped under the active key with its `key_id` stored
+  per row (additive migration), old ciphertext keeps decrypting under its own key, and `rewrap_secrets`
+  / `exa secrets rewrap [--dry-run]` re-encrypts everything under the active key so a retired key can be
+  dropped — all without downtime, plaintext never leaving the process. `DASHBOARD_SECRET_KEY` is
+  demoted from *primary* KEK to a legacy decrypt-only fallback. `test_secrets_envelope.py` (6); the 10
+  existing secrets tests stay green (back-compat).
+
+### Added — Enterprise-readiness Phase 1 (started)
+
+- **feat(k8s): zero-downtime rolling upgrades + additive-migration guard (item 1.10).** The chart's
+  Deployments use `RollingUpdate` with `maxUnavailable: 0` + readiness probes, so cutover is
+  readiness-gated (no capacity dip) and `helm rollback` is instant. The invariant that makes that safe —
+  **additive-only schema migrations** (expand/contract: `CREATE TABLE IF NOT EXISTS` + nullable/defaulted
+  `ADD COLUMN`, never `DROP`/`RENAME` in one release) — is now enforced by `test_migrations_additive.py`
+  (3), so a destructive change that would break an old replica mid-rollout fails CI. Runbook in
+  production-hardening.md.
+- **feat(k8s): enterprise Helm reference topology (item 1.1).** New `platform/infra/helm/examlops` chart
+  deploys the control-plane (HPA 3→10 + PDB), dashboard, and agent as **stateless multi-replica** tiers
+  behind a TLS ingress — no `container_name` pins, no hostPath, every pod non-root / read-only-rootfs /
+  all-caps-dropped and topology-spread across nodes. State stays out of the chart: HA Postgres
+  (CloudNativePG) + distributed MinIO are referenced via values; secrets come from an existing Secret
+  (never templated). Renders + passes `helm lint` + `kubectl apply --dry-run` (12 manifests); `make
+  helm-validate` gates it. Compose is now explicitly dev-only. Chart README documents the full wiring.
+- **feat(agent): in-loop circuit-breaker + resilient SSE streaming (items 4.4, 1.7).** `AgentCircuitBreaker`
+  (`examlops.agentops`) wires the existing anomaly detection into a live guard: `guard(step)` aborts the loop
+  (`CircuitBreakerTripped`) the moment a runaway repeat-loop, step blow-up, all-errors burst, or cost overrun
+  appears — so an agent/autopilot can't loop forever or burn unbounded GPU-hours (not just post-hoc detection).
+  `examlops.streaming` adds the resilient SSE core (item 1.7): an `EventRing` with resume cursors (Last-Event-ID
+  replay of only the missed gap + a truncation signal for full-refresh) and exponential `backoff_delay` with
+  jitter to avoid reconnect thundering-herds. `test_agent_circuit_breaker.py` (6) + `test_streaming.py` (6).
+- **feat(agent): HA Postgres checkpointer seam (item 1.8).** Single-node Skipper keeps conversation state in a
+  SQLite LangGraph checkpointer, so N replicas can't share it. `AGENT_CHECKPOINT_BACKEND=postgres` (+
+  `AGENT_POSTGRES_DSN`/`DATABASE_URL`) now selects a shared Postgres checkpointer so replicas survive a host
+  loss and load-balance; it degrades to SQLite when unset or the driver/DB is unavailable. The pure backend
+  selector (`skipper.checkpoint_backend`) is tested (6); the LangGraph `PostgresSaver` construction is a
+  reviewable seam not runtime-verified in the sandbox (needs the extra + a live Postgres), like the 0.1
+  Postgres backend.
+- **feat(hpc): non-blocking async job wait (item 1.4).** `examlops.hpc_poll.poll_until_complete` replaces the
+  adapters' blocking `time.sleep` wait (which pins a worker for a job's whole up-to-24h life) with an async
+  poller that `await`s between polls — so one worker shepherds many jobs concurrently — with a per-poll
+  callback (progress/heartbeat), a hard timeout, and a sync-or-async status_fn. Injectable sleep/clock →
+  `test_hpc_poll.py` (5) runs with zero real waits. Wire behind the `SchedulerAdapter` seam.
+- **feat(coordination): externalized locks / idempotency / rate-limit seam (item 1.2).** The control
+  plane kept dedup/idempotency/rate-limit state in process memory, so a second replica double-fired
+  retrains and re-processed duplicate webhooks. New `examlops.coordination` `Coordinator` seam:
+  `try_lock`/`unlock` (leader election), `first_seen` (idempotency dedup), `allow` (fixed-window rate
+  limit). The `db` default is backed by `platform_db` (`coord_locks`/`coord_idempotency`/`coord_rate`)
+  so it already coordinates across every **process** sharing `platform.db`; a `redis` backend
+  (`EXAMLOPS_COORDINATOR=redis`) is the cross-host HA path — a loud skeleton until Redis is wired.
+  `test_coordination.py` (8, incl. an 8-replica leader-election exactly-one check).
+- **feat(admission): durable admission-control queue with per-tenant fair-share (item 1.5).** Every
+  trigger (drift/autopilot/API/webhook) can `admission.submit(...)` instead of dispatching straight to
+  Prefect; a worker `drain`s it under a **global concurrency cap** + **per-tenant max-min fairness**, so a
+  fleet-wide drift event or one noisy tenant can't starve everyone's cluster share. New `admission_queue`
+  table + `claim_next_admission` (fair-share atomic claim under a RESERVED lock, crashed-item TTL reclaim),
+  `examlops.admission` facade (`submit`/`worker_step`/`drain`/`stats`), `exa admission submit|stats`.
+  `EXAMLOPS_ADMISSION_MAX_RUNNING` (4) / `EXAMLOPS_ADMISSION_PER_TENANT` (2). `test_admission.py` (9, incl.
+  the fair-share-beats-flood property + an 8-thread concurrent-cap check).
+- **feat(events): NovaFabric event backbone — transactional outbox + publisher seam (item 1.3, foundation).**
+  New `event_outbox` table + `examlops.events`: domain code calls `events.publish(topic, payload)` (or
+  `enqueue_event(..., conn=)` inside an existing txn so the event commits atomically with the domain
+  write); a relay (`events.relay_once` / `exa events relay`) claims unpublished rows under a visibility
+  lease and publishes each **exactly once** to the configured `EventPublisher`, marking published/failed
+  (failures retained, never dropped). Publisher swappable via `EXAMLOPS_EVENT_PUBLISHER` — default `log`
+  is dependency-free; `nats`/`kafka`/`redis` are loud skeletons until wired (same degrade-gracefully
+  pattern as the StorageBackend + provider seams). `exa events relay|stats|publish`; first producer wired
+  (autopilot cycle-complete). Replaces the O(models×replicas) polling + in-process realtime singleton the
+  audit flagged. `test_event_outbox.py` (7, incl. a 4-relay concurrent exactly-once check).
+- **perf(hpc): SQL-side fleet capacity aggregation + TTL cache (item 1.9, partial).** New
+  `platform_db.aggregate_node_capacity` does a `GROUP BY cluster, state` over the
+  `ix_hpc_nodes_cluster_state` index instead of loading every `hpc_nodes` row into Python to sum
+  (O(nodes) memory → a per-cluster rollup at fleet scale). `hpc_capacity.capacity_summary` wraps it in
+  a short TTL cache (`EXAMLOPS_HPC_CAPACITY_TTL`, default 30s) so a dashboard/NOC-wall refreshing many
+  widgets collapses to one query per window; a fresh `record_node_snapshot` invalidates it.
+  `test_node_capacity_aggregation.py` (4) proves parity with the canonical `node_capacity`. The async
+  bulk `squeue`/`flux jobs` poller half of 1.9 needs live schedulers (deferred).
+
+## [0.37.0] — 2026-07-18
+
+### Fixed / Security — Enterprise-readiness Phase 0 completion wave
+
+- **feat(autopilot): distributed cycle lease closes Phase 0 item 0.12.** A single-row, TTL-based
+  `autopilot_lease` (`claim_autopilot_lease`/`release_autopilot_lease`) means only one autopilot cycle
+  runs at a time across overlapping cron fires / agent replicas; a crashed holder's lease auto-expires,
+  and only the owner can release it. `run_cycle` acquires before the scan (skips + audits if held) and
+  releases in a `finally`. Defense-in-depth atop the already-atomic `claim_drift_trigger`.
+  `EXAMLOPS_AUTOPILOT_LEASE_TTL` (default 900s). `test_autopilot_lease.py` (7, incl. 8-racer exactly-one).
+
+- **feat(db): central write_retry coverage + retry-exhaustion metric/log (item 0.4).** Every mutating
+  `platform_db` helper is auto-discovered by source inspection at import and wrapped in `write_retry`
+  (99 helpers), skipping reads and the two that already self-retry (audit hash-chain, atomic drift claim).
+  Self-maintaining — new writers are protected the moment they land. Retry exhaustion is now loud, never
+  silent: `retry_call` gained an `on_exhausted` hook; `write_retry` logs a WARNING (Loki signal) and
+  increments a process counter (`write_retry_exhaustions()`) before re-raising, so a lost write can never
+  vanish inside a fire-and-forget caller. `tests/unit/test_write_retry_exhaustion.py` (6).
+- **fix(security): fail-closed authz + remove forgeable audit-checkpoint dev-key (item 0.7).** `authz.check()`
+  now DENIES + alerts on a backend error (never accidentally allows); `authz._audit()` no longer silently
+  swallows dropped security events; `exa audit checkpoint` refuses (exit 1) when no signing key is configured
+  instead of falling back to the well-known `examlops-dev-key` (a forgeable checkpoint gives zero
+  tamper-evidence). The multitenancy default-deny flip remains deferred to Phase 2.2 (needs identity
+  propagation). `test_authz` +2, `test_audit_trail` +1.
+- **feat(config): `EXAMLOPS_CONFIG` path override + hermetic config resolution.** `load_config()` resolves its
+  file via `config_path()`, honoring `EXAMLOPS_CONFIG` so containers/CI can pin a config and tests never read
+  the developer's real `~/.config/examlops/config.toml`. doctor/config/env display the effective path.
+- **test(ci): version-consistency gate (item 0.10).** `tests/unit/test_version_consistency.py` asserts root
+  `pyproject` == cli `pyproject` == CHANGELOG latest release, and that the version is ≥ the latest git tag —
+  killing the `0.33.0` / `0.35.0` / `v0.36.0` drift this release reconciles. All surfaces now read `0.37.0`.
+- **perf(observability): drop the version label from hot-path predict metrics (item 3.2/QW5).** `version` was a
+  label on `examlops_predict_requests_total` + `examlops_predict_latency_seconds` — an unbounded cardinality
+  source (fresh series per promotion × model × alias × status) that would OOM Prometheus at fleet scale. Removed;
+  bounded `alias` kept. Per-version visibility preserved as the VALUE of a new `examlops_model_version` gauge.
+  `test_metric_cardinality.py` is a source-AST label-budget lint that fails the build if a banned label returns.
+- **fix(security): compose hardening — scoped Docker socket + no insecure defaults (items 0.6 + 0.8).**
+  The dashboard no longer bind-mounts the raw `/var/run/docker.sock` (root-equivalent host takeover);
+  a new `docker-socket-proxy` holds the socket read-only and exposes only `CONTAINERS`+`POST` (EXEC/
+  IMAGES/VOLUMES/NETWORKS/SWARM/SECRETS/AUTH all denied), reached via `DOCKER_HOST` (no code change —
+  `docker.from_env()` honors it). Insecure literals are gone: `CONTROL_PLANE_TOKEN` no longer defaults
+  to `changeme` (empty → fail-closed 503); Grafana admin password + anonymous access are env-driven for
+  a secure prod override. The control plane honors `CONTROL_PLANE_ALLOWED_HOSTS` (Host-header scoping).
+  Gated by `test_compose_security.py` (4) + guide `docs/guides/production-hardening.md`.
+- **feat(backup): consistent `platform.db` backup/restore + tested DR drill (item 0.9).** New
+  `examlops.backup` module + `exa backup create|list|verify|restore` take an online, WAL-safe SQLite
+  snapshot (SQLite's native backup API — a torn-state-proof alternative to `cp`) with a verifiable
+  manifest (sha256 + per-table row counts + audit-chain head). Restore is guarded (refuses to clobber a
+  non-empty DB without `--force`) and re-verifies integrity + the audit hash chain after restoring.
+  `make dr-drill` + `test_backup_restore.py` (6) run the full backup→wipe→restore round trip in CI (RPO =
+  last backup, RTO = restore time). Runbook `docs/guides/backup-restore.md` covers Postgres/MinIO too.
+- **feat(observability): real Alertmanager route tree + delivery heartbeat (item 3.4/QW3).** Replaces the single
+  black-hole receiver with a severity/cluster/service route tree → PagerDuty (critical) + Slack (warning &
+  critical) receivers, inhibition (critical mutes sibling warning; an outage mutes its symptom alerts), and an
+  always-firing `Watchdog` rule routed to an external dead-man's-switch that proves the whole
+  Prometheus→Alertmanager→receiver path. Secrets are file-based (gitignored, absent ⇒ receiver no-op); Prometheus
+  stamps `cluster`/`tenant` external labels. Validated by `amtool`/`promtool` + `test_alerting_config.py` (7).
+
+### Added — Dashboard edit parity (connections · projects · storage)
+
+- **feat(dashboard): bring the CLI's config-setup edit capabilities into the dashboard.** The web
+  dashboard was read-heavy (27 of ~40 routers GET-only, incl. connections), so operators had to drop to
+  the CLI to create a connection, bind storage, or tear down a project. New write routers close that gap
+  by calling the **same `examlops.*` code paths the CLI uses** (not raw-sqlite mirrors), so the dashboard
+  can never drift from the CLI and secrets flow through the same store.
+  - **Connections** (`routers/connections.py`): `POST` create (s3/uri/dataplane, optional secret written
+    through `examlops.secrets` — CLI/serving-compatible, only `hasSecret` returned), `POST /{name}/test`
+    reachability probe, `DELETE /{name}`. New `connection.manage` capability; every write audited.
+  - **Projects** (`routers/projects.py`): `DELETE /{name}` (cascades membership/resource/storage/pipeline
+    rows), `DELETE /{name}/members/{subject}`, `POST /{name}/storage` (provision + bind a connection via
+    the shared `ensure_project_storage` / `bind_project_connection` helpers). All `project.manage`, audited.
+  - **Frontend**: `lib/connections.ts` + `lib/projects.ts` mutation hooks; `ProjectDetail.tsx` gains a
+    New-connection modal, per-row Test/Delete, member Remove, a Provision/Bind-storage modal, and a
+    Danger-zone Delete-project — all capability-gated (viewers see read-only, admins see the controls).
+  - Enforcement stays at the BFF (F15): viewers get 403 + a human `deny_reason`; no secret value ever
+    reaches the browser. Tests: +15 backend (`test_connections_workbenches.py`, `test_projects_writes.py`),
+    +10 frontend (`connections.test.ts`, `projects_writes.test.ts`). Design:
+    `docs/superpowers/specs/2026-07-17-dashboard-edit-parity-design.md`.
+
+### Added — Enterprise-readiness Phase 0.1 (StorageBackend seam · scaffold)
+
+- **feat(storage): land the `StorageBackend` repository seam (item 0.1, scaffold).** New
+  `examlops.storage` package puts a dialect-neutral engine seam in front of the datastore so it can
+  become Postgres (multi-writer, HA, per-tenant isolation) without touching call sites — the audit's
+  single highest-leverage move. Ships the `StorageBackend` protocol, a fully-tested `SqliteBackend`
+  (byte-identical current behaviour via `resilience.db`), a `PostgresBackend` **skeleton** (complete
+  dialect helpers — `now_expr`/`upsert_sql`/param style — but `connect` fails loudly without
+  `psycopg`+DSN and is **not yet runtime-verified**), and `get_backend()` (`EXAMLOPS_DB_BACKEND`).
+  `tests/unit/test_storage_backend.py` (7). Migrating the ~221 `platform_db` helpers onto the seam and
+  finishing the Postgres driver against a live database is the tracked follow-on.
+
+### Fixed — Enterprise-readiness Phase 0 (foundation / unblock)
+
+- **feat(data): telemetry retention/TTL prune (item 3.6 / QW9).** The per-inference `drift_snapshots` and
+  `input_snapshots` tables grew unbounded. New `platform_db.purge_telemetry(days, dry_run, vacuum)` deletes
+  rows older than a retention window and optionally VACUUMs — deliberately **excluding** the tamper-evident
+  audit log (hash chain) and FinOps cost history. Exposed as `exa data retention-prune --days N [--dry-run]
+  [--vacuum]` (audited). `tests/unit/test_purge_telemetry.py` (4 cases).
+- **perf(bridge): offload per-inference SQLite writes off the event loop (item 0.11 / QW10).** The
+  SeanerBUS bridge made three synchronous `platform.db` writes (drift snapshot, input-embedding snapshot,
+  audit event) directly on the asyncio loop for every inference, head-of-line-blocking the hot path while
+  they took the write lock. They're now bundled into `_persist_inference_telemetry` and run in a single
+  `asyncio.to_thread` hop. `tests/unit/test_seanerbus_bridge.py` (+2 cases).
+- **perf(db): index `hpc_nodes(cluster, state)` (Phase 0 bonus win).** Fleet capacity/availability
+  queries filter node snapshots by cluster and state; `ix_hpc_nodes_cluster_state` avoids a full scan at
+  fleet scale. Covered by `tests/unit/test_schema_once.py`.
+- **fix(security): verify SSH host keys instead of blind AutoAdd (Phase 0 SSH-hardening).** The HPC SSH
+  transport used `paramiko.AutoAddPolicy`, trusting any host key on first contact — trivial to MITM.
+  `SSHExecutor._connect` now loads the operator's system + `~/.ssh/known_hosts` and defaults to
+  `RejectPolicy`; auto-add is an explicit dev-only opt-in via `EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS=1`.
+  `tests/unit/test_executor.py` (+4 cases).
+- **fix(security): control plane rejects placeholder tokens (item 0.8 / QW6).** An unset
+  `CONTROL_PLANE_TOKEN` already failed closed (503); a *weak* placeholder like `changeme` — the kind
+  that ships in examples/compose files — was still accepted, leaving write endpoints effectively
+  unauthenticated. New `_token_is_usable()` also rejects a set of well-known placeholders; `_require_token`
+  and the startup self-check (`token: weak`) and `auth_configured` now use it. `tests/test_weak_token.py`
+  (8 cases). (Grafana/MinIO compose-default hardening tracked as an infra follow-up.)
+- **perf(db): run the schema bootstrap once per process (item 0.5 / QW8).** `init_db()` is called
+  defensively by ~165 helpers and re-ran the 100+-table `CREATE TABLE IF NOT EXISTS` script (plus column
+  migrations) on every call, churning a write lock on hot read paths. A process-level `_INITIALIZED_PATHS`
+  sentinel now short-circuits after the first call per `PLATFORM_DB` path (`:memory:` never cached;
+  `force=True` re-runs for tests that drop tables). `tests/unit/test_schema_once.py` (3 cases); full unit
+  suite green (1460 passed).
+- **fix(db): harden every dashboard SQLite connection (item 0.2 / QW1, dashboard tier).** The dashboard
+  is a separate app that can't import the core package; its ~44 bare `sqlite3.connect(...)` call sites
+  (30 files) bypassed WAL + `busy_timeout` and produced "database is locked" 500s under concurrency. New
+  `platform/services/dashboard/backend/dbconn.py` `connect()` helper carries the same hardening; every
+  call site now routes through it, guarded by a dashboard-local `test_no_bare_sqlite_connect.py` (311
+  backend tests green, ruff clean).
+- **fix(observability): bound trace sampling to 5% by default (item 0.2 / QW4).** A manually-built
+  `TracerProvider` samples every trace (`ParentBased(ALWAYS_ON)`), so enabling tracing across the fleet
+  firehoses Tempo. `setup_tracing` now builds its sampler via `_build_sampler()`, defaulting to
+  `parentbased_traceidratio` at 0.05 (children follow the root decision), clamped to [0,1] and
+  overridable through the standard `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` env vars.
+  `tests/unit/test_trace_sampler.py` (5 cases).
+- **fix(db): ban bare `sqlite3.connect` in the core package (item 0.2 / QW1).** `doctor.py`'s DB check
+  now uses the hardened `examlops.resilience.db.connect` (WAL + `busy_timeout`) like every other access,
+  and a new CI guard `tests/unit/test_no_bare_sqlite_connect.py` fails the build on any bare
+  `sqlite3.connect(` in `examlops` (only the resilience adapter is exempt). The dashboard tier — a
+  separate app that can't import the core package — is hardened through its own local `dbconn.connect`
+  helper plus a matching guard, removing the "database is locked" 500s under concurrent access.
+- **fix(autopilot): cooldown TOCTOU + per-cycle retrain storm cap (item 0.12 / QW7).** The auto-retrain
+  cooldown was a read-then-check-then-stamp on a value loaded at cycle start, so two overlapping
+  autopilot / `exa drift trigger` cycles could both pass the check and double-fire a retrain. New
+  `platform_db.claim_drift_trigger(model, cooldown_s)` performs the check-and-stamp as a **single
+  conditional UPDATE** (atomic claim); both the autopilot loop and the drift-trigger prediction+concept
+  paths now claim before triggering, so at most one caller wins per cooldown window. Adds a per-cycle
+  retrain cap (`EXAMLOPS_AUTOPILOT_MAX_RETRAINS`, default 10) so a fleet-wide drift event can't launch an
+  unbounded retrain storm. `tests/unit/test_claim_drift_trigger.py` proves exactly-one-winner under 16
+  concurrent claimers. (Distributed cycle-lease is a noted follow-up; correctness is already guaranteed.)
+- **fix(audit): hash-chain race under concurrent writers (item 0.3 / QW2).** `write_audit_event`
+  read the current chain head and appended the next link on a *deferred* transaction, so two
+  writer processes could chain off the same parent and fork the tamper-evident chain
+  (`verify_audit_chain` → prev_hash mismatch). New `platform_db._immediate_write()` holds an
+  IMMEDIATE (RESERVED) lock across the head-read + append, and the append runs under `write_retry`
+  so a lost lock race re-runs the whole transaction instead of corrupting or dropping the event.
+  Proven by `tests/unit/test_audit_chain_concurrency.py` (8×12 barrier-synchronized writers → one
+  contiguous, valid chain). Restores audit tamper-evidence under the multi-writer reality.
+
 ### Added — Project Anatomy (Increment 2: storage · pipelines · unified view)
 
 - **feat(projects): per-project MinIO storage (P6, ADR 0091).** Each project gets a stable location

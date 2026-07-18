@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import get_db, init_db
+from examlops.data import get_db, init_db
 
 _EXAMPLES = (
     "Examples:\n\n"
@@ -109,7 +109,7 @@ def audit(
 @app.command("verify")
 def verify() -> None:
     """Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken."""
-    from examlops.platform_db import verify_audit_chain
+    from examlops.data.audit import verify_audit_chain
 
     result = verify_audit_chain()
     if _output.json_mode:
@@ -132,32 +132,64 @@ def verify() -> None:
 @app.command("checkpoint")
 def checkpoint() -> None:
     """Sign the current chain head, producing a detached checkpoint signature (D4·R5)."""
-    from examlops.platform_db import audit_chain_head, sign_audit_checkpoint
+    from examlops.data.audit import audit_chain_head, sign_audit_checkpoint
 
     head = audit_chain_head()
     if head is None:
         _output.info("No chained audit events yet — nothing to checkpoint.")
         return
-    # Sign the head hash with the D7 signing key (HMAC fallback), reusing D3's helper.
+    # Sign the head hash with the D7-managed signing key (D3's HMAC helper). FAIL CLOSED
+    # (item 0.7): if no signing key is configured we refuse rather than sign with a
+    # well-known default — a checkpoint anyone can forge provides zero tamper-evidence,
+    # which is worse than no checkpoint.
+    from examlops.supplychain import SigningKeyMissing, _hmac_sign
+
     try:
-        from examlops.supplychain import _hmac_sign
-
         signature = _hmac_sign(head["hash"])
-        key_id = "d3-hmac"
-    except Exception:
-        import hashlib
-
-        key = os.getenv("EXAMLOPS_SIGNING_KEY", "examlops-dev-key")
-        signature = hashlib.sha256(f"{key}:{head['hash']}".encode()).hexdigest()
-        key_id = "hmac-fallback"
+    except SigningKeyMissing as exc:
+        _output.error(
+            f"Cannot sign audit checkpoint: {exc}. A checkpoint signed with a default key is "
+            "forgeable and provides no tamper-evidence — refusing. Configure a real signing key "
+            "(EXAMLOPS_SIGNING_KEY, or store secret 'model-signing/key' via exa secrets set)."
+        )
+        raise typer.Exit(1) from exc
+    key_id = "d3-hmac"
     cp = sign_audit_checkpoint(signature, key_id=key_id)
+    # Anchor to the external WORM store (item 2.4) so the checkpoint is tamper-evident even against
+    # a full-DB rewrite. Best-effort + no-op when EXAMLOPS_AUDIT_WORM_PATH is unset.
+    worm_hash = None
+    try:
+        from datetime import UTC, datetime
+
+        from examlops.audit_worm import anchor_checkpoint
+
+        worm_hash = anchor_checkpoint(cp, ts=datetime.now(UTC).isoformat(timespec="seconds"))
+    except Exception:  # noqa: BLE001 - anchoring is best-effort
+        pass
     if _output.json_mode:
-        _output.print_json(cp)
+        _output.print_json({**cp, "worm_hash": worm_hash})
         return
+    anchored = f", anchored to WORM {worm_hash[:12]}…" if worm_hash else ""
     _output.ok(
         f"Checkpoint signed over head id {cp['head_id']} "
-        f"(hash {cp['head_hash'][:12]}…, key {key_id})."
+        f"(hash {cp['head_hash'][:12]}…, key {key_id}){anchored}."
     )
+
+
+@app.command("verify-worm")
+def verify_worm() -> None:
+    """Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4)."""
+    from examlops.audit_worm import verify_worm as _verify
+
+    result = _verify()
+    if _output.json_mode:
+        _output.print_json(result)
+    elif result["ok"]:
+        _output.ok(f"WORM anchor verified — {result['entries']} entry(ies) ({result['reason']}).")
+    else:
+        _output.error(f"WORM anchor FAILED: {result['reason']}")
+    if not result["ok"]:
+        raise typer.Exit(1)
 
 
 @app.command("checkpoints")
@@ -165,7 +197,7 @@ def checkpoints(
     limit: int = typer.Option(20, "--limit", "-n", help="Max checkpoints to show"),
 ) -> None:
     """List signed audit checkpoints."""
-    from examlops.platform_db import list_audit_checkpoints
+    from examlops.data.audit import list_audit_checkpoints
 
     rows = list_audit_checkpoints(limit)
     if _output.json_mode:
@@ -187,7 +219,7 @@ def export(
     before: str = typer.Option(None, "--before", help="Only events before this ISO timestamp"),
 ) -> None:
     """Archival export of the audit trail (D4·R4). Append-only — never deletes."""
-    from examlops.platform_db import export_audit_events, write_audit_event
+    from examlops.data.audit import export_audit_events, write_audit_event
 
     events = export_audit_events(before_ts=before)
     with open(out, "w") as fh:

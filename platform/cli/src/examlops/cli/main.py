@@ -13,12 +13,14 @@ from typer.core import TyperGroup
 from examlops.cli import _output, _plugins
 from examlops.cli.commands import (
     ab_cmd,
+    admission_cmd,
     agentops_cmd,
     approvals,
     ask_cmd,
     assets_cmd,
     autopilot_cmd,
     autoscale_cmd,
+    backup_cmd,
     batch_cmd,
     cards_a6_cmd,
     cards_cmd,
@@ -35,6 +37,8 @@ from examlops.cli.commands import (
     engines_cmd,
     env_cmd,
     eval_cmd,
+    events_cmd,
+    exchange_cmd,
     explain_cmd,
     explain_command,
     fairness_cmd,
@@ -44,6 +48,7 @@ from examlops.cli.commands import (
     feedback_cmd,
     finetune_cmd,
     finops_cmd,
+    fleet_cmd,
     gateway_cmd,
     genai_cmd,
     governance_cmd,
@@ -66,6 +71,7 @@ from examlops.cli.commands import (
     providers_cmd,
     quality_cmd,
     rag_cmd,
+    report_cmd,
     reproduce_cmd,
     retrain,
     rollback_cmd,
@@ -85,7 +91,7 @@ from examlops.cli.commands import (
 from examlops.cli.commands import (
     audit as audit_cmd,
 )
-from examlops.platform_db import init_db as _init_platform_db
+from examlops.data import init_db as _init_platform_db
 
 _console = Console()
 
@@ -226,6 +232,18 @@ pipeline.app.add_typer(
 )
 app.add_typer(stack.app, name="stack", help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config", help="CLI configuration")
+app.add_typer(backup_cmd.app, name="backup", help="Backup / restore the platform datastore")
+app.add_typer(
+    events_cmd.app, name="events", help="NovaFabric event backbone (transactional outbox)"
+)
+app.add_typer(
+    admission_cmd.app, name="admission", help="Admission-control queue (per-tenant fair-share)"
+)
+app.add_typer(report_cmd.app, name="report", help="Offline cost/carbon/SLA reports")
+app.add_typer(fleet_cmd.app, name="fleet", help="Fleet Digital Twin — what-if simulation")
+app.add_typer(
+    exchange_cmd.app, name="exchange", help="NovaFabric Exchange — signed shareable packages"
+)
 app.add_typer(seanerbus_cmd.app, name="seanerbus", help="SeanerBUS bridge UUID management")
 app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isolation")
 app.add_typer(

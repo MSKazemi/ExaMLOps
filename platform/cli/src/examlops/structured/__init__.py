@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 
 class StructuredOutputError(RuntimeError):

@@ -9,7 +9,9 @@ import typer
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli.commands import explain_cmd
-from examlops.platform_db import get_traffic_rules, init_db, set_traffic_rules, write_audit_event
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.serving import get_traffic_rules, set_traffic_rules
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -269,8 +271,8 @@ def traffic_list(
 def _render_traffic_list() -> None:
     import json as _json
 
-    from examlops.platform_db import get_db as _get_db
-    from examlops.platform_db import init_db as _init_db
+    from examlops.data import get_db as _get_db
+    from examlops.data import init_db as _init_db
 
     _init_db()
     with _get_db() as conn:

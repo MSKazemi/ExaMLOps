@@ -11,11 +11,11 @@ Playwright synthetics) layers on top; this is the always-available, dependency-f
 from __future__ import annotations
 
 import os
-import sqlite3
 import time
 from collections import deque
 from typing import Any
 
+from dbconn import connect
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -92,7 +92,7 @@ def dependency_health() -> list[dict[str, Any]]:
     # platform.db: connectable + queryable?
     start = time.monotonic()
     try:
-        conn = sqlite3.connect(_platform_db_path())
+        conn = connect(_platform_db_path())
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         conn.close()
         deps.append(
@@ -123,7 +123,7 @@ def record_ui_action(action: str, target: str, actor: str, details: str = "") ->
     Returns ``True`` on write, ``False`` when the audit table isn't present (degrades quietly).
     """
     try:
-        conn = sqlite3.connect(_platform_db_path())
+        conn = connect(_platform_db_path())
         try:
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"

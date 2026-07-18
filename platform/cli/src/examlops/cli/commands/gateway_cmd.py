@@ -58,7 +58,7 @@ def key_issue(
 @key_app.command("list")
 def key_list() -> None:
     """List virtual keys (hashes only)."""
-    from examlops.platform_db import list_virtual_keys
+    from examlops.data.gateway import list_virtual_keys
 
     keys = list_virtual_keys()
     if _output.json_mode:
@@ -88,7 +88,9 @@ def key_list() -> None:
 @key_app.command("revoke")
 def key_revoke(key_hash: str = typer.Argument(..., help="Key hash prefix or full hash")) -> None:
     """Revoke a virtual key by its stored hash."""
-    from examlops.platform_db import list_virtual_keys, revoke_virtual_key, write_audit_event
+    from examlops.data.audit import write_audit_event
+    from examlops.data.gateway import list_virtual_keys
+    from examlops.data.governance import revoke_virtual_key
 
     matches = [k for k in list_virtual_keys() if k["key_hash"].startswith(key_hash)]
     if not matches:
@@ -114,7 +116,7 @@ def cache_stats_cmd(
     tenant: str | None = typer.Option(None, "--tenant", help="Filter to one tenant"),
 ) -> None:
     """Show semantic-cache hit-rate and token/cost savings (B3)."""
-    from examlops.platform_db import cache_stats
+    from examlops.data.gateway import cache_stats
 
     stats = cache_stats(tenant)
     if _output.json_mode:
@@ -264,7 +266,7 @@ def reasoning_stats(
     tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
 ) -> None:
     """Reasoning-vs-output token/cost split + structured-output outcomes."""
-    from examlops.platform_db import reasoning_usage_summary, structured_output_stats
+    from examlops.data.events import reasoning_usage_summary, structured_output_stats
 
     summary = reasoning_usage_summary(model, tenant)
     outcomes = structured_output_stats()

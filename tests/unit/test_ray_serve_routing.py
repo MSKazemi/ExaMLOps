@@ -49,6 +49,7 @@ def _make_server(
     server._latency_hist = MagicMock()
     server._pred_value_hist = MagicMock()
     server._models_gauge = MagicMock()
+    server._version_gauge = MagicMock()
     server._reload_counter = MagicMock()
     return server
 

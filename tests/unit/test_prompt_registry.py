@@ -94,10 +94,10 @@ def test_gwt5_failsafe_last_known_good(monkeypatch):
 
 
 def test_gwt5_no_cache_raises(monkeypatch):
-    import examlops.platform_db as db
-
+    # get_prompt_by_label's body now lives in examlops.data.prompts (item 4.5 relocation); patch there.
     monkeypatch.setattr(
-        db, "get_prompt_by_label", lambda *a, **k: (_ for _ in ()).throw(RuntimeError())
+        "examlops.data.prompts.get_prompt_by_label",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError()),
     )
     with pytest.raises(RuntimeError):
         prompts.get_prompt("Unknown", "prod")

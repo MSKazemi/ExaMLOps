@@ -56,7 +56,7 @@ def declare(
 @app.command("list")
 def list_cmd() -> None:
     """List declared assets with their current version."""
-    from examlops.platform_db import list_assets
+    from examlops.data.data_assets import list_assets
 
     assets = list_assets()
     if _output.json_mode:
@@ -81,7 +81,7 @@ def status(
 ) -> None:
     """Show the freshness graph — fresh/stale + why (R5/GWT-2)."""
     from examlops.assets import asset_status
-    from examlops.platform_db import list_assets
+    from examlops.data.data_assets import list_assets
 
     names = [name] if name else [a["name"] for a in list_assets()]
     if not names:

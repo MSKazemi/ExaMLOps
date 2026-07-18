@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 import urllib.error
 import urllib.request
@@ -11,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from examlops.cli import _output
-from examlops.cli._config import CONFIG_PATH, load_config
+from examlops.cli._config import config_path, load_config
 
 _EXAMPLES = "Examples:\n\n  exa doctor\n\n  exa --json doctor"
 
@@ -40,7 +39,9 @@ def _ping(url: str, timeout: float = 4.0) -> tuple[bool, str]:
 
 def _db_check(path: str) -> tuple[bool, str]:
     try:
-        conn = sqlite3.connect(path)
+        from examlops.resilience import db as _rdb
+
+        conn = _rdb.connect(path)  # hardened: WAL + busy_timeout, like every other DB access
         conn.execute("SELECT 1")
         conn.close()
         return True, path
@@ -61,14 +62,15 @@ def doctor() -> None:
             issues.append(fix or detail)
 
     # ── Config file ────────────────────────────────────────────────────────
-    if CONFIG_PATH.exists():
-        _row("Config file", True, str(CONFIG_PATH))
+    cfg_path = config_path()
+    if cfg_path.exists():
+        _row("Config file", True, str(cfg_path))
     else:
         _row(
             "Config file",
             False,
             "not found",
-            f"Create {CONFIG_PATH} or set env vars. Run: exa config show",
+            f"Create {cfg_path} or set env vars. Run: exa config show",
         )
 
     # ── API token ──────────────────────────────────────────────────────────

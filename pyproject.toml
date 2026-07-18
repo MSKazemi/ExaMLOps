@@ -11,7 +11,7 @@ py-modules = []
 # `make install-dev` (uv pip install -e ".[dev]") bootstraps the whole dev env.
 [project]
 name = "examlops-workspace"
-version = "0.33.0"
+version = "0.37.0"
 requires-python = ">=3.12"
 dependencies = [
     # workspace members — installs exa CLI entry point
@@ -31,8 +31,12 @@ dependencies = [
     "xgboost>=1.7.0",
     # pipeline / orchestration
     "prefect>=3.0.0,<4.0",
-    # serving — FastAPI is used as the HTTP layer inside Ray Serve (@serve.ingress)
-    "fastapi>=0.100.0",
+    # serving — FastAPI is used as the HTTP layer inside Ray Serve (@serve.ingress).
+    # Upper-bound is REQUIRED: ray 2.55.0's `@serve.ingress` cloudpickles the FastAPI app at
+    # import time, and fastapi>=0.137 holds an unpicklable `_thread.lock` ("cannot pickle
+    # '_thread.lock' object"). 0.136.x is verified-compatible. Lift the cap when the ray pin
+    # moves to a release that tolerates the newer fastapi. (starlette version is unaffected.)
+    "fastapi>=0.100.0,<0.137",
     # ray serving
     "ray[serve]==2.55.0",
     # CLI
@@ -85,6 +89,14 @@ target-version = "py312"
 # serving as first-party. examlops lives under platform/cli/src after the
 # Phase 15 restructure; pipelines/ and serving/ are first-party at the repo root.
 src = [".", "platform/cli/src"]
+
+[tool.ruff.format]
+# platform_db.py is a mid-module re-export barrel: each `from examlops.data.<domain>
+# import (...)` line carries a line-level `# noqa: E402, F401` that only works while the
+# import stays on ONE physical line. `ruff format` would wrap them multi-line and strand
+# the noqa on the closing paren (254 spurious F401/E402). The layout is deliberate; exclude
+# it from the formatter (it stays `ruff check`-clean).
+exclude = ["platform/cli/src/examlops/platform_db.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]

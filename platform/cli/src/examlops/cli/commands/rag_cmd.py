@@ -87,7 +87,7 @@ def list_kbs(
     tenant: str | None = typer.Option(None, "--tenant", help="Filter to one tenant"),
 ) -> None:
     """List knowledge bases and their versions."""
-    from examlops.platform_db import get_db, init_db
+    from examlops.data import get_db, init_db
 
     init_db()
     q = "SELECT kb, tenant, source_revision, encoder, chunk_count, updated_at FROM rag_kbs"

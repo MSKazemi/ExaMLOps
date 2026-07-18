@@ -122,12 +122,14 @@ def test_gwt7_events_carry_actor_tenant_resource():
     assert row["target"] == "JPCP"
 
 
-def test_cli_verify_and_checkpoint():
+def test_cli_verify_and_checkpoint(monkeypatch):
     from typer.testing import CliRunner
 
     from examlops import platform_db
     from examlops.cli.main import app
 
+    # A real signing key must be configured to produce a non-forgeable checkpoint (item 0.7).
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "unit-test-signing-key")
     for i in range(3):
         platform_db.write_audit_event("cli", "a", f"act{i}", "JPCP")
     runner = CliRunner()
@@ -138,6 +140,30 @@ def test_cli_verify_and_checkpoint():
     assert r2.exit_code == 0, r2.output
     r3 = runner.invoke(app, ["audit", "checkpoints"])
     assert r3.exit_code == 0, r3.output
+
+
+def test_cli_checkpoint_fails_closed_without_signing_key(monkeypatch):
+    """0.7: with no signing key, checkpoint refuses (exit 1) instead of signing forgeably."""
+    from typer.testing import CliRunner
+
+    import examlops.supplychain as sc
+    from examlops import platform_db
+    from examlops.cli.main import app
+
+    # Ensure neither the env key nor a D7 secret is available.
+    monkeypatch.delenv("EXAMLOPS_SIGNING_KEY", raising=False)
+
+    def _no_key() -> bytes:
+        raise sc.SigningKeyMissing("no signing key")
+
+    monkeypatch.setattr(sc, "_signing_key", _no_key)
+    platform_db.write_audit_event("cli", "a", "act", "JPCP")
+    runner = CliRunner()
+    r = runner.invoke(app, ["audit", "checkpoint"])
+    assert r.exit_code == 1, r.output
+    assert "refusing" in r.output.lower() or "cannot sign" in r.output.lower()
+    # No forgeable checkpoint was recorded.
+    assert platform_db.list_audit_checkpoints() == []
 
 
 def test_cli_bare_audit_still_works():

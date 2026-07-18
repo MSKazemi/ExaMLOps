@@ -6,7 +6,8 @@ import typer
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
-from examlops.platform_db import init_db, write_audit_event
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
 
 app = typer.Typer(
     no_args_is_help=True,

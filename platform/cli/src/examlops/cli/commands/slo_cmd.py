@@ -79,7 +79,7 @@ def list_slos(
     tenant: str = typer.Option(None, "--tenant", help="Filter to one tenant"),
 ) -> None:
     """List declared SLO specs."""
-    from examlops.platform_db import list_slo_specs
+    from examlops.data.governance import list_slo_specs
 
     specs = list_slo_specs(model=model, tenant=tenant)
     if _output.json_mode:
@@ -148,7 +148,7 @@ def generate(
     out: str = typer.Option(None, "--out", help="Write rules YAML to this file"),
 ) -> None:
     """Generate promtool-valid Prometheus recording + burn-rate rules (R2/R3)."""
-    from examlops.platform_db import get_slo_spec
+    from examlops.data.governance import get_slo_spec
     from examlops.slo import generate_rules
 
     spec = get_slo_spec(model, name, tenant)
@@ -200,7 +200,7 @@ def record(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Record one SLI measurement interval (R4) — feeds budget + burn rate."""
-    from examlops.platform_db import record_slo_sample
+    from examlops.data.governance import record_slo_sample
 
     record_slo_sample(model, name, good, total, tenant=tenant)
     _output.ok(f"Recorded SLI sample for {model}/{name}: {good}/{total}")

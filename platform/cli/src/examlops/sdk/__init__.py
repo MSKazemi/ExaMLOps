@@ -18,11 +18,43 @@ from typing import Any
 __all__ = [
     "ServiceHealth",
     "PlatformStatus",
+    "Result",
+    "ok",
+    "err",
     "status",
     "place",
     "list_providers",
     "resolve_provider",
 ]
+
+
+# ── canonical result envelope (item 4.6) ────────────────────────────────────────────────────────
+# One ``ok``/error shape for every agent-callable / programmatic surface (CLI JSON, MCP tools, agent
+# tools, dashboard BFF), so a caller never has to guess a surface's bespoke dict. ``to_dict()`` emits
+# the exact historical wire format (``{"ok": bool, "error"?: str, **data}``) so surfaces can adopt it
+# with zero wire change; new code builds envelopes with :func:`ok` / :func:`err`.
+@dataclass(frozen=True)
+class Result:
+    """A typed success/failure envelope. Prefer :func:`ok` / :func:`err` to construct."""
+
+    ok: bool
+    error: str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.ok:
+            return {"ok": True, **self.data}
+        return {"ok": False, "error": self.error, **self.data}
+
+
+def ok(**data: Any) -> Result:
+    """A success envelope carrying ``data`` fields."""
+    return Result(ok=True, error=None, data=data)
+
+
+def err(message: str, **data: Any) -> Result:
+    """A failure envelope with a human ``message`` and optional structured ``data``."""
+    return Result(ok=False, error=message, data=data)
 
 
 # ── typed return objects (a stable boundary — not bare dicts) ───────────────────────────────────

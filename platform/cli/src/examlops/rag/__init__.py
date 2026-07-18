@@ -129,7 +129,7 @@ class RagPipeline:
         encoder: str = "token-hash",
     ) -> int:
         """Chunk→embed→index documents into the B5 store; version against A1 (R1)."""
-        from examlops.platform_db import get_db, init_db
+        from examlops.data import get_db, init_db
         from examlops.vector_store import VecItem
 
         init_db()

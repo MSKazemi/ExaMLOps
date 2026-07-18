@@ -122,7 +122,7 @@ def emit_lineage(
 
     # 1) Operational source of truth — always written (R7), independent of Marquez.
     try:
-        from examlops.platform_db import record_lineage_event
+        from examlops.data.events import record_lineage_event
 
         record_lineage_event(
             run_id,

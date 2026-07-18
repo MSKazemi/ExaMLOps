@@ -6,7 +6,10 @@ vi.mock('./api', () => ({
 }))
 
 import { apiFetch } from './api'
-import { listConnections, type ConnectionSummary } from './connections'
+import {
+  listConnections, createConnection, deleteConnection, testConnection,
+  type ConnectionSummary, type CreateConnectionBody,
+} from './connections'
 
 const mockFetch = vi.mocked(apiFetch)
 
@@ -39,5 +42,53 @@ describe('listConnections', () => {
     expect(out[0].hasSecret).toBe(true)
     // The DTO carries only a boolean flag — never a secret value.
     expect(out[0]).not.toHaveProperty('secret')
+  })
+})
+
+describe('createConnection', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('POSTs the create body to the connections endpoint', async () => {
+    mockFetch.mockResolvedValue({ name: 'minio', kind: 's3' })
+    const body: CreateConnectionBody = {
+      name: 'minio', kind: 's3', project: 'research',
+      config: { endpoint: 'http://minio:9000' }, secret: 'top-secret',
+    }
+    await createConnection(body)
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/connections', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  })
+})
+
+describe('deleteConnection', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('DELETEs a project-scoped connection with an encoded project query', async () => {
+    mockFetch.mockResolvedValue({ name: 'minio', project: 'my research', deleted: true })
+    await deleteConnection('minio', 'my research')
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/connections/minio?project=my%20research', {
+      method: 'DELETE',
+    })
+  })
+
+  it('omits the project query for a global connection', async () => {
+    mockFetch.mockResolvedValue({ name: 'g', project: null, deleted: true })
+    await deleteConnection('g', null)
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/connections/g', { method: 'DELETE' })
+  })
+})
+
+describe('testConnection', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('POSTs to the /test sub-resource', async () => {
+    mockFetch.mockResolvedValue({ name: 'minio', project: 'research', ok: true, detail: 'reachable' })
+    const r = await testConnection('minio', 'research')
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/connections/minio/test?project=research', {
+      method: 'POST',
+    })
+    expect(r.ok).toBe(true)
   })
 })

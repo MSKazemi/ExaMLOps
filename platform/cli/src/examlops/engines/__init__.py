@@ -291,7 +291,7 @@ def _audit_quantize(
     model: str, base: str, new_version: str, method: str, actor: str | None
 ) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event(
             "exa-engines",

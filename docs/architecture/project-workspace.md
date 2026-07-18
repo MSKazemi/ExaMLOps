@@ -200,17 +200,25 @@ delivered now is making the boundary **named, visible, and consistent** across C
 
 ## 7. Surfaces — CLI ↔ Dashboard parity
 
-| Concern | CLI | Dashboard |
-|---|---|---|
-| List all projects | `exa project list` | Projects console (grid) |
-| Full anatomy (one pane) | `exa project show <name>` | Project detail (Storage · Connections · Pipelines · Models · Members · Quota · Budget) |
-| Storage *(P6)* | `exa project storage <name>` | Storage panel |
-| Pipelines *(P7)* | `exa project pipelines <name>` | Prefect + Ray Serve panels |
-| Connections *(P2)* | `exa connection …` | Connections panel |
-| Members | `exa project add-member …` | Members panel |
+| Concern | CLI | Dashboard (read) | Dashboard (write — Phase 42) |
+|---|---|---|---|
+| List all projects | `exa project list` | Projects console (grid) | — |
+| Full anatomy (one pane) | `exa project show <name>` | Project detail (Storage · Connections · Pipelines · Models · Members · Quota · Budget) | — |
+| Create / delete project | `exa project create` / *(CLI)* | — | Create modal · Danger-zone **Delete project** |
+| Storage *(P6)* | `exa project storage <name>` | Storage panel | **Provision** + **Bind connection** |
+| Pipelines *(P7)* | `exa project pipelines <name>` | Prefect + Ray Serve panels | — |
+| Connections *(P2)* | `exa connection create/test/delete` | Connections panel (secret-safe) | **New** · **Test** · **Delete** |
+| Members | `exa project add-member / remove-member` | Members panel | **Add** · **Remove** |
 
 Both surfaces read the **same** `get_project_full()` model — the CLI and dashboard say the exact same
-words, by construction.
+words, by construction. Since Phase 42 the *write* side is shared too: the dashboard's mutating routers
+call the **same `examlops.*` functions** the CLI calls (`examlops.connections.*`,
+`ensure_project_storage`/`bind_project_connection`) rather than raw-sqlite mirrors, so there is one
+implementation of each mutation and a secret entered in the dashboard is written through
+`examlops.secrets` — the identical, CLI/serving-readable store. Enforcement stays at the dashboard BFF
+(F15): viewers are read-only (403 + `deny_reason`), admins hold the `project.manage` / `connection.manage`
+capabilities, and every mutation is audited as a `dashboard`-sourced event. No secret value ever leaves
+the server — the browser sees only `hasSecret`.
 
 ## 8. Maturity & what's next
 
@@ -220,6 +228,7 @@ words, by construction.
 | Per-project storage (prefix + MLflow experiment binding) | **shipped** (Increment 2) | 0091 (P6) |
 | Two pipeline surfaces (Prefect + Ray Serve) | **shipped** (Increment 2) | 0092 (P7) |
 | Assembled anatomy view (CLI + dashboard) + isolation model | **shipped** (Increment 2) | 0093 (P8) |
+| Dashboard edit parity (connections/projects/storage writes via shared `examlops.*` paths) | **shipped** (Phase 42) | — |
 | Enforced isolation (network firewalling · per-bucket IAM · cluster queue admission) | **future** | — |
 
 Design set: dossier `design/vision/library/soa-project-anatomy.md`, Vision Card

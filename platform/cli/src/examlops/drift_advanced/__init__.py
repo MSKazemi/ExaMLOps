@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 # Severity thresholds (relative error increase for concept; null fraction for quality).
 CONCEPT_WARN_Z = 2.0

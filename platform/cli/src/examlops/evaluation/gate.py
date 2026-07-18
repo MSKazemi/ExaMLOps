@@ -101,7 +101,7 @@ def run_eval_gate(
     Scores may be supplied directly (tests / on-demand eval) or resolved from the latest
     persisted C2 results for the candidate version and the baseline alias.
     """
-    from examlops.platform_db import get_eval_gate, get_eval_results, record_gate_report
+    from examlops.data.evaluation import get_eval_gate, get_eval_results, record_gate_report
 
     gate = get_eval_gate(model)
     if gate is None:

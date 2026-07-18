@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/platform-data", tags=["platform-data"])
@@ -21,8 +21,7 @@ def _db_path() -> str:
 async def get_all_traffic_rules(_=Depends(_viewer)) -> list[dict]:
     """All traffic split rules."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             "SELECT model, rules, updated_at, updated_by FROM traffic_rules ORDER BY model"
         ).fetchall()
@@ -44,8 +43,7 @@ async def get_all_traffic_rules(_=Depends(_viewer)) -> list[dict]:
 async def get_model_traffic_rules(model: str, _=Depends(_viewer)) -> dict | None:
     """Traffic split rules for one model."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         row = conn.execute(
             "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?", (model,)
         ).fetchone()
@@ -66,8 +64,7 @@ async def get_model_traffic_rules(model: str, _=Depends(_viewer)) -> dict | None
 async def get_all_promotion_rules(_=Depends(_viewer)) -> list[dict]:
     """All metric-gated promotion rules."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute("SELECT * FROM promotion_rules ORDER BY model").fetchall()
         conn.close()
         return [dict(r) for r in rows]
