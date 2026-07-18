@@ -363,7 +363,7 @@ class MultiModelServer:
         )
         self._version_gauge = Gauge(
             "examlops_model_version",
-            description="Live model version currently served per (model, alias) — version as a "
+            description="Live model version currently served per (model, alias) - version as a "
             "gauge VALUE (not a label) so per-version visibility survives the cardinality guard",
             tag_keys=("model_name", "alias"),
         )
