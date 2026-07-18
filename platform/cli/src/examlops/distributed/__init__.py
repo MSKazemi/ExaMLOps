@@ -24,7 +24,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 STRATEGIES = ("fsdp", "zero", "megatron")
 
@@ -232,7 +232,7 @@ def _emit_lineage(run_id: str, model: str, dataset_rev: str | None) -> None:
 
 def _audit(run_id: str, action: str, extra: dict[str, Any], actor: str | None) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event("exa-distributed", actor, action, run_id, extra)
     except Exception:

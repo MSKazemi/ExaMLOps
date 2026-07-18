@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 _CATALOGUE_PATH = Path(__file__).parent / "catalogue.yaml"
 

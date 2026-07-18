@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 
 @dataclass
@@ -125,6 +125,36 @@ def decide_scale(
         f"{policy.target_metric}={observed_metric:g} → scale {verb} to {target}",
         True,
     )
+
+
+def to_ray_autoscaling_config(policy: AutoscalePolicy) -> dict[str, Any]:
+    """Map an :class:`AutoscalePolicy` to Ray Serve's native ``autoscaling_config`` (item 1.6).
+
+    Instead of an in-process controller polling + calling ``decide_scale`` per model (which doesn't
+    survive a replica restart and fights Ray's own autoscaler), this emits the declarative config Ray
+    Serve autoscales from directly — same policy, actuated by the platform. ``scale_to_zero`` maps to
+    ``min_replicas=0``; the anti-thrash windows map to Ray's up/downscale delays; the queue-depth
+    target maps to ``target_num_ongoing_requests_per_replica``. Pure — no Ray import needed.
+    """
+    min_r = 0 if policy.scale_to_zero_after_s > 0 else policy.min_replicas
+    initial = max(policy.warm_pool, min_r)
+    return {
+        "min_replicas": min_r,
+        "max_replicas": policy.max_replicas,
+        "initial_replicas": initial,
+        "target_num_ongoing_requests_per_replica": max(1.0, policy.target_value),
+        "upscale_delay_s": policy.stabilization_s,
+        # Scale-down is the risky direction → gate on the longer of cooldown / scale-to-zero idle.
+        "downscale_delay_s": max(policy.cooldown_s, policy.scale_to_zero_after_s or 0),
+    }
+
+
+def to_ray_deployment_kwargs(policy: AutoscalePolicy) -> dict[str, Any]:
+    """Full ``@serve.deployment`` kwargs from a policy: autoscaling_config + GPU fraction (E3)."""
+    return {
+        "autoscaling_config": to_ray_autoscaling_config(policy),
+        "ray_actor_options": {"num_gpus": policy.gpu_fraction},
+    }
 
 
 def set_policy(model: str, **kw: Any) -> None:

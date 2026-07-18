@@ -39,7 +39,7 @@ def dataset_card(
 ) -> None:
     """Emit + validate a Croissant JSON-LD dataset card (R1/R2)."""
     from examlops.cards import croissant_record, validate_croissant
-    from examlops.platform_db import save_dataset_card
+    from examlops.data.registry import save_dataset_card
 
     record = croissant_record(dataset, revision=revision, license=license_)
     errors = validate_croissant(record)
@@ -69,7 +69,7 @@ def model_card(
 ) -> None:
     """Build a structured model card from live data — gaps as 'not provided' (R3/R4)."""
     from examlops.cards import build_model_card
-    from examlops.platform_db import save_model_card
+    from examlops.data.registry import save_model_card
 
     card = build_model_card(model, tenant=tenant)
     if save:

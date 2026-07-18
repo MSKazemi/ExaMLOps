@@ -21,7 +21,7 @@ from examlops.connections import (
     list_connections,
     test_connection,
 )
-from examlops.platform_db import write_audit_event
+from examlops.data.audit import write_audit_event
 
 app = typer.Typer(
     no_args_is_help=True,

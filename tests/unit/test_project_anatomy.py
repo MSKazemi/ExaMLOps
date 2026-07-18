@@ -168,8 +168,11 @@ def test_anatomy_fail_open(demo, monkeypatch):
     # GWT-3: a broken source doesn't blow up the anatomy.
     import examlops.platform_db as db
 
+    # get_project_pipelines' body now lives in examlops.data.projects, and get_project_full (also there)
+    # calls it as a same-module lookup — so patch the new home (item 4.5 relocation).
     monkeypatch.setattr(
-        db, "get_project_pipelines", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x"))
+        "examlops.data.projects.get_project_pipelines",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x")),
     )
     full = db.get_project_full("demo")
     assert full is not None

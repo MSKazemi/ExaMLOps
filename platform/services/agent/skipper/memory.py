@@ -40,6 +40,17 @@ def build_checkpointer(db_path: str | None = None):
     on any setup failure, fall back to an in-memory saver so the agent stays up
     (losing only cross-restart conversation persistence).
     """
+    # Agent HA (item 1.8): when AGENT_CHECKPOINT_BACKEND=postgres (+ a DSN), all replicas share one
+    # Postgres checkpointer so conversation state survives a replica loss and load-balances. Degrades
+    # to the single-node SQLite saver when unset / the Postgres driver or endpoint is unavailable.
+    from skipper.checkpoint_backend import postgres_dsn, select_backend
+
+    if select_backend() == "postgres":
+        pg = _build_postgres_checkpointer(postgres_dsn())
+        if pg is not None:
+            return pg
+        log.warning("postgres checkpointer unavailable — falling back to SQLite (single-node)")
+
     path = os.path.abspath(db_path or config.AGENT_DB)
     try:
         conn = sqlite3.connect(path, check_same_thread=False)
@@ -50,6 +61,27 @@ def build_checkpointer(db_path: str | None = None):
     except Exception as exc:  # noqa: BLE001 — degrade rather than crash graph build
         log.error("SQLite checkpointer setup failed (%s) — falling back to in-memory", exc)
         return MemorySaver()
+
+
+def _build_postgres_checkpointer(dsn: str | None):
+    """Build a LangGraph Postgres checkpointer for HA, or None to fall back (item 1.8).
+
+    Lazy import + fail-graceful: an absent ``langgraph-checkpoint-postgres`` extra or an unreachable
+    DB returns None so the agent still starts on SQLite. NOT runtime-verified in the sandbox (needs
+    the extra + a live Postgres); shipped as a reviewable seam like the item-0.1 Postgres backend.
+    """
+    if not dsn:
+        return None
+    try:  # pragma: no cover - requires langgraph postgres extra + live PG
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        saver = PostgresSaver.from_conn_string(dsn)
+        saver.setup()
+        log.info("using Postgres LangGraph checkpointer (agent HA)")
+        return saver
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Postgres checkpointer init failed (%s)", exc)
+        return None
 
 
 def build_embeddings() -> Callable[[list[str]], list[list[float]]] | None:

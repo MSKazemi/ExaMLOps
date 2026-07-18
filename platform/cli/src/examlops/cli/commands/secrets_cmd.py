@@ -86,6 +86,40 @@ def rotate_cmd(
     _output.ok(f"Rotated [bold]{path}[/bold] → v{version} (value re-generated, audited)")
 
 
+@app.command("rewrap")
+def rewrap_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would rewrap; change nothing"
+    ),
+) -> None:
+    """Re-encrypt every local secret under the ACTIVE KEK (online key rotation, item 2.3).
+
+    Run after adding a new key to EXAMLOPS_SECRETS_KEYS and pointing EXAMLOPS_SECRETS_ACTIVE_KEY at
+    it: secrets migrate to the new key so the old one can be decommissioned. Plaintext never leaves
+    the process; the operation is audited.
+    """
+    from examlops.secrets import SecretNotFound, rewrap_secrets
+
+    try:
+        summary = rewrap_secrets(actor=_actor(), dry_run=dry_run)
+    except SecretNotFound as exc:
+        _output.error(str(exc))
+        raise typer.Exit(1) from exc
+    if _output.json_mode:
+        _output.print_json(summary)
+        return
+    verb = "Would rewrap" if dry_run else "Rewrapped"
+    _output.ok(
+        f"{verb} {summary['rewrapped']}/{summary['total']} secret(s) under key "
+        f"'{summary['active_key_id']}' ({summary['skipped']} already current, "
+        f"{summary['failed']} failed)."
+    )
+    if summary["failed"]:
+        for e in summary["errors"]:
+            _output.error(e)
+        raise typer.Exit(1)
+
+
 @app.command("list", epilog="Examples:\n\n  exa secrets list\n\n  exa secrets list --tenant acme")
 def list_cmd(
     tenant: str | None = typer.Option(None, "--tenant", help="Filter by tenant"),

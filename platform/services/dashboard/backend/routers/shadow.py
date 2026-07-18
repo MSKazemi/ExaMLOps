@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/shadow", tags=["shadow"])
@@ -20,8 +20,7 @@ def _db_path() -> str:
 async def get_shadow_config(_=Depends(_viewer)) -> list[dict]:
     """Return all shadow deployment configuration rows."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             "SELECT model, shadow_alias, enabled, updated_at, updated_by FROM shadow_config ORDER BY model"
         ).fetchall()
@@ -35,8 +34,7 @@ async def get_shadow_config(_=Depends(_viewer)) -> list[dict]:
 async def get_shadow_results(model: str, _=Depends(_viewer)) -> list[dict]:
     """Return the last 50 shadow inference comparison results for a model."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             """SELECT id, ts, model, production_pred, shadow_pred, diff_pct, job_id
                FROM shadow_results

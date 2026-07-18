@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from examlops.platform_db import get_db
+from examlops.data import get_db
 
 KINDS = ("s3", "uri", "dataplane")
 
@@ -71,7 +71,7 @@ def create_connection(
         )
     # Register as a project resource (ADR 0086) when scoped to a project.
     if project:
-        from examlops.platform_db import assign_resource_to_project
+        from examlops.data.projects import assign_resource_to_project
 
         assign_resource_to_project(project, "connection", name, added_by=created_by)
     return get_connection(name, project=project)  # type: ignore[return-value]
@@ -122,7 +122,7 @@ def delete_connection(name: str, *, project: str | None = None) -> bool:
         )
         removed = cur.rowcount > 0
     if removed and project:
-        from examlops.platform_db import remove_project_resource
+        from examlops.data.projects import remove_project_resource
 
         remove_project_resource(project, "connection", name)
     return removed

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/nextgen", tags=["nextgen-40"])
@@ -27,8 +27,7 @@ def _db_path() -> str:
 def _query(sql: str, params: tuple = ()) -> list[dict]:
     """Run a read query, returning [] on any error (fail-open)."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(sql, params).fetchall()
         conn.close()
         return [dict(r) for r in rows]

@@ -270,7 +270,7 @@ def _bundle_content(tenant: str = "default") -> str:
 
 def sign_bundle(tenant: str = "default", *, actor: str | None = None) -> dict[str, Any]:
     """Version + hash + sign the effective policy bundle for a tenant (R2)."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     content = _bundle_content(tenant)
     content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -295,7 +295,7 @@ def sign_bundle(tenant: str = "default", *, actor: str | None = None) -> dict[st
 
 def verify_bundle(tenant: str = "default", version: int | None = None) -> dict[str, Any]:
     """Verify a stored bundle's hash + signature (R2)."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     row = platform_db.get_policy_bundle(tenant, version)
     if not row:
@@ -330,7 +330,7 @@ def _sign(content_hash: str) -> tuple[str | None, str | None]:
 
 def _audit(decision: str, input: PolicyInput, result: EngineDecision) -> None:  # noqa: A002
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event(
             "policy-engine",
@@ -348,7 +348,7 @@ def _audit_bundle(
     tenant: str, version: int, action: str, extra: dict[str, Any], actor: str | None
 ) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event(
             "policy-engine", actor, action, f"{tenant}/v{version}", extra, tenant=tenant

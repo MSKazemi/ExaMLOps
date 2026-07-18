@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 ACCELERATORS = ("nvidia", "amd", "intel-gaudi", "tpu", "cpu")
 

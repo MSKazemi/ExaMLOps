@@ -6,6 +6,7 @@ import os
 import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/cards", tags=["cards"])
@@ -18,8 +19,7 @@ def _db_path() -> str:
 
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_db_path())
     return conn
 
 

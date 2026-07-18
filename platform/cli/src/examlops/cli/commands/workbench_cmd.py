@@ -11,7 +11,7 @@ import os
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import write_audit_event
+from examlops.data.audit import write_audit_event
 from examlops.workbenches import (
     WorkbenchError,
     create_workbench,

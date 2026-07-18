@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from examlops.platform_db import get_db, init_db
+from examlops.data import get_db, init_db
 
 _METRICS = ("cosine", "l2", "dot")
 

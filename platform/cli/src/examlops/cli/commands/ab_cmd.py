@@ -5,7 +5,8 @@ import os
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import get_db, init_db, write_audit_event
+from examlops.data import get_db, init_db
+from examlops.data.audit import write_audit_event
 
 app = typer.Typer(
     help="A/B testing experiments — compare two model variants.",

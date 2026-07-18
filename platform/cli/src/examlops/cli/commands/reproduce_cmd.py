@@ -159,7 +159,7 @@ def list_cmd(
     model: str = typer.Argument(None, help="Filter by model"),
 ) -> None:
     """List reproducibility bundles."""
-    from examlops.platform_db import list_repro_bundles
+    from examlops.data.data_assets import list_repro_bundles
 
     bundles = list_repro_bundles(model)
     if _output.json_mode:

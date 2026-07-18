@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 # Multi-window burn-rate config (Google SRE workbook 2-window defaults for a 30d SLO).
 # (short_window, long_window, burn_rate_factor, severity, for_duration)

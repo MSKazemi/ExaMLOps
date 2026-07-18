@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 DISCLAIMER = (
     "DISCLAIMER: This document assembles compliance evidence from platform metadata. "
@@ -144,7 +144,7 @@ def promotion_blocked_reason(model: str) -> str | None:
 # --- evidence collectors (each returns (present, content)) -------------------
 def _ev_model_card(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_compliance_system
+        from examlops.data.governance import get_compliance_system
 
         sys = get_compliance_system(model)
         if sys and sys["intended_purpose"]:
@@ -160,7 +160,7 @@ def _ev_model_card(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_lineage(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             row = conn.execute(
@@ -176,7 +176,7 @@ def _ev_lineage(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_eval(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             row = conn.execute(
@@ -209,7 +209,7 @@ def _ev_fairness(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_integrity(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             row = conn.execute(
@@ -224,7 +224,7 @@ def _ev_integrity(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_monitoring(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             drift = conn.execute(
@@ -253,7 +253,7 @@ def _ev_record_keeping(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_data_governance(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             revs = conn.execute("SELECT COUNT(*) AS c FROM dataset_revisions").fetchone()["c"]
@@ -270,7 +270,7 @@ def _ev_data_governance(model: str, tenant: str) -> tuple[bool, str]:
 
 def _ev_risk_management(model: str, tenant: str) -> tuple[bool, str]:
     try:
-        from examlops.platform_db import get_db
+        from examlops.data import get_db
 
         with get_db() as conn:
             guard = conn.execute("SELECT COUNT(*) AS c FROM guardrail_events").fetchone()["c"]

@@ -19,14 +19,15 @@ import json
 import sqlite3
 from typing import Any
 
+from dbconn import connect
+
 # Job states that count as actively holding resources vs waiting in the queue.
 _RUNNING_STATES = ("RUNNING", "R", "COMPLETING")
 _QUEUED_STATES = ("SUBMITTED", "PENDING", "PD", "CONFIGURING")
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
     return conn
 
 

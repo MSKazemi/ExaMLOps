@@ -28,7 +28,11 @@ from examlops.cli._config import Config, load_config
 
 
 def _err(message: str, **extra: Any) -> dict[str, Any]:
-    return {"ok": False, "error": message, **extra}
+    # Route through the canonical SDK envelope (item 4.6). Byte-identical wire format:
+    # {"ok": False, "error": message, **extra} — one error shape across all surfaces.
+    from examlops.sdk import err
+
+    return err(message, **extra).to_dict()
 
 
 def _cfg() -> Config:
@@ -156,7 +160,7 @@ def recent_audit_events(limit: int = 20, model: str | None = None) -> dict[str, 
         model: Optional case-insensitive filter on the event target (model name).
     """
     try:
-        from examlops.platform_db import get_db, init_db
+        from examlops.data import get_db, init_db
 
         init_db()
         limit = max(1, min(int(limit), 500))
@@ -260,7 +264,8 @@ def trigger_retrain(
     # and the sibling `hpc_approve_cluster` tool. Best-effort: never fail the
     # retrain because auditing is unavailable.
     try:
-        from examlops.platform_db import init_db, write_audit_event
+        from examlops.data import init_db
+        from examlops.data.audit import write_audit_event
 
         init_db()
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
@@ -317,7 +322,8 @@ def hpc_nodes(cluster: str | None = None) -> dict[str, Any]:
     ``exa hpc nodes --save --cluster <name>``.
     """
     try:
-        from examlops.platform_db import get_node_snapshot, init_db
+        from examlops.data import init_db
+        from examlops.data.hpc import get_node_snapshot
 
         init_db()
         return {"ok": True, "nodes": get_node_snapshot(cluster)}
@@ -346,10 +352,31 @@ def hpc_place(gpus: int = 0, nodes: int = 1) -> dict[str, Any]:
         return _err(str(exc))
 
 
+def fleet_simulate(
+    jobs: int = 0, gpus: int = 1, nodes: int = 1, optimize: str | None = None
+) -> dict[str, Any]:
+    """Run a Fleet Digital Twin what-if: project submitting ``jobs`` × ``gpus``-GPU jobs on the fleet.
+
+    Returns the projected placements, GPU-hours, cost, carbon, and queue depth vs the current baseline
+    (item 5.1) — the read-only planning tool a fleet copilot (item 5.5) composes into previewed plans.
+    Touches nothing live. ``optimize`` picks a placement provider (carbon-aware/cost-aware/...).
+    """
+    try:
+        from examlops.fleet_twin import JobSpec, Scenario, simulate
+        from examlops.hpc_placement_providers import resolve_placement_score_fn
+
+        scenario = Scenario(jobs=[JobSpec(gpus=gpus, nodes=nodes, count=jobs)] if jobs else [])
+        score_fn = resolve_placement_score_fn(optimize) if optimize else None
+        return {"ok": True, **simulate(scenario, score_fn=score_fn)}
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
 def hpc_jobs(model: str | None = None) -> dict[str, Any]:
     """List tracked HPC job submissions (from the ``hpc_jobs`` table), newest first."""
     try:
-        from examlops.platform_db import get_hpc_jobs, init_db
+        from examlops.data import init_db
+        from examlops.data.hpc import get_hpc_jobs
 
         init_db()
         return {"ok": True, "jobs": get_hpc_jobs(model)[:50]}
@@ -366,8 +393,9 @@ def hpc_approve_cluster(name: str) -> dict[str, Any]:
     if gate is not None:
         return gate
     try:
+        from examlops.data.audit import write_audit_event
+        from examlops.data.hpc import set_cluster_state
         from examlops.hpc_registry import get_merged
-        from examlops.platform_db import set_cluster_state, write_audit_event
 
         if get_merged(name) is None:
             return _err(f"unknown cluster: {name}")
@@ -389,7 +417,8 @@ def project_list() -> dict[str, Any]:
     Reads the ``projects`` table.
     """
     try:
-        from examlops.platform_db import init_db, list_projects
+        from examlops.data import init_db
+        from examlops.data.projects import list_projects
 
         init_db()
         return {"ok": True, "projects": list_projects()}
@@ -400,7 +429,8 @@ def project_list() -> dict[str, Any]:
 def project_detail(name: str) -> dict[str, Any]:
     """Full anatomy of one Project: quota, resources by kind, members, budget, consumption."""
     try:
-        from examlops.platform_db import get_project_full, init_db
+        from examlops.data import init_db
+        from examlops.data.projects import get_project_full
 
         init_db()
         full = get_project_full(name)
@@ -414,7 +444,8 @@ def project_detail(name: str) -> dict[str, Any]:
 def project_cost(name: str) -> dict[str, Any]:
     """Per-project cost attribution (GPU-hours, USD, carbon) and budget/quota breach status."""
     try:
-        from examlops.platform_db import get_project, init_db
+        from examlops.data import init_db
+        from examlops.data.projects import get_project
         from examlops.project_finops import budget_status, cost_summary
 
         init_db()
@@ -431,7 +462,9 @@ def project_assign_model(project: str, model: str) -> dict[str, Any]:
     if gate is not None:
         return gate
     try:
-        from examlops.platform_db import assign_resource_to_project, init_db, write_audit_event
+        from examlops.data import init_db
+        from examlops.data.audit import write_audit_event
+        from examlops.data.projects import assign_resource_to_project
 
         init_db()
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
@@ -451,7 +484,9 @@ def project_add_member(project: str, subject: str, role: str = "viewer") -> dict
     if role not in {"owner", "editor", "viewer"}:
         return _err("role must be one of: owner, editor, viewer")
     try:
-        from examlops.platform_db import add_project_member, get_project, init_db, write_audit_event
+        from examlops.data import init_db
+        from examlops.data.audit import write_audit_event
+        from examlops.data.projects import add_project_member, get_project
 
         init_db()
         if get_project(project) is None:
@@ -498,6 +533,7 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(hpc_clusters, tags=("read", "hpc")),
     ToolSpec(hpc_nodes, tags=("read", "hpc")),
     ToolSpec(hpc_place, tags=("read", "hpc")),
+    ToolSpec(fleet_simulate, tags=("read", "hpc", "fleet")),
     ToolSpec(hpc_jobs, tags=("read", "hpc")),
     ToolSpec(hpc_approve_cluster, mutating=True, tags=("write", "hpc", "governance")),
     ToolSpec(project_list, tags=("read", "projects")),

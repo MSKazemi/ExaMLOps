@@ -24,6 +24,13 @@ Each role maps to a capability set:
 | `config.write` | — | ✅ |
 | `secret.reveal` | — | ✅ |
 | `service.control` | — | ✅ |
+| `project.manage` | — | ✅ |
+| `connection.manage` | — | ✅ |
+
+`project.manage` gates project create/delete, resource assign, and member add/remove;
+`connection.manage` gates connection create/test/delete and project storage binding. Both write paths
+call the same `examlops.*` code the `exa` CLI uses, so a secret entered in the dashboard is stored in
+the CLI-compatible secrets client and only `hasSecret` (never the value) is returned to the browser.
 
 `GET /api/auth/me` returns the caller's `role`, `tenant`, and `capabilities[]` — the UI's affordance
 source.

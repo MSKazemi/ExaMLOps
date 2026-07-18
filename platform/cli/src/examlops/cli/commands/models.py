@@ -192,7 +192,7 @@ def lineage(
     """Show the pipeline → dataset → model version lineage chain (or the A2 graph)."""
     # A2 — impact analysis: which models came from a dataset revision.
     if impact is not None:
-        from examlops.platform_db import lineage_impact
+        from examlops.data.events import lineage_impact
 
         rows = lineage_impact(impact)
         if _output.json_mode:
@@ -214,7 +214,7 @@ def lineage(
 
     # A2 — provenance graph from platform_db (upstream datasets/runs, downstream deployments).
     if graph:
-        from examlops.platform_db import lineage_graph
+        from examlops.data.events import lineage_graph
 
         g = lineage_graph(model)
         if _output.json_mode:
@@ -485,7 +485,8 @@ def cost(
     ),
 ):
     """Show HPC cost history for a model.  Use --record to ingest new data."""
-    from examlops.platform_db import get_model_costs, init_db, record_model_cost
+    from examlops.data import init_db
+    from examlops.data.finops import get_model_costs, record_model_cost
 
     init_db()
 
@@ -600,8 +601,8 @@ _EXAMPLES_COST_LIST = "Examples:\n\n  exa models cost-list\n\n  exa --json model
 @app.command("cost-list", epilog=_EXAMPLES_COST_LIST)
 def cost_list():
     """Show HPC cost summary across all models."""
-    from examlops.platform_db import get_db as _gdb
-    from examlops.platform_db import init_db as _init
+    from examlops.data import get_db as _gdb
+    from examlops.data import init_db as _init
 
     _init()
     with _gdb() as conn:

@@ -157,7 +157,8 @@ class DefaultGuardrail:
 
     def _record(self, direction: str, action: str, rule: str) -> None:
         try:
-            from examlops.platform_db import get_db, write_audit_event
+            from examlops.data import get_db
+            from examlops.data.audit import write_audit_event
 
             with get_db() as conn:
                 conn.execute(
@@ -200,7 +201,7 @@ def rag_guardrail_adapter(guard: DefaultGuardrail):
 
 def guardrail_stats(tenant: str | None = None) -> dict[str, Any]:
     """Aggregate guardrail actions for the dashboard/Prometheus (R8)."""
-    from examlops.platform_db import get_db, init_db
+    from examlops.data import get_db, init_db
 
     init_db()
     where = "WHERE tenant=?" if tenant else ""

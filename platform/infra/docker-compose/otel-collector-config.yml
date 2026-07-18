@@ -1,0 +1,61 @@
+# OpenTelemetry Collector — HA metrics/traces pipeline (enterprise-readiness item 3.3).
+#
+# Sits between the app OTLP exporters and long-term storage: it does tail-based trace sampling
+# (keep every error/slow trace, sample the rest) so the 48h Tempo doesn't firehose, batches for
+# throughput, and fans traces to Tempo + metrics to a Prometheus remote-write target (Mimir/Thanos
+# on object storage). Endpoints are env-driven so dev points at local Tempo and prod at Mimir.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Tail-based sampling: decide AFTER a trace completes, so we can keep all errors + slow traces
+  # and probabilistically sample the healthy majority (parent-ratio at the SDK is the first stage;
+  # this is the smarter second stage).
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: errors
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      - name: slow
+        type: latency
+        latency: {threshold_ms: 1000}
+      - name: sample-the-rest
+        type: probabilistic
+        probabilistic: {sampling_percentage: 5}
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+exporters:
+  # Traces → Tempo (object-store mode in prod).
+  otlp/tempo:
+    endpoint: ${TEMPO_OTLP_ENDPOINT:-tempo:4317}
+    tls: {insecure: true}
+  # Metrics → Prometheus remote-write (Mimir/Thanos on MinIO in prod).
+  prometheusremotewrite:
+    endpoint: ${METRICS_REMOTE_WRITE_URL:-http://mimir:9009/api/v1/push}
+    resource_to_telemetry_conversion: {enabled: true}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+  telemetry:
+    logs: {level: info}

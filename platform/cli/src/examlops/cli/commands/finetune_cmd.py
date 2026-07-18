@@ -87,7 +87,7 @@ def adapter_list(
     base: str = typer.Option(None, "--base", help="Filter by base model ref"),
 ) -> None:
     """List registered adapters (R6)."""
-    from examlops.platform_db import list_adapters
+    from examlops.data.data_assets import list_adapters
 
     adapters = list_adapters(base)
     if _output.json_mode:

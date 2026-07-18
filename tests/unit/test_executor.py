@@ -154,3 +154,60 @@ def test_ssh_run_raises_when_both_attempts_drop(monkeypatch):
     with pytest.raises(paramiko.SSHException):
         ex.run(["echo", "hi"])
     assert calls["connect"] == 2  # tried twice, then gave up
+
+
+# ── host-key verification (enterprise-readiness Phase 0, bonus SSH-hardening) ──
+
+
+def test_auto_add_host_keys_defaults_off(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", raising=False)
+    assert SSHExecutor._auto_add_host_keys() is False
+    monkeypatch.setenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", "1")
+    assert SSHExecutor._auto_add_host_keys() is True
+
+
+class _PolicyRecordingClient:
+    """Minimal paramiko.SSHClient stand-in that records the host-key policy chosen."""
+
+    def __init__(self):
+        self.policy = None
+
+    def load_system_host_keys(self, *a, **k):
+        pass
+
+    def load_host_keys(self, *a, **k):
+        raise FileNotFoundError  # exercise the graceful "no known_hosts yet" branch
+
+    def set_missing_host_key_policy(self, policy):
+        self.policy = policy
+
+    def connect(self, *a, **k):
+        pass
+
+    def get_transport(self):
+        return None
+
+
+def _connect_with_recorded_policy(monkeypatch):
+    import paramiko
+
+    rec = _PolicyRecordingClient()
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: rec)
+    SSHExecutor(host="h")._connect()
+    return rec.policy
+
+
+def test_connect_rejects_unknown_hosts_by_default(monkeypatch):
+    import paramiko
+
+    monkeypatch.delenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", raising=False)
+    policy = _connect_with_recorded_policy(monkeypatch)
+    assert isinstance(policy, paramiko.RejectPolicy)
+
+
+def test_connect_auto_adds_only_when_opted_in(monkeypatch):
+    import paramiko
+
+    monkeypatch.setenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", "yes")
+    policy = _connect_with_recorded_policy(monkeypatch)
+    assert isinstance(policy, paramiko.AutoAddPolicy)

@@ -113,7 +113,7 @@ def retrain(
 def _record_audit(model: str, dataset: str, dummy: bool, backend: str | None, result: dict) -> None:
     """Write a best-effort audit event — never fail the command on audit errors."""
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
         write_audit_event(

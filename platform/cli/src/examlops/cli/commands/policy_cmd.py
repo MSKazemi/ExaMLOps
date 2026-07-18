@@ -196,7 +196,7 @@ def bundle_list(
     tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
 ) -> None:
     """List signed policy bundle versions."""
-    from examlops.platform_db import list_policy_bundles
+    from examlops.data.governance import list_policy_bundles
 
     bundles = list_policy_bundles(tenant)
     if _output.json_mode:

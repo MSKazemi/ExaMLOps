@@ -9,7 +9,7 @@ import typer
 
 from examlops.cli import _output
 from examlops.cli._config import load_config
-from examlops.platform_db import get_db, init_db
+from examlops.data import get_db, init_db
 
 app = typer.Typer(
     help="Feature importance explanations (XAI)",

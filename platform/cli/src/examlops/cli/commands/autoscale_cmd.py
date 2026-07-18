@@ -110,7 +110,7 @@ def status(
 ) -> None:
     """Show the autoscale policy + recent scale events + cold-start time."""
     from examlops.autoscale import cold_start_seconds
-    from examlops.platform_db import get_autoscale_config, list_scale_events
+    from examlops.data.serving import get_autoscale_config, list_scale_events
 
     cfg = get_autoscale_config(model)
     if not cfg:

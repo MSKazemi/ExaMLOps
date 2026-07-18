@@ -73,6 +73,7 @@ endif
         agent \
         venv install install-dev install-hooks clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \
+        alerts-check dr-drill helm-validate \
         ci ci-modelzoo ci-infra ci-examlops \
         modelzoo-test agent-test \
         docs-serve docs-build docs-cli \
@@ -542,11 +543,26 @@ ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + 
 	  poetry run pytest tests/unit/ tests/smoke/ -v --tb=short
 	@printf "$(GREEN)CI · modelzoo passed.$(RESET)\n"
 
-alerts-check: ## Validate Prometheus alert rules with promtool
+alerts-check: ## Validate Prometheus alert rules + Alertmanager config
 	@printf "$(BOLD)Validating alert rules...$(RESET)\n"
 	@docker run --rm --entrypoint promtool -v "$(CURDIR)/$(COMPOSE_DIR):/cfg" \
 	  prom/prometheus:v2.54.1 check rules /cfg/alert_rules.yml
-	@printf "$(GREEN)Alert rules valid.$(RESET)\n"
+	@printf "$(BOLD)Validating Alertmanager config...$(RESET)\n"
+	@docker run --rm --entrypoint amtool -v "$(CURDIR)/$(COMPOSE_DIR)/alertmanager.yml:/tmp/am.yml:ro" \
+	  prom/alertmanager:v0.27.0 check-config /tmp/am.yml
+	@printf "$(GREEN)Alert rules + Alertmanager config valid.$(RESET)\n"
+
+helm-validate: ## Lint + render + schema-validate the enterprise Helm chart (item 1.1)
+	@printf "$(BOLD)helm lint...$(RESET)\n"
+	@helm lint platform/infra/helm/examlops
+	@printf "$(BOLD)helm template + kubectl schema check...$(RESET)\n"
+	@helm template rel platform/infra/helm/examlops | kubectl apply --dry-run=client -f - >/dev/null
+	@printf "$(GREEN)Helm chart valid (lint + render + kubectl dry-run).$(RESET)\n"
+
+dr-drill: install-dev ## Disaster-recovery drill — backup → wipe → restore round-trip (item 0.9)
+	@printf "$(BOLD)Running DR drill (backup/restore round-trip)...$(RESET)\n"
+	@.venv/bin/pytest tests/unit/test_backup_restore.py -q
+	@printf "$(GREEN)DR drill passed — restore path verified (RPO=last backup, RTO=restore time).$(RESET)\n"
 
 ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
 	@printf "$(BOLD)CI · infra (compose + slurm)$(RESET)\n"

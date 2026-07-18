@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 _shadow_local = threading.local()
 

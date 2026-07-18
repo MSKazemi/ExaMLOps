@@ -150,7 +150,7 @@ def list_challengers(
     tenant: str = typer.Option(None, "--tenant", help="Filter to one tenant"),
 ) -> None:
     """List configured challengers."""
-    from examlops.platform_db import list_challenger_configs
+    from examlops.data.serving import list_challenger_configs
 
     rows = list_challenger_configs(tenant=tenant)
     if _output.json_mode:

@@ -204,6 +204,36 @@ export const addMember = (name: string, body: AddMemberBody): Promise<ProjectDet
     body: JSON.stringify(body),
   })
 
+export const removeMember = (
+  name: string,
+  subject: string,
+): Promise<{ project: string; subject: string; removed: number }> =>
+  apiFetch(
+    `/api/v1/projects/${encodeURIComponent(name)}/members/${encodeURIComponent(subject)}`,
+    { method: 'DELETE' },
+  )
+
+export const deleteProject = (name: string): Promise<{ name: string; deleted: boolean }> =>
+  apiFetch(`/api/v1/projects/${encodeURIComponent(name)}`, { method: 'DELETE' })
+
+export interface BindStorageBody {
+  connectionRef?: string
+}
+
+export interface BindStorageResult {
+  project: string
+  bucket: string | null
+  prefix: string | null
+  connectionRef: string | null
+  bound: boolean
+}
+
+export const bindStorage = (name: string, body: BindStorageBody): Promise<BindStorageResult> =>
+  apiFetch<BindStorageResult>(`/api/v1/projects/${encodeURIComponent(name)}/storage`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
 // ── data hooks ────────────────────────────────────────────────────────────────
 
 export const useProjects = () =>
@@ -247,6 +277,37 @@ export const useAddMember = (name: string) => {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects', 'detail', name] })
       qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export const useRemoveMember = (name: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (subject: string) => removeMember(name, subject),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects', 'detail', name] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export const useDeleteProject = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => deleteProject(name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+}
+
+export const useBindStorage = (name: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: BindStorageBody) => bindStorage(name, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects', 'detail', name] })
     },
   })
 }

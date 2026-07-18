@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/explain", tags=["explain"])
@@ -19,8 +19,7 @@ def _db_path() -> str:
 def _rows_from_db(sql: str, params: tuple = ()) -> list[dict]:
     """Execute a read query against the platform SQLite DB and return row dicts."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(sql, params).fetchall()
         conn.close()
         return [dict(r) for r in rows]

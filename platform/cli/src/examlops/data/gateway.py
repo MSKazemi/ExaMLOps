@@ -1,0 +1,167 @@
+"""examlops.data.gateway — LLM gateway — routing/cache/RAG/guardrails/vectors.
+
+Owns these helpers (bodies physically live here) — per-domain split (item 4.5), implementation relocated.
+Shared primitives are imported from ``platform_db``; cross-domain calls route via ``_pdb`` (resolved at
+call time → no import cycle). ``install_write_retry(__name__)`` re-applies the item-0.4 auto-wrapping.
+``platform_db`` re-exports these names for backward compatibility.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any  # noqa: F401
+
+from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F401
+
+__all__ = [
+    "cache_stats",
+    "create_virtual_key",
+    "get_gateway_config",
+    "get_virtual_key",
+    "list_virtual_keys",
+    "record_gateway_call",
+    "set_gateway_config",
+]
+
+
+def cache_stats(tenant: str | None = None) -> dict[str, Any]:
+    """Aggregate hit-rate + measured savings (R7) — for the dashboard caching panel."""
+    init_db()
+    where = "WHERE tenant=?" if tenant else ""
+    params = (tenant,) if tenant else ()
+    with get_db() as conn:
+        row = conn.execute(
+            f"""SELECT
+                    COALESCE(SUM(hit),0)              AS hits,
+                    COALESCE(SUM(1-hit),0)            AS misses,
+                    COUNT(*)                          AS total,
+                    COALESCE(SUM(tokens_saved),0)     AS tokens_saved,
+                    COALESCE(SUM(cost_saved),0)       AS cost_saved
+                FROM cache_events {where}""",
+            params,
+        ).fetchone()
+    hits, total = int(row["hits"]), int(row["total"])
+    return {
+        "hits": hits,
+        "misses": int(row["misses"]),
+        "total": total,
+        "hit_rate": (hits / total) if total else 0.0,
+        "tokens_saved": int(row["tokens_saved"]),
+        "cost_saved": float(row["cost_saved"]),
+    }
+
+
+def create_virtual_key(
+    key_hash: str,
+    *,
+    tenant: str = "default",
+    project: str = "default",
+    models: list[str] | None = None,
+    budget_usd: float | None = None,
+    created_by: str | None = None,
+) -> None:
+    """Store a virtual key (only its hash — never the raw key)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO virtual_keys
+                   (key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by)
+               VALUES (?,?,?,?,?,
+                   COALESCE((SELECT spent_usd FROM virtual_keys WHERE key_hash=?), 0), ?)""",
+            (
+                key_hash,
+                tenant,
+                project,
+                json.dumps(models or []),
+                budget_usd,
+                key_hash,
+                created_by,
+            ),
+        )
+
+
+def get_gateway_config(model: str, tenant: str = "default") -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM inference_gateway_config WHERE model=? AND tenant=?", (model, tenant)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_virtual_key(key_hash: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["models"] = json.loads(d.pop("models_json"))
+    return d
+
+
+def list_virtual_keys() -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM virtual_keys ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["models"] = json.loads(d.pop("models_json"))
+        out.append(d)
+    return out
+
+
+def record_gateway_call(
+    key_hash: str | None,
+    model: str,
+    *,
+    backend: str | None = None,
+    cost_usd: float = 0.0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO gateway_calls
+                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens)
+               VALUES (?,?,?,?,?,?)""",
+            (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens),
+        )
+
+
+def set_gateway_config(
+    model: str,
+    *,
+    tenant: str = "default",
+    mode: str = "round_robin",
+    slo_latency_ms: float | None = None,
+    disaggregate: bool = False,
+    prefill_pool: str | None = None,
+    decode_pool: str | None = None,
+) -> None:
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO inference_gateway_config
+                   (model, tenant, mode, slo_latency_ms, disaggregate, prefill_pool,
+                    decode_pool, updated_at)
+               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+               ON CONFLICT(model, tenant) DO UPDATE SET
+                   mode=excluded.mode, slo_latency_ms=excluded.slo_latency_ms,
+                   disaggregate=excluded.disaggregate, prefill_pool=excluded.prefill_pool,
+                   decode_pool=excluded.decode_pool, updated_at=CURRENT_TIMESTAMP""",
+            (
+                model,
+                tenant,
+                mode,
+                slo_latency_ms,
+                1 if disaggregate else 0,
+                prefill_pool,
+                decode_pool,
+            ),
+        )
+
+
+install_write_retry(__name__)

@@ -57,12 +57,18 @@ def retry_call[T](
     retry_on: Callable[[BaseException], bool] = is_transient_network,
     sleep: Callable[[float], None] = time.sleep,
     label: str = "call",
+    on_exhausted: Callable[[BaseException, int], None] | None = None,
 ) -> T:
     """Call ``fn``; retry on exceptions matching ``retry_on`` with exponential backoff.
 
     Retries up to ``retries`` times (so ``retries + 1`` total attempts). Delay for
     attempt ``i`` is ``min(max_delay, base_delay * 2**i)``. Non-matching exceptions
     propagate immediately. The final matching exception is re-raised after exhaustion.
+
+    ``on_exhausted(exc, total_attempts)`` — when given — is invoked exactly once, right
+    before the final matching exception is re-raised, so callers can emit a metric/log
+    instead of the failure vanishing (enterprise-readiness item 0.4). It is *not* called
+    on success or when a non-matching exception propagates on the first attempt.
 
     ``sleep`` is injectable so tests can run without real delays.
     """
@@ -86,4 +92,6 @@ def retry_call[T](
                 )
                 sleep(delay)
     assert last_exc is not None  # unreachable: loop only exits here after a failure
+    if on_exhausted is not None:
+        on_exhausted(last_exc, retries + 1)
     raise last_exc

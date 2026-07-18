@@ -1,19 +1,23 @@
 import { useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, FolderKanban, Layers, Users, Cpu, DollarSign, Gauge,
   PlusCircle, X, Clock, UserPlus, Plug, FlaskConical, Lock, Check,
-  Play, Square, HardDrive, Workflow,
+  Play, Square, HardDrive, Workflow, Trash2, PlugZap,
 } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
 import { isAdmin } from '@/lib/auth'
 import {
-  useProject, useAssignResource, useAddMember, statusToken, budgetUsage,
+  useProject, useAssignResource, useAddMember, useRemoveMember, useDeleteProject,
+  useBindStorage, statusToken, budgetUsage,
   storageUsagePct, bytesToGb,
   RESOURCE_KINDS, MEMBER_ROLES,
   type AssignResourceBody, type AddMemberBody,
 } from '@/lib/projects'
-import { useConnections } from '@/lib/connections'
+import {
+  useConnections, useCreateConnection, useDeleteConnection, useTestConnection,
+  CONNECTION_KINDS, type CreateConnectionBody, type ConnectionKind,
+} from '@/lib/connections'
 import { useWorkbenches, useSetWorkbenchStatus, nextStatus } from '@/lib/workbenches'
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
@@ -124,6 +128,72 @@ function AddMemberModal({ name, onClose }: { name: string; onClose: () => void }
   )
 }
 
+function CreateConnectionModal({ project, onClose }: { project: string; onClose: () => void }) {
+  const [name, setName] = useState('')
+  const [kind, setKind] = useState<ConnectionKind>(CONNECTION_KINDS[0])
+  const [configText, setConfigText] = useState('{}')
+  const [secret, setSecret] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const create = useCreateConnection(project)
+
+  const handleSubmit = async () => {
+    setError(null)
+    let config: Record<string, unknown>
+    try {
+      config = configText.trim() ? JSON.parse(configText) : {}
+    } catch {
+      setError('Config must be valid JSON.')
+      return
+    }
+    const body: CreateConnectionBody = { name: name.trim(), kind, project, config }
+    if (secret) body.secret = secret
+    try {
+      await create.mutateAsync(body)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create connection')
+    }
+  }
+
+  const cli =
+    `exa connection create ${name || '<name>'} --kind ${kind} --project ${project}` +
+    (secret ? ' --secret-value ***' : '')
+
+  return (
+    <Modal title="New Connection" cli={cli} onClose={onClose} onSubmit={handleSubmit}
+      submitting={create.isPending} disabled={!name.trim()} error={error}>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Name</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. minio-data"
+          className="w-full rounded-lg px-3 py-1.5 text-sm focus:outline-none font-mono"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }} />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Kind</label>
+        <select value={kind} onChange={e => setKind(e.target.value as ConnectionKind)}
+          className="w-full rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}>
+          {CONNECTION_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Config (JSON, non-secret)</label>
+        <textarea value={configText} onChange={e => setConfigText(e.target.value)} rows={3}
+          placeholder='{"endpoint":"http://localhost:19000","bucket":"data","access_key":"minioadmin"}'
+          className="w-full rounded-lg px-3 py-1.5 text-xs focus:outline-none font-mono"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }} />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Secret (optional — stored encrypted, never shown again)</label>
+        <input type="password" value={secret} onChange={e => setSecret(e.target.value)} autoComplete="new-password"
+          placeholder="credential / access secret"
+          className="w-full rounded-lg px-3 py-1.5 text-sm focus:outline-none font-mono"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }} />
+      </div>
+    </Modal>
+  )
+}
+
 function Modal({ title, cli, onClose, onSubmit, submitting, disabled, error, children }: {
   title: string; cli: string; onClose: () => void; onSubmit: () => void
   submitting: boolean; disabled: boolean; error: string | null; children: React.ReactNode
@@ -166,11 +236,33 @@ function Modal({ title, cli, onClose, onSubmit, submitting, disabled, error, chi
   )
 }
 
-function ConnectionsCard({ project }: { project: string }) {
+function ConnectionsCard({ project, admin }: { project: string; admin: boolean }) {
   const { data, isLoading } = useConnections(project)
+  const [showNew, setShowNew] = useState(false)
+  const del = useDeleteConnection(project)
+  const test = useTestConnection(project)
+  const [probe, setProbe] = useState<{ name: string; ok: boolean; detail: string } | null>(null)
+
+  const runTest = async (name: string) => {
+    setProbe(null)
+    try {
+      const r = await test.mutateAsync(name)
+      setProbe({ name, ok: r.ok, detail: r.detail })
+    } catch (e) {
+      setProbe({ name, ok: false, detail: e instanceof Error ? e.message : 'test failed' })
+    }
+  }
+
+  const newBtn = admin ? (
+    <button onClick={() => setShowNew(true)}
+      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium"
+      style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+      <PlusCircle className="w-3 h-3" /> New connection
+    </button>
+  ) : undefined
 
   return (
-    <SectionCard icon={Plug} title="Connections">
+    <SectionCard icon={Plug} title="Connections" action={newBtn}>
       {isLoading ? (
         <p className="text-sm text-muted-foreground italic">Loading connections…</p>
       ) : data && data.length > 0 ? (
@@ -179,13 +271,15 @@ function ConnectionsCard({ project }: { project: string }) {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
-                  {['Name', 'Kind', 'Secret', 'Created by'].map(h => (
-                    <th key={h} className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground">{h}</th>
+                  {['Name', 'Kind', 'Secret', 'Created by', ...(admin ? [''] : [])].map((h, i) => (
+                    <th key={h || `act-${i}`} className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {data.map((c, i) => (
+                {data.map((c, i) => {
+                  const busy = del.isPending && del.variables === c.name
+                  return (
                   <tr key={c.name} style={{
                     background: i % 2 === 0 ? 'var(--surface-0)' : 'var(--surface-1)',
                     borderBottom: '1px solid var(--border-sm)',
@@ -209,20 +303,48 @@ function ConnectionsCard({ project }: { project: string }) {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">{c.createdBy}</td>
+                    {admin && (
+                      <td className="px-4 py-2.5 text-xs">
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button onClick={() => runTest(c.name)} title="Test reachability"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-0.5"
+                            style={{ background: 'var(--surface-2)', border: '1px solid var(--border-sm)', color: 'var(--subtle-text)' }}>
+                            <PlugZap className="w-3 h-3" /> Test
+                          </button>
+                          <button onClick={() => del.mutate(c.name)} disabled={busy} title="Delete connection"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 disabled:opacity-50"
+                            style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+                            <Trash2 className="w-3 h-3" /> {busy ? '…' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>
+          {probe && (
+            <p className="text-[11px] rounded-lg px-3 py-2 font-mono"
+              style={probe.ok
+                ? { background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }
+                : { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+              {probe.name}: {probe.ok ? 'reachable' : 'unreachable'} — {probe.detail}
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground">
-            Connections are created from the CLI (secrets never touch the dashboard):{' '}
+            Secret values are stored encrypted and never returned to the browser — the dashboard
+            writes them through the same path as{' '}
             <code className="font-mono" style={{ color: 'var(--accent-text)' }}>exa connection create</code>.
           </p>
         </div>
       ) : (
         <EmptyState icon={Plug} title="No connections yet"
-          description="Create one with `exa connection create` — secret-backed connections are managed via the CLI." />
+          description={admin
+            ? 'Add a project-scoped S3 / URI / dataplane connection with “New connection”.'
+            : 'No connections defined. An admin can add one, or use `exa connection create`.'} />
       )}
+      {showNew && <CreateConnectionModal project={project} onClose={() => setShowNew(false)} />}
     </SectionCard>
   )
 }
@@ -286,11 +408,96 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
   )
 }
 
+function BindStorageModal({ project, onClose }: { project: string; onClose: () => void }) {
+  const { data: conns } = useConnections(project)
+  const [connectionRef, setConnectionRef] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const bind = useBindStorage(project)
+
+  const handleSubmit = async () => {
+    setError(null)
+    try {
+      await bind.mutateAsync(connectionRef ? { connectionRef } : {})
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to bind storage')
+    }
+  }
+
+  const cli = `exa project storage ${project}` + (connectionRef ? ` --connection ${connectionRef}` : '')
+
+  return (
+    <Modal title="Provision / Bind Storage" cli={cli} onClose={onClose} onSubmit={handleSubmit}
+      submitting={bind.isPending} disabled={false} error={error}>
+      <p className="text-xs text-muted-foreground">
+        Ensures the per-project MinIO storage layout exists and (optionally) binds one of this
+        project's connections to it.
+      </p>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Connection (optional)</label>
+        <select value={connectionRef} onChange={e => setConnectionRef(e.target.value)}
+          className="w-full rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}>
+          <option value="">— none (provision only) —</option>
+          {(conns ?? []).map(c => <option key={c.name} value={c.name}>{c.name} ({c.kind})</option>)}
+        </select>
+      </div>
+    </Modal>
+  )
+}
+
+function StorageCard({ project, storage, admin, onBind }: {
+  project: string
+  storage: { bucket: string; prefix: string; quotaGb: number | null; usedBytes: number; connectionRef: string | null } | null | undefined
+  admin: boolean
+  onBind: () => void
+}) {
+  const bindBtn = admin ? (
+    <button onClick={onBind}
+      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium"
+      style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+      <PlugZap className="w-3 h-3" /> {storage ? 'Bind connection' : 'Provision storage'}
+    </button>
+  ) : undefined
+  void project
+  return (
+    <SectionCard icon={HardDrive} title="Storage" action={bindBtn}>
+      {storage ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            <QuotaMetric label="Used" value={Number((storage.usedBytes / 1e9).toFixed(2))} unit="GB" />
+            <QuotaMetric label="Quota" value={storage.quotaGb ?? 0} unit="GB" />
+            <div>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Connection</p>
+              <p className="text-sm font-mono">{storage.connectionRef ?? '—'}</p>
+            </div>
+          </div>
+          <p className="text-xs font-mono text-muted-foreground break-all">
+            s3://{storage.bucket}/{storage.prefix} · {bytesToGb(storage.usedBytes)} used ({storageUsagePct(storage)}% of quota)
+          </p>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+            <div className="h-full rounded-full"
+              style={{ width: `${storageUsagePct(storage)}%`, background: 'oklch(0.64 0.20 265)' }} />
+          </div>
+        </div>
+      ) : (
+        <EmptyState icon={HardDrive} title="No storage provisioned"
+          description={admin
+            ? 'Provision the per-project MinIO layout with “Provision storage”.'
+            : 'No project storage yet. An admin can provision it, or use `exa project storage`.'} />
+      )}
+    </SectionCard>
+  )
+}
+
 export function ProjectDetail() {
   const { name } = useParams<{ name: string }>()
+  const navigate = useNavigate()
   const { data, isLoading, error } = useProject(name ?? '')
-  const [modal, setModal] = useState<'resource' | 'member' | null>(null)
+  const [modal, setModal] = useState<'resource' | 'member' | 'storage' | null>(null)
   const admin = isAdmin()
+  const removeMember = useRemoveMember(name ?? '')
+  const delProject = useDeleteProject()
 
   if (isLoading) return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
@@ -396,28 +603,8 @@ export function ProjectDetail() {
         )}
       </SectionCard>
 
-      {/* Storage (P6) */}
-      {data.storage && (
-        <SectionCard icon={HardDrive} title="Storage">
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              <QuotaMetric label="Used" value={Number((data.storage.usedBytes / 1e9).toFixed(2))} unit="GB" />
-              <QuotaMetric label="Quota" value={data.storage.quotaGb ?? 0} unit="GB" />
-              <div>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Connection</p>
-                <p className="text-sm font-mono">{data.storage.connectionRef ?? '—'}</p>
-              </div>
-            </div>
-            <p className="text-xs font-mono text-muted-foreground break-all">
-              s3://{data.storage.bucket}/{data.storage.prefix} · {bytesToGb(data.storage.usedBytes)} used ({storageUsagePct(data.storage)}% of quota)
-            </p>
-            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
-              <div className="h-full rounded-full"
-                style={{ width: `${storageUsagePct(data.storage)}%`, background: 'oklch(0.64 0.20 265)' }} />
-            </div>
-          </div>
-        </SectionCard>
-      )}
+      {/* Storage (P6) — admins can provision + bind a connection */}
+      <StorageCard project={data.name} storage={data.storage} admin={admin} onBind={() => setModal('storage')} />
 
       {/* Pipelines (P7): the project's Prefect training + Ray Serve serving surfaces */}
       {data.pipelines && (data.pipelines.prefect || data.pipelines.rayserve) && (
@@ -475,13 +662,15 @@ export function ProjectDetail() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
-                  {['Subject', 'Role', 'Granted by', 'When'].map(h => (
-                    <th key={h} className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground">{h}</th>
+                  {['Subject', 'Role', 'Granted by', 'When', ...(admin ? [''] : [])].map((h, i) => (
+                    <th key={h || `act-${i}`} className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {data.members.map((m, i) => (
+                {data.members.map((m, i) => {
+                  const busy = removeMember.isPending && removeMember.variables === m.subject
+                  return (
                   <tr key={`${m.subject}-${i}`} style={{
                     background: i % 2 === 0 ? 'var(--surface-0)' : 'var(--surface-1)',
                     borderBottom: '1px solid var(--border-sm)',
@@ -490,8 +679,17 @@ export function ProjectDetail() {
                     <td className="px-4 py-2.5 text-xs">{m.role}</td>
                     <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">{m.grantedBy}</td>
                     <td className="px-4 py-2.5 text-xs text-muted-foreground">{String(m.when).slice(0, 19).replace('T', ' ')}</td>
+                    {admin && (
+                      <td className="px-4 py-2.5 text-xs text-right">
+                        <button onClick={() => removeMember.mutate(m.subject)} disabled={busy} title="Remove member"
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 disabled:opacity-50"
+                          style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+                          <X className="w-3 h-3" /> {busy ? '…' : 'Remove'}
+                        </button>
+                      </td>
+                    )}
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>
@@ -500,14 +698,42 @@ export function ProjectDetail() {
         )}
       </SectionCard>
 
-      {/* Connections (read-only — created via CLI) */}
-      <ConnectionsCard project={data.name} />
+      {/* Connections (viewers read; admins create/delete/test) */}
+      <ConnectionsCard project={data.name} admin={admin} />
 
       {/* Workbenches (viewers see status; admins can start/stop) */}
       <WorkbenchesCard project={data.name} admin={admin} />
 
+      {/* Danger zone — delete the project grouping (admin) */}
+      {admin && (
+        <SectionCard icon={Trash2} title="Danger zone">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-xs text-muted-foreground max-w-md">
+              Delete this project and its membership/resource groupings. The underlying models,
+              connections, and storage are <strong>not</strong> deleted — only the project.
+            </p>
+            <button
+              onClick={async () => {
+                if (!window.confirm(`Delete project "${data.name}"? This cannot be undone.`)) return
+                try {
+                  await delProject.mutateAsync(data.name)
+                  navigate('/projects')
+                } catch {
+                  /* surfaced by the mutation error state */
+                }
+              }}
+              disabled={delProject.isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium shrink-0 disabled:opacity-50"
+              style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 30%)', color: 'var(--error-text)' }}>
+              <Trash2 className="w-3.5 h-3.5" /> {delProject.isPending ? 'Deleting…' : 'Delete project'}
+            </button>
+          </div>
+        </SectionCard>
+      )}
+
       {modal === 'resource' && admin && <AssignResourceModal name={data.name} onClose={() => setModal(null)} />}
       {modal === 'member' && admin && <AddMemberModal name={data.name} onClose={() => setModal(null)} />}
+      {modal === 'storage' && admin && <BindStorageModal project={data.name} onClose={() => setModal(null)} />}
     </div>
   )
 }

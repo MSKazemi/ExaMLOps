@@ -28,7 +28,7 @@ def resolve_project(model: str, *, explicit: str | None = None) -> str | None:
     if env:
         return env
     try:
-        from examlops.platform_db import get_project_for_model
+        from examlops.data.projects import get_project_for_model
 
         return get_project_for_model(model)
     except Exception:

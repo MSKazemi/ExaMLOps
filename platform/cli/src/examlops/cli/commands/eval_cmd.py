@@ -117,7 +117,7 @@ def gate_set(
     mode: str = typer.Option("block", "--mode", help="block | warn"),
 ) -> None:
     """Configure the regression gate for a model."""
-    from examlops.platform_db import set_eval_gate
+    from examlops.data.evaluation import set_eval_gate
 
     metrics = []
     for spec in metric:
@@ -137,7 +137,7 @@ def gate_set(
 @gate_app.command("show")
 def gate_show(model: str = typer.Argument(..., help="Model name")) -> None:
     """Show the configured gate for a model."""
-    from examlops.platform_db import get_eval_gate
+    from examlops.data.evaluation import get_eval_gate
 
     gate = get_eval_gate(model)
     if gate is None:

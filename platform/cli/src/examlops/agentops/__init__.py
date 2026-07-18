@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 # Default detection thresholds — overridable per call. Kept conservative so a
 # normal Skipper session (a handful of tool calls) never trips them.
@@ -278,9 +278,65 @@ class SessionRecorder:
         )
 
 
+class CircuitBreakerTripped(RuntimeError):
+    """Raised in-loop when a critical agent anomaly is detected (item 4.4)."""
+
+    def __init__(self, anomaly: Anomaly) -> None:
+        super().__init__(f"agent circuit-breaker tripped: {anomaly.code} — {anomaly.detail}")
+        self.anomaly = anomaly
+
+
+@dataclass
+class AgentCircuitBreaker:
+    """In-loop circuit-breaker wiring the pure detection into a live agent graph (item 4.4).
+
+    Feed each tool step as it happens with :meth:`guard`; the breaker re-runs anomaly detection over
+    the accumulating steps and **aborts the loop** (raises :class:`CircuitBreakerTripped`) the moment
+    a *critical* anomaly appears — a runaway loop, step blow-up, or all-errors burst — instead of only
+    noticing post-hoc. ``cost_overrun`` (a warning) trips only when ``abort_on_cost`` is set. This is
+    the guardrail that stops an autopilot/agent from burning GPU-hours or looping forever.
+    """
+
+    cost_budget: float = COST_OVERRUN_DEFAULT
+    loop_threshold: int = LOOP_REPEAT_THRESHOLD
+    step_threshold: int = STEP_BLOWUP_THRESHOLD
+    abort_on_cost: bool = True
+    steps: list[AgentStep] = field(default_factory=list)
+    tripped_by: Anomaly | None = None
+
+    def _critical(self) -> Anomaly | None:
+        anomalies = detect_anomalies_from_steps(
+            self.steps,
+            cost_budget=self.cost_budget,
+            loop_threshold=self.loop_threshold,
+            step_threshold=self.step_threshold,
+        )
+        for a in anomalies:
+            if a.severity == "critical" or (a.code == "cost_overrun" and self.abort_on_cost):
+                return a
+        return None
+
+    def check(self) -> Anomaly | None:
+        """Return the abort-worthy anomaly over the steps so far, or None."""
+        return self._critical()
+
+    def tripped(self) -> bool:
+        return self.tripped_by is not None
+
+    def guard(self, step: AgentStep) -> None:
+        """Record ``step`` and abort the loop if it pushes the session into a critical anomaly."""
+        self.steps.append(step)
+        anomaly = self._critical()
+        if anomaly is not None:
+            self.tripped_by = anomaly
+            raise CircuitBreakerTripped(anomaly)
+
+
 __all__ = [
     "AgentStep",
     "Anomaly",
+    "AgentCircuitBreaker",
+    "CircuitBreakerTripped",
     "SessionRecorder",
     "record_session",
     "detect_anomalies",
