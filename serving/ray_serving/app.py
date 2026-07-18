@@ -102,7 +102,12 @@ RELOAD_POLL_SECONDS = int(os.getenv("RAY_RELOAD_POLL_SECONDS", "60"))
 # path indefinitely. setdefault ⇒ operator overrides win.
 os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", os.getenv("RAY_MLFLOW_TIMEOUT", "10"))
 os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", os.getenv("RAY_MLFLOW_MAX_RETRIES", "3"))
-os.environ.setdefault("MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR", "0.5")
+# MLflow 3.x types this env var as int (default 2); a float like "0.5" raises
+# ValueError in every REST call ("invalid literal for int()"), silently killing the
+# alias-change scan so the hot set never fills. Keep it an integer.
+os.environ.setdefault(
+    "MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR", os.getenv("RAY_MLFLOW_BACKOFF_FACTOR", "1")
+)
 
 # Hard ceiling on a single model.predict() so a pathological/hung model can't pin
 # a replica worker forever (num_cpus=1 ⇒ a hang otherwise saturates the deployment).
