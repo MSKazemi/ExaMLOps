@@ -37,6 +37,12 @@ analysis = [
 finops = [
     "simpleeval>=1.0",
 ]
+# OIDC SSO access-token validation (examlops.oidc, Phase 2 item 2.1). PyJWT is
+# imported lazily inside oidc.py, so the core CLI works without it; installing
+# this extra enables RS256 token verification against a configured JWKS.
+oidc = [
+    "pyjwt>=2.10",
+]
 
 [project.scripts]
 exa = "examlops.cli.main:app"

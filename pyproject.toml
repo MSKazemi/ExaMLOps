@@ -73,6 +73,10 @@ dev = [
                         # `examlops[finops]` extra, but CI installs only root `.[dev]`;
                         # without it here 17 provider/policy tests that exercise the
                         # expression path fail in CI (ProviderError) while passing locally.
+    "pyjwt>=2.10",      # OIDC SSO token validation (examlops.oidc, Phase 2 item 2.1).
+                        # The runtime dep is the optional `examlops[oidc]` extra, but CI
+                        # installs only root `.[dev]`; without it here tests/unit/test_oidc.py
+                        # fails collection with ModuleNotFoundError: No module named 'jwt'.
 ]
 
 # ─── Tool config ─────────────────────────────────────────────────────────────
