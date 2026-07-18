@@ -15,6 +15,11 @@ dependencies = [
     "pyyaml>=6.0",
     "prefect>=3.0.0,<4.0",
     "paramiko>=3.5.0",  # SSH transport for the HPC scheduler adapter (Flux/Slurm over SSH)
+    # Transitive-dependency pin (prefect pulls fastapi): cap <0.137 so that installing this
+    # package inside the ray-serving image does not upgrade the FastAPI that ray 2.55.0's
+    # @serve.ingress must cloudpickle. fastapi>=0.137 has an unpicklable _thread.lock and
+    # crash-loops the serve container ("cannot pickle '_thread.lock' object"). 0.136.x works.
+    "fastapi>=0.100.0,<0.137",
 ]
 
 [tool.setuptools.packages.find]
