@@ -230,9 +230,24 @@ class InferencePipelineIngress:
 
 # Apply Ray Serve decorators after class definitions so the plain class names
 # remain accessible for unit testing (static methods, etc.).
-_ModelRouterDeployment = serve.deployment(num_replicas=1)(ModelRouter)
-_FeatureTransformerDeployment = serve.deployment(num_replicas=1)(FeatureTransformer)
-_IngressDeployment = serve.deployment(num_replicas=1)(
+#
+# num_cpus=0: these three deployments are I/O-bound orchestrators — they only
+# `await` (Ray-handle calls + an httpx POST to /predict), never compute — so
+# reserving a full CPU each is wrong and, on a CPU-capped node, starves them:
+# multi_model_server (num_cpus=1) + ModelRouter/FeatureTransformer/Ingress at 1
+# CPU each = 4+ CPUs, which cannot fit the default 2-CPU container limit, leaving
+# FeatureTransformer + Ingress permanently UPDATING and /infer-pipeline hanging.
+# num_cpus=0 is Ray Serve's recommended setting for lightweight routing
+# deployments and makes the topology fit any node. Only the compute-bound
+# model server keeps its dedicated core.
+_PIPELINE_ACTOR_OPTS = {"num_cpus": 0}
+_ModelRouterDeployment = serve.deployment(num_replicas=1, ray_actor_options=_PIPELINE_ACTOR_OPTS)(
+    ModelRouter
+)
+_FeatureTransformerDeployment = serve.deployment(
+    num_replicas=1, ray_actor_options=_PIPELINE_ACTOR_OPTS
+)(FeatureTransformer)
+_IngressDeployment = serve.deployment(num_replicas=1, ray_actor_options=_PIPELINE_ACTOR_OPTS)(
     serve.ingress(_ingress_app)(InferencePipelineIngress)
 )
 
