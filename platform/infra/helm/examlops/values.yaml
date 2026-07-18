@@ -1,0 +1,107 @@
+# ExaMLOps enterprise reference values (Phase 1 item 1.1).
+# Every tier is stateless + multi-replica; state lives in HA Postgres + distributed MinIO (below).
+# NO container_name pins, NO hostPath, NO privileged — pods are schedulable + replaceable anywhere.
+
+global:
+  imageRegistry: ""            # e.g. registry.example.org/ ; blank = docker hub-style
+  imagePullSecrets: []
+  # Cluster + tenant labels stamped into config (mirrors Prometheus external_labels).
+  cluster: prod
+  tenant: default
+
+# ── shared secret (created out-of-band; NEVER templated with real values) ──────────────────────
+# Provide a Kubernetes Secret with these keys and reference it here. The chart never embeds secrets.
+existingSecret: examlops-secrets   # keys: CONTROL_PLANE_TOKEN, DASHBOARD_JWT_SECRET,
+                                   #       DASHBOARD_SECRET_KEY, DASHBOARD_ADMIN_PASSWORD,
+                                   #       DASHBOARD_VIEWER_PASSWORD, EXAMLOPS_SECRETS_KEYS, DATABASE_URL
+
+# ── external managed state (referenced, not deployed by this chart) ────────────────────────────
+postgres:
+  # Recommended: CloudNativePG `Cluster` CR (3 instances, sync replicas). See README. The app reads
+  # DATABASE_URL from existingSecret; this block documents the expected topology.
+  host: examlops-pg-rw          # CloudNativePG read-write service
+  readHost: examlops-pg-ro
+  database: examlops
+minio:
+  # Recommended: MinIO distributed mode (4+ nodes, erasure coding) or an S3-compatible service.
+  endpoint: http://minio:9000
+  bucket: examlops
+
+ingress:
+  enabled: true
+  className: nginx
+  host: examlops.example.org
+  tls:
+    enabled: true
+    secretName: examlops-tls     # cert-manager-issued; TLS terminates here
+
+# ── control plane (the write API — must scale + survive host loss) ─────────────────────────────
+controlPlane:
+  replicaCount: 3
+  image:
+    repository: examlops-control-plane
+    tag: ""                      # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  port: 8002
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 2
+  env:
+    # Coordination + admission are externalized so replicas don't double-fire (items 1.2/1.5).
+    EXAMLOPS_COORDINATOR: redis
+    EXAMLOPS_EVENT_PUBLISHER: nats
+  extraEnv: []
+
+dashboard:
+  replicaCount: 2
+  image:
+    repository: examlops-dashboard
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8099
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+agent:
+  replicaCount: 2
+  image:
+    repository: examlops-agent
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 18004
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+# ── pod hardening applied to every tier ────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: ["ALL"]}
+
+# Spread replicas across nodes/zones so a host loss can't take a whole tier down.
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+
+serviceAccount:
+  create: true
+  name: ""

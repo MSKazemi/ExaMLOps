@@ -6,6 +6,7 @@ import os
 import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/features", tags=["features"])
@@ -35,8 +36,7 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
 @router.get("/versions")
 async def list_versions(_=Depends(_viewer)) -> list[dict]:
     """Return the last 50 feature versions across all models."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_db_path())
     _ensure_table(conn)
     rows = conn.execute(
         "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"
@@ -49,8 +49,7 @@ async def list_versions(_=Depends(_viewer)) -> list[dict]:
 @router.get("/versions/{model}")
 async def list_versions_for_model(model: str, _=Depends(_viewer)) -> list[dict]:
     """Return feature versions for a specific model."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_db_path())
     _ensure_table(conn)
     rows = conn.execute(
         "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"

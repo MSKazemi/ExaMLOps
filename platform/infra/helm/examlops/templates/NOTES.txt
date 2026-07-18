@@ -1,0 +1,20 @@
+ExaMLOps {{ .Chart.AppVersion }} deployed as release {{ .Release.Name }} (cluster={{ .Values.global.cluster }}).
+
+Tiers (all stateless, multi-replica):
+  control-plane  x{{ .Values.controlPlane.replicaCount }} (HPA {{ .Values.controlPlane.autoscaling.minReplicas }}-{{ .Values.controlPlane.autoscaling.maxReplicas }})
+  dashboard      x{{ .Values.dashboard.replicaCount }}
+  agent          x{{ .Values.agent.replicaCount }}
+
+{{ if .Values.ingress.enabled -}}
+Reach it at: https://{{ .Values.ingress.host }}/
+{{- else -}}
+No ingress enabled — port-forward a Service to reach it.
+{{- end }}
+
+State (managed OUT of this chart — see the chart README):
+  Postgres : {{ .Values.postgres.host }} (recommend CloudNativePG, 3 instances)
+  MinIO    : {{ .Values.minio.endpoint }} (recommend distributed mode, erasure-coded)
+
+Coordination is externalized (items 1.2/1.3): set EXAMLOPS_COORDINATOR=redis and
+EXAMLOPS_EVENT_PUBLISHER=nats (+ their endpoints in the Secret) once Redis/NATS are up,
+so the {{ .Values.controlPlane.replicaCount }} control-plane replicas don't double-fire.

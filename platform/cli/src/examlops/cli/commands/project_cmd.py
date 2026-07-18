@@ -29,7 +29,9 @@ import typer
 import yaml
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.projects import (
     add_project_member,
     archive_project,
     assign_resource_to_project,
@@ -41,14 +43,12 @@ from examlops.platform_db import (
     get_project_full,
     get_project_pipelines,
     get_project_storage,
-    init_db,
     list_project_members,
     list_project_models,
     list_projects,
     refresh_project_usage,
     remove_project_member,
     update_project_quota,
-    write_audit_event,
 )
 
 app = typer.Typer(
@@ -813,7 +813,7 @@ def access(
     obj: str | None = typer.Option(None, "--object", help="Show all grants on an object"),
 ) -> None:
     """List RBAC relations (by subject and/or object)."""
-    from examlops.platform_db import list_relations
+    from examlops.data.governance import list_relations
 
     rows = list_relations(subject=subject, obj=obj)
     if _output.json_mode:

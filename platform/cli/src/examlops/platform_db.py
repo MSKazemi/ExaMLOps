@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import os
 import sqlite3
+import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -44,7 +47,104 @@ def write_retry[T](fn: Callable[[], T]) -> T:
     return _rdb.write_retry(fn)
 
 
-def init_db() -> None:
+# --- Central write-retry coverage (enterprise-readiness Phase 0, item 0.4) -------------------
+# Every mutating helper in this module must survive a transient ``database is locked`` past the
+# busy_timeout, and must never let a lost write vanish inside a fire-and-forget caller. Rather than
+# hand-decorate ~80 helpers (churn + drift as new ones land), :func:`_install_write_retry` runs once
+# at import and transparently wraps every public helper whose source performs a write, skipping the
+# two that already call :func:`write_retry` internally (the audit hash-chain + atomic drift claim).
+# The wrap is idempotent-safe: these helpers open a fresh ``get_db()`` transaction, so a lock error
+# means nothing committed and re-running the whole function cannot double-write.
+
+_WRITE_MARKERS = ("INSERT ", "UPDATE ", "DELETE ", " REPLACE", "OR REPLACE", "BEGIN IMMEDIATE")
+
+
+def _wrap_mutating[T](fn: Callable[..., T]) -> Callable[..., T]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> T:
+        return _rdb.write_retry(lambda: fn(*args, **kwargs))
+
+    wrapper._wr_wrapped = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def install_write_retry(module_name: str) -> None:
+    """Wrap all mutating public helpers **in ``module_name``** with :func:`write_retry` (item 0.4).
+
+    Auto-discovers writers by source inspection so coverage is self-maintaining: a new mutating
+    helper is protected the moment it lands, no allow-list to update. Degrades to a no-op if source
+    is unavailable (frozen/zipimport). Generalized (parametric on the module) so a relocated
+    per-domain module (item 4.5 body relocation) can call ``install_write_retry(__name__)`` to
+    protect its own mutating helpers exactly as ``platform_db`` does — the auto-wrapper is no longer
+    hard-coupled to this one module."""
+    mod = sys.modules[module_name]
+    for name, obj in list(vars(mod).items()):
+        if name.startswith("_") or not inspect.isfunction(obj):
+            continue
+        if getattr(obj, "__module__", None) != module_name or getattr(obj, "_wr_wrapped", False):
+            continue
+        try:
+            src = inspect.getsource(obj)
+        except (OSError, TypeError):  # pragma: no cover - frozen/zipimport fallback
+            continue
+        if not any(marker in src for marker in _WRITE_MARKERS):
+            continue  # pure reader — nothing to protect
+        if "write_retry(" in src:
+            continue  # already self-retries (write_audit_event, claim_drift_trigger)
+        setattr(mod, name, _wrap_mutating(obj))
+
+
+def _install_write_retry() -> None:  # back-compat wrapper for this module
+    install_write_retry(__name__)
+
+
+@contextmanager
+def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
+    """A hardened connection holding an IMMEDIATE (RESERVED) write lock for the whole txn.
+
+    Use this for read-modify-write sequences that must be atomic against other *writer
+    processes* — chiefly the audit hash-chain, where reading the current head and appending
+    the next link must not interleave with another writer (or the chain forks: two rows chain
+    off the same parent and :func:`verify_audit_chain` reports a prev_hash mismatch). The plain
+    :func:`get_db` opens a *deferred* transaction, so its head-read runs before any lock is
+    held; ``BEGIN IMMEDIATE`` takes the RESERVED lock up front instead. Pair with
+    :func:`write_retry` so a lost lock race (``database is locked`` after busy_timeout) retries
+    the whole transaction rather than corrupting or dropping the write.
+    """
+    conn = _rdb.connect(_db_path())
+    conn.isolation_level = None  # drive BEGIN/COMMIT explicitly (no implicit deferred txn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+# Process-level sentinel of DB paths whose schema has been created this process, so the full
+# CREATE-TABLE-IF-NOT-EXISTS script + column migrations run once — not on every one of the ~165
+# defensive `init_db()` calls, which otherwise churned a write lock on hot read paths (item 0.5/QW8).
+_INITIALIZED_PATHS: set[str] = set()
+
+
+def init_db(*, force: bool = False) -> None:
+    """Create the platform schema. Idempotent, and near-free after the first call per DB path.
+
+    The 100+-table DDL and additive column migrations run once per process per ``PLATFORM_DB``
+    path (guarded by :data:`_INITIALIZED_PATHS`); subsequent calls short-circuit. Pass
+    ``force=True`` to re-run regardless — e.g. after intentionally dropping tables in a test.
+    In-memory DBs are never cached, since each new connection is a distinct database.
+    """
+    path = _db_path()
+    cacheable = path not in (":memory:", "") and not path.startswith("file::memory:")
+    if not force and cacheable and path in _INITIALIZED_PATHS:
+        return
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS audit_events (
@@ -153,6 +253,10 @@ def init_db() -> None:
                 partition   TEXT,                   -- Slurm partition / Flux queue
                 captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Capacity/availability queries filter by (cluster, state); index it so fleet-scale
+            -- node snapshots don't force a full scan (Phase 0 bonus win).
+            CREATE INDEX IF NOT EXISTS ix_hpc_nodes_cluster_state
+                ON hpc_nodes (cluster, state);
             CREATE TABLE IF NOT EXISTS hpc_clusters (
                 name            TEXT PRIMARY KEY,
                 scheduler       TEXT NOT NULL,        -- flux|slurm|unmanaged|mock
@@ -599,6 +703,70 @@ def init_db() -> None:
                 value       TEXT NOT NULL,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Phase 1 item 1.2 — externalized coordination primitives (distributed lock,
+            -- idempotency dedup, fixed-window rate limit). DB-backed so they work cross-PROCESS
+            -- today (CLI + control-plane + agent share platform.db); the same Coordinator seam
+            -- swaps to Redis for cross-HOST HA with no caller change.
+            CREATE TABLE IF NOT EXISTS coord_locks (
+                key        TEXT PRIMARY KEY,
+                holder     TEXT NOT NULL,
+                expires_at DATETIME NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS coord_idempotency (
+                key        TEXT PRIMARY KEY,
+                first_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS coord_rate (
+                bucket       TEXT PRIMARY KEY,
+                window_start DATETIME NOT NULL,
+                count        INTEGER NOT NULL DEFAULT 0
+            );
+            -- Phase 1 item 1.5 — durable admission-control queue between every trigger
+            -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
+            -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the
+            -- cluster. Survives a restart; a crashed worker's 'running' item is reclaimable by TTL.
+            CREATE TABLE IF NOT EXISTS admission_queue (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                project      TEXT,
+                kind         TEXT NOT NULL,           -- retrain | pipeline | ...
+                payload      TEXT NOT NULL,           -- JSON
+                priority     INTEGER NOT NULL DEFAULT 0,   -- higher runs first within a tenant
+                state        TEXT NOT NULL DEFAULT 'queued', -- queued|running|done|rejected|failed
+                enqueued_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at   DATETIME,
+                finished_at  DATETIME,
+                reason       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_admission_state_tenant
+                ON admission_queue (state, tenant, priority, id);
+            -- Phase 1 item 1.3 — transactional outbox for the NovaFabric event backbone. A domain
+            -- write and its event enqueue commit together (same DB txn); a relay then publishes each
+            -- row exactly once to the broker (NATS/Kafka/Redis-Streams) and stamps published_at.
+            -- Replaces O(models×replicas) polling + the in-process realtime singleton.
+            CREATE TABLE IF NOT EXISTS event_outbox (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic        TEXT NOT NULL,
+                payload      TEXT NOT NULL,           -- JSON
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                published_at DATETIME,                -- NULL until relayed
+                claimed_at   DATETIME,                -- set when a relay claims it (visibility lease)
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                last_error   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_event_outbox_unpublished
+                ON event_outbox (published_at, id);
+            -- Phase 0 item 0.12 — single-row distributed cycle lease so overlapping cron
+            -- runs (or multiple agent replicas) don't scan/act concurrently. TTL-based so a
+            -- crashed holder's lease auto-expires. Correctness of no-double-retrain is already
+            -- guaranteed by claim_drift_trigger; this is the coarser cycle-level guard.
+            CREATE TABLE IF NOT EXISTS autopilot_lease (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                holder      TEXT NOT NULL,
+                acquired_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at  DATETIME NOT NULL
+            );
             -- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013).
             CREATE TABLE IF NOT EXISTS model_signatures (
                 model       TEXT NOT NULL,
@@ -635,6 +803,7 @@ def init_db() -> None:
                 path        TEXT NOT NULL,
                 tenant      TEXT NOT NULL DEFAULT 'default',
                 ciphertext  TEXT NOT NULL,
+                key_id      TEXT,                   -- KEK the ciphertext is wrapped under (2.3)
                 version     INTEGER NOT NULL DEFAULT 1,
                 updated_by  TEXT,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1355,6 +1524,8 @@ def init_db() -> None:
                 ON repro_bundles (model, version, bundle_version);
         """)
         _migrate_columns(conn)
+    if cacheable:
+        _INITIALIZED_PATHS.add(path)
 
 
 # Idempotent additive column migrations for tables that predate a feature.
@@ -1404,6 +1575,11 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "model_costs": {
         "project": "TEXT",
     },
+    # D7/2.3 envelope encryption: which KEK (key_id) each secret is wrapped under, so keys can be
+    # rotated online and old ciphertext rewrapped. NULL = the legacy single-key era.
+    "secrets_store": {
+        "key_id": "TEXT",
+    },
 }
 
 
@@ -1446,427 +1622,89 @@ def _audit_hash(prev_hash: str, canonical: str) -> str:
     return hashlib.sha256(f"{prev_hash}‖{canonical}".encode()).hexdigest()
 
 
-def write_audit_event(
-    source: str,
-    actor: str | None,
-    action: str,
-    target: str | None,
-    details: dict[str, Any] | None = None,
-    *,
-    tenant: str = "default",
-) -> None:
-    """Append a tamper-evident, hash-chained audit event (D4, R1/R7).
-
-    Each row stores ``prev_hash`` and ``hash = H(prev_hash ‖ canonical(event))`` so any
-    edit/deletion/reordering breaks the chain (verify with :func:`verify_audit_chain`).
-    The table is append-only at the DB level (triggers). Chaining degrades gracefully:
-    if the hash columns are missing (older DB pre-migration) the event is still written.
-    """
-    details_json = json.dumps(details) if details else None
-    with get_db() as conn:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
-        if not {"prev_hash", "hash"} <= cols:  # pre-migration DB — plain append
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) "
-                "VALUES (?,?,?,?,?)",
-                (source, actor, action, target, details_json),
-            )
-            return
-        # Chain over the current head. CURRENT_TIMESTAMP is resolved here so the stored
-        # ts matches what we hash.
-        ts = conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
-        head = conn.execute(
-            "SELECT hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        prev_hash = head["hash"] if head and head["hash"] else "GENESIS"
-        canonical = _audit_canonical(source, actor, action, target, details_json, tenant, ts)
-        h = _audit_hash(prev_hash, canonical)
-        conn.execute(
-            "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
-            "prev_hash, hash, ts) VALUES (?,?,?,?,?,?,?,?,?)",
-            (source, actor, action, target, details_json, tenant, prev_hash, h, ts),
-        )
 
 
-def write_drift_snapshot(model: str, alias: str, prediction: float, job_id: str | None) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO drift_snapshots (model, alias, prediction, job_id) VALUES (?,?,?,?)",
-            (model, alias, prediction, job_id),
-        )
 
 
-def set_traffic_rules(model: str, rules: dict[str, int], updated_by: str | None = None) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO traffic_rules (model, rules, updated_by) VALUES (?,?,?)",
-            (model, json.dumps(rules), updated_by),
-        )
+# Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
+# relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
+from examlops.data.serving import (disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, get_device_pools, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_promotion_rule, set_traffic_rules)  # noqa: E402, E501, F401, I001
 
 
-def get_traffic_rules(model: str) -> dict[str, int] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (model,)).fetchone()
-    if row is None:
-        return None
-    return json.loads(row["rules"])
 
 
-def set_promotion_rule(
-    model: str,
-    metric: str,
-    operator: str,
-    threshold: float,
-    from_alias: str = "Staging",
-    to_alias: str = "Production",
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO promotion_rules
-               (model, metric, operator, threshold, from_alias, to_alias)
-               VALUES (?,?,?,?,?,?)""",
-            (model, metric, operator, threshold, from_alias, to_alias),
-        )
 
 
-def get_promotion_rule(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM promotion_rules WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def set_drift_baseline(model: str, stats: dict[str, float]) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO drift_baselines (model, stats) VALUES (?,?)",
-            (model, json.dumps(stats)),
-        )
 
 
-def get_drift_baseline(model: str) -> dict[str, float] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT stats FROM drift_baselines WHERE model=?", (model,)).fetchone()
-    return json.loads(row["stats"]) if row else None
 
 
-def write_input_snapshot(
-    model: str, alias: str, emb_norm: float, emb_mean: float, emb_std: float, job_id: str | None
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO input_snapshots (model, alias, emb_norm, emb_mean, emb_std, job_id) "
-            "VALUES (?,?,?,?,?,?)",
-            (model, alias, emb_norm, emb_mean, emb_std, job_id),
-        )
 
 
-def set_input_baseline(model: str, stats: dict[str, Any]) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO input_baselines (model, stats) VALUES (?,?)",
-            (model, json.dumps(stats)),
-        )
 
 
-def get_input_baseline(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT stats FROM input_baselines WHERE model=?", (model,)).fetchone()
-    return json.loads(row["stats"]) if row else None
 
 
-def set_drift_auto_retrain(
-    model: str,
-    enabled: bool,
-    min_z_score: float = 3.0,
-    dataset_name: str = "PM100Dataset",
-    cooldown_s: int = 3600,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO drift_auto_retrain
-               (model, enabled, min_z_score, dataset_name, cooldown_s)
-               VALUES (?,?,?,?,?)""",
-            (model, int(enabled), min_z_score, dataset_name, cooldown_s),
-        )
 
 
-def get_drift_auto_retrain(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM drift_auto_retrain WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_drift_auto_retrain() -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_drift_trigger(model: str) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE drift_auto_retrain SET last_triggered=CURRENT_TIMESTAMP WHERE model=?",
-            (model,),
-        )
+# High-volume, append-only, per-inference telemetry tables that grow unbounded and are safe to
+# TTL-prune. Deliberately EXCLUDES audit_events (tamper-evident hash chain — deleting rows breaks
+# verify_audit_chain) and model_costs / carbon_records (FinOps history must be retained). Item QW9.
+_PRUNABLE_TELEMETRY: tuple[str, ...] = ("drift_snapshots", "input_snapshots")
 
 
-def record_model_cost(
-    model_name: str,
-    version: int,
-    run_id: str | None,
-    job_id: str | None,
-    gpu_hours: float | None,
-    cost_usd: float | None,
-    project: str | None = None,
-) -> None:
-    import datetime
-
-    # Attribute the cost to the model's project (ADR 0086) when not passed explicitly.
-    if project is None:
-        project = get_project_for_model(model_name)
-    recorded_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_costs
-               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project),
-        )
 
 
-def get_model_costs(model_name: str) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
-            (model_name,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_hpc_job(
-    job_id: str,
-    scheduler: str,
-    flow_run_id: str | None,
-    model: str,
-    dataset: str,
-    nodes: int | None = None,
-    gpus: int | None = None,
-    cpus: int | None = None,
-    submit_time: str | None = None,
-    mlflow_run_id: str | None = None,
-) -> None:
-    """Insert (or upsert) an HPC job tracking row.
-
-    Idempotent on ``(scheduler, job_id)`` so a Prefect task retry that resubmits does
-    not create duplicate rows.
-    """
-    import datetime
-
-    submit_time = submit_time or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO hpc_jobs
-                   (job_id, scheduler, flow_run_id, model, dataset, state,
-                    submit_time, nodes, gpus, cpus, mlflow_run_id)
-               VALUES (?,?,?,?,?,'SUBMITTED',?,?,?,?,?)
-               ON CONFLICT(scheduler, job_id) DO UPDATE SET
-                   flow_run_id=excluded.flow_run_id,
-                   model=excluded.model,
-                   dataset=excluded.dataset,
-                   nodes=excluded.nodes,
-                   gpus=excluded.gpus,
-                   cpus=excluded.cpus,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (
-                job_id,
-                scheduler,
-                flow_run_id,
-                model,
-                dataset,
-                submit_time,
-                nodes,
-                gpus,
-                cpus,
-                mlflow_run_id,
-            ),
-        )
 
 
-def update_hpc_job(
-    job_id: str,
-    scheduler: str,
-    *,
-    state: str | None = None,
-    start_time: str | None = None,
-    end_time: str | None = None,
-    exit_code: int | None = None,
-    queue_seconds: float | None = None,
-    run_seconds: float | None = None,
-    mlflow_run_id: str | None = None,
-) -> None:
-    """Update mutable fields of an existing hpc_jobs row (no-op if none provided)."""
-    fields = {
-        "state": state,
-        "start_time": start_time,
-        "end_time": end_time,
-        "exit_code": exit_code,
-        "queue_seconds": queue_seconds,
-        "run_seconds": run_seconds,
-        "mlflow_run_id": mlflow_run_id,
-    }
-    sets = {k: v for k, v in fields.items() if v is not None}
-    if not sets:
-        return
-    assignments = ", ".join(f"{k}=?" for k in sets)
-    with get_db() as conn:
-        conn.execute(
-            f"UPDATE hpc_jobs SET {assignments}, updated_at=CURRENT_TIMESTAMP "
-            "WHERE scheduler=? AND job_id=?",
-            (*sets.values(), scheduler, job_id),
-        )
+# Coordination primitives (item 1.2) now LIVE in examlops.data.coordination (item 4.5 body
+# relocation); re-exported here for backward compatibility. data.coordination imports the shared
+# get_db/_immediate_write/write_retry defined above, so there is no import cycle.
+# noqa: E402, I001 — mid-module re-export must stay here (data.coordination needs get_db/etc.
+# defined above → no import cycle).
+from examlops.data.coordination import coord_check_and_set_idempotent, coord_rate_allow, coord_try_lock, coord_unlock  # noqa: E402, E501, F401, I001
+# admission helpers now LIVE in examlops.data.admission (item 4.5 body relocation); re-exported
+# for back-compat (data.admission imports get_db/etc. defined above → no cycle).
+from examlops.data.admission import admission_stats, claim_next_admission, complete_admission, enqueue_admission  # noqa: E402, E501, F401, I001
+# events helpers now LIVE in examlops.data.events (item 4.5 body relocation); re-exported
+# for back-compat (data.events imports get_db/etc. defined above → no cycle).
+from examlops.data.events import (claim_outbox_batch, create_federated_run, enqueue_event, get_federated_run, get_federated_sites, get_reasoning_trace, lineage_graph, lineage_impact, list_burst_events, list_federated_rounds, mark_event_failed, mark_event_published, outbox_stats, reasoning_usage_summary, record_burst_event, record_cache_event, record_federated_round, record_lineage_event, record_reasoning_usage, record_routing_event, record_structured_output_event, register_federated_site, routing_stats, store_reasoning_trace, structured_output_stats)  # noqa: E402, E501, F401, I001
 
 
-def get_hpc_jobs(model: str | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        if model:
-            rows = conn.execute(
-                "SELECT * FROM hpc_jobs WHERE model=? ORDER BY id DESC", (model,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_jobs ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_node_snapshot(cluster: str, scheduler: str, nodes: list[dict[str, Any]]) -> int:
-    """Replace the stored node inventory for ``cluster`` with a fresh snapshot.
-
-    Snapshot semantics (latest wins): existing rows for the cluster are deleted and the
-    current ``nodes`` (dicts shaped like ``discovery.NodeInfo.to_dict()``) are inserted.
-    Returns the number of node rows written.
-    """
-    with get_db() as conn:
-        conn.execute("DELETE FROM hpc_nodes WHERE cluster=?", (cluster,))
-        conn.executemany(
-            """INSERT INTO hpc_nodes
-                   (cluster, scheduler, node, cpus, memory_mb, gpus, gpu_model, state, partition)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            [
-                (
-                    cluster,
-                    scheduler,
-                    n.get("name"),
-                    n.get("cpus"),
-                    n.get("memory_mb"),
-                    n.get("gpus", 0) or 0,
-                    n.get("gpu_model"),
-                    n.get("state"),
-                    n.get("partition"),
-                )
-                for n in nodes
-            ],
-        )
-    return len(nodes)
 
 
-def get_node_snapshot(cluster: str | None = None) -> list[dict[str, Any]]:
-    """Return the latest stored node inventory, optionally filtered to one cluster."""
-    with get_db() as conn:
-        if cluster:
-            rows = conn.execute(
-                "SELECT * FROM hpc_nodes WHERE cluster=? ORDER BY node ASC", (cluster,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def upsert_cluster(
-    name: str,
-    scheduler: str,
-    *,
-    transport: str = "ssh",
-    host: str | None = None,
-    ssh_user: str | None = None,
-    ssh_port: int | None = 22,
-    ssh_key: str | None = None,
-    key_fingerprint: str | None = None,
-    capabilities: dict[str, Any] | None = None,
-    requested_by: str | None = None,
-) -> None:
-    """Insert or update a cluster *definition* — state is never changed here.
-
-    A brand-new cluster starts ``PENDING`` (the table default). Re-running discovery on an
-    already-approved (or already-rejected) cluster refreshes its definition + capabilities
-    but leaves its ``state``/``approved_by`` intact, so re-probing can never silently
-    authorize or de-authorize a cluster. State transitions go through
-    :func:`set_cluster_state`.
-    """
-    caps = json.dumps(capabilities) if capabilities else None
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO hpc_clusters
-                   (name, scheduler, transport, host, ssh_user, ssh_port, ssh_key,
-                    key_fingerprint, capabilities, requested_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(name) DO UPDATE SET
-                   scheduler=excluded.scheduler,
-                   transport=excluded.transport,
-                   host=excluded.host,
-                   ssh_user=excluded.ssh_user,
-                   ssh_port=excluded.ssh_port,
-                   ssh_key=excluded.ssh_key,
-                   key_fingerprint=excluded.key_fingerprint,
-                   capabilities=excluded.capabilities,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (
-                name,
-                scheduler,
-                transport,
-                host,
-                ssh_user,
-                ssh_port,
-                ssh_key,
-                key_fingerprint,
-                caps,
-                requested_by,
-            ),
-        )
 
 
-def set_cluster_state(
-    name: str,
-    state: str,
-    *,
-    approved_by: str | None = None,
-    reason: str | None = None,
-) -> bool:
-    """Transition a cluster's state (PENDING|ACTIVE|REJECTED). Returns False if unknown."""
-    with get_db() as conn:
-        cur = conn.execute(
-            """UPDATE hpc_clusters
-                   SET state=?, approved_by=COALESCE(?, approved_by),
-                       reason=COALESCE(?, reason), updated_at=CURRENT_TIMESTAMP
-                 WHERE name=?""",
-            (state, approved_by, reason, name),
-        )
-        return cur.rowcount > 0
 
 
-def get_cluster(name: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM hpc_clusters WHERE name=?", (name,)).fetchone()
-    return dict(row) if row else None
 
 
-def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        if state:
-            rows = conn.execute(
-                "SELECT * FROM hpc_clusters WHERE state=? ORDER BY name ASC", (state,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_clusters ORDER BY name ASC").fetchall()
-    return [dict(r) for r in rows]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ======================================================================
@@ -1881,180 +1719,32 @@ def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
 
 
 # ---- #9 Ground-truth feedback loop -------------------------------------------
-def write_prediction(
-    model: str,
-    alias: str,
-    request_hash: str,
-    prediction: float,
-    features_json: str | None = None,
-    job_id: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO predictions
-               (model, alias, request_hash, prediction, features_json, job_id)
-               VALUES (?,?,?,?,?,?)""",
-            (model, alias, request_hash, prediction, features_json, job_id),
-        )
 
 
-def write_ground_truth(request_hash: str, label: float, source: str = "manual") -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO ground_truth (request_hash, label, source) VALUES (?,?,?)",
-            (request_hash, label, source),
-        )
 
 
-def join_predictions_with_truth(model: str, alias: str | None = None) -> list[dict[str, Any]]:
-    """Return prediction/label pairs for a model (optionally one alias).
-
-    The join key is ``request_hash`` — a stable digest of the inference input the
-    serving path already computes for drift logging. Feeds live-accuracy metrics
-    (#9), the A/B stats engine (#13), canary analysis (#11) and eval (#14).
-    """
-    sql = (
-        "SELECT p.model, p.alias, p.request_hash, p.prediction, g.label, g.source "
-        "FROM predictions p JOIN ground_truth g ON p.request_hash = g.request_hash "
-        "WHERE p.model=?"
-    )
-    params: list[Any] = [model]
-    if alias is not None:
-        sql += " AND p.alias=?"
-        params.append(alias)
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
-def write_live_metric(
-    model: str,
-    alias: str,
-    metric: str,
-    value: float,
-    n: int = 0,
-    window_start: str | None = None,
-    window_end: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO live_metrics
-               (model, alias, metric, value, n, window_start, window_end)
-               VALUES (?,?,?,?,?,?,?)""",
-            (model, alias, metric, value, n, window_start, window_end),
-        )
 
 
-def get_live_metrics(model: str, alias: str | None = None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM live_metrics WHERE model=?"
-    params: list[Any] = [model]
-    if alias is not None:
-        sql += " AND alias=?"
-        params.append(alias)
-    sql += " ORDER BY id DESC"
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---- #18 Fairness gates ------------------------------------------------------
-def set_fairness_gate(
-    model: str, sensitive_feature: str, metric: str, max_disparity: float
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO fairness_gates
-               (model, sensitive_feature, metric, max_disparity) VALUES (?,?,?,?)""",
-            (model, sensitive_feature, metric, max_disparity),
-        )
 
 
-def get_fairness_gates(model: str) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM fairness_gates WHERE model=?", (model,)).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---- #20 FinOps budgets ------------------------------------------------------
-def set_project_budget(
-    project: str,
-    gpu_hours_budget: float | None,
-    cost_budget: float | None,
-    period: str = "monthly",
-    updated_by: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO project_budgets
-               (project, gpu_hours_budget, cost_budget, period, updated_by)
-               VALUES (?,?,?,?,?)""",
-            (project, gpu_hours_budget, cost_budget, period, updated_by),
-        )
 
 
-def get_project_budget(project: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM project_budgets WHERE project=?", (project,)).fetchone()
-    return dict(row) if row else None
 
 
-def write_carbon_record(
-    model: str,
-    run_id: str | None,
-    kwh: float | None,
-    co2e_g: float | None,
-    grid_intensity: float | None = None,
-    provider: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity, provider)
-               VALUES (?,?,?,?,?,?)""",
-            (run_id, model, kwh, co2e_g, grid_intensity, provider),
-        )
 
 
-def get_carbon_records(model: str | None = None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM carbon_records"
-    params: list[Any] = []
-    if model is not None:
-        sql += " WHERE model=?"
-        params.append(model)
-    sql += " ORDER BY id DESC"
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_project_budgets() -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM project_budgets ORDER BY project").fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_project_consumption(project: str) -> dict[str, float]:
-    """Sum recorded GPU-hours and cost attributed to a project (ADR 0086).
-
-    Resolves the project's models from the unified membership tables — ``project_resources``
-    (kind='model') ∪ ``project_models`` ∪ ``namespace_models`` (back-compat alias) — so budgets
-    enforce against the real training spend tracked by ``exa models cost``, whether a model was
-    grouped via the new Projects surface or the legacy namespace surface.
-    """
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """WITH members(model) AS (
-                   SELECT ref  FROM project_resources WHERE project = ? AND kind = 'model'
-                   UNION SELECT model FROM project_models   WHERE project   = ?
-                   UNION SELECT model FROM namespace_models WHERE namespace = ?
-               )
-               SELECT COALESCE(SUM(c.gpu_hours), 0) AS gpu_hours,
-                      COALESCE(SUM(c.cost_usd), 0)  AS cost_usd
-               FROM members m
-               JOIN model_costs c ON c.model_name = m.model""",
-            (project, project, project),
-        ).fetchone()
-    return {"gpu_hours": float(row["gpu_hours"]), "cost_usd": float(row["cost_usd"])}
 
 
 def _actor() -> str:
@@ -2064,163 +1754,20 @@ def _actor() -> str:
 # ── ExaMLOps Projects (RHOAI-style resource envelopes for Docker) ─────────────
 
 
-def create_project(
-    name: str,
-    *,
-    description: str | None = None,
-    cpu_limit: float = 4.0,
-    memory_limit_gb: float = 8.0,
-    storage_gb: float = 50.0,
-    gpu_limit: int = 0,
-    created_by: str | None = None,
-) -> None:
-    """Create a new project with resource quotas."""
-    init_db()
-    network_name = f"examlops-{name}"
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO projects
-               (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
-                network_name, created_by)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                name,
-                description,
-                cpu_limit,
-                memory_limit_gb,
-                storage_gb,
-                gpu_limit,
-                network_name,
-                created_by,
-            ),
-        )
 
 
-def get_project(name: str) -> dict[str, Any] | None:
-    """Return project row as dict, or None if not found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_projects(status: str | None = None) -> list[dict[str, Any]]:
-    """Return all projects, optionally filtered by status (ACTIVE/ARCHIVED)."""
-    init_db()
-    with get_db() as conn:
-        if status:
-            rows = conn.execute(
-                "SELECT * FROM projects WHERE status=? ORDER BY name", (status,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-    return [dict(r) for r in rows]
 
 
-def update_project_quota(
-    name: str,
-    *,
-    cpu_limit: float | None = None,
-    memory_limit_gb: float | None = None,
-    storage_gb: float | None = None,
-    gpu_limit: int | None = None,
-    description: str | None = None,
-) -> bool:
-    """Update quota fields for a project. Returns True if found and updated."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        if cpu_limit is not None:
-            conn.execute(
-                "UPDATE projects SET cpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (cpu_limit, name),
-            )
-        if memory_limit_gb is not None:
-            conn.execute(
-                "UPDATE projects SET memory_limit_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (memory_limit_gb, name),
-            )
-        if storage_gb is not None:
-            conn.execute(
-                "UPDATE projects SET storage_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (storage_gb, name),
-            )
-        if gpu_limit is not None:
-            conn.execute(
-                "UPDATE projects SET gpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (gpu_limit, name),
-            )
-        if description is not None:
-            conn.execute(
-                "UPDATE projects SET description=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (description, name),
-            )
-    return True
 
 
-def archive_project(name: str) -> bool:
-    """Set project status to ARCHIVED. Returns True if found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            "UPDATE projects SET status='ARCHIVED', updated_at=CURRENT_TIMESTAMP WHERE name=?",
-            (name,),
-        )
-    return True
 
 
-def delete_project(name: str) -> bool:
-    """Delete a project and its model assignments. Returns True if found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        conn.execute("DELETE FROM project_models WHERE project=?", (name,))
-        conn.execute("DELETE FROM project_resources WHERE project=?", (name,))
-        conn.execute("DELETE FROM projects WHERE name=?", (name,))
-    return True
 
 
-def assign_model_to_project(project: str, model: str, added_by: str | None = None) -> bool:
-    """Assign a model to a project. Returns False if project not found.
-
-    Dual-writes the legacy ``project_models`` table and the unified ``project_resources``
-    membership (ADR 0086, ``kind='model'``) so both stay consistent during the transition.
-    """
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)",
-            (project, model),
-        )
-        conn.execute(
-            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
-               VALUES (?, 'model', ?, ?)""",
-            (project, model, added_by),
-        )
-    return True
 
 
-def list_project_models(project: str) -> list[str]:
-    """Return model names assigned to a project (unified: project_resources ∪ project_models)."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            """SELECT ref AS model FROM project_resources WHERE project=? AND kind='model'
-               UNION SELECT model FROM project_models WHERE project=?
-               ORDER BY model""",
-            (project, project),
-        ).fetchall()
-    return [r["model"] for r in rows]
 
 
 # ── Unified Project workspace: generic resource membership (ADR 0086) ─────────
@@ -2229,240 +1776,36 @@ def list_project_models(project: str) -> list[str]:
 _RESOURCE_KINDS = {"model", "pipeline", "serving_endpoint", "connection", "dataset", "storage"}
 
 
-def assign_resource_to_project(
-    project: str, kind: str, ref: str, added_by: str | None = None
-) -> bool:
-    """Attach any resource (by ``kind``/``ref``) to a project. False if project not found.
-
-    ``kind='model'`` also mirrors into the legacy ``project_models`` table for back-compat.
-    """
-    if kind not in _RESOURCE_KINDS:
-        raise ValueError(
-            f"unknown resource kind: {kind!r} (expected one of {sorted(_RESOURCE_KINDS)})"
-        )
-    if kind == "model":
-        return assign_model_to_project(project, ref, added_by=added_by)
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
-               VALUES (?,?,?,?)""",
-            (project, kind, ref, added_by),
-        )
-    return True
 
 
-def remove_project_resource(project: str, kind: str, ref: str) -> bool:
-    """Detach a resource from a project. Returns True if a row was removed."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM project_resources WHERE project=? AND kind=? AND ref=?",
-            (project, kind, ref),
-        )
-        if kind == "model":
-            conn.execute("DELETE FROM project_models WHERE project=? AND model=?", (project, ref))
-        removed = cur.rowcount > 0
-    return removed
 
 
-def list_project_resources(project: str, kind: str | None = None) -> dict[str, list[str]]:
-    """Return a project's resources grouped by kind ({kind: [ref, ...]})."""
-    init_db()
-    with get_db() as conn:
-        if kind:
-            rows = conn.execute(
-                "SELECT kind, ref FROM project_resources WHERE project=? AND kind=? ORDER BY ref",
-                (project, kind),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT kind, ref FROM project_resources WHERE project=? ORDER BY kind, ref",
-                (project,),
-            ).fetchall()
-    grouped: dict[str, list[str]] = {}
-    for r in rows:
-        grouped.setdefault(r["kind"], []).append(r["ref"])
-    # models also come from the legacy table (union)
-    if kind in (None, "model"):
-        legacy = {m for m in list_project_models(project)}
-        grouped["model"] = sorted(set(grouped.get("model", [])) | legacy)
-        if not grouped["model"]:
-            grouped.pop("model", None)
-    return grouped
 
 
-def get_project_for_model(model: str) -> str | None:
-    """Return the first project a model belongs to, or None (used for cost attribution)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT project FROM project_resources WHERE kind='model' AND ref=?
-               UNION SELECT project FROM project_models WHERE model=?
-               LIMIT 1""",
-            (model, model),
-        ).fetchone()
-    return row["project"] if row else None
 
 
 # ── People membership + permissions via D6 authz (ADR 0086, no new ACL table) ─
 
 
-def add_project_member(project: str, subject: str, role: str, actor: str | None = None) -> None:
-    """Add a person to a project with an ``owner|editor|viewer`` role (wraps authz.grant)."""
-    if role not in {"owner", "editor", "viewer"}:
-        raise ValueError("role must be one of: owner, editor, viewer")
-    from examlops.authz import grant as _grant
-
-    _grant(subject, role, f"project:{project}", actor=actor)
 
 
-def remove_project_member(
-    project: str, subject: str, role: str | None = None, actor: str | None = None
-) -> int:
-    """Remove a person's grant(s) on a project (wraps authz.revoke). Returns rows removed."""
-    from examlops.authz import revoke as _revoke
-
-    roles = [role] if role else ["owner", "editor", "viewer"]
-    return sum(_revoke(subject, r, f"project:{project}", actor=actor) for r in roles)
 
 
-def list_project_members(project: str) -> list[dict[str, Any]]:
-    """Return the people granted a relation directly on ``project:<name>``."""
-    rows = list_relations(obj=f"project:{project}")
-    return [
-        {
-            "subject": r["subject"],
-            "role": r["relation"],
-            "granted_by": r.get("actor"),
-            "when": r.get("created_at"),
-        }
-        for r in rows
-    ]
 
 
-def get_project_full(name: str) -> dict[str, Any] | None:
-    """Full project anatomy for ``exa project show`` and the dashboard detail endpoint.
-
-    Returns None for an unknown project (ADR 0086 R5).
-    """
-    project = get_project(name)
-    if not project:
-        return None
-
-    # P8 anatomy (ADR 0093): storage / connections / pipelines are fail-open and secret-safe —
-    # a missing or unreachable source yields empty/None, never an exception. Storage is ensured
-    # lazily so a real project always shows its location (idempotent; project is known here).
-    try:
-        storage = get_project_storage(name) or ensure_project_storage(name)
-    except Exception:
-        storage = None
-    try:
-        from examlops.connections import list_connections
-
-        connections = [
-            {"name": c["name"], "kind": c.get("kind"), "has_secret": bool(c.get("has_secret"))}
-            for c in list_connections(project=name)
-        ]
-    except Exception:
-        connections = []
-    try:
-        pipelines = get_project_pipelines(name)
-    except Exception:
-        pipelines = {"prefect": None, "rayserve": None}
-
-    return {
-        **project,
-        "resources": list_project_resources(name),
-        "members": list_project_members(name),
-        "budget": get_project_budget(name),
-        "consumption": get_project_consumption(name),
-        "storage": storage,
-        "connections": connections,
-        "pipelines": pipelines,
-    }
 
 
 # ── Autopilot (ADR 0085): self-driving closed-loop detect→retrain→promote ────
 
 
-def get_autopilot_config(key: str) -> str | None:
-    """Return a value from autopilot_config, or None if not set."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM autopilot_config WHERE key=?", (key,)).fetchone()
-    return row["value"] if row else None
 
 
-def set_autopilot_config(key: str, value: str) -> None:
-    """Upsert a key/value pair in autopilot_config."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO autopilot_config (key, value, updated_at) "
-            "VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (key, value),
-        )
 
 
-def create_autopilot_run(
-    triggered_by: str = "manual",
-    model_filter: str | None = None,
-    dry_run: bool = False,
-    enabled_state: str = "enabled",
-) -> int:
-    """Insert a new autopilot_runs row and return its id."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            """INSERT INTO autopilot_runs
-               (triggered_by, model_filter, dry_run, enabled_state)
-               VALUES (?,?,?,?)""",
-            (triggered_by, model_filter, int(dry_run), enabled_state),
-        )
-        return cur.lastrowid  # type: ignore[return-value]
 
 
-def update_autopilot_run(
-    run_id: int,
-    *,
-    retrains_triggered: int = 0,
-    promotions_made: int = 0,
-    policy_blocks: int = 0,
-    human_required: int = 0,
-    skipped: int = 0,
-    summary: dict[str, Any] | None = None,
-) -> None:
-    """Update counts and summary for a completed autopilot run."""
-    with get_db() as conn:
-        conn.execute(
-            """UPDATE autopilot_runs
-               SET retrains_triggered=?, promotions_made=?, policy_blocks=?,
-                   human_required=?, skipped=?, summary=?
-               WHERE id=?""",
-            (
-                retrains_triggered,
-                promotions_made,
-                policy_blocks,
-                human_required,
-                skipped,
-                json.dumps(summary) if summary else None,
-                run_id,
-            ),
-        )
 
 
-def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
-    """Return the last N autopilot run records, newest first."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM autopilot_runs ORDER BY id DESC LIMIT ?", (last_n,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · A1 — dataset revisions (ADR 0003) --------------------------
@@ -2471,216 +1814,34 @@ def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
 # module never imports the pipelines package (avoids a layering cycle).
 
 
-def record_dataset_revision(
-    rev: Any,
-    *,
-    mlflow_run_id: str | None = None,
-    row_count: int | None = None,
-    byte_count: int | None = None,
-    actor: str | None = None,
-) -> None:
-    """Record a resolved dataset revision.
-
-    Idempotent on ``(backend, dataset, revision_id)`` (spec R5): re-recording the
-    same revision is a no-op and never raises a UNIQUE-constraint error.
-    """
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO dataset_revisions
-                   (backend, dataset, revision_id, kind, uri, schema_hash,
-                    mlflow_run_id, row_count, byte_count, actor)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(backend, dataset, revision_id) DO NOTHING""",
-            (
-                rev.backend,
-                rev.dataset,
-                rev.revision_id,
-                getattr(rev, "kind", "content"),
-                getattr(rev, "uri", None),
-                getattr(rev, "schema_hash", None),
-                mlflow_run_id,
-                row_count,
-                byte_count,
-                actor,
-            ),
-        )
 
 
-def get_dataset_revisions(dataset: str, backend: str | None = None) -> list[dict[str, Any]]:
-    """Return recorded revisions for ``dataset`` newest-first (spec R9).
-
-    When ``backend`` is given, restrict to that backend.
-    """
-    init_db()
-    with get_db() as conn:
-        if backend:
-            rows = conn.execute(
-                "SELECT * FROM dataset_revisions WHERE dataset=? AND backend=? ORDER BY id DESC",
-                (dataset, backend),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM dataset_revisions WHERE dataset=? ORDER BY id DESC",
-                (dataset,),
-            ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_dataset_revision(
-    dataset: str, revision_id: str, backend: str | None = None
-) -> dict[str, Any] | None:
-    """Return a single recorded revision by id, or None if absent."""
-    for row in get_dataset_revisions(dataset, backend):
-        if row["revision_id"] == revision_id:
-            return row
-    return None
 
 
 # --- Next-Gen 40 · A5 — data contracts / quality gates (ADR 0005) ------------
 
 
-def record_data_quality_check(
-    dataset: str,
-    result: Any,
-    *,
-    revision: str | None = None,
-    stage: str = "train",
-    model: str = "-",
-    actor: str | None = None,
-) -> None:
-    """Record a contract-validation outcome (spec R7).
-
-    ``result`` is a QualityResult-like object exposing ``passed``, ``score``, and
-    ``checks`` (kept duck-typed so this layer never imports the pipelines package).
-    """
-    init_db()
-    checks = list(getattr(result, "checks", []))
-    passed_n = sum(1 for c in checks if c.get("passed"))
-    failed_n = len(checks) - passed_n
-    status = "PASS" if getattr(result, "passed", False) else "FAIL"
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO data_quality_checks
-                   (model, dataset, status, passed, failed, details_json, actor,
-                    revision, stage, score)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (
-                model,
-                dataset,
-                status,
-                passed_n,
-                failed_n,
-                json.dumps(checks),
-                actor,
-                revision,
-                stage,
-                float(getattr(result, "score", 0.0)),
-            ),
-        )
 
 
-def get_data_quality_checks(dataset: str, last_n: int = 20) -> list[dict[str, Any]]:
-    """Return recent quality-check rows for ``dataset``, newest first."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM data_quality_checks WHERE dataset=? ORDER BY id DESC LIMIT ?",
-            (dataset, last_n),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · B1 — prompt registry (ADR 0009) ---------------------------
 
 
-def create_prompt_version(
-    name: str,
-    template: str,
-    *,
-    variables: list[str] | None = None,
-    tags: dict[str, Any] | None = None,
-    actor: str | None = None,
-) -> int:
-    """Create a new immutable prompt version (spec R1). Returns the new version number."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) AS v FROM prompt_versions WHERE name=?", (name,)
-        ).fetchone()
-        version = int(row["v"]) + 1
-        conn.execute(
-            """INSERT INTO prompt_versions (name, version, template, variables, tags, actor)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                name,
-                version,
-                template,
-                json.dumps(variables or []),
-                json.dumps(tags or {}),
-                actor,
-            ),
-        )
-    return version
 
 
-def get_prompt_version(name: str, version: int) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM prompt_versions WHERE name=? AND version=?", (name, version)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def list_prompt_versions(name: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM prompt_versions WHERE name=? ORDER BY version DESC", (name,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_prompt_names() -> list[str]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT DISTINCT name FROM prompt_versions ORDER BY name").fetchall()
-    return [r["name"] for r in rows]
 
 
-def set_prompt_label(name: str, label: str, version: int) -> None:
-    """Point a label at a version (spec R8). Caller writes the audit event (R9)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO prompt_labels (name, label, version, updated_at)
-               VALUES (?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(name, label) DO UPDATE SET
-                   version=excluded.version, updated_at=CURRENT_TIMESTAMP""",
-            (name, label, version),
-        )
 
 
-def get_prompt_by_label(name: str, label: str) -> dict[str, Any] | None:
-    """Resolve ``name@label`` to its pinned prompt version (spec R3)."""
-    init_db()
-    with get_db() as conn:
-        lab = conn.execute(
-            "SELECT version FROM prompt_labels WHERE name=? AND label=?", (name, label)
-        ).fetchone()
-    if lab is None:
-        return None
-    return get_prompt_version(name, int(lab["version"]))
 
 
-def list_prompt_labels(name: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM prompt_labels WHERE name=? ORDER BY label", (name,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · D7 — local encrypted secrets store (ADR 0011) --------------
@@ -2688,2618 +1849,373 @@ def list_prompt_labels(name: str) -> list[dict[str, Any]]:
 # examlops.secrets client so this DB layer never sees a plaintext secret.
 
 
-def put_secret_ciphertext(
-    path: str, tenant: str, ciphertext: str, *, updated_by: str | None = None
-) -> int:
-    """Upsert an encrypted secret, bumping its version. Returns the new version."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT version FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
-        ).fetchone()
-        version = (int(row["version"]) + 1) if row else 1
-        conn.execute(
-            """INSERT INTO secrets_store (path, tenant, ciphertext, version, updated_by, updated_at)
-               VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(path, tenant) DO UPDATE SET
-                   ciphertext=excluded.ciphertext, version=excluded.version,
-                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
-            (path, tenant, ciphertext, version, updated_by),
-        )
-    return version
 
 
-def get_secret_ciphertext(path: str, tenant: str) -> str | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT ciphertext FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
-        ).fetchone()
-    return row["ciphertext"] if row else None
 
 
-def list_secret_paths(tenant: str | None = None) -> list[dict[str, Any]]:
-    """List secret metadata (path/tenant/version/updated_at) — never values."""
-    init_db()
-    with get_db() as conn:
-        if tenant:
-            rows = conn.execute(
-                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
-                "WHERE tenant=? ORDER BY path",
-                (tenant,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
-                "ORDER BY tenant, path"
-            ).fetchall()
-    return [dict(r) for r in rows]
+
+
+
+
 
 
 # --- Next-Gen 40 · D6 — authz relations (ADR 0014) ---------------------------
 
 
-def grant_relation(subject: str, relation: str, obj: str, *, actor: str | None = None) -> None:
-    """Grant ``subject`` a ``relation`` on ``obj`` (idempotent)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO authz_relations (subject, relation, object, actor)
-               VALUES (?,?,?,?)
-               ON CONFLICT(subject, relation, object) DO NOTHING""",
-            (subject, relation, obj, actor),
-        )
 
 
-def revoke_relation(subject: str, relation: str, obj: str) -> int:
-    """Revoke a relation. Returns rows deleted (0 if none)."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM authz_relations WHERE subject=? AND relation=? AND object=?",
-            (subject, relation, obj),
-        )
-        return cur.rowcount
 
 
-def get_relations_for(subject: str, obj: str) -> list[str]:
-    """Return the relations ``subject`` holds directly on ``obj``."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT relation FROM authz_relations WHERE subject=? AND object=?", (subject, obj)
-        ).fetchall()
-    return [r["relation"] for r in rows]
 
 
-def list_relations(subject: str | None = None, obj: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    clauses, params = [], []
-    if subject:
-        clauses.append("subject=?")
-        params.append(subject)
-    if obj:
-        clauses.append("object=?")
-        params.append(obj)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM authz_relations{where} ORDER BY object, subject", params
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_objects_for(subject: str) -> list[dict[str, Any]]:
-    """All (object, relation) pairs granted to ``subject``."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT object, relation FROM authz_relations WHERE subject=? ORDER BY object",
-            (subject,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013) --------------------
 
 
-def store_model_signature(
-    model: str,
-    version: str,
-    digest: str,
-    signature: str,
-    *,
-    algo: str = "hmac-sha256",
-    cert: str | None = None,
-    signed_by: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_signatures
-                   (model, version, digest, algo, signature, cert, signed_by, signed_at)
-               VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(model, version) DO UPDATE SET
-                   digest=excluded.digest, algo=excluded.algo, signature=excluded.signature,
-                   cert=excluded.cert, signed_by=excluded.signed_by, signed_at=CURRENT_TIMESTAMP""",
-            (model, version, digest, algo, signature, cert, signed_by),
-        )
 
 
-def get_model_signature(model: str, version: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM model_signatures WHERE model=? AND version=?", (model, version)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def store_model_bom(model: str, version: str, bom: dict[str, Any]) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_boms (model, version, bom_json, created_at)
-               VALUES (?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(model, version) DO UPDATE SET
-                   bom_json=excluded.bom_json, created_at=CURRENT_TIMESTAMP""",
-            (model, version, json.dumps(bom)),
-        )
 
 
-def get_model_bom(model: str, version: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT bom_json FROM model_boms WHERE model=? AND version=?", (model, version)
-        ).fetchone()
-    return json.loads(row["bom_json"]) if row else None
 
 
 # ── A2 — OpenLineage dual-write + graph/impact queries (ADR 0004) ─────────────
 
 
-def record_lineage_event(
-    run_id: str,
-    job: str,
-    event_type: str,
-    *,
-    inputs: list[dict[str, str]] | None = None,
-    outputs: list[dict[str, str]] | None = None,
-    dataset_revision: str | None = None,
-    mlflow_run_id: str | None = None,
-    model: str | None = None,
-    model_version: str | None = None,
-    trace_id: str | None = None,
-    facets: dict[str, Any] | None = None,
-) -> None:
-    """Upsert a lineage run event + its I/O nodes (the operational source of truth)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO lineage_events
-                   (run_id, job, event_type, dataset_revision, mlflow_run_id,
-                    model, model_version, trace_id, facets_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                run_id,
-                job,
-                event_type,
-                dataset_revision,
-                mlflow_run_id,
-                model,
-                model_version,
-                trace_id,
-                json.dumps(facets) if facets else None,
-            ),
-        )
-        for direction, nodes in (("input", inputs or []), ("output", outputs or [])):
-            for node in nodes:
-                conn.execute(
-                    """INSERT OR IGNORE INTO lineage_io
-                           (run_id, direction, node_type, node_name)
-                       VALUES (?,?,?,?)""",
-                    (run_id, direction, node.get("type", "dataset"), node["name"]),
-                )
 
 
-def lineage_graph(model: str) -> dict[str, Any]:
-    """Return upstream (datasets/runs) + downstream (deployments) nodes for a model."""
-    init_db()
-    with get_db() as conn:
-        runs = conn.execute(
-            "SELECT * FROM lineage_events WHERE model=? ORDER BY ts DESC", (model,)
-        ).fetchall()
-        run_ids = [r["run_id"] for r in runs]
-        io_rows: list[dict[str, Any]] = []
-        for rid in run_ids:
-            io_rows.extend(
-                dict(r)
-                for r in conn.execute("SELECT * FROM lineage_io WHERE run_id=?", (rid,)).fetchall()
-            )
-    return {
-        "model": model,
-        "runs": [dict(r) for r in runs],
-        "upstream": [r for r in io_rows if r["direction"] == "input"],
-        "downstream": [r for r in io_rows if r["direction"] == "output"],
-    }
 
 
-def lineage_impact(dataset_revision: str) -> list[dict[str, Any]]:
-    """List every model version derived (transitively) from a dataset revision."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            """SELECT DISTINCT model, model_version, run_id, mlflow_run_id
-               FROM lineage_events
-               WHERE dataset_revision=? AND model IS NOT NULL
-               ORDER BY model, model_version""",
-            (dataset_revision,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ── C2 — continuous-eval suite results (ADR 0007) ─────────────────────────────
 
 
-def record_eval_result(
-    suite: str,
-    model: str,
-    scores: dict[str, float],
-    *,
-    run_id: str,
-    model_version: str | None = None,
-    alias: str | None = None,
-    sample_size: int = 0,
-    judge: dict[str, str] | None = None,
-    dataset_revision: str | None = None,
-) -> None:
-    """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8)."""
-    init_db()
-    judge_model = (judge or {}).get("model")
-    judge_prompt = (judge or {}).get("prompt_version")
-    with get_db() as conn:
-        for metric, score in scores.items():
-            conn.execute(
-                """INSERT OR IGNORE INTO eval_suite_results
-                       (suite, model, model_version, alias, metric, score, sample_size,
-                        judge_model, judge_prompt_version, dataset_revision, run_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    suite,
-                    model,
-                    model_version,
-                    alias,
-                    metric,
-                    float(score),
-                    sample_size,
-                    judge_model,
-                    judge_prompt,
-                    dataset_revision,
-                    run_id,
-                ),
-            )
 
 
-def get_eval_results(
-    model: str, suite: str | None = None, *, alias: str | None = None
-) -> list[dict[str, Any]]:
-    init_db()
-    q = "SELECT * FROM eval_suite_results WHERE model=?"
-    params: list[Any] = [model]
-    if suite:
-        q += " AND suite=?"
-        params.append(suite)
-    if alias:
-        q += " AND alias=?"
-        params.append(alias)
-    q += " ORDER BY ts DESC"
-    with get_db() as conn:
-        return [dict(r) for r in conn.execute(q, params).fetchall()]
 
 
 # ── C3 — eval regression gate config + reports (ADR 0008) ─────────────────────
 
 
-def set_eval_gate(
-    model: str,
-    suite: str,
-    metrics: list[dict[str, Any]],
-    *,
-    baseline_alias: str = "Production",
-    mode: str = "block",
-    updated_by: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO eval_gates (model, suite, baseline_alias, metrics_json, mode, updated_by)
-               VALUES (?,?,?,?,?,?)
-               ON CONFLICT(model) DO UPDATE SET
-                   suite=excluded.suite, baseline_alias=excluded.baseline_alias,
-                   metrics_json=excluded.metrics_json, mode=excluded.mode,
-                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
-            (model, suite, baseline_alias, json.dumps(metrics), mode, updated_by),
-        )
 
 
-def get_eval_gate(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM eval_gates WHERE model=?", (model,)).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["metrics"] = json.loads(d.pop("metrics_json"))
-    return d
 
 
-def record_gate_report(
-    model: str,
-    passed: bool,
-    mode: str,
-    report: dict[str, Any],
-    *,
-    candidate: str | None = None,
-    baseline: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO gate_reports (model, candidate, baseline, passed, mode, report_json)
-               VALUES (?,?,?,?,?,?)""",
-            (model, candidate, baseline, 1 if passed else 0, mode, json.dumps(report)),
-        )
 
 
-def get_gate_reports(model: str, limit: int = 20) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM gate_reports WHERE model=? ORDER BY ts DESC LIMIT ?", (model, limit)
-        ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["report"] = json.loads(d.pop("report_json"))
-        out.append(d)
-    return out
 
 
 # ── B2 — model-gateway virtual keys + per-call cost (ADR 0010) ────────────────
 
 
-def create_virtual_key(
-    key_hash: str,
-    *,
-    tenant: str = "default",
-    project: str = "default",
-    models: list[str] | None = None,
-    budget_usd: float | None = None,
-    created_by: str | None = None,
-) -> None:
-    """Store a virtual key (only its hash — never the raw key)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO virtual_keys
-                   (key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by)
-               VALUES (?,?,?,?,?,
-                   COALESCE((SELECT spent_usd FROM virtual_keys WHERE key_hash=?), 0), ?)""",
-            (
-                key_hash,
-                tenant,
-                project,
-                json.dumps(models or []),
-                budget_usd,
-                key_hash,
-                created_by,
-            ),
-        )
 
 
-def get_virtual_key(key_hash: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["models"] = json.loads(d.pop("models_json"))
-    return d
 
 
-def list_virtual_keys() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM virtual_keys ORDER BY created_at DESC").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["models"] = json.loads(d.pop("models_json"))
-        out.append(d)
-    return out
 
 
-def add_key_spend(key_hash: str, cost_usd: float) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE virtual_keys SET spent_usd = spent_usd + ? WHERE key_hash=?",
-            (cost_usd, key_hash),
-        )
 
 
-def revoke_virtual_key(key_hash: str) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute("UPDATE virtual_keys SET revoked=1 WHERE key_hash=?", (key_hash,))
 
 
-def record_gateway_call(
-    key_hash: str | None,
-    model: str,
-    *,
-    backend: str | None = None,
-    cost_usd: float = 0.0,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO gateway_calls
-                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens)
-               VALUES (?,?,?,?,?,?)""",
-            (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens),
-        )
 
 
-def total_gateway_cost(key_hash: str | None = None) -> float:
-    init_db()
-    with get_db() as conn:
-        if key_hash:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls WHERE key_hash=?",
-                (key_hash,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls"
-            ).fetchone()
-    return float(row["t"])
 
 
 # ── B3 — semantic-cache savings (ADR 0018) ────────────────────────────────────
 
 
-def record_cache_event(
-    tenant: str,
-    model: str,
-    *,
-    hit: bool,
-    similarity: float | None = None,
-    tokens_saved: int = 0,
-    cost_saved: float = 0.0,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO cache_events (tenant, model, hit, similarity, tokens_saved, cost_saved)
-               VALUES (?,?,?,?,?,?)""",
-            (tenant, model, 1 if hit else 0, similarity, tokens_saved, cost_saved),
-        )
 
 
-def cache_stats(tenant: str | None = None) -> dict[str, Any]:
-    """Aggregate hit-rate + measured savings (R7) — for the dashboard caching panel."""
-    init_db()
-    where = "WHERE tenant=?" if tenant else ""
-    params = (tenant,) if tenant else ()
-    with get_db() as conn:
-        row = conn.execute(
-            f"""SELECT
-                    COALESCE(SUM(hit),0)              AS hits,
-                    COALESCE(SUM(1-hit),0)            AS misses,
-                    COUNT(*)                          AS total,
-                    COALESCE(SUM(tokens_saved),0)     AS tokens_saved,
-                    COALESCE(SUM(cost_saved),0)       AS cost_saved
-                FROM cache_events {where}""",
-            params,
-        ).fetchone()
-    hits, total = int(row["hits"]), int(row["total"])
-    return {
-        "hits": hits,
-        "misses": int(row["misses"]),
-        "total": total,
-        "hit_rate": (hits / total) if total else 0.0,
-        "tokens_saved": int(row["tokens_saved"]),
-        "cost_saved": float(row["cost_saved"]),
-    }
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · C4 — AgentOps: agent trace & tool-call analytics (ADR 0021).
 # ---------------------------------------------------------------------------
-def record_agent_session(
-    session_id: str,
-    *,
-    tenant: str = "default",
-    agent: str | None = None,
-    model: str | None = None,
-    steps: int = 0,
-    tool_calls: int = 0,
-    errors: int = 0,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cost_usd: float = 0.0,
-    status: str = "ok",
-    anomalies: list[str] | None = None,
-    ended: bool = False,
-) -> None:
-    """Upsert a session summary row (idempotent by ``session_id``)."""
-    init_db()
-    anom_json = json.dumps(anomalies) if anomalies else None
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO agent_sessions
-                   (session_id, tenant, agent, model, steps, tool_calls, errors,
-                    input_tokens, output_tokens, cost_usd, status, anomalies,
-                    ended_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?, CASE WHEN ? THEN CURRENT_TIMESTAMP END)
-               ON CONFLICT(session_id) DO UPDATE SET
-                    tenant=excluded.tenant, agent=excluded.agent, model=excluded.model,
-                    steps=excluded.steps, tool_calls=excluded.tool_calls,
-                    errors=excluded.errors, input_tokens=excluded.input_tokens,
-                    output_tokens=excluded.output_tokens, cost_usd=excluded.cost_usd,
-                    status=excluded.status, anomalies=excluded.anomalies,
-                    ended_at=COALESCE(excluded.ended_at, agent_sessions.ended_at)""",
-            (
-                session_id,
-                tenant,
-                agent,
-                model,
-                steps,
-                tool_calls,
-                errors,
-                input_tokens,
-                output_tokens,
-                cost_usd,
-                status,
-                anom_json,
-                ended,
-            ),
-        )
 
 
-def record_agent_tool_call(
-    session_id: str,
-    tool: str,
-    *,
-    tenant: str = "default",
-    step: int = 0,
-    args_digest: str | None = None,
-    ok: bool = True,
-    error: str | None = None,
-    latency_ms: float | None = None,
-) -> None:
-    """Append one tool-call event (already-redacted ``args_digest`` from D8)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO agent_tool_calls
-                   (session_id, tenant, step, tool, args_digest, ok, error, latency_ms)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (session_id, tenant, step, tool, args_digest, 1 if ok else 0, error, latency_ms),
-        )
 
 
-def tool_success_rate(
-    tool: str | None = None, *, tenant: str | None = None
-) -> list[dict[str, Any]]:
-    """Per-tool success rate + call count (R2) — for the AgentOps dashboard panel."""
-    init_db()
-    clauses, params = [], []
-    if tool:
-        clauses.append("tool=?")
-        params.append(tool)
-    if tenant:
-        clauses.append("tenant=?")
-        params.append(tenant)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"""SELECT tool,
-                       COUNT(*)                AS calls,
-                       COALESCE(SUM(ok),0)     AS ok,
-                       AVG(latency_ms)         AS avg_latency_ms
-                FROM agent_tool_calls {where}
-                GROUP BY tool ORDER BY calls DESC""",
-            tuple(params),
-        ).fetchall()
-    out = []
-    for r in rows:
-        calls, ok = int(r["calls"]), int(r["ok"])
-        out.append(
-            {
-                "tool": r["tool"],
-                "calls": calls,
-                "ok": ok,
-                "errors": calls - ok,
-                "success_rate": (ok / calls) if calls else 0.0,
-                "avg_latency_ms": float(r["avg_latency_ms"])
-                if r["avg_latency_ms"] is not None
-                else None,
-            }
-        )
-    return out
 
 
-def list_agent_sessions(
-    *, tenant: str | None = None, status: str | None = None, limit: int = 50
-) -> list[dict[str, Any]]:
-    """Recent agent sessions newest-first (R6 replay index)."""
-    init_db()
-    clauses, params = [], []
-    if tenant:
-        clauses.append("tenant=?")
-        params.append(tenant)
-    if status:
-        clauses.append("status=?")
-        params.append(status)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"""SELECT * FROM agent_sessions {where}
-                ORDER BY started_at DESC LIMIT ?""",
-            (*params, limit),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_agent_session_trace(session_id: str) -> dict[str, Any]:
-    """Full session replay: summary + ordered tool-call steps (R6)."""
-    init_db()
-    with get_db() as conn:
-        head = conn.execute(
-            "SELECT * FROM agent_sessions WHERE session_id=?", (session_id,)
-        ).fetchone()
-        steps = conn.execute(
-            """SELECT step, tool, args_digest, ok, error, latency_ms, ts
-               FROM agent_tool_calls WHERE session_id=? ORDER BY step, id""",
-            (session_id,),
-        ).fetchall()
-    return {
-        "session": dict(head) if head else None,
-        "steps": [dict(s) for s in steps],
-    }
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · C5 — advanced drift: concept / label-free perf / data quality (ADR 0022).
 # ---------------------------------------------------------------------------
-def record_drift_event(
-    model: str,
-    drift_kind: str,
-    *,
-    severity: str = "OK",
-    score: float | None = None,
-    metric: str | None = None,
-    detail: dict[str, Any] | None = None,
-) -> None:
-    """Write one unified drift event (R6). ``drift_kind`` is the discriminator."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO drift_events (model, drift_kind, severity, score, metric, detail)
-               VALUES (?,?,?,?,?,?)""",
-            (model, drift_kind, severity, score, metric, json.dumps(detail) if detail else None),
-        )
 
 
-def list_drift_events(
-    *, model: str | None = None, drift_kind: str | None = None, last_n: int = 50
-) -> list[dict[str, Any]]:
-    """Recent unified drift events, newest first — filterable by model/kind (R6)."""
-    init_db()
-    clauses, params = [], []
-    if model:
-        clauses.append("model=?")
-        params.append(model)
-    if drift_kind:
-        clauses.append("drift_kind=?")
-        params.append(drift_kind)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM drift_events {where} ORDER BY ts DESC, id DESC LIMIT ?",
-            (*params, last_n),
-        ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["detail"] = json.loads(d["detail"]) if d["detail"] else None
-        out.append(d)
-    return out
 
 
-def latest_drift_event(model: str, drift_kind: str) -> dict[str, Any] | None:
-    """Most recent event of a given kind for a model (auto-retrain consumers)."""
-    events = list_drift_events(model=model, drift_kind=drift_kind, last_n=1)
-    return events[0] if events else None
 
 
-def record_perf_estimate(
-    model: str,
-    metric: str,
-    *,
-    estimated: float | None = None,
-    realized: float | None = None,
-    baseline: float | None = None,
-    method: str = "cbpe-like",
-) -> None:
-    """Store a label-free performance estimate (or realized backfill) (R3)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO perf_estimates (model, metric, estimated, realized, baseline, method)
-               VALUES (?,?,?,?,?,?)""",
-            (model, metric, estimated, realized, baseline, method),
-        )
 
 
-def list_perf_estimates(model: str, *, last_n: int = 50) -> list[dict[str, Any]]:
-    """Estimated-vs-realized performance history for a model (R3/R4)."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM perf_estimates WHERE model=? ORDER BY ts DESC, id DESC LIMIT ?",
-            (model, last_n),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · C6 — model-quality SLOs / SLIs & burn-rate (ADR 0023).
 # ---------------------------------------------------------------------------
-def upsert_slo_spec(
-    model: str,
-    name: str,
-    *,
-    tenant: str = "default",
-    sli_source: str = "prometheus",
-    sli_query: str | None = None,
-    target: float = 0.99,
-    window: str = "30d",
-    higher_is_better: bool = True,
-    gate_promotion: bool = False,
-) -> None:
-    """Insert or version-bump an SLO spec (R1/R7 — versioned + per-tenant)."""
-    init_db()
-    with get_db() as conn:
-        prev = conn.execute(
-            "SELECT version FROM slo_specs WHERE model=? AND tenant=? AND name=?",
-            (model, tenant, name),
-        ).fetchone()
-        version = (prev["version"] + 1) if prev else 1
-        conn.execute(
-            """INSERT INTO slo_specs
-                   (model, tenant, name, sli_source, sli_query, target, window,
-                    higher_is_better, version, gate_promotion, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(model, tenant, name) DO UPDATE SET
-                    sli_source=excluded.sli_source, sli_query=excluded.sli_query,
-                    target=excluded.target, window=excluded.window,
-                    higher_is_better=excluded.higher_is_better,
-                    version=excluded.version, gate_promotion=excluded.gate_promotion,
-                    updated_at=CURRENT_TIMESTAMP""",
-            (
-                model,
-                tenant,
-                name,
-                sli_source,
-                sli_query,
-                target,
-                window,
-                1 if higher_is_better else 0,
-                version,
-                1 if gate_promotion else 0,
-            ),
-        )
 
 
-def list_slo_specs(*, model: str | None = None, tenant: str | None = None) -> list[dict[str, Any]]:
-    """All SLO specs, optionally filtered by model/tenant (R5)."""
-    init_db()
-    clauses, params = [], []
-    if model:
-        clauses.append("model=?")
-        params.append(model)
-    if tenant:
-        clauses.append("tenant=?")
-        params.append(tenant)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM slo_specs {where} ORDER BY model, name", tuple(params)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_slo_spec(model: str, name: str, tenant: str = "default") -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM slo_specs WHERE model=? AND tenant=? AND name=?",
-            (model, tenant, name),
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def record_slo_sample(
-    model: str, name: str, good: float, total: float, *, tenant: str = "default"
-) -> None:
-    """Append one SLI good/total measurement interval (R4)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO slo_samples (model, tenant, name, good, total) VALUES (?,?,?,?,?)",
-            (model, tenant, name, good, total),
-        )
 
 
-def slo_sli_ratio(
-    model: str, name: str, *, tenant: str = "default", last_n: int = 1000
-) -> tuple[float, float]:
-    """Aggregate (good, total) over the most recent samples for an SLO."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT COALESCE(SUM(good),0) AS good, COALESCE(SUM(total),0) AS total
-               FROM (SELECT good, total FROM slo_samples
-                     WHERE model=? AND tenant=? AND name=?
-                     ORDER BY id DESC LIMIT ?)""",
-            (model, tenant, name, last_n),
-        ).fetchone()
-    return float(row["good"]), float(row["total"])
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · C7 — champion-challenger / shadow scoreboard (ADR 0024).
 # ---------------------------------------------------------------------------
-def set_challenger_config(
-    model: str,
-    challenger_version: str,
-    *,
-    tenant: str = "default",
-    mirror_pct: int = 100,
-    min_delta: float = 0.0,
-    alpha: float = 0.05,
-    min_samples: int = 100,
-    auto_promote: bool = False,
-    enabled: bool = True,
-    updated_by: str | None = None,
-) -> None:
-    """Enable/configure a challenger for a model (R1/R5)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO challenger_config
-                   (model, tenant, challenger_version, mirror_pct, min_delta, alpha,
-                    min_samples, auto_promote, enabled, updated_at, updated_by)
-               VALUES (?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP, ?)""",
-            (
-                model,
-                tenant,
-                challenger_version,
-                mirror_pct,
-                min_delta,
-                alpha,
-                min_samples,
-                1 if auto_promote else 0,
-                1 if enabled else 0,
-                updated_by,
-            ),
-        )
 
 
-def get_challenger_config(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM challenger_config WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_challenger_configs(*, tenant: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    where = "WHERE tenant=?" if tenant else ""
-    params = (tenant,) if tenant else ()
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM challenger_config {where} ORDER BY model", params
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def disable_challenger(model: str, *, updated_by: str | None = None) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE challenger_config SET enabled=0, updated_at=CURRENT_TIMESTAMP, "
-            "updated_by=? WHERE model=?",
-            (updated_by, model),
-        )
 
 
-def record_challenger_sample(
-    model: str,
-    *,
-    tenant: str = "default",
-    request_hash: str | None = None,
-    champion_pred: float | None = None,
-    challenger_pred: float | None = None,
-    label: float | None = None,
-) -> None:
-    """Log one champion vs challenger prediction pair (R4)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO challenger_samples
-                   (model, tenant, request_hash, champion_pred, challenger_pred, label)
-               VALUES (?,?,?,?,?,?)""",
-            (model, tenant, request_hash, champion_pred, challenger_pred, label),
-        )
 
 
-def get_challenger_samples(
-    model: str, *, tenant: str = "default", labelled_only: bool = False, last_n: int = 5000
-) -> list[dict[str, Any]]:
-    """Recent champion/challenger samples for scoring."""
-    init_db()
-    clause = "WHERE model=? AND tenant=?"
-    params: list[Any] = [model, tenant]
-    if labelled_only:
-        clause += " AND label IS NOT NULL"
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM challenger_samples {clause} ORDER BY id DESC LIMIT ?",
-            (*params, last_n),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · C8 — fairness & subgroup performance monitoring (ADR 0025).
 # ---------------------------------------------------------------------------
-def set_fairness_config(
-    model: str,
-    slice_attrs: list[str],
-    *,
-    tenant: str = "default",
-    threshold: float = 0.1,
-    min_samples: int = 30,
-    gate_promotion: bool = False,
-    enabled: bool = True,
-) -> None:
-    """Declare slicing attributes + disparity threshold for a model (R1)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO fairness_config
-                   (model, tenant, slice_attrs, threshold, min_samples,
-                    gate_promotion, enabled, updated_at)
-               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
-            (
-                model,
-                tenant,
-                json.dumps(slice_attrs),
-                threshold,
-                min_samples,
-                1 if gate_promotion else 0,
-                1 if enabled else 0,
-            ),
-        )
 
 
-def get_fairness_config(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM fairness_config WHERE model=?", (model,)).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["slice_attrs"] = json.loads(d["slice_attrs"]) if d["slice_attrs"] else []
-    return d
 
 
-def record_fairness_sample(
-    model: str,
-    slice_attr: str,
-    slice_value: str,
-    *,
-    tenant: str = "default",
-    prediction: float | None = None,
-    label: float | None = None,
-) -> None:
-    """Log one per-request fairness sample (R2)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO fairness_samples
-                   (model, tenant, slice_attr, slice_value, prediction, label)
-               VALUES (?,?,?,?,?,?)""",
-            (model, tenant, slice_attr, slice_value, prediction, label),
-        )
 
 
-def get_fairness_samples(
-    model: str, slice_attr: str, *, tenant: str = "default", last_n: int = 20000
-) -> list[dict[str, Any]]:
-    """Recent fairness samples for one slicing attribute."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            """SELECT slice_value, prediction, label FROM fairness_samples
-               WHERE model=? AND tenant=? AND slice_attr=? ORDER BY id DESC LIMIT ?""",
-            (model, tenant, slice_attr, last_n),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · D1 — EU AI Act compliance (ADR 0012).
 # ---------------------------------------------------------------------------
-def set_compliance_system(
-    model: str,
-    *,
-    tenant: str = "default",
-    in_scope: bool = True,
-    risk_tier: str | None = None,
-    intended_purpose: str | None = None,
-    deployment_context: str | None = None,
-    conformity_state: str | None = None,
-    updated_by: str | None = None,
-) -> None:
-    """Upsert a system's compliance record (classification / conformity) (R1)."""
-    init_db()
-    with get_db() as conn:
-        existing = conn.execute(
-            "SELECT * FROM compliance_systems WHERE model=?", (model,)
-        ).fetchone()
-        if existing:
-            cur = dict(existing)
-            conn.execute(
-                """UPDATE compliance_systems SET tenant=?, in_scope=?, risk_tier=?,
-                       intended_purpose=?, deployment_context=?, conformity_state=?,
-                       updated_at=CURRENT_TIMESTAMP, updated_by=? WHERE model=?""",
-                (
-                    tenant,
-                    1 if in_scope else 0,
-                    risk_tier if risk_tier is not None else cur["risk_tier"],
-                    intended_purpose if intended_purpose is not None else cur["intended_purpose"],
-                    deployment_context
-                    if deployment_context is not None
-                    else cur["deployment_context"],
-                    conformity_state if conformity_state is not None else cur["conformity_state"],
-                    updated_by,
-                    model,
-                ),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO compliance_systems
-                       (model, tenant, in_scope, risk_tier, intended_purpose,
-                        deployment_context, conformity_state, updated_by)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (
-                    model,
-                    tenant,
-                    1 if in_scope else 0,
-                    risk_tier,
-                    intended_purpose,
-                    deployment_context,
-                    conformity_state or "draft",
-                    updated_by,
-                ),
-            )
 
 
-def get_compliance_system(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM compliance_systems WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_compliance_systems(*, tenant: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    where = "WHERE tenant=?" if tenant else ""
-    params = (tenant,) if tenant else ()
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM compliance_systems {where} ORDER BY model", params
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def save_technical_file(
-    model: str,
-    content: str,
-    *,
-    tenant: str = "default",
-    gaps: int = 0,
-    generated_by: str | None = None,
-) -> int:
-    """Persist a new (versioned) technical file; returns the new version (R5)."""
-    init_db()
-    with get_db() as conn:
-        prev = conn.execute(
-            "SELECT MAX(version) AS v FROM technical_files WHERE model=?", (model,)
-        ).fetchone()
-        version = (prev["v"] or 0) + 1
-        conn.execute(
-            """INSERT INTO technical_files (model, tenant, version, gaps, content, generated_by)
-               VALUES (?,?,?,?,?,?)""",
-            (model, tenant, version, gaps, content, generated_by),
-        )
-    return version
 
 
-def list_technical_files(model: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT version, gaps, generated_at, generated_by FROM technical_files "
-            "WHERE model=? ORDER BY version DESC",
-            (model,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · D4 — immutable, tamper-evident audit trail (ADR 0028).
 # ---------------------------------------------------------------------------
-def verify_audit_chain() -> dict[str, Any]:
-    """Recompute the hash chain and report the first broken link, if any (R2/R6)."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, source, actor, action, target, details, tenant, prev_hash, hash, ts "
-            "FROM audit_events WHERE hash IS NOT NULL ORDER BY id ASC"
-        ).fetchall()
-    prev = "GENESIS"
-    for r in rows:
-        canonical = _audit_canonical(
-            r["source"],
-            r["actor"],
-            r["action"],
-            r["target"],
-            r["details"],
-            r["tenant"] or "default",
-            r["ts"],
-        )
-        expected = _audit_hash(prev, canonical)
-        if r["prev_hash"] != prev or r["hash"] != expected:
-            return {
-                "ok": False,
-                "verified": True,
-                "count": len(rows),
-                "broken_at_id": r["id"],
-                "reason": "prev_hash mismatch"
-                if r["prev_hash"] != prev
-                else "hash mismatch (event altered)",
-            }
-        prev = r["hash"]
-    return {"ok": True, "verified": True, "count": len(rows), "head_hash": prev}
 
 
-def audit_chain_head() -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT id, hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-    return {"id": row["id"], "hash": row["hash"]} if row else None
 
 
-def sign_audit_checkpoint(signature: str, *, key_id: str | None = None) -> dict[str, Any] | None:
-    """Persist a detached signature over the current chain head (R5). Returns the checkpoint."""
-    head = audit_chain_head()
-    if head is None:
-        return None
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO audit_checkpoints (head_id, head_hash, signature, key_id) VALUES (?,?,?,?)",
-            (head["id"], head["hash"], signature, key_id),
-        )
-    return {"head_id": head["id"], "head_hash": head["hash"], "key_id": key_id}
 
 
-def list_audit_checkpoints(last_n: int = 20) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM audit_checkpoints ORDER BY id DESC LIMIT ?", (last_n,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def export_audit_events(*, before_ts: str | None = None) -> list[dict[str, Any]]:
-    """Read-only archival export of the audit trail (R4). Never deletes — append-only."""
-    init_db()
-    clause = "WHERE ts < ?" if before_ts else ""
-    params = (before_ts,) if before_ts else ()
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM audit_events {clause} ORDER BY id ASC", params
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · A6 — Croissant dataset cards + structured model cards (ADR 0037).
 # ---------------------------------------------------------------------------
-def save_dataset_card(dataset: str, croissant_json: str, *, revision: str | None = None) -> int:
-    init_db()
-    with get_db() as conn:
-        prev = conn.execute(
-            "SELECT MAX(version) AS v FROM dataset_cards WHERE dataset=?", (dataset,)
-        ).fetchone()
-        version = (prev["v"] or 0) + 1
-        conn.execute(
-            "INSERT INTO dataset_cards (dataset, revision, version, croissant_json) "
-            "VALUES (?,?,?,?)",
-            (dataset, revision, version, croissant_json),
-        )
-    return version
 
 
-def get_dataset_card(dataset: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM dataset_cards WHERE dataset=? ORDER BY version DESC LIMIT 1",
-            (dataset,),
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def save_model_card(
-    model: str,
-    card_json: str,
-    completeness: float,
-    *,
-    tenant: str = "default",
-    created_by: str | None = None,
-) -> int:
-    init_db()
-    with get_db() as conn:
-        prev = conn.execute(
-            "SELECT MAX(version) AS v FROM model_card_records WHERE model=?", (model,)
-        ).fetchone()
-        version = (prev["v"] or 0) + 1
-        conn.execute(
-            "INSERT INTO model_card_records (model, tenant, version, completeness, card_json, "
-            "created_by) VALUES (?,?,?,?,?,?)",
-            (model, tenant, version, completeness, card_json, created_by),
-        )
-    return version
 
 
-def get_model_card(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM model_card_records WHERE model=? ORDER BY version DESC LIMIT 1",
-            (model,),
-        ).fetchone()
-    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · E5 — autoscaling & scale-to-zero (ADR 0031).
 # ---------------------------------------------------------------------------
-def set_autoscale_config(
-    model: str,
-    min_replicas: int | None = None,
-    max_replicas: int | None = None,
-    **kw: Any,
-) -> None:
-    """Upsert a per-model autoscale policy (R1).
-
-    Backward-compatible with the Phase-24 positional stub
-    (``set_autoscale_config(model, min_replicas, max_replicas, target_ongoing=..., updated_by=...)``)
-    and the E5 keyword form (``set_autoscale_config(model, target_metric=..., warm_pool=..., ...)``).
-    """
-    init_db()
-    if min_replicas is not None:
-        kw["min_replicas"] = min_replicas
-    if max_replicas is not None:
-        kw["max_replicas"] = max_replicas
-    defaults = {
-        "tenant": "default",
-        "min_replicas": 1,
-        "max_replicas": 4,
-        "target_ongoing": 8,
-        "target_metric": "queue_depth",
-        "target_value": 10.0,
-        "scale_to_zero_after_s": 0,
-        "warm_pool": 0,
-        "stabilization_s": 30,
-        "cooldown_s": 60,
-        "gpu_fraction": 1.0,
-        "enabled": 1,
-        "updated_by": None,
-    }
-    existing = get_autoscale_config(model) or {}
-    cfg = {**defaults, **{k: existing.get(k) for k in defaults if k in existing}, **kw}
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO autoscale_config
-                   (model, tenant, min_replicas, max_replicas, target_ongoing, target_metric,
-                    target_value, scale_to_zero_after_s, warm_pool, stabilization_s, cooldown_s,
-                    gpu_fraction, enabled, updated_by, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)""",
-            (
-                model,
-                cfg["tenant"],
-                cfg["min_replicas"],
-                cfg["max_replicas"],
-                cfg["target_ongoing"],
-                cfg["target_metric"],
-                cfg["target_value"],
-                cfg["scale_to_zero_after_s"],
-                cfg["warm_pool"],
-                cfg["stabilization_s"],
-                cfg["cooldown_s"],
-                cfg["gpu_fraction"],
-                int(cfg["enabled"]),
-                cfg["updated_by"],
-            ),
-        )
 
 
-def get_autoscale_config(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM autoscale_config WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_autoscale_configs() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM autoscale_config ORDER BY model").fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_scale_event(
-    model: str,
-    from_replicas: int,
-    to_replicas: int,
-    *,
-    tenant: str = "default",
-    reason: str | None = None,
-    metric_value: float | None = None,
-    cold_start_s: float | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO scale_events
-                   (model, tenant, from_replicas, to_replicas, reason, metric_value, cold_start_s)
-               VALUES (?,?,?,?,?,?,?)""",
-            (model, tenant, from_replicas, to_replicas, reason, metric_value, cold_start_s),
-        )
 
 
-def list_scale_events(model: str, *, last_n: int = 50) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM scale_events WHERE model=? ORDER BY id DESC LIMIT ?", (model, last_n)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · A3 — feature store (single train/serve definition; ADR 0017).
 # ---------------------------------------------------------------------------
-def upsert_feature_view(
-    name: str,
-    entity: str,
-    features: list[str],
-    *,
-    source: str | None = None,
-    ttl_seconds: int = 0,
-    dataset_revision: str | None = None,
-) -> None:
-    """Register/patch a feature view (single definition for train + serve) (R1)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO feature_views
-                   (name, entity, features_json, source, ttl_seconds, dataset_revision, updated_at)
-               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(name) DO UPDATE SET
-                   entity=excluded.entity, features_json=excluded.features_json,
-                   source=excluded.source, ttl_seconds=excluded.ttl_seconds,
-                   dataset_revision=excluded.dataset_revision, updated_at=CURRENT_TIMESTAMP""",
-            (name, entity, json.dumps(features), source, ttl_seconds, dataset_revision),
-        )
 
 
-def get_feature_view(name: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM feature_views WHERE name=?", (name,)).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["features"] = json.loads(d.pop("features_json"))
-    return d
 
 
-def list_feature_views() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM feature_views ORDER BY name").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["features"] = json.loads(d.pop("features_json"))
-        out.append(d)
-    return out
 
 
-def write_feature_record(view: str, entity_id: str, event_ts: str, values: dict[str, Any]) -> None:
-    """Append an offline feature observation (point-in-time source of truth)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO feature_records (view, entity_id, event_ts, values_json)
-               VALUES (?,?,?,?)""",
-            (view, entity_id, event_ts, json.dumps(values)),
-        )
 
 
-def get_offline_features_asof(view: str, entity_id: str, asof_ts: str) -> dict[str, Any] | None:
-    """Latest offline feature values for an entity **as of** ``asof_ts`` (R4/R5, no leakage)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT values_json FROM feature_records
-               WHERE view=? AND entity_id=? AND event_ts<=?
-               ORDER BY event_ts DESC, id DESC LIMIT 1""",
-            (view, entity_id, asof_ts),
-        ).fetchone()
-    return json.loads(row["values_json"]) if row else None
 
 
-def materialize_online(view: str, *, start_ts: str | None = None, end_ts: str | None = None) -> int:
-    """Copy the latest offline value per entity into the online store (R6). Returns row count."""
-    init_db()
-    with get_db() as conn:
-        clauses = ["view=?"]
-        params: list[Any] = [view]
-        if start_ts:
-            clauses.append("event_ts>=?")
-            params.append(start_ts)
-        if end_ts:
-            clauses.append("event_ts<=?")
-            params.append(end_ts)
-        where = " AND ".join(clauses)
-        # Latest row per entity within the window.
-        rows = conn.execute(
-            f"""SELECT fr.entity_id, fr.event_ts, fr.values_json
-                FROM feature_records fr
-                JOIN (SELECT entity_id, MAX(event_ts) AS mx FROM feature_records
-                      WHERE {where} GROUP BY entity_id) g
-                  ON fr.entity_id=g.entity_id AND fr.event_ts=g.mx
-                WHERE fr.view=?""",
-            (*params, view),
-        ).fetchall()
-        for r in rows:
-            conn.execute(
-                """INSERT INTO online_features (view, entity_id, event_ts, values_json,
-                                                materialized_at)
-                   VALUES (?,?,?,?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(view, entity_id) DO UPDATE SET
-                       event_ts=excluded.event_ts, values_json=excluded.values_json,
-                       materialized_at=CURRENT_TIMESTAMP""",
-                (view, r["entity_id"], r["event_ts"], r["values_json"]),
-            )
-        conn.execute(
-            """INSERT INTO feature_view_materializations (view, start_ts, end_ts, rows)
-               VALUES (?,?,?,?)""",
-            (view, start_ts, end_ts, len(rows)),
-        )
-    return len(rows)
 
 
-def get_online_feature(view: str, entity_id: str) -> dict[str, Any] | None:
-    """Low-latency online read of the materialized feature vector (R3)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT values_json FROM online_features WHERE view=? AND entity_id=?",
-            (view, entity_id),
-        ).fetchone()
-    return json.loads(row["values_json"]) if row else None
 
 
-def last_materialization(view: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT * FROM feature_view_materializations WHERE view=?
-               ORDER BY id DESC LIMIT 1""",
-            (view,),
-        ).fetchone()
-    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · A4 — declarative asset-centric pipelines (ADR 0036).
 # ---------------------------------------------------------------------------
-def register_asset(
-    name: str,
-    kind: str = "model",
-    deps: list[str] | None = None,
-    *,
-    description: str | None = None,
-) -> None:
-    """Register/patch an asset declaration (R1). Preserves version + freshness state."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO assets (name, kind, deps_json, description, updated_at)
-               VALUES (?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(name) DO UPDATE SET
-                   kind=excluded.kind, deps_json=excluded.deps_json,
-                   description=excluded.description, updated_at=CURRENT_TIMESTAMP""",
-            (name, kind, json.dumps(deps or []), description),
-        )
 
 
-def get_asset(name: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM assets WHERE name=?", (name,)).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["deps"] = json.loads(d.pop("deps_json"))
-    d["built_from"] = json.loads(d["built_from_json"]) if d.get("built_from_json") else {}
-    d.pop("built_from_json", None)
-    return d
 
 
-def list_assets() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM assets ORDER BY name").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["deps"] = json.loads(d.pop("deps_json"))
-        d["built_from"] = json.loads(d["built_from_json"]) if d.get("built_from_json") else {}
-        d.pop("built_from_json", None)
-        out.append(d)
-    return out
 
 
-def bump_asset_version(
-    name: str,
-    built_from: dict[str, int],
-    *,
-    run_id: str | None = None,
-    actor: str | None = None,
-) -> int:
-    """Record a new materialized version of an asset + the upstream versions it built from (R3)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT current_version FROM assets WHERE name=?", (name,)).fetchone()
-        new_version = (row["current_version"] if row else 0) + 1
-        conn.execute(
-            """UPDATE assets SET current_version=?, built_from_json=?,
-                   last_materialized_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-               WHERE name=?""",
-            (new_version, json.dumps(built_from), name),
-        )
-        conn.execute(
-            """INSERT INTO asset_materializations (name, version, built_from_json, run_id, actor)
-               VALUES (?,?,?,?,?)""",
-            (name, new_version, json.dumps(built_from), run_id, actor),
-        )
-    return new_version
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · A8 — signed reproducibility bundles (ADR 0038).
 # ---------------------------------------------------------------------------
-def store_repro_bundle(
-    model: str,
-    version: str,
-    manifest: dict[str, Any],
-    manifest_hash: str,
-    *,
-    signature: str | None = None,
-    algo: str | None = None,
-    signed_by: str | None = None,
-) -> int:
-    """Persist a reproducibility bundle manifest (versioned; audited by the caller) (R2)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT MAX(bundle_version) AS mx FROM repro_bundles WHERE model=? AND version=?",
-            (model, version),
-        ).fetchone()
-        bundle_version = (row["mx"] or 0) + 1
-        conn.execute(
-            """INSERT INTO repro_bundles
-                   (model, version, bundle_version, manifest_json, manifest_hash,
-                    signature, algo, signed_by)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                model,
-                version,
-                bundle_version,
-                json.dumps(manifest),
-                manifest_hash,
-                signature,
-                algo,
-                signed_by,
-            ),
-        )
-    return bundle_version
 
 
-def get_repro_bundle(model: str, version: str) -> dict[str, Any] | None:
-    """Return the latest bundle for a model version (with parsed manifest), or None."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT * FROM repro_bundles WHERE model=? AND version=?
-               ORDER BY bundle_version DESC LIMIT 1""",
-            (model, version),
-        ).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["manifest"] = json.loads(d["manifest_json"])
-    return d
 
 
-def list_repro_bundles(model: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        if model:
-            rows = conn.execute(
-                """SELECT model, version, MAX(bundle_version) AS bundle_version,
-                          manifest_hash, signature, created_at
-                   FROM repro_bundles WHERE model=?
-                   GROUP BY model, version ORDER BY created_at DESC""",
-                (model,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT model, version, MAX(bundle_version) AS bundle_version,
-                          manifest_hash, signature, created_at
-                   FROM repro_bundles
-                   GROUP BY model, version ORDER BY created_at DESC"""
-            ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
 # ---------------------------------------------------------------------------
-def register_adapter(
-    adapter_id: str,
-    base_ref: str,
-    *,
-    method: str = "lora",
-    rank: int | None = None,
-    target_modules: str | None = None,
-    dataset_revision: str | None = None,
-    eval_score: float | None = None,
-    eval_floor: float | None = None,
-    signature: str | None = None,
-    signed_by: str | None = None,
-    cost_gpu_hours: float | None = None,
-) -> None:
-    """Register/patch a LoRA adapter as a first-class artifact (R3)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO lora_adapters
-                   (adapter_id, base_ref, method, rank, target_modules, dataset_revision,
-                    eval_score, eval_floor, signature, signed_by, cost_gpu_hours, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(adapter_id) DO UPDATE SET
-                   base_ref=excluded.base_ref, method=excluded.method, rank=excluded.rank,
-                   target_modules=excluded.target_modules,
-                   dataset_revision=excluded.dataset_revision, eval_score=excluded.eval_score,
-                   eval_floor=excluded.eval_floor, signature=excluded.signature,
-                   signed_by=excluded.signed_by, cost_gpu_hours=excluded.cost_gpu_hours,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (
-                adapter_id,
-                base_ref,
-                method,
-                rank,
-                target_modules,
-                dataset_revision,
-                eval_score,
-                eval_floor,
-                signature,
-                signed_by,
-                cost_gpu_hours,
-            ),
-        )
 
 
-def get_adapter(adapter_id: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM lora_adapters WHERE adapter_id=?", (adapter_id,)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def list_adapters(base_ref: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        if base_ref:
-            rows = conn.execute(
-                "SELECT * FROM lora_adapters WHERE base_ref=? ORDER BY created_at DESC",
-                (base_ref,),
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM lora_adapters ORDER BY created_at DESC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def set_adapter_promoted(adapter_id: str, promoted: bool) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE lora_adapters SET promoted=?, updated_at=CURRENT_TIMESTAMP WHERE adapter_id=?",
-            (1 if promoted else 0, adapter_id),
-        )
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · D5 — signed, versioned policy bundles (ADR 0029).
 # ---------------------------------------------------------------------------
-def store_policy_bundle(
-    tenant: str,
-    content: str,
-    content_hash: str,
-    *,
-    signature: str | None = None,
-    algo: str | None = None,
-    signed_by: str | None = None,
-) -> int:
-    """Persist a signed policy bundle version for a tenant (R2). Returns the version."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT MAX(version) AS mx FROM policy_bundles WHERE tenant=?", (tenant,)
-        ).fetchone()
-        version = (row["mx"] or 0) + 1
-        conn.execute(
-            """INSERT INTO policy_bundles
-                   (tenant, version, content_hash, content, signature, algo, signed_by)
-               VALUES (?,?,?,?,?,?,?)""",
-            (tenant, version, content_hash, content, signature, algo, signed_by),
-        )
-    return version
 
 
-def get_policy_bundle(tenant: str = "default", version: int | None = None) -> dict[str, Any] | None:
-    """Return a policy bundle (latest for the tenant, or a specific version)."""
-    init_db()
-    with get_db() as conn:
-        if version is not None:
-            row = conn.execute(
-                "SELECT * FROM policy_bundles WHERE tenant=? AND version=?", (tenant, version)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM policy_bundles WHERE tenant=? ORDER BY version DESC LIMIT 1",
-                (tenant,),
-            ).fetchone()
-    return dict(row) if row else None
 
 
-def list_policy_bundles(tenant: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        if tenant:
-            rows = conn.execute(
-                "SELECT * FROM policy_bundles WHERE tenant=? ORDER BY version DESC", (tenant,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM policy_bundles ORDER BY tenant, version DESC"
-            ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
 # ---------------------------------------------------------------------------
-def create_distributed_run(
-    run_id: str,
-    model: str,
-    *,
-    nodes: int = 1,
-    gpus_per_node: int = 1,
-    strategy: str = "fsdp",
-    dataset_revision: str | None = None,
-    checkpoint_every: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO distributed_runs
-                   (run_id, model, nodes, gpus_per_node, strategy, status,
-                    dataset_revision, checkpoint_every, updated_at)
-               VALUES (?,?,?,?,?, 'running', ?,?, CURRENT_TIMESTAMP)""",
-            (run_id, model, nodes, gpus_per_node, strategy, dataset_revision, checkpoint_every),
-        )
 
 
-def get_distributed_run(run_id: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM distributed_runs WHERE run_id=?", (run_id,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_distributed_runs(model: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        if model:
-            rows = conn.execute(
-                "SELECT * FROM distributed_runs WHERE model=? ORDER BY created_at DESC", (model,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM distributed_runs ORDER BY created_at DESC"
-            ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def update_distributed_run(
-    run_id: str,
-    *,
-    status: str | None = None,
-    cost_gpu_hours: float | None = None,
-    bump_resumes: bool = False,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        if status is not None:
-            conn.execute(
-                "UPDATE distributed_runs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE run_id=?",
-                (status, run_id),
-            )
-        if cost_gpu_hours is not None:
-            conn.execute(
-                "UPDATE distributed_runs SET cost_gpu_hours=?, updated_at=CURRENT_TIMESTAMP "
-                "WHERE run_id=?",
-                (cost_gpu_hours, run_id),
-            )
-        if bump_resumes:
-            conn.execute(
-                "UPDATE distributed_runs SET resumes=resumes+1, updated_at=CURRENT_TIMESTAMP "
-                "WHERE run_id=?",
-                (run_id,),
-            )
 
 
-def write_training_checkpoint(
-    run_id: str,
-    step: int,
-    epoch: int,
-    state_json: str,
-    integrity_hash: str,
-    *,
-    shard_count: int = 1,
-    uri: str | None = None,
-    mlflow_run_id: str | None = None,
-) -> int:
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            """INSERT INTO training_checkpoints
-                   (run_id, step, epoch, shard_count, uri, state_json, integrity_hash,
-                    mlflow_run_id)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (run_id, step, epoch, shard_count, uri, state_json, integrity_hash, mlflow_run_id),
-        )
-        return int(cur.lastrowid)
 
 
-def list_training_checkpoints(run_id: str) -> list[dict[str, Any]]:
-    """Checkpoints for a run, newest (highest step) first."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM training_checkpoints WHERE run_id=? ORDER BY step DESC, id DESC",
-            (run_id,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · B6 — embedding lifecycle & reindexing (ADR 0043).
 # ---------------------------------------------------------------------------
-def register_encoder_row(
-    encoder_id: str, name: str, version: str, dim: int, metric: str, normalization: str
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR IGNORE INTO encoders
-                   (encoder_id, name, version, dim, metric, normalization)
-               VALUES (?,?,?,?,?,?)""",
-            (encoder_id, name, version, dim, metric, normalization),
-        )
 
 
-def get_encoder(encoder_id: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM encoders WHERE encoder_id=?", (encoder_id,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_encoders() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM encoders ORDER BY created_at DESC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_collection(collection: str, tenant: str = "default") -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM embedding_collections WHERE collection=? AND tenant=?",
-            (collection, tenant),
-        ).fetchone()
-    return dict(row) if row else None
 
 
 _UNSET = object()  # sentinel: distinguish "don't change" from "set to NULL"
 
 
-def upsert_collection(
-    collection: str,
-    tenant: str = "default",
-    *,
-    active_encoder_id: Any = _UNSET,
-    staging_encoder_id: Any = _UNSET,
-    status: str | None = None,
-) -> None:
-    init_db()
-    existing = get_collection(collection, tenant) or {}
-    active = existing.get("active_encoder_id") if active_encoder_id is _UNSET else active_encoder_id
-    staging = (
-        existing.get("staging_encoder_id") if staging_encoder_id is _UNSET else staging_encoder_id
-    )
-    st = status if status is not None else existing.get("status", "active")
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO embedding_collections
-                   (collection, tenant, active_encoder_id, staging_encoder_id, status, updated_at)
-               VALUES (?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(collection, tenant) DO UPDATE SET
-                   active_encoder_id=excluded.active_encoder_id,
-                   staging_encoder_id=excluded.staging_encoder_id,
-                   status=excluded.status, updated_at=CURRENT_TIMESTAMP""",
-            (collection, tenant, active, staging, st),
-        )
 
 
-def create_reindex_job(
-    collection: str, tenant: str, from_encoder: str | None, to_encoder: str
-) -> int:
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            """INSERT INTO reindex_jobs (collection, tenant, from_encoder, to_encoder, status)
-               VALUES (?,?,?,?, 'building')""",
-            (collection, tenant, from_encoder, to_encoder),
-        )
-        return int(cur.lastrowid)
 
 
-def update_reindex_job(
-    job_id: int,
-    *,
-    status: str | None = None,
-    recall: float | None = None,
-    docs_reindexed: int | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        if status is not None:
-            conn.execute(
-                "UPDATE reindex_jobs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (status, job_id),
-            )
-        if recall is not None:
-            conn.execute(
-                "UPDATE reindex_jobs SET recall=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (recall, job_id),
-            )
-        if docs_reindexed is not None:
-            conn.execute(
-                "UPDATE reindex_jobs SET docs_reindexed=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (docs_reindexed, job_id),
-            )
 
 
-def list_reindex_jobs(collection: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        if collection:
-            rows = conn.execute(
-                "SELECT * FROM reindex_jobs WHERE collection=? ORDER BY id DESC", (collection,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM reindex_jobs ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · B8 — structured output & reasoning ops (ADR 0035).
 # ---------------------------------------------------------------------------
-def record_reasoning_usage(
-    model: str,
-    reasoning_tokens: int,
-    output_tokens: int,
-    reasoning_cost: float,
-    output_cost: float,
-    *,
-    tenant: str = "default",
-    request_id: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO reasoning_usage
-                   (model, tenant, request_id, reasoning_tokens, output_tokens,
-                    reasoning_cost, output_cost)
-               VALUES (?,?,?,?,?,?,?)""",
-            (
-                model,
-                tenant,
-                request_id,
-                reasoning_tokens,
-                output_tokens,
-                reasoning_cost,
-                output_cost,
-            ),
-        )
 
 
-def reasoning_usage_summary(model: str | None = None, tenant: str | None = None) -> dict[str, Any]:
-    init_db()
-    clauses, params = [], []
-    if model:
-        clauses.append("model=?")
-        params.append(model)
-    if tenant:
-        clauses.append("tenant=?")
-        params.append(tenant)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        row = conn.execute(
-            f"""SELECT COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens,
-                       COALESCE(SUM(output_tokens),0) AS output_tokens,
-                       COALESCE(SUM(reasoning_cost),0) AS reasoning_cost,
-                       COALESCE(SUM(output_cost),0) AS output_cost
-                FROM reasoning_usage{where}""",
-            tuple(params),
-        ).fetchone()
-    return dict(row)
 
 
-def store_reasoning_trace(
-    request_id: str,
-    redacted_trace: str,
-    *,
-    tenant: str = "default",
-    expires_at: float | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO reasoning_traces
-                   (request_id, tenant, redacted_trace, expires_at)
-               VALUES (?,?,?,?)""",
-            (request_id, tenant, redacted_trace, expires_at),
-        )
 
 
-def get_reasoning_trace(request_id: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM reasoning_traces WHERE request_id=?", (request_id,)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def record_structured_output_event(
-    outcome: str, *, model: str | None = None, tenant: str = "default"
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO structured_output_events (model, tenant, outcome) VALUES (?,?,?)",
-            (model, tenant, outcome),
-        )
 
 
-def structured_output_stats() -> dict[str, int]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT outcome, COUNT(*) AS n FROM structured_output_events GROUP BY outcome"
-        ).fetchall()
-    return {r["outcome"]: r["n"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · E4 — inference gateway & KV-cache-aware routing (ADR 0039).
 # ---------------------------------------------------------------------------
-def set_gateway_config(
-    model: str,
-    *,
-    tenant: str = "default",
-    mode: str = "round_robin",
-    slo_latency_ms: float | None = None,
-    disaggregate: bool = False,
-    prefill_pool: str | None = None,
-    decode_pool: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO inference_gateway_config
-                   (model, tenant, mode, slo_latency_ms, disaggregate, prefill_pool,
-                    decode_pool, updated_at)
-               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(model, tenant) DO UPDATE SET
-                   mode=excluded.mode, slo_latency_ms=excluded.slo_latency_ms,
-                   disaggregate=excluded.disaggregate, prefill_pool=excluded.prefill_pool,
-                   decode_pool=excluded.decode_pool, updated_at=CURRENT_TIMESTAMP""",
-            (
-                model,
-                tenant,
-                mode,
-                slo_latency_ms,
-                1 if disaggregate else 0,
-                prefill_pool,
-                decode_pool,
-            ),
-        )
 
 
-def get_gateway_config(model: str, tenant: str = "default") -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM inference_gateway_config WHERE model=? AND tenant=?", (model, tenant)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def record_routing_event(
-    model: str,
-    prefix_key: str | None,
-    replica: str,
-    decision: str,
-    hit: bool,
-    *,
-    tenant: str = "default",
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO routing_events (model, tenant, prefix_key, replica, decision, hit)
-               VALUES (?,?,?,?,?,?)""",
-            (model, tenant, prefix_key, replica, decision, 1 if hit else 0),
-        )
 
 
-def routing_stats(model: str, tenant: str | None = None) -> dict[str, Any]:
-    init_db()
-    clauses = ["model=?"]
-    params: list[Any] = [model]
-    if tenant:
-        clauses.append("tenant=?")
-        params.append(tenant)
-    where = " AND ".join(clauses)
-    with get_db() as conn:
-        row = conn.execute(
-            f"""SELECT COUNT(*) AS total, COALESCE(SUM(hit),0) AS hits
-                FROM routing_events WHERE {where}""",
-            tuple(params),
-        ).fetchone()
-        by_decision = conn.execute(
-            f"SELECT decision, COUNT(*) AS n FROM routing_events WHERE {where} GROUP BY decision",
-            tuple(params),
-        ).fetchall()
-    total = row["total"]
-    return {
-        "total": total,
-        "hits": row["hits"],
-        "hit_rate": (row["hits"] / total) if total else 0.0,
-        "by_decision": {r["decision"]: r["n"] for r in by_decision},
-    }
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · E7 — federated & privacy-preserving training (ADR 0040).
 # ---------------------------------------------------------------------------
-def create_federated_run(
-    run_id: str,
-    strategy: str,
-    *,
-    dp_enabled: bool = False,
-    secure_agg: bool = False,
-    delta: float = 0.0,
-    epsilon_per_round: float = 0.0,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO federated_runs
-                   (run_id, strategy, dp_enabled, secure_agg, delta, epsilon_per_round, status)
-               VALUES (?,?,?,?,?,?, 'initialized')""",
-            (
-                run_id,
-                strategy,
-                1 if dp_enabled else 0,
-                1 if secure_agg else 0,
-                delta,
-                epsilon_per_round,
-            ),
-        )
 
 
-def get_federated_run(run_id: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM federated_runs WHERE run_id=?", (run_id,)).fetchone()
-    return dict(row) if row else None
 
 
-def register_federated_site(run_id: str, site: str, authorized: bool) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO federated_sites (run_id, site, authorized)
-               VALUES (?,?,?)""",
-            (run_id, site, 1 if authorized else 0),
-        )
 
 
-def get_federated_sites(run_id: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM federated_sites WHERE run_id=? ORDER BY site", (run_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_federated_round(
-    run_id: str,
-    round_num: int,
-    global_metric: float | None,
-    sites_participated: int,
-    epsilon: float,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO federated_rounds
-                   (run_id, round_num, global_metric, sites_participated, epsilon)
-               VALUES (?,?,?,?,?)""",
-            (run_id, round_num, global_metric, sites_participated, epsilon),
-        )
-        conn.execute(
-            """UPDATE federated_runs SET rounds_completed=?, epsilon=?, status='running',
-                   updated_at=CURRENT_TIMESTAMP WHERE run_id=?""",
-            (round_num, epsilon, run_id),
-        )
 
 
-def list_federated_rounds(run_id: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM federated_rounds WHERE run_id=? ORDER BY round_num", (run_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Next-Gen 40 · E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).
 # ---------------------------------------------------------------------------
-def register_device_pool(
-    name: str,
-    *,
-    target: str = "hpc",
-    accelerator: str = "nvidia",
-    capabilities: list[str] | None = None,
-    count: int = 0,
-    region: str | None = None,
-    cost_per_hour: float = 0.0,
-    carbon_factor: float = 0.0,
-    supports_fractions: bool = False,
-    status: str = "active",
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO device_pools
-                   (name, target, accelerator, capabilities, count, region, cost_per_hour,
-                    carbon_factor, supports_fractions, status, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
-            (
-                name,
-                target,
-                accelerator,
-                json.dumps(capabilities or []),
-                count,
-                region,
-                cost_per_hour,
-                carbon_factor,
-                1 if supports_fractions else 0,
-                status,
-            ),
-        )
 
 
-def get_device_pools(
-    target: str | None = None,
-    accelerator: str | None = None,
-    status: str | None = "active",
-) -> list[dict[str, Any]]:
-    init_db()
-    q = "SELECT * FROM device_pools WHERE 1=1"
-    params: list[Any] = []
-    if target:
-        q += " AND target=?"
-        params.append(target)
-    if accelerator:
-        q += " AND accelerator=?"
-        params.append(accelerator)
-    if status:
-        q += " AND status=?"
-        params.append(status)
-    q += " ORDER BY cost_per_hour, name"
-    with get_db() as conn:
-        rows = conn.execute(q, params).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["capabilities"] = json.loads(d["capabilities"]) if d.get("capabilities") else []
-        d["supports_fractions"] = bool(d["supports_fractions"])
-        out.append(d)
-    return out
 
 
-def record_placement_decision(
-    workload: str,
-    *,
-    accelerator_requested: str | None,
-    device_chosen: str | None,
-    pool: str | None,
-    target: str | None,
-    region: str | None,
-    decision: str,
-    fraction_honored: bool = True,
-    reason: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO placement_decisions
-                   (workload, accelerator_requested, device_chosen, pool, target, region,
-                    decision, fraction_honored, reason)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                workload,
-                accelerator_requested,
-                device_chosen,
-                pool,
-                target,
-                region,
-                decision,
-                1 if fraction_honored else 0,
-                reason,
-            ),
-        )
 
 
-def list_placement_decisions(limit: int = 50) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM placement_decisions ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_burst_event(
-    workload: str,
-    *,
-    from_pool: str | None,
-    to_pool: str | None,
-    residency: str | None,
-    allowed: bool,
-    reason: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO burst_events
-                   (workload, from_pool, to_pool, residency, allowed, reason)
-               VALUES (?,?,?,?,?,?)""",
-            (workload, from_pool, to_pool, residency, 1 if allowed else 0, reason),
-        )
 
 
-def list_burst_events(limit: int = 50) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM burst_events ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Project Anatomy · P6 — per-project storage location (ADR 0091).
 # ---------------------------------------------------------------------------
-def projects_bucket() -> str:
-    """The shared bucket that holds every project's prefix (env-overridable)."""
-    return os.getenv("EXAMLOPS_PROJECTS_BUCKET", "examlops-projects")
 
 
-def project_experiment(project: str) -> str:
-    """Stable MLflow experiment name whose artifact_location is the project prefix."""
-    return f"project/{project}"
 
 
-def ensure_project_storage(project: str) -> dict[str, Any] | None:
-    """Upsert the default storage record for a *known* project; idempotent.
-
-    Returns the record, or None if the project does not exist (never creates a row for an
-    unknown project — R4). The default location is ``s3://<projects_bucket>/<project>/`` with a
-    ``quota_gb`` mirrored from ``projects.storage_gb``.
-    """
-    init_db()
-    proj = get_project(project)
-    if not proj:
-        return None
-    with get_db() as conn:
-        existing = conn.execute(
-            "SELECT connection_ref, used_bytes FROM project_storage WHERE project=?", (project,)
-        ).fetchone()
-        conn.execute(
-            """INSERT INTO project_storage
-                   (project, bucket, prefix, connection_ref, quota_gb, used_bytes, updated_at)
-               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(project) DO UPDATE SET
-                   bucket=excluded.bucket, prefix=excluded.prefix,
-                   quota_gb=excluded.quota_gb, updated_at=CURRENT_TIMESTAMP""",
-            (
-                project,
-                projects_bucket(),
-                f"{project}/",
-                existing["connection_ref"] if existing else None,
-                proj.get("storage_gb"),
-                existing["used_bytes"] if existing else 0,
-            ),
-        )
-    return get_project_storage(project)
 
 
-def get_project_storage(project: str) -> dict[str, Any] | None:
-    """Return the storage record for a project, or None."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM project_storage WHERE project=?", (project,)).fetchone()
-    return dict(row) if row else None
 
 
-def bind_project_connection(project: str, connection_ref: str, actor: str | None = None) -> bool:
-    """Bind an existing P2 S3 connection as the project's storage backend.
-
-    Validates the ref against the project's connections (kind ``s3``); the effective bucket then
-    comes from the connection config. Never copies a secret. Returns False if the project has no
-    storage record or the connection is missing/not s3.
-    """
-    from examlops.connections import get_connection
-
-    init_db()
-    if get_project_storage(project) is None and ensure_project_storage(project) is None:
-        return False
-    conn_rec = get_connection(connection_ref, project=project)
-    if not conn_rec or conn_rec.get("kind") != "s3":
-        return False
-    bucket = str(conn_rec.get("config", {}).get("bucket") or projects_bucket())
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE project_storage SET connection_ref=?, bucket=?, updated_at=CURRENT_TIMESTAMP "
-            "WHERE project=?",
-            (connection_ref, bucket, project),
-        )
-    write_audit_event(
-        "cli", actor, "project_storage_bind", project, {"connection_ref": connection_ref}
-    )
-    return True
 
 
-def set_project_usage(project: str, used_bytes: int) -> None:
-    """Record a measured usage figure (called by refresh_project_usage / probes)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE project_storage SET used_bytes=?, updated_at=CURRENT_TIMESTAMP WHERE project=?",
-            (int(used_bytes), project),
-        )
 
 
-def refresh_project_usage(project: str) -> int:
-    """Probe MinIO for the bytes under the project prefix and store them; fail-open.
-
-    Sums object sizes under ``<prefix>`` via S3 ListObjectsV2 (boto3, lazily imported). If MinIO
-    or boto3 is unavailable, the prior ``used_bytes`` is kept and returned — the platform never
-    raises on a missing backend (R5/R11).
-    """
-    rec = get_project_storage(project)
-    if rec is None:
-        return 0
-    prior = int(rec.get("used_bytes") or 0)
-    try:
-        import boto3  # noqa: PLC0415  (lazy — MinIO/boto3 is optional)
-
-        endpoint = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000")
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=endpoint,
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin"),
-        )
-        total = 0
-        token = None
-        while True:
-            kw = {"Bucket": rec["bucket"], "Prefix": rec["prefix"]}
-            if token:
-                kw["ContinuationToken"] = token
-            resp = s3.list_objects_v2(**kw)
-            total += sum(o.get("Size", 0) for o in resp.get("Contents", []))
-            if not resp.get("IsTruncated"):
-                break
-            token = resp.get("NextContinuationToken")
-        set_project_usage(project, total)
-        return total
-    except Exception:
-        return prior
 
 
 # ---------------------------------------------------------------------------
@@ -5308,72 +2224,28 @@ def refresh_project_usage(project: str) -> int:
 _PIPELINE_KINDS = ("prefect", "rayserve")
 
 
-def upsert_project_pipeline(
-    project: str,
-    kind: str,
-    ref: str,
-    *,
-    status: str = "unknown",
-    schedule: str | None = None,
-    last_run_at: str | None = None,
-) -> None:
-    """Register/update one of a project's two pipeline surfaces (PK project+kind = one-each)."""
-    if kind not in _PIPELINE_KINDS:
-        raise ValueError(f"kind must be one of {_PIPELINE_KINDS}, got {kind!r}")
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO project_pipelines
-                   (project, kind, ref, status, schedule, last_run_at, updated_at)
-               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
-               ON CONFLICT(project, kind) DO UPDATE SET
-                   ref=excluded.ref, status=excluded.status, schedule=excluded.schedule,
-                   last_run_at=excluded.last_run_at, updated_at=CURRENT_TIMESTAMP""",
-            (project, kind, ref, status, schedule, last_run_at),
-        )
 
 
-def get_project_pipelines(project: str) -> dict[str, Any]:
-    """Return the project's two pipeline surfaces (aggregation over existing state + registry).
 
-    Fail-open: if a live source is unavailable the registry row is used; an empty project yields
-    both surfaces as None (never an error). The Prefect surface's members are the project's models
-    (their per-model deployments); the Ray Serve surface's members are the same models with their
-    traffic split from ``traffic_rules``.
-    """
-    init_db()
-    models = list_project_models(project)
-    with get_db() as conn:
-        reg = {
-            r["kind"]: dict(r)
-            for r in conn.execute(
-                "SELECT * FROM project_pipelines WHERE project=?", (project,)
-            ).fetchall()
-        }
 
-    prefect_reg = reg.get("prefect")
-    rayserve_reg = reg.get("rayserve")
+# Install central write-retry coverage once the whole module (all helpers) is defined.
 
-    prefect = None
-    if models or prefect_reg:
-        prefect = {
-            "deployments": [f"examlops-{m.lower()}" for m in models],
-            "schedule": (prefect_reg or {}).get("schedule"),
-            "last_run_at": (prefect_reg or {}).get("last_run_at"),
-            "status": (prefect_reg or {}).get("status", "unknown"),
-        }
 
-    rayserve = None
-    if models or rayserve_reg:
-        traffic: dict[str, Any] = {}
-        for m in models:
-            rules = get_traffic_rules(m)
-            if rules:
-                traffic[m] = rules
-        rayserve = {
-            "models": models,
-            "traffic": traffic,
-            "status": (rayserve_reg or {}).get("status", "unknown"),
-        }
+# ── Per-domain body relocation (item 4.5): helpers below LIVE in examlops.data.*; re-exported
+# for back-compat (at END so every primitive/constant + install_write_retry is defined first).
+from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
+from examlops.data.audit import (audit_chain_head, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
+from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
+from examlops.data.drift import (claim_drift_trigger, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
+from examlops.data.evaluation import (get_eval_gate, get_eval_results, get_gate_reports, list_perf_estimates, record_eval_result, record_gate_report, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
+from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
+from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
+from examlops.data.governance import (get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
+from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
+from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001
+from examlops.data.prompts import (create_prompt_version, get_prompt_by_label, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label)  # noqa: E402, E501, F401, I001
+from examlops.data.registry import (get_dataset_card, get_model_bom, get_model_card, get_model_signature, register_device_pool, save_dataset_card, save_model_card, store_model_bom, store_model_signature)  # noqa: E402, E501, F401, I001
+from examlops.data.secrets import (all_secret_records, get_secret_ciphertext, get_secret_record, list_secret_paths, put_secret_ciphertext)  # noqa: E402, E501, F401, I001
 
-    return {"prefect": prefect, "rayserve": rayserve}
+_install_write_retry()  # wrap platform_db's own remaining mutating helpers (if any)

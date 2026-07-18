@@ -312,6 +312,17 @@ List recorded revisions newest-first, with linked runs (spec R9).
 
 - `--backend, -b` — Filter by backend
 
+### `exa data retention-prune`
+
+Prune unbounded per-inference telemetry (drift / input snapshots) older than --days.
+
+Never touches the tamper-evident audit log or FinOps cost history. Use --dry-run first to see the
+row counts, then run without it (optionally with --vacuum) to reclaim space.
+
+- `--days` — Delete telemetry older than this many days
+- `--dry-run` — Report what would be pruned; change nothing
+- `--vacuum` — Reclaim freed pages after pruning
+
 ### `exa data snapshot`
 
 Resolve the current dataset state to a revision and record it (spec R8).

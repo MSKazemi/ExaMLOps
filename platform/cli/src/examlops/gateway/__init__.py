@@ -107,7 +107,8 @@ def issue_virtual_key(
     actor: str,
 ) -> str:
     """Issue a virtual key scoped to a tenant/project (+ allow-list + budget). Audited (R5)."""
-    from examlops.platform_db import create_virtual_key, write_audit_event
+    from examlops.data.audit import write_audit_event
+    from examlops.data.gateway import create_virtual_key
 
     raw = "exa-" + secrets.token_urlsafe(24)
     create_virtual_key(
@@ -130,7 +131,7 @@ def issue_virtual_key(
 
 def authorize(key_raw: str, model: str) -> dict[str, Any]:
     """Validate a key for a model (existence, revocation, allow-list, budget). Raises on deny."""
-    from examlops.platform_db import get_virtual_key
+    from examlops.data.gateway import get_virtual_key
 
     rec = get_virtual_key(_hash_key(key_raw))
     if rec is None or rec.get("revoked"):
@@ -161,7 +162,8 @@ class GatewayClient:
     cache_store: Callable[[str, list, Completion], None] | None = None
 
     def chat(self, model: str, messages: list[dict[str, str]], **kw: Any) -> Completion:
-        from examlops.platform_db import add_key_spend, record_gateway_call
+        from examlops.data.finops import add_key_spend
+        from examlops.data.gateway import record_gateway_call
 
         key_hash = _hash_key(self.virtual_key) if self.virtual_key else None
         if self.virtual_key:

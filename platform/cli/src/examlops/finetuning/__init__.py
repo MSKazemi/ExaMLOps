@@ -23,7 +23,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 VALID_METHODS = ("lora", "qlora", "full")
 
@@ -211,7 +211,7 @@ def _emit_lineage(adapter_id: str, base: str, dataset_rev: str | None) -> None:
 
 def _audit(adapter_id: str, action: str, extra: dict[str, Any], actor: str | None) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event("exa-finetune", actor, action, adapter_id, extra)
     except Exception:

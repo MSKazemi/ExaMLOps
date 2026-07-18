@@ -12,7 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from examlops.platform_db import get_db, get_project
+from examlops.data import get_db
+from examlops.data.projects import get_project
 
 _DEFAULT_IMAGE = "jupyter/scipy-notebook:latest"
 
@@ -92,7 +93,7 @@ def create_workbench(
                VALUES (?,?,?,?,?,?,?)""",
             (name, project, image or _DEFAULT_IMAGE, cpu, memory_gb, volume, created_by),
         )
-    from examlops.platform_db import assign_resource_to_project
+    from examlops.data.projects import assign_resource_to_project
 
     assign_resource_to_project(project, "storage", f"workbench:{name}", added_by=created_by)
     return get_workbench(name, project)  # type: ignore[return-value]
@@ -161,7 +162,7 @@ def delete_workbench(name: str, project: str) -> bool:
         cur = conn.execute("DELETE FROM workbenches WHERE project=? AND name=?", (project, name))
         removed = cur.rowcount > 0
     if removed:
-        from examlops.platform_db import remove_project_resource
+        from examlops.data.projects import remove_project_resource
 
         remove_project_resource(project, "storage", f"workbench:{name}")
     return removed

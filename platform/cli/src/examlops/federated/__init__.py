@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 STRATEGIES = ("fedavg", "fedprox", "robust")
 
@@ -203,7 +203,7 @@ def federated_status(run_id: str) -> dict:
 
 def _audit(run_id: str, action: str, extra: dict, actor: str | None) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event("exa-federated", actor, action, run_id, extra)
     except Exception:

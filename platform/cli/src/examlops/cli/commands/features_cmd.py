@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import get_db, init_db
+from examlops.data import get_db, init_db
 
 app = typer.Typer(
     help="Feature store — versioned training features",

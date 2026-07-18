@@ -6,6 +6,7 @@ import os
 import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/namespaces", tags=["namespaces"])
@@ -37,8 +38,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 async def get_namespaces(_=Depends(_viewer)) -> list[dict]:
     """All namespaces with the number of models assigned to each."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         _ensure_tables(conn)
         # Ensure default namespace always present
         conn.execute("INSERT OR IGNORE INTO namespaces (name) VALUES ('default')")
@@ -71,8 +71,7 @@ async def get_namespaces(_=Depends(_viewer)) -> list[dict]:
 async def get_namespace_models(name: str, _=Depends(_viewer)) -> dict:
     """All models assigned to a specific namespace."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         _ensure_tables(conn)
         ns_row = conn.execute(
             "SELECT name, description, created_at, created_by FROM namespaces WHERE name=?",

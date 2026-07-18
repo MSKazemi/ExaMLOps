@@ -15,6 +15,7 @@ import sqlite3
 
 from auth import require_role
 from capabilities import PROJECT_MANAGE, can, deny_reason
+from dbconn import connect
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 router = APIRouter(prefix="/v1/workbenches", tags=["workbenches"])
@@ -27,8 +28,7 @@ def _db_path() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_db_path())
     return conn
 
 

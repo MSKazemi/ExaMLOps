@@ -10,7 +10,8 @@ import os
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data.audit import write_audit_event
+from examlops.data.prompts import (
     create_prompt_version,
     get_prompt_by_label,
     get_prompt_version,
@@ -18,7 +19,6 @@ from examlops.platform_db import (
     list_prompt_names,
     list_prompt_versions,
     set_prompt_label,
-    write_audit_event,
 )
 
 app = typer.Typer(

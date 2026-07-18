@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 # In-process registry of declared assets (production functions live here; version/freshness
 # state lives in platform.db so it survives across processes).
@@ -155,7 +155,7 @@ def materialize(
 
     Governed by policy (D5): a ``deny`` on ``asset_materialize`` blocks the run.
     """
-    from examlops.platform_db import write_audit_event
+    from examlops.data.audit import write_audit_event
 
     # Policy gate (D5) — default allow if no policy file.
     blocked = _policy_block("asset_materialize", {"asset": name, "actor": actor})

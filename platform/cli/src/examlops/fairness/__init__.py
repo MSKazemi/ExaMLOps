@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from examlops import platform_db
+from examlops import data as platform_db
 
 DEFAULT_THRESHOLD = 0.1
 DEFAULT_MIN_SAMPLES = 30

@@ -8,11 +8,11 @@ from pathlib import Path
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.finops import (
     get_live_metrics,
-    init_db,
     join_predictions_with_truth,
-    write_audit_event,
     write_ground_truth,
     write_live_metric,
 )

@@ -6,20 +6,19 @@ import os
 import typer
 
 from examlops.cli import _output
-from examlops.drift_providers import resolve_drift_score_fn
-from examlops.platform_db import (
-    get_db,
+from examlops.data import get_db, init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.drift import (
+    claim_drift_trigger,
     get_drift_auto_retrain,
     get_drift_baseline,
     get_input_baseline,
-    init_db,
     list_drift_auto_retrain,
-    record_drift_trigger,
     set_drift_auto_retrain,
     set_drift_baseline,
     set_input_baseline,
-    write_audit_event,
 )
+from examlops.drift_providers import resolve_drift_score_fn
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -360,10 +359,14 @@ def trigger(
         if dry_run:
             triggered.append({"model": model, "z": z, "action": "would retrain"})
             continue
+        # Atomic cooldown claim (stamps last_triggered) — closes the check-then-record TOCTOU so a
+        # concurrent `drift trigger`/autopilot cycle cannot double-fire this model's retrain.
+        if not claim_drift_trigger(model, ar["cooldown_s"]):
+            skipped.append({"model": model, "reason": "cooldown active (claimed concurrently)"})
+            continue
         body = {"model_name": model, "dataset_name": ar["dataset_name"], "is_dummy": False}
         try:
             result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
-            record_drift_trigger(model)
             write_audit_event(
                 "cli",
                 actor,
@@ -377,7 +380,7 @@ def trigger(
 
     # C5 (R2): concept-CRITICAL detections are also auto-retrain consumable, subject
     # to the same cooldown. Skip any model already triggered above on prediction drift.
-    from examlops.platform_db import latest_drift_event
+    from examlops.data.drift import latest_drift_event
 
     already = {t["model"] for t in triggered}
     for model, ar in enabled_configs.items():
@@ -396,10 +399,14 @@ def trigger(
                 {"model": model, "z": ev.get("score") or 0.0, "action": "would retrain (concept)"}
             )
             continue
+        if not claim_drift_trigger(model, ar["cooldown_s"]):
+            skipped.append(
+                {"model": model, "reason": "concept: cooldown active (claimed concurrently)"}
+            )
+            continue
         body = {"model_name": model, "dataset_name": ar["dataset_name"], "is_dummy": False}
         try:
             result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
-            record_drift_trigger(model)
             write_audit_event(
                 "cli",
                 actor,
@@ -858,7 +865,7 @@ def events(
     last_n: int = typer.Option(30, "--last-n", help="Max events (newest first)"),
 ):
     """List unified drift events across all kinds (C5·R6)."""
-    from examlops.platform_db import list_drift_events
+    from examlops.data.drift import list_drift_events
 
     init_db()
     evs = list_drift_events(model=model, drift_kind=kind, last_n=last_n)
@@ -882,3 +889,37 @@ def events(
             for e in evs
         ],
     )
+
+
+@app.command()
+def forecast(
+    model: str = typer.Argument(..., help="Model to forecast drift for"),
+    threshold: float = typer.Option(3.0, "--threshold", help="Critical z-score threshold"),
+    horizon: int = typer.Option(20, "--horizon", help="Look-ahead steps"),
+):
+    """Predict WHEN a model's drift will breach the threshold (pre-emptive, item 5.2).
+
+    Fits a trend to recent prediction drift and projects the breach ETA, so the autopilot can
+    retrain BEFORE the degradation window instead of after. Exit 1 if a breach is imminent.
+    """
+    from examlops.forecast import forecast_model_drift
+
+    result = forecast_model_drift(model, threshold=threshold, horizon=horizon)
+    if _output.json_mode:
+        _output.print_json(result)
+    elif result.get("reason"):
+        _output.info(f"{model}: {result['reason']} — cannot forecast yet.")
+    elif result["will_breach"]:
+        eta = result["eta_steps"]
+        when = "already breached" if eta == 0 else f"in ~{eta} step(s)"
+        _output.warning(
+            f"{model}: drift trend projects a breach of {threshold} {when} "
+            f"(current z={result['current']}, slope={result['slope']})."
+        )
+    else:
+        _output.ok(
+            f"{model}: no breach forecast within {horizon} steps "
+            f"(current z={result['current']}, slope={result['slope']})."
+        )
+    if result.get("will_breach"):
+        raise typer.Exit(1)

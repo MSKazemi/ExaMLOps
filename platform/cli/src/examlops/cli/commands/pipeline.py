@@ -11,12 +11,9 @@ from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
 from examlops.cli.commands import hpo_cmd
-from examlops.platform_db import (
-    get_db,
-    init_db,
-    set_promotion_rule,
-    write_audit_event,
-)
+from examlops.data import get_db, init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.serving import set_promotion_rule
 from examlops.promotion_providers import resolve_promotion_eval_fn
 
 app = typer.Typer(
@@ -176,8 +173,8 @@ def run(
     if project:
         os.environ["EXAMLOPS_PROJECT"] = project
         if model:
-            from examlops.platform_db import assign_resource_to_project
-            from examlops.platform_db import init_db as _init_db
+            from examlops.data import init_db as _init_db
+            from examlops.data.projects import assign_resource_to_project
 
             _init_db()
             assign_resource_to_project(project, "model", model, added_by=os.getenv("USER"))
@@ -186,8 +183,8 @@ def run(
     if dataset_revision:
         if not dataset:
             _output.error("--dataset-revision requires --dataset to identify the pinned dataset.")
-        from examlops.platform_db import get_dataset_revision
-        from examlops.platform_db import init_db as _init_db
+        from examlops.data import init_db as _init_db
+        from examlops.data.data_assets import get_dataset_revision
 
         _init_db()
         if get_dataset_revision(dataset, dataset_revision) is None:
@@ -532,7 +529,7 @@ def promote(
     from examlops.cli.commands.slo_cmd import gate_enabled as _slo_gate_enabled
 
     if _slo_gate_enabled():
-        from examlops.platform_db import list_slo_specs
+        from examlops.data.governance import list_slo_specs
         from examlops.slo import budget_exhausted
 
         exhausted = [
@@ -756,8 +753,8 @@ def promote_delete(
     all_rules: bool = typer.Option(False, "--all", help="Delete ALL promotion rules"),
 ) -> None:
     """Delete saved metric-gated promotion rules."""
-    from examlops.platform_db import get_db as _get_db
-    from examlops.platform_db import init_db as _init_db
+    from examlops.data import get_db as _get_db
+    from examlops.data import init_db as _init_db
 
     _init_db()
     if all_rules:

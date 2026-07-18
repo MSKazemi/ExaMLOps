@@ -440,3 +440,34 @@ async def test_successful_inference_records_drift_success(mock_http_client):
     bucket = bridge._drift_tracker._results.get(model, [])
     assert len(bucket) == before + 1
     assert bucket[-1] is True
+
+
+# ── QW10: per-inference telemetry writes are bundled + offloaded to a worker thread ──
+
+
+def test_persist_inference_telemetry_writes_all_three(monkeypatch):
+    """The bundled helper performs the drift, input-embedding and audit writes with correct args."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: calls.__setitem__("drift", a))
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: calls.__setitem__("input", a))
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: calls.__setitem__("audit", a))
+
+    bridge._persist_inference_telemetry("JPCP", "Production", 42.0, [3.0, 4.0], "job-1")
+
+    assert calls["drift"] == ("JPCP", "Production", 42.0, "job-1")
+    # embedding [3, 4] ⇒ norm=5.0, mean=3.5, std=0.5
+    _, _, norm, mean, std, jid = calls["input"]  # type: ignore[misc]
+    assert round(norm, 6) == 5.0 and mean == 3.5 and std == 0.5 and jid == "job-1"
+    assert calls["audit"][0] == "bridge" and calls["audit"][3] == "JPCP"  # type: ignore[index]
+
+
+def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
+    seen = {"input": 0}
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(
+        bridge, "write_input_snapshot", lambda *a: seen.__setitem__("input", seen["input"] + 1)
+    )
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+
+    bridge._persist_inference_telemetry("JPCP", "Production", None, None, "job-2")
+    assert seen["input"] == 0  # no embedding ⇒ no input snapshot

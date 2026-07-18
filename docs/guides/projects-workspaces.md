@@ -146,18 +146,33 @@ read path, so no attribution is lost.
 
 The **Projects console** (gated by the `projectsConsole` feature flag) lists projects and shows
 each project's anatomy (resources, members, quota, budget, consumption). Viewers can browse; the
-create / assign / add-member actions require the `project.manage` capability (admin). Every
-mutation is audited and visible under `exa audit` and the dashboard Audit page.
+create / assign / add-member / **remove-member** / **delete-project** actions require the
+`project.manage` capability (admin). Every mutation is audited and visible under `exa audit` and the
+dashboard Audit page.
 
-The project detail page also surfaces two project-scoped sections:
+Since the *dashboard edit-parity* work, the config-setup operations an operator previously had to run
+from the CLI are available in the UI. Each write router calls the **same `examlops.*` code path the
+CLI calls** (no raw-sqlite mirror), so the dashboard can never drift from the CLI and secrets are
+written through the same secrets client:
 
-- **Connections** — a read-only list of the project's Named Connections (§9): name, kind, and a
-  *secret set / none* indicator. The secret value is never rendered — only whether one is attached.
-  Connections are created from the CLI (`exa connection create`) so credentials flow through the
-  secrets client, never the dashboard's data path.
+- **Connections** — viewers see a read-only list (name, kind, *secret set / none* — the value is
+  never rendered). Admins (`connection.manage`) get **New connection** (S3 / URI / dataplane, optional
+  encrypted secret), per-row **Test** (reachability probe) and **Delete**. A secret entered here is
+  written through `examlops.secrets` (the same store `exa connection create` uses), so it is readable
+  by the CLI and serving layer — only `hasSecret` ever returns to the browser.
+- **Storage** — admins can **Provision storage** (the per-project MinIO layout) and **Bind** one of
+  the project's connections to it (calls the shared `ensure_project_storage` / `bind_project_connection`
+  helpers, matching `exa project storage`).
+- **Members** — admins add and now **remove** members (owner / editor / viewer via the D6 authz
+  relations); each change is audited.
+- **Danger zone** — admins can **Delete project**: removes the project grouping plus its membership /
+  resource / storage / pipeline rows. The underlying models and connections are *not* deleted.
 - **Workbenches** — the project's dev environments (§12) with their status. Admins get a per-row
   Start / Stop toggle (`RUNNING` ↔ `STOPPED`); the flip is audited. The actual pod spawn is
   delegated to the runtime — the dashboard records and reports intent.
+
+Every mutation is capability-gated at the BFF (the sole enforcement point), viewer-denied with a
+human `deny_reason`, and audited as a `dashboard`-sourced event.
 
 ## 9. Named Connections
 

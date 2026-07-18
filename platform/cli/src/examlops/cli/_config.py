@@ -7,6 +7,17 @@ from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".config" / "examlops" / "config.toml"
 
+
+def config_path() -> Path:
+    """The effective config file path.
+
+    ``EXAMLOPS_CONFIG`` overrides the default ``~/.config/examlops/config.toml`` so
+    containers/CI can point at a pinned config and tests can run hermetically (never
+    reading the developer's real config). Falls back to :data:`CONFIG_PATH`."""
+    override = os.getenv("EXAMLOPS_CONFIG")
+    return Path(override) if override else CONFIG_PATH
+
+
 # field name, TOML key, env var, default, is_secret
 _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("control_plane_url", "control_plane", "CONTROL_PLANE_URL", "http://localhost:18002", False),
@@ -38,9 +49,10 @@ class Config:
 
 
 def _read_raw() -> dict:
-    if not CONFIG_PATH.exists():
+    path = config_path()
+    if not path.exists():
         return {}
-    with open(CONFIG_PATH, "rb") as f:
+    with open(path, "rb") as f:
         return tomllib.load(f)
 
 
@@ -163,13 +175,14 @@ def write_config(updates: dict, context: str | None = None) -> None:
 
 
 def _write_raw(data: dict) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import tomli_w
 
-        CONFIG_PATH.write_text(tomli_w.dumps(data))
+        path.write_text(tomli_w.dumps(data))
     except ImportError:
-        CONFIG_PATH.write_text(_dumps_toml(data))
+        path.write_text(_dumps_toml(data))
 
 
 def _toml_value(val: object) -> str:

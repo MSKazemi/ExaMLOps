@@ -16,6 +16,8 @@ import secrets
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from dbconn import connect
+
 _MENTION = re.compile(r"@([A-Za-z0-9._-]+)")
 _TAG = re.compile(r"<[^>]*>")
 _JS_URI = re.compile(r"javascript:", re.I)
@@ -75,7 +77,7 @@ def add_comment(
     """Sanitize + persist a comment on an entity, audited (F22 R1/R5). Returns the stored row."""
     clean = sanitize_comment(body)
     mentions = extract_mentions(clean)
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_tables(conn)
         cur = conn.execute(
@@ -108,7 +110,7 @@ def add_comment(
 
 def list_comments(db_path: str, entity_type: str, entity_id: str, tenant: str) -> list[dict]:
     """Comments on an entity, scoped to the caller's tenant (F15/R1). Newest last."""
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_tables(conn)
         rows = conn.execute(
@@ -128,7 +130,7 @@ def entity_activity(db_path: str, entity_type: str, entity_id: str, tenant: str)
     """Merged activity trail: comments + audit events referencing this entity (F22 R5/GWT-5)."""
     target = f"{entity_type}/{entity_id}"
     items: list[dict] = []
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_tables(conn)
         for r in conn.execute(
@@ -156,7 +158,7 @@ def create_snapshot(
     """Create a scoped, expiring, read-only shareable snapshot of a view (F22 R2). Returns the token."""
     token = secrets.token_urlsafe(16)
     expires = (datetime.now(UTC) + timedelta(hours=ttl_hours)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_tables(conn)
         conn.execute(
@@ -172,7 +174,7 @@ def create_snapshot(
 
 def get_snapshot(db_path: str, token: str) -> dict | None:
     """Resolve a snapshot if it exists and has not expired — read-only (F22 R2/GWT-3)."""
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_tables(conn)
         row = conn.execute(

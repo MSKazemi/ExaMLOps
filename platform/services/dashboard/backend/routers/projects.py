@@ -14,6 +14,7 @@ import sqlite3
 
 from auth import require_role
 from capabilities import PROJECT_MANAGE, can, deny_reason
+from dbconn import connect
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -28,8 +29,7 @@ def _db_path() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_db_path())
     return conn
 
 
@@ -378,3 +378,112 @@ async def add_member_view(
     conn.commit()
     conn.close()
     return {"project": name, "subject": subject, "role": role}
+
+
+@router.delete("/{name}/members/{subject}")
+async def remove_member_view(name: str, subject: str, principal: dict = Depends(_admin)) -> dict:
+    """Remove a person from a project (admin / project.manage; audited)."""
+    _require_manage(principal)
+    conn = _connect()
+    _ensure_tables(conn)
+    if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+        conn.close()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    cur = conn.execute(
+        "DELETE FROM authz_relations WHERE subject=? AND object=?", (subject, f"project:{name}")
+    )
+    removed = cur.rowcount
+    _audit(
+        conn,
+        principal.get("sub", "?"),
+        "project_member_removed",
+        subject,
+        {"project": name, "removed": removed},
+    )
+    conn.commit()
+    conn.close()
+    if removed == 0:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"'{subject}' is not a member of project '{name}'"
+        )
+    return {"project": name, "subject": subject, "removed": removed}
+
+
+@router.post("/{name}/storage")
+async def bind_storage_view(
+    name: str, payload: dict = Body(default={}), principal: dict = Depends(_admin)
+) -> dict:
+    """Ensure per-project storage and (optionally) bind a connection to it (P6, ADR 0091).
+
+    Body: ``{connectionRef?}``. Calls the shared ``examlops.platform_db`` helpers so the storage
+    layout matches ``exa project storage`` exactly. Admin / project.manage; audited.
+    """
+    _require_manage(principal)
+    conn = _connect()
+    _ensure_tables(conn)
+    if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+        conn.close()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    conn.close()
+    try:
+        from examlops import platform_db as _pdb  # lazy, guarded (503 if unavailable)
+    except ImportError as exc:  # pragma: no cover
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "storage binding requires the examlops package (not available in this deployment)",
+        ) from exc
+    actor = principal.get("sub", "?")
+    storage = _pdb.ensure_project_storage(name)
+    if storage is None:  # pragma: no cover - ensure returns None only on backend failure
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "could not provision storage")
+    connection_ref = (payload.get("connectionRef") or "").strip() or None
+    bound = False
+    if connection_ref:
+        bound = _pdb.bind_project_connection(name, connection_ref, actor=actor)
+        storage = _pdb.ensure_project_storage(name)  # re-read to reflect the binding
+    conn = _connect()
+    _audit(
+        conn,
+        actor,
+        "project_storage_bound",
+        name,
+        {"connectionRef": connection_ref, "bound": bound},
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "project": name,
+        "bucket": storage.get("bucket"),
+        "prefix": storage.get("prefix"),
+        "connectionRef": storage.get("connection_ref"),
+        "bound": bound,
+    }
+
+
+@router.delete("/{name}")
+async def delete_project_view(name: str, principal: dict = Depends(_admin)) -> dict:
+    """Delete a project and its membership/resource rows (admin / project.manage; audited).
+
+    Removes the project row plus its ``project_models``/``project_resources``/``authz_relations``
+    (membership) and best-effort ``project_budgets``/``project_storage``/``project_pipelines``.
+    Does not delete the underlying models or connections themselves — only the project grouping.
+    """
+    _require_manage(principal)
+    conn = _connect()
+    _ensure_tables(conn)
+    if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+        conn.close()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    conn.execute("DELETE FROM project_models WHERE project=?", (name,))
+    conn.execute("DELETE FROM project_resources WHERE project=?", (name,))
+    conn.execute("DELETE FROM authz_relations WHERE object=?", (f"project:{name}",))
+    for tbl in ("project_budgets", "project_storage", "project_pipelines"):
+        try:
+            conn.execute(f"DELETE FROM {tbl} WHERE project=?", (name,))
+        except sqlite3.OperationalError:
+            pass  # optional table not present in this DB
+    conn.execute("DELETE FROM projects WHERE name=?", (name,))
+    _audit(conn, principal.get("sub", "?"), "project_deleted", name, {"via": "dashboard"})
+    conn.commit()
+    conn.close()
+    return {"name": name, "deleted": True}

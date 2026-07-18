@@ -45,8 +45,8 @@ def add_pool(
     ),
 ) -> None:
     """Register (or update) a device pool."""
+    from examlops.data.registry import register_device_pool
     from examlops.hardware import ACCELERATORS
-    from examlops.platform_db import register_device_pool
 
     if accelerator not in ACCELERATORS:
         _output.error(f"accelerator must be one of {ACCELERATORS}")
@@ -74,7 +74,7 @@ def pools(
     accelerator: str = typer.Option(None, "--accelerator", help="Filter by accelerator"),
 ) -> None:
     """List registered device pools."""
-    from examlops.platform_db import get_device_pools
+    from examlops.data.serving import get_device_pools
 
     rows = get_device_pools(target=target, accelerator=accelerator)
     if _output.json_mode:
@@ -196,7 +196,7 @@ def burst_cmd(
 @app.command("decisions")
 def decisions(limit: int = typer.Option(20, "--limit", help="Rows to show")) -> None:
     """Show recent placement decisions."""
-    from examlops.platform_db import list_placement_decisions
+    from examlops.data.hpc import list_placement_decisions
 
     rows = list_placement_decisions(limit)
     if _output.json_mode:

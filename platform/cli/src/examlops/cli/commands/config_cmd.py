@@ -4,7 +4,7 @@ import typer
 
 from examlops.cli import _output
 from examlops.cli._config import (
-    CONFIG_PATH,
+    config_path,
     list_contexts,
     load_config,
     set_active_context,
@@ -38,7 +38,7 @@ def show():
         "prefect_url": cfg.prefect_url,
         "dashboard_url": cfg.dashboard_url,
         "control_plane_token": "***" if cfg.control_plane_token else "(unset)",
-        "config_file": str(CONFIG_PATH),
+        "config_file": str(config_path()),
     }
     _output.print_record(data)
 
@@ -66,7 +66,7 @@ def init():
         updates["control_plane_token"] = token
     if updates:
         write_config(updates)
-        _output.ok(f"Config saved to {CONFIG_PATH}")
+        _output.ok(f"Config saved to {config_path()}")
     else:
         typer.echo("No changes.")
 

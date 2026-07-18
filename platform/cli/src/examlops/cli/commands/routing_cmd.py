@@ -37,7 +37,7 @@ def set_cmd(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Configure a model's inference routing (R3 default round-robin; cache-aware opt-in)."""
-    from examlops.platform_db import set_gateway_config
+    from examlops.data.gateway import set_gateway_config
 
     set_gateway_config(
         model,
@@ -96,7 +96,8 @@ def stats(
     tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
 ) -> None:
     """Show recorded prefix-cache hit rate + routing-decision breakdown."""
-    from examlops.platform_db import get_gateway_config, routing_stats
+    from examlops.data.events import routing_stats
+    from examlops.data.gateway import get_gateway_config
 
     cfg = get_gateway_config(model, tenant or "default")
     st = routing_stats(model, tenant)

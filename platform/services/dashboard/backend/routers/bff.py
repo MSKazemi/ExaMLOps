@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 from typing import Any
 
 from auth import require_role
 from bff import aggregate
+from dbconn import connect
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from realtime import CHANNELS, bus, sse_frame
@@ -32,8 +32,7 @@ def _platform_db_path() -> str:
 
 
 def _query_one(sql: str, params: tuple = ()) -> Any:
-    conn = sqlite3.connect(_platform_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = connect(_platform_db_path())
     try:
         return conn.execute(sql, params).fetchone()
     finally:

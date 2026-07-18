@@ -83,7 +83,7 @@ def get_prompt(name: str, label: str = "prod") -> PromptVersion:
     if cached and (now - cached[1]) < _CACHE_TTL_S:
         return cached[0]
     try:
-        from examlops.platform_db import get_prompt_by_label
+        from examlops.data.prompts import get_prompt_by_label
 
         row = get_prompt_by_label(name, label)
         if row is None:

@@ -54,7 +54,7 @@ def register(
 @app.command("list")
 def list_cmd() -> None:
     """List registered encoders."""
-    from examlops.platform_db import list_encoders
+    from examlops.data.data_assets import list_encoders
 
     encoders = list_encoders()
     if _output.json_mode:
@@ -89,8 +89,8 @@ def set_encoder(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Bootstrap a collection's active encoder (R2)."""
+    from examlops.data.data_assets import get_encoder
     from examlops.embeddings import set_collection_encoder
-    from examlops.platform_db import get_encoder
 
     if get_encoder(encoder_id) is None:
         _output.error(f"Unknown encoder {encoder_id} — register it first.")

@@ -38,7 +38,8 @@ def config(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
 ) -> None:
     """Declare slicing attributes + disparity threshold for a model (R1)."""
-    from examlops.platform_db import set_fairness_config, write_audit_event
+    from examlops.data.audit import write_audit_event
+    from examlops.data.governance import set_fairness_config
 
     set_fairness_config(
         model,

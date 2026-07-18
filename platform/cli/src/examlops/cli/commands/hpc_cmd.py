@@ -155,7 +155,8 @@ def nodes(
     sched = inv["capabilities"].get("scheduler")
 
     if save:
-        from examlops.platform_db import init_db, record_node_snapshot
+        from examlops.data import init_db
+        from examlops.data.hpc import record_node_snapshot
 
         init_db()
         n = record_node_snapshot(cluster, sched or "unknown", node_rows)
@@ -280,8 +281,8 @@ def connect(
 ):
     """Probe a host and register it as a PENDING cluster (requires approval to use)."""
     discovery, *_ = _load_discovery()
+    from examlops.data.audit import write_audit_event
     from examlops.hpc_registry import register_pending
-    from examlops.platform_db import write_audit_event
 
     cluster = name or host
     executor = _build_executor(host, user, key, port)
@@ -364,8 +365,9 @@ def approve(
     name: str = typer.Argument(..., help="Cluster name to approve"),
 ):
     """Sysadmin: approve a cluster so exaMLOps may schedule jobs on it."""
+    from examlops.data.audit import write_audit_event
+    from examlops.data.hpc import set_cluster_state
     from examlops.hpc_registry import get_merged
-    from examlops.platform_db import set_cluster_state, write_audit_event
 
     merged = get_merged(name)
     if merged is None:
@@ -388,8 +390,9 @@ def reject(
     reason: str = typer.Option(None, "--reason", "-r", help="Why the cluster is rejected"),
 ):
     """Sysadmin: reject a cluster (blocks scheduling; auditable)."""
+    from examlops.data.audit import write_audit_event
+    from examlops.data.hpc import set_cluster_state
     from examlops.hpc_registry import get_merged
-    from examlops.platform_db import set_cluster_state, write_audit_event
 
     merged = get_merged(name)
     if merged is None:
@@ -511,7 +514,8 @@ def jobs(
     limit: int = typer.Option(20, "--limit", "-n", help="Max rows"),
 ):
     """List tracked HPC submissions from platform.db (hpc_jobs)."""
-    from examlops.platform_db import get_hpc_jobs, init_db
+    from examlops.data import init_db
+    from examlops.data.hpc import get_hpc_jobs
 
     init_db()
     rows = get_hpc_jobs(model)[:limit]
@@ -579,9 +583,10 @@ def preflight(
 @app.command(epilog=_PLACE_EXAMPLES)
 def capacity():
     """Per-cluster GPU capacity, utilization, GPU-hours used and cost (ACTIVE clusters)."""
+    from examlops.data import init_db
+    from examlops.data.hpc import get_hpc_jobs
     from examlops.hpc_capacity import capacity_report
     from examlops.hpc_registry import active_clusters_with_inventory
-    from examlops.platform_db import get_hpc_jobs, init_db
 
     init_db()
     rows = capacity_report(active_clusters_with_inventory(), get_hpc_jobs())
@@ -605,3 +610,18 @@ def capacity():
     ]
     _output.print_table("HPC capacity", cols, table)
     _output.detail("Carbon/energy accounting: exa finops carbon")
+
+
+@app.command("prometheus-sd")
+def prometheus_sd(
+    out: str = typer.Option(None, "--out", "-o", help="Write file_sd JSON here (else stdout)"),
+    cluster: str = typer.Option(None, "--cluster", "-c", help="Limit to one cluster"),
+):
+    """Generate Prometheus file_sd scrape targets (node_exporter + DCGM) from the fleet registry (3.1)."""
+    from examlops.prometheus_sd import generate, write_file_sd
+
+    if out:
+        n = write_file_sd(out, cluster)
+        _output.ok(f"Wrote {n} scrape target(s) to {out}.")
+    else:
+        _output.print_json(generate(cluster))

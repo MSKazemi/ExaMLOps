@@ -65,7 +65,7 @@ def technical_file(
 ) -> None:
     """Generate the Annex-IV technical file from live evidence, flagging gaps (R3/R4/R5)."""
     from examlops.compliance import generate_technical_file
-    from examlops.platform_db import save_technical_file
+    from examlops.data.governance import save_technical_file
 
     doc = generate_technical_file(model, tenant=tenant)
     md = doc.to_markdown()
@@ -121,7 +121,7 @@ def status(
     tenant: str = typer.Option(None, "--tenant", help="Tenant scope"),
 ) -> None:
     """Show compliance classification + conformity state."""
-    from examlops.platform_db import get_compliance_system, list_compliance_systems
+    from examlops.data.governance import get_compliance_system, list_compliance_systems
 
     if model:
         sys = get_compliance_system(model)

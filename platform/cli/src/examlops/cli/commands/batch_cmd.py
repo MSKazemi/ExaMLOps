@@ -11,7 +11,8 @@ import typer
 
 from examlops.cli import _output
 from examlops.cli._config import load_config
-from examlops.platform_db import get_db, init_db, write_audit_event
+from examlops.data import get_db, init_db
+from examlops.data.audit import write_audit_event
 
 _CREATE_BATCH_JOBS = """
 CREATE TABLE IF NOT EXISTS batch_jobs (

@@ -174,7 +174,7 @@ def record_allocation(
     gpu_index: int | None = None,
 ) -> None:
     """Persist a GPU allocation for fractional accounting."""
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     platform_db.init_db()
     with platform_db.get_db() as conn:
@@ -194,7 +194,7 @@ def record_allocation(
 
 
 def list_allocations(*, tenant: str | None = None) -> list[dict[str, Any]]:
-    from examlops import platform_db
+    from examlops import data as platform_db
 
     platform_db.init_db()
     where = "WHERE tenant=?" if tenant else ""

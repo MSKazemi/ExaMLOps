@@ -89,3 +89,25 @@ def test_gwt5_flag_off_allows_everything(monkeypatch):
 def test_require_raises_on_deny():
     with pytest.raises(PermissionError):
         authz.require("nobody", "viewer", "model:X")
+
+
+def test_check_fails_closed_on_backend_error(monkeypatch):
+    """0.7: a datastore failure during a check must DENY (never accidentally allow)."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated authz backend outage")
+
+    # Break the relation read the parent-walk depends on.
+    monkeypatch.setattr(authz, "_best_rank_on", _boom)
+    assert authz.check("alice", "viewer", "model:JPCP") is False
+
+
+def test_require_fails_closed_on_backend_error(monkeypatch):
+    """0.7: enforcement points raise PermissionError when the backend errors (deny)."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated authz backend outage")
+
+    monkeypatch.setattr(authz, "_best_rank_on", _boom)
+    with pytest.raises(PermissionError):
+        authz.require("alice", "viewer", "model:JPCP")
