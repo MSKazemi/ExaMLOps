@@ -65,7 +65,9 @@ async def test_docs_content_requires_auth(client):
 @pytest.mark.asyncio
 async def test_docs_content_missing_file_returns_404(client):
     token = await _login(client, VIEWER_PW)
-    response = await client.get("/api/documents/content?path=docs/nonexistent.md", headers=_hdr(token))
+    response = await client.get(
+        "/api/documents/content?path=docs/nonexistent.md", headers=_hdr(token)
+    )
     assert response.status_code == 404
 
 
