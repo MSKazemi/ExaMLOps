@@ -48,4 +48,4 @@ The legacy `DASHBOARD_TOKEN` is removed. Update `.env` before redeploying.
 
 ## OpenAPI
 
-The full API reference is auto-generated at `/api/docs` on a running dashboard.
+The full API reference (Swagger UI) is auto-generated at `/docs` on a running dashboard.

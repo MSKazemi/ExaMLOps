@@ -64,7 +64,7 @@ const BASE_NAV = [
   { path: '/flags',     label: 'Flags',     icon: Flag,          adminOnly: true  },
   { path: '/approvals', label: 'Approvals', icon: ClipboardCheck, adminOnly: true  },
   { path: '/status',    label: 'Status',    icon: Activity,      adminOnly: false },
-  { path: '/docs',      label: 'Docs',     icon: BookOpen,        adminOnly: false },
+  { path: '/documents', label: 'Docs',     icon: BookOpen,        adminOnly: false },
 ] as const
 
 const THEMES: { value: Theme; icon: typeof Sun; label: string }[] = [

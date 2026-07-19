@@ -31,7 +31,7 @@ _PAGES: list[tuple[str, str]] = [
     ("Approvals", "/approvals"),
     ("Audit", "/audit"),
     ("Config", "/config"),
-    ("Docs", "/docs"),
+    ("Docs", "/documents"),
 ]
 
 
