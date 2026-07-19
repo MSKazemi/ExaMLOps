@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **fix(dashboard): dashboard Documentation page moved from `/docs` to `/documents` (route collision).**
+  FastAPI serves its Swagger UI from an explicit `/docs` route, which is matched before the React SPA
+  catch-all — so the dashboard's own Documentation page (also routed at `/docs`) was permanently
+  shadowed by Swagger and unreachable in the browser. The documentation surface now lives at
+  `/documents`: SPA route, sidebar nav, command palette, and global-search nav target updated; the
+  backend content API moved `/api/docs/{tree,content}` → `/api/documents/{tree,content}`
+  (`routers/docs.py` prefix). `/docs` now belongs solely to the Swagger UI. Ray Serve's own `/docs`
+  is unaffected. Docs corrected (`docs/guides/interfaces.md`, `docs/dashboard/auth.md`) — the Swagger
+  UI is at `/docs`, not `/api/docs` as previously stated. Tests: `backend/tests/test_docs.py` (7)
+  green against the new routes.
+
+### Fixed
+
+- **fix(dashboard): `/docs` + `/redoc` rendered blank under the strict CSP.** FastAPI's built-in
+  Swagger UI / ReDoc pages load their JS+CSS from `cdn.jsdelivr.net`, but the F16 / ADR-0053
+  `SecurityHeadersMiddleware` sets `Content-Security-Policy: … script-src 'self' …`, so the browser
+  refused the CDN scripts and the API-docs page stayed empty. The docs are now re-served from
+  **same-origin vendored assets** under `/static` (Swagger UI 5.17.14 + ReDoc 2.1.5, `docs_url`/
+  `redoc_url` disabled and re-registered via `get_swagger_ui_html`/`get_redoc_html`), so they render
+  under the strict CSP and work offline on the HPC/lxp deploy. `/openapi.json` is unchanged.
+  Regression guard: `backend/tests/test_openapi_docs.py` (no CDN reference, assets served).
+
 ### Added — Enterprise-readiness Phase 5 (started)
 
 - **feat(autopilot): predictive pre-emptive drift forecasting + root-cause classifier (item 5.2).** New
@@ -301,7 +325,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   - Enforcement stays at the BFF (F15): viewers get 403 + a human `deny_reason`; no secret value ever
     reaches the browser. Tests: +15 backend (`test_connections_workbenches.py`, `test_projects_writes.py`),
     +10 frontend (`connections.test.ts`, `projects_writes.test.ts`). Design:
-    `docs/superpowers/specs/2026-07-17-dashboard-edit-parity-design.md`.
+    `design/superpowers/specs/2026-07-17-dashboard-edit-parity-design.md`.
 
 ### Added — Enterprise-readiness Phase 0.1 (StorageBackend seam · scaffold)
 

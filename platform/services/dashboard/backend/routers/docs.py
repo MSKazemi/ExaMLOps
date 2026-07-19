@@ -20,7 +20,9 @@ from auth import require_role
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
-router = APIRouter(prefix="/docs", dependencies=[Depends(require_role("viewer"))])
+# Prefix is ``/documents`` (not ``/docs``) so the dashboard's own documentation surface never
+# collides with FastAPI's Swagger UI, which is served from ``/docs`` at the app root.
+router = APIRouter(prefix="/documents", dependencies=[Depends(require_role("viewer"))])
 
 # Top-level docs/ subdirectories, mapped to friendly section titles for the auto-discovery pass.
 _SUBDIR_TITLES = {
