@@ -18,7 +18,7 @@ backend/
 │   ├── auth.py        /login /logout /me
 │   ├── audit.py       /audit (admin)
 │   ├── config.py      /config /config/keys (mask + encrypt + audit)
-│   ├── docs.py        /docs/tree /docs/content
+│   ├── docs.py        /documents/tree /documents/content
 │   ├── health.py      /health (open)
 │   └── proxy.py       /proxy/{svc}/{path} with per-service auth injection
 └── tests/             pytest-asyncio + httpx ASGITransport, sqlite in-memory

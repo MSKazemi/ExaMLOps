@@ -31,7 +31,7 @@ Check what is running: `exa status`
 
 **http://localhost:18099**
 
-The primary control surface. A React SPA served by FastAPI at `platform/services/dashboard/`. Log in with the `DASHBOARD_VIEWER_PASSWORD` (read-only) or `DASHBOARD_ADMIN_PASSWORD` (full access). OpenAPI docs are at `/api/docs`.
+The primary control surface. A React SPA served by FastAPI at `platform/services/dashboard/`. Log in with the `DASHBOARD_VIEWER_PASSWORD` (read-only) or `DASHBOARD_ADMIN_PASSWORD` (full access). The interactive OpenAPI (Swagger UI) API reference is at `/docs`; the dashboard's own documentation browser is at `/documents`.
 
 ### Pages
 

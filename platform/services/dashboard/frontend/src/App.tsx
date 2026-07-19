@@ -113,7 +113,7 @@ export default function App() {
                       <Route path="/datasets" element={<Datasets />} />
                       <Route path="/config" element={<Config />} />
                       <Route path="/audit" element={<Audit />} />
-                      <Route path="/docs" element={<Docs />} />
+                      <Route path="/documents" element={<Docs />} />
                       <Route path="/seanerbus" element={<SeanerBus />} />
                       <Route path="/approvals" element={<Approvals />} />
                       <Route path="/pipelines" element={<Pipelines />} />

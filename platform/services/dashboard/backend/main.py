@@ -3,7 +3,12 @@ from pathlib import Path
 
 from database import engine, init_db
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.openapi.docs import (
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from routers import (
     ab_testing,
@@ -73,7 +78,50 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="ExaMLOps Dashboard", version="1.0.0", lifespan=lifespan)
+# Disable the built-in /docs + /redoc: FastAPI's defaults pull Swagger UI / ReDoc JS+CSS from a
+# public CDN (cdn.jsdelivr.net), which the strict CSP set by SecurityHeadersMiddleware
+# (F16 / ADR 0053: `script-src 'self'`) blocks in the browser — leaving the docs page blank.
+# We re-serve /docs + /redoc below from same-origin vendored assets so the API docs render under
+# the strict CSP and work offline on the HPC/lxp deploy. `/openapi.json` stays on the default route.
+app = FastAPI(
+    title="ExaMLOps Dashboard",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+)
+
+# Vendored Swagger UI / ReDoc assets (same-origin ⇒ CSP `script-src 'self'` allows them).
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui_html() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        swagger_js_url="/static/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui.css",
+        swagger_favicon_url="/static/favicon.png",
+    )
+
+
+@app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+async def swagger_ui_redirect() -> HTMLResponse:
+    return get_swagger_ui_oauth2_redirect_html()
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_html() -> HTMLResponse:
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="/static/redoc.standalone.js",
+        redoc_favicon_url="/static/favicon.png",
+        with_google_fonts=False,  # Google Fonts stylesheet would be CSP-blocked; ReDoc degrades fine.
+    )
 
 # Security-hardening baseline (F16 / ADR 0053): strict CSP + security headers on every response,
 # with frame-ancestors scoped to the Grafana embed origin (F5).
