@@ -123,6 +123,7 @@ async def redoc_html() -> HTMLResponse:
         with_google_fonts=False,  # Google Fonts stylesheet would be CSP-blocked; ReDoc degrades fine.
     )
 
+
 # Security-hardening baseline (F16 / ADR 0053): strict CSP + security headers on every response,
 # with frame-ancestors scoped to the Grafana embed origin (F5).
 from security import SecurityHeadersMiddleware  # noqa: E402
