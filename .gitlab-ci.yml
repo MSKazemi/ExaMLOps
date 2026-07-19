@@ -287,6 +287,13 @@ test:examlops:
         --cov=platform/cli/src/examlops --cov=pipelines --cov=serving
         --cov-report=term-missing --cov-report=xml:reports/coverage.xml
     - pip install -r platform/services/dashboard/backend/requirements.txt -q
+    # The dashboard write routers (Phase 42: connections/projects/storage) and the
+    # FinOps carbon-methodology surface call into the `examlops` package the same way
+    # the CLI does; without it these tests hit the "examlops package not available"
+    # 503 guard. The dashboard reqs run in system-python (not the .venv above), so
+    # install examlops here too. Base package is enough (metadata/write paths need no
+    # optional extras).
+    - pip install -e platform/cli -q
     # EXAMLOPS_DOCS_ROOT: the docs router's auto-detection of the project root
     # fails in CI's checkout layout and returns 503; point it at the repo root.
     # test_storage is skipped in CI only: moto's MockRawResponse is incompatible
