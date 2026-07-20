@@ -34,6 +34,23 @@ def test_local_executor_copies_files(tmp_path):
     assert back.read_text() == "data"
 
 
+def test_local_executor_put_same_file_is_noop(tmp_path):
+    # Flux worker running ON the compute node: the flow's local job dir equals the
+    # remote workdir, so put() is asked to copy a file onto itself. It must no-op,
+    # not raise shutil.SameFileError.
+    f = tmp_path / "run.sh"
+    f.write_text("#!/bin/bash\necho hi\n")
+    LocalExecutor().put(str(f), str(f))
+    assert f.read_text() == "#!/bin/bash\necho hi\n"
+
+
+def test_local_executor_get_same_file_is_noop(tmp_path):
+    f = tmp_path / "model.pkl"
+    f.write_text("blob")
+    LocalExecutor().get(str(f), str(f))
+    assert f.read_text() == "blob"
+
+
 def test_local_executor_timeout_becomes_job_timeout(monkeypatch):
     def _hang(*_a, **_kw):
         raise subprocess.TimeoutExpired(cmd="sleep", timeout=1)

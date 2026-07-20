@@ -6,6 +6,7 @@ import {
   Play, Square, HardDrive, Workflow, Trash2, PlugZap, Pencil, Boxes,
 } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
+import { ProvidersCard } from '@/components/ProvidersCard'
 import { isAdmin } from '@/lib/auth'
 import {
   useProject, useAssignResource, useAddMember, useRemoveMember, useDeleteProject,
@@ -870,6 +871,9 @@ export function ProjectDetail() {
 
       {/* Workbenches (viewers see status; admins can start/stop) */}
       <WorkbenchesCard project={data.name} admin={admin} />
+
+      {/* Authored providers (ADR 0074): edit the Python behind this project's calculations */}
+      <ProvidersCard project={data.name} admin={admin} />
 
       {/* Danger zone — delete the project grouping (admin) */}
       {admin && (

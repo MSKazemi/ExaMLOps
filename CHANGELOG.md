@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **docs(hpc): new guide `docs/guides/hpc-training-workflow.md` — run a Prefect `training_flow` on a
+  real Slurm/Flux cluster end-to-end** (scheduler × transport axes, resource env vars, `local` vs
+  `ssh` transport, the governed `exa hpc --cluster` path, and a verified JPCP × PM100 example on the
+  live `lxp` Flux instance). Cross-linked from `hpc-fleet.md`.
+
+### Fixed
+
+- **fix(hpc): real-scheduler (`slurm`/`flux`) training now honours `--dummy`.** The Prefect flow's
+  generated `run.sh` wrapper dropped the dummy flag, so every real-HPC run trained on the full
+  dataset — there was no fast smoke-test path on a cluster. `slurm_submit_task` now threads
+  `is_dummy` through and forwards `--dummy` to `slurm_train_script.py` (parity with mock mode and the
+  CLI flag). `pipelines/pipeline_generator.py`; regression tests in `tests/unit/test_pipeline.py`.
+- **fix(hpc): `LocalExecutor.put`/`get` no longer raise `shutil.SameFileError`** when the Flux/Slurm
+  worker runs *on* the compute node and the flow's local job dir coincides with the remote workdir
+  (a supported "worker on the login node" topology). Same-path stages are now a no-op.
+  `platform/infra/slurm-adapter/executor.py`; regression tests in `tests/unit/test_executor.py`.
+
 ### Changed
 
 - **fix(dashboard): dashboard Documentation page moved from `/docs` to `/documents` (route collision).**
