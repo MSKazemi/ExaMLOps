@@ -726,6 +726,7 @@ def slurm_submit_task(
     loader: Any,
     model_name: str,
     dataset_cls_name: str,
+    is_dummy: bool = False,
 ) -> tuple[str, str | None]:
     """
     Submit training to HPC (or run inline for mock mode).
@@ -774,6 +775,9 @@ def slurm_submit_task(
     local_job_dir = Path(adapter.working_dir) / run_uuid
     local_job_dir.mkdir(parents=True, exist_ok=True)
     bash_script = local_job_dir / "run.sh"
+    # Forward --dummy so a real-scheduler smoke test trains on the small dummy split
+    # instead of the full dataset (parity with mock mode and the CLI --dummy flag).
+    dummy_flag = " --dummy" if is_dummy else ""
     bash_script.write_text(
         "#!/bin/bash\n"
         f"mkdir -p {remote_dir}\n"
@@ -781,7 +785,7 @@ def slurm_submit_task(
         f"  --model {model_name} \\\n"
         f"  --dataset {dataset_cls_name} \\\n"
         f"  --output {remote_model} \\\n"
-        f"  --mlflow-uri {mlflow_uri}\n"
+        f"  --mlflow-uri {mlflow_uri}{dummy_flag}\n"
     )
     bash_script.chmod(0o755)
 
@@ -1281,7 +1285,9 @@ def training_flow(
     print(f"{'=' * 60}\n")
 
     model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
-    job_id, artifact_hint = slurm_submit_task(model_init, loader, model_name, dataset_cls_name)
+    job_id, artifact_hint = slurm_submit_task(
+        model_init, loader, model_name, dataset_cls_name, is_dummy
+    )
     state, artifact_path = slurm_wait_task(job_id, artifact_hint)
     model = result_fetch_task(
         state, artifact_path, model_name, dataset_cls_name, is_dummy, backend_name

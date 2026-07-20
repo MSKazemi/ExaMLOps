@@ -186,3 +186,36 @@ class DoubleCost(Provider):
     # Without the project (and after a fresh registry it wouldn't be known) the default still works.
     base = estimate_cost_via_provider(5.0)
     assert "cost_usd" in base
+
+
+def test_active_provider_selection_and_default_resolution():
+    from examlops.finops.cost import estimate_cost_via_provider
+    from examlops.providers import get_active_provider, set_active_provider
+
+    code = """
+class Triple(Provider):
+    name = "triple"
+    def compute(self, inputs):
+        return {"cost_usd": inputs.get("gpu_hours", 0) * 3.0}
+"""
+    save_provider("cost", "triple", code, project="research")
+    assert get_active_provider("research", "cost") is None
+    set_active_provider("research", "cost", "triple")
+    assert get_active_provider("research", "cost") == "triple"
+    # With no explicit --provider, the project's active selection is used.
+    got = estimate_cost_via_provider(4.0, project="research")
+    assert got["cost_usd"] == pytest.approx(12.0)
+    assert got["provider"] == "triple"
+    # It's flagged active in the listing.
+    listed = {r["name"]: r for r in list_project_providers("research")}
+    assert listed["triple"]["active"] is True
+    # Deleting the active provider clears the marker.
+    delete_provider("research", "cost", "triple")
+    assert get_active_provider("research", "cost") is None
+
+
+def test_set_active_unknown_rejected():
+    with pytest.raises(ProviderError):
+        from examlops.providers import set_active_provider
+
+        set_active_provider("research", "cost", "nope")

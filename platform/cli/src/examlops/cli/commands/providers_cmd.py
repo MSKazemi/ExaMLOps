@@ -216,3 +216,22 @@ def validate(
         _output.error(f"rejected: {exc}")
         raise typer.Exit(1) from exc
     _output.ok(f"OK — defines Provider subclass '{cls.__name__}'.")
+
+
+@app.command(epilog=_AUTHOR_EXAMPLES)
+def activate(
+    domain: str = typer.Argument(...),
+    name: str = typer.Argument(...),
+    project: str = typer.Option(..., "--project", "-p"),
+):
+    """Make a provider the active one for its (project, domain) — used when no --provider is given."""
+    from examlops.data.audit import write_audit_event
+    from examlops.providers import ProviderError, set_active_provider
+
+    try:
+        set_active_provider(project, domain, name)
+    except ProviderError as exc:
+        _output.error(str(exc))
+        raise typer.Exit(1) from exc
+    write_audit_event("cli", _actor(), "provider_activated", f"{project}/{domain}/{name}", {})
+    _output.ok(f"'{name}' is now the active {domain} provider for project '{project}'.")

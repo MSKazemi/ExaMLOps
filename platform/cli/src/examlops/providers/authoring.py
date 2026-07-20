@@ -105,6 +105,36 @@ def save_provider(
     }
 
 
+def _active_marker(project: str, domain: str) -> Path:
+    project = _check("project", project)
+    domain = _check("domain", domain)
+    return providers_root() / project / domain / "_active.txt"
+
+
+def set_active_provider(project: str, domain: str, name: str) -> None:
+    """Mark ``name`` the active provider for ``(project, domain)`` (a domain uses it by default)."""
+    name = _check("name", name)
+    if not provider_path(project, domain, name).exists():
+        raise ProviderError(
+            f"provider {name!r} (domain {domain!r}) not found in project {project!r}"
+        )
+    marker = _active_marker(project, domain)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(name, encoding="utf-8")
+
+
+def get_active_provider(project: str, domain: str) -> str | None:
+    """Return the active provider name for ``(project, domain)``, or None if none is set."""
+    try:
+        marker = _active_marker(project, domain)
+    except ProviderError:
+        return None
+    if not marker.exists():
+        return None
+    name = marker.read_text(encoding="utf-8").strip()
+    return name or None
+
+
 def read_provider_source(project: str, domain: str, name: str) -> str:
     """Return the stored source of an authored provider (raises if absent)."""
     path = provider_path(project, domain, name)
@@ -116,10 +146,12 @@ def read_provider_source(project: str, domain: str, name: str) -> str:
 
 
 def delete_provider(project: str, domain: str, name: str) -> bool:
-    """Delete an authored provider file. Returns True if it existed."""
+    """Delete an authored provider file. Returns True if it existed. Clears a dangling active mark."""
     path = provider_path(project, domain, name)
     if path.exists():
         path.unlink()
+        if get_active_provider(project, domain) == _check("name", name):
+            _active_marker(project, domain).unlink(missing_ok=True)
         return True
     return False
 
@@ -132,6 +164,7 @@ def list_project_providers(project: str) -> list[dict[str, Any]]:
     if not root.is_dir():
         return out
     for domain_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        active = get_active_provider(project, domain_dir.name)
         for py in sorted(domain_dir.glob("*.py")):
             rec: dict[str, Any] = {
                 "domain": domain_dir.name,
@@ -139,6 +172,7 @@ def list_project_providers(project: str) -> list[dict[str, Any]]:
                 "path": str(py),
                 "ok": True,
                 "error": None,
+                "active": py.stem == active,
             }
             try:
                 validate_source(py.read_text(encoding="utf-8"))

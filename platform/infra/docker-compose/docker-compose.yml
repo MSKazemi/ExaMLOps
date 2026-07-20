@@ -442,6 +442,9 @@ services:
       # image's baked docs/ copy (Dockerfile.dashboard) — that copy is the fallback for K8s/PVC
       # where /repo is not mounted. Without either, the tree resolves empty ("No results").
       EXAMLOPS_DOCS_ROOT: /repo
+      # Authored calculation providers (ADR 0074) live under the bind-mounted repo so they persist
+      # across restarts and are shared with the CLI/pipeline (all resolve the same path).
+      EXAMLOPS_PROVIDERS_DIR: ${EXAMLOPS_PROVIDERS_DIR:-/repo/.providers}
       # The dashboard's config-write routers (projects storage, named connections) call the
       # SAME `examlops.*` code paths as the `exa` CLI (phase 42) instead of re-implementing them,
       # so the UI can never drift from the CLI and secrets flow through one store. The examlops

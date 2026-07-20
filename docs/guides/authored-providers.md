@@ -50,8 +50,24 @@ exa providers validate --file my_cost.py                              # gate-che
 exa providers author cost my-cost --project research --file my_cost.py # save + register (audited)
 exa providers authored --project research                            # list a project's providers
 exa providers show cost my-cost --project research                   # print stored source
+exa providers activate cost my-cost --project research               # make it the domain default
 exa providers rm cost my-cost --project research                     # delete (audited)
 ```
+
+## From the dashboard
+
+Open a project (**Projects → a project**) and use the **Providers** card: **New provider** opens a
+code editor (domain + name + Python) with a **Validate** button (runs the AST gate) and a **Save**
+that persists it; per-row **Edit** / **Activate** / **Delete**. All writes require the
+`project.manage` capability and are audited; viewers see the list read-only. The editor is the GUI
+half of this feature — it calls the same `examlops.providers` code path as the notebook/CLI.
+
+## Active provider
+
+Each `(project, domain)` can have one **active** provider — the one used when a calculation is run
+with no explicit `--provider`. Set it with `exa providers activate` (or the dashboard **Activate**
+button / the New-provider "make active" checkbox). `estimate_cost_via_provider(..., project=...)` and
+`estimate_carbon_via_provider(..., project=...)` honour it.
 
 ## Use it
 

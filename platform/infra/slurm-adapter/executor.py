@@ -77,10 +77,14 @@ class LocalExecutor:
 
     def put(self, local: str, remote: str) -> None:
         Path(remote).parent.mkdir(parents=True, exist_ok=True)
+        if os.path.realpath(local) == os.path.realpath(remote):
+            return  # local transport with a shared workdir — source already at the target
         shutil.copy(local, remote)
 
     def get(self, remote: str, local: str) -> None:
         Path(local).parent.mkdir(parents=True, exist_ok=True)
+        if os.path.realpath(remote) == os.path.realpath(local):
+            return  # source already at the target (worker runs on the compute node)
         shutil.copy(remote, local)
 
     def close(self) -> None:  # noqa: D401 - nothing to release
