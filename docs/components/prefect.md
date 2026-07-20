@@ -140,7 +140,7 @@ exa pipeline run --dummy
 
 **Task failed: MLflow connection refused** — ensure `make stack-up` has been run and MLflow is healthy at port 5000.
 
-**`slurm_submit` fails in slurm mode** — real Slurm requires a pre-baked training script. Switch to `EXAMLOPS_SLURM_MODE=mock` for local development.
+**`slurm_submit` fails in slurm/flux mode** — the compute node needs the repo, a Python env, and the scheduler CLI on `PATH` (set `EXAMLOPS_HPC_REMOTE_{REPO,PYTHON}`). Add `--dummy` for a fast cluster smoke test (it is forwarded to the node), or switch to `EXAMLOPS_SLURM_MODE=mock` for local development. Full walkthrough: [../guides/hpc-training-workflow.md](../guides/hpc-training-workflow.md).
 
 ---
 
