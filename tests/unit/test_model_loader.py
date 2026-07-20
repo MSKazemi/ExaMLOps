@@ -12,9 +12,12 @@ for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-MODELS_DIR = REPO_ROOT / "pipelines" / "models"
-
 from pipelines.model_loader import load_model_yaml, scan_model_yamls  # noqa: E402
+from pipelines.usecase import models_dir  # noqa: E402
+
+# Resolve the active use-case pack's model dir (ADR 0094) instead of the pre-migration
+# in-tree ``pipelines/models`` location.
+MODELS_DIR = models_dir()
 
 
 def test_load_jpcp_basic_fields():

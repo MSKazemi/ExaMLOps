@@ -237,12 +237,21 @@ _EXAMPLES_TRIGGER = (
 @auto_retrain_app.command("enable", epilog=_EXAMPLES_AR_ENABLE)
 def auto_retrain_enable(
     model: str = typer.Argument(..., help="Model name"),
-    dataset: str = typer.Option("PM100Dataset", "--dataset", "-d", help="Dataset class name"),
+    dataset: str = typer.Option(
+        None, "--dataset", "-d", help="Dataset class name (default: model's primary dataset)"
+    ),
     min_z: float = typer.Option(3.0, "--min-z", help="Z-score threshold to trigger retrain"),
     cooldown: int = typer.Option(3600, "--cooldown", help="Seconds between triggers"),
 ):
     """Enable drift-triggered auto-retrain for a model."""
+    from examlops.usecase import default_dataset_for
+
     init_db()
+    # No hardcoded dataset (ADR 0094): resolve the model's primary dataset from the pack YAML.
+    dataset = dataset or default_dataset_for(model)
+    if not dataset:
+        _output.error(f"--dataset is required (no default dataset in {model}'s YAML)")
+        raise typer.Exit(1)
     set_drift_auto_retrain(
         model, enabled=True, min_z_score=min_z, dataset_name=dataset, cooldown_s=cooldown
     )

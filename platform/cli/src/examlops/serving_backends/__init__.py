@@ -146,7 +146,10 @@ class KServeK8s:
     name = "kserve-k8s"
 
     def __init__(self, registry_dir: str | None = None) -> None:
-        self.registry_dir = registry_dir or os.getenv("RAY_MODELS_DIR", "pipelines/models")
+        from examlops.usecase import models_dir
+
+        # Per-model YAML lives in the active use-case pack (ADR 0094), resolved from the env.
+        self.registry_dir = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
 
     def _load_yaml(self, model: str) -> dict[str, Any]:
         import yaml

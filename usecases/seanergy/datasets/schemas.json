@@ -1,0 +1,7 @@
+{
+  "FData": [
+    {"name": "pclass", "dataType": "sc:Text", "description": "memory-bound | compute-bound class"},
+    {"name": "mbwidth", "dataType": "sc:Float", "description": "memory bandwidth (double)"},
+    {"name": "embedding", "dataType": "sc:Float", "description": "384-dim feature embedding"}
+  ]
+}

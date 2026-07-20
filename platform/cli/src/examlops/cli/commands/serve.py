@@ -329,8 +329,9 @@ def manifest(
     import yaml
 
     from examlops.serving_backends import registry_to_kserve, validate_manifest
+    from examlops.usecase import models_dir
 
-    reg = registry_dir or os.getenv("RAY_MODELS_DIR", "pipelines/models")
+    reg = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
     yaml_path = Path(reg) / f"{model.lower()}.yaml"
     if not yaml_path.is_file():
         _output.error(f"Model YAML not found: {yaml_path}")

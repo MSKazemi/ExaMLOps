@@ -18,7 +18,7 @@ app = typer.Typer(
 _EXAMPLES = (
     "Examples:\n\n"
     "  exa models quantize JPCP 17 --method awq --path ./artifacts/jpcp\n\n"
-    "  exa models engine validate ./pipelines/models/jpcp.yaml\n\n"
+    "  exa models engine validate ./usecases/seanergy/models/jpcp.yaml\n\n"
     "  exa models engine list"
 )
 
