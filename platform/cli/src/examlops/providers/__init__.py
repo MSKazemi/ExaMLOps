@@ -17,6 +17,16 @@ See ``.claude/plans/finops-plugins/`` for the design (research, plan, ADR).
 
 from __future__ import annotations
 
+from .authoring import (
+    delete_provider,
+    list_project_providers,
+    load_project_providers,
+    provider_path,
+    providers_root,
+    read_provider_source,
+    register_from_source,
+    save_provider,
+)
 from .base import Provider, ProviderError, ProviderInfo, ProviderMeta
 from .registry import (
     Registry,
@@ -25,6 +35,7 @@ from .registry import (
     list_providers,
     register_provider,
 )
+from .sandbox import ProviderSecurityError, compile_provider, validate_source
 from .yaml_provider import ExpressionProvider, build_expression_provider
 
 __all__ = [
@@ -39,4 +50,16 @@ __all__ = [
     "get_provider",
     "list_providers",
     "default_provider_name",
+    # Notebook/dashboard authoring (per-project, AST-sandboxed)
+    "ProviderSecurityError",
+    "validate_source",
+    "compile_provider",
+    "register_from_source",
+    "save_provider",
+    "read_provider_source",
+    "delete_provider",
+    "list_project_providers",
+    "load_project_providers",
+    "provider_path",
+    "providers_root",
 ]
