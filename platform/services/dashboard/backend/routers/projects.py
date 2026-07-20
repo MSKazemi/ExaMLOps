@@ -57,7 +57,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (model, namespace)
         );
         CREATE TABLE IF NOT EXISTS project_budgets (
-            project TEXT PRIMARY KEY, gpu_hours REAL, cost_usd REAL
+            project TEXT PRIMARY KEY, gpu_hours_budget REAL, cost_budget REAL,
+            period TEXT NOT NULL DEFAULT 'monthly', updated_at DATETIME, updated_by TEXT
         );
         CREATE TABLE IF NOT EXISTS model_costs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
@@ -180,6 +181,7 @@ async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
     if models:
         resources["model"] = models
     budget_row = conn.execute("SELECT * FROM project_budgets WHERE project=?", (name,)).fetchone()
+    budget = _budget_view(budget_row)
     anatomy = {
         "name": p["name"],
         "description": p["description"],
@@ -192,11 +194,7 @@ async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
         },
         "resources": resources,
         "members": _members(conn, name),
-        "budget": (
-            {"gpuHours": budget_row["gpu_hours"], "costUsd": budget_row["cost_usd"]}
-            if budget_row
-            else None
-        ),
+        "budget": budget,
         "consumption": _consumption(conn, name),
         "createdAt": p["created_at"],
         "createdBy": p["created_by"],
@@ -208,6 +206,30 @@ async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
     }
     conn.close()
     return anatomy
+
+
+def _budget_view(row: sqlite3.Row | None) -> dict | None:
+    """Shape a ``project_budgets`` row for the UI.
+
+    The canonical ``platform_db`` schema names the columns ``gpu_hours_budget`` / ``cost_budget``
+    (written by ``examlops.data.projects.set_project_budget`` and ``exa``). Older/divergent DBs may
+    have ``gpu_hours`` / ``cost_usd``. Read defensively so a budget set via the CLI renders here
+    instead of 500-ing the whole anatomy endpoint on a missing column.
+    """
+    if row is None:
+        return None
+    keys = row.keys()
+    gpu = (
+        row["gpu_hours_budget"]
+        if "gpu_hours_budget" in keys
+        else (row["gpu_hours"] if "gpu_hours" in keys else None)
+    )
+    cost = (
+        row["cost_budget"]
+        if "cost_budget" in keys
+        else (row["cost_usd"] if "cost_usd" in keys else None)
+    )
+    return {"gpuHours": gpu, "costUsd": cost}
 
 
 def _storage(conn, name: str) -> dict | None:

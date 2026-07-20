@@ -20,6 +20,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **fix(dashboard): Documentation page was empty ("No results") in the deployed container.** The
+  `/documents` router (`routers/docs.py`) locates the docs set via `EXAMLOPS_DOCS_ROOT` or by
+  walking up from its own file for a parent holding both `README.md` and `docs/`. In the dashboard
+  image neither held: the env var was set only in CI, and the docs `COPY` lines in
+  `Dockerfile.dashboard` were commented out — so `_ROOT` resolved to `None`, the tree came back
+  empty, and the page rendered `No results for ""`. Fixed on two fronts so docs render in **every**
+  deployment topology: (1) docker-compose now sets `EXAMLOPS_DOCS_ROOT=/repo` (the repo is already
+  bind-mounted there in dev); (2) the image now bakes `README.md` + `mkdocs.yml` + the whole `docs/`
+  tree, so the router auto-detects `/app` as root when no bind mount exists (K8s/PVC). Verified in a
+  built image: with no env var, the router resolves `/app` → 13 sections / 100 files. The Docker
+  frontend builder was bumped `node:20-alpine` → `node:24-alpine` (current LTS; Vite 7 / rolldown
+  require ≥20.19). The sidebar nav + command-palette labels were also finalized `Docs` → `Documents`
+  to match the route and stay clear of Swagger's `/docs`. Frontend `npm run build` + 276 tests green;
+  `backend/tests/test_docs.py` (7) green.
+
 - **fix(dashboard): `/docs` + `/redoc` rendered blank under the strict CSP.** FastAPI's built-in
   Swagger UI / ReDoc pages load their JS+CSS from `cdn.jsdelivr.net`, but the F16 / ADR-0053
   `SecurityHeadersMiddleware` sets `Content-Security-Policy: … script-src 'self' …`, so the browser
