@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from .authoring import (
     delete_provider,
+    get_active_provider,
     list_project_providers,
     load_project_providers,
     provider_path,
@@ -26,6 +27,7 @@ from .authoring import (
     read_provider_source,
     register_from_source,
     save_provider,
+    set_active_provider,
 )
 from .base import Provider, ProviderError, ProviderInfo, ProviderMeta
 from .registry import (
@@ -60,6 +62,8 @@ __all__ = [
     "delete_provider",
     "list_project_providers",
     "load_project_providers",
+    "set_active_provider",
+    "get_active_provider",
     "provider_path",
     "providers_root",
 ]

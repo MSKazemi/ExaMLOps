@@ -71,12 +71,14 @@ def estimate_carbon_via_provider(
     gpu_hours: float,
     *,
     provider: str | None = None,
+    project: str | None = None,
     config: dict | None = None,
     **overrides: float,
 ) -> dict:
     """GPU-hours → carbon via the **pluggable provider registry** (#20 + FinOps-plugins).
 
-    Resolves the active ``carbon`` provider — an explicit ``provider`` name, else the
+    Resolves the active ``carbon`` provider — an explicit ``provider`` name, else the project's
+    notebook/dashboard-authored active provider (when ``project`` is given), else the
     ``[finops.carbon]`` config / ``EXAMLOPS_CARBON_PROVIDER`` env, else the built-in
     ``green-ai-default`` (which reproduces :func:`estimate_carbon` exactly). Configured
     ``coefficients`` are layered *under* per-call ``overrides`` (e.g. ``pue=1.3``) so an explicit
@@ -89,6 +91,16 @@ def estimate_carbon_via_provider(
     from ..providers import get_provider
     from ..providers.loader import load_domain_config, resolve_provider
     from . import carbon_providers  # noqa: F401 - importing registers the built-ins
+
+    if project:
+        try:
+            from ..providers import get_active_provider, load_project_providers
+
+            load_project_providers(project)
+            if provider is None:
+                provider = get_active_provider(project, "carbon")
+        except Exception:
+            pass  # authored providers are additive — never block the built-in path
 
     block = dict(config) if config is not None else load_domain_config("carbon")
     coeffs = dict(block.get("coefficients") or {})

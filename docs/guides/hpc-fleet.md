@@ -165,6 +165,7 @@ while approval stays human-gated by default.
 
 ## Related
 
+- End-to-end training on a cluster: `docs/guides/hpc-training-workflow.md`
 - Scheduler abstraction (Phase 23): `docs/components/slurm-adapter.md`
 - Environment variables: `docs/reference/env-vars.md`
 - Command reference: `docs/reference/cli.md`

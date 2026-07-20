@@ -62,9 +62,12 @@ def estimate_cost_via_provider(
 
     if project:
         try:
-            from ..providers import load_project_providers
+            from ..providers import get_active_provider, load_project_providers
 
             load_project_providers(project)
+            # With no explicit choice, honour the project's active-provider selection for this domain.
+            if provider is None:
+                provider = get_active_provider(project, "cost")
         except Exception:
             pass  # authored providers are additive — never block the built-in path
 

@@ -173,6 +173,42 @@ class TestSlurmSubmitTask:
         assert "FDataDataset" in content
         assert "slurm_train_script.py" in content
 
+    def test_real_hpc_forwards_dummy_flag(self, monkeypatch, tmp_path):
+        # A real-scheduler smoke test with --dummy must train on the small dummy split,
+        # so the generated run.sh has to pass --dummy through to slurm_train_script.py.
+        monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "flux")
+        model = _fake_model()
+
+        fake_adapter = MagicMock()
+        fake_adapter.working_dir = tmp_path
+        fake_adapter.submit_job.return_value = "ƒDummy1"
+
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
+            pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "PM100Dataset", True)
+
+        script_path = (
+            fake_adapter.submit_job.call_args[1].get("script_path")
+            or fake_adapter.submit_job.call_args[0][0]
+        )
+        assert "--dummy" in Path(script_path).read_text()
+
+    def test_real_hpc_omits_dummy_flag_by_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "flux")
+        model = _fake_model()
+
+        fake_adapter = MagicMock()
+        fake_adapter.working_dir = tmp_path
+        fake_adapter.submit_job.return_value = "ƒFull1"
+
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
+            pg.slurm_submit_task.fn(model, _fake_loader(), "JPCP", "PM100Dataset")
+
+        script_path = (
+            fake_adapter.submit_job.call_args[1].get("script_path")
+            or fake_adapter.submit_job.call_args[0][0]
+        )
+        assert "--dummy" not in Path(script_path).read_text()
+
     def test_real_slurm_threads_gpu_resources(self, monkeypatch, tmp_path):
         monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "flux")
         monkeypatch.setenv("EXAMLOPS_HPC_GPUS", "2")

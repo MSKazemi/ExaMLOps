@@ -44,6 +44,7 @@ from routers import (
     platform_audit,
     platform_data,
     projects,
+    providers,
     proxy,
     quality,
     rollback,
@@ -189,6 +190,7 @@ app.include_router(features.router, prefix="/api")
 app.include_router(namespace.router, prefix="/api")
 app.include_router(nextgen.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(providers.router, prefix="/api")
 app.include_router(connections.router, prefix="/api")
 app.include_router(workbenches.router, prefix="/api")
 
