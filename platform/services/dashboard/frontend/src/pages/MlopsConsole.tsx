@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Boxes, ShieldCheck } from 'lucide-react'
+import { Boxes, ShieldCheck, Split } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
+import { isAdmin } from '@/lib/auth'
 import {
   useMlopsRegistry,
   useMlopsPromotion,
@@ -10,6 +11,12 @@ import {
   freshnessLabel,
   type ModelRow,
 } from '@/lib/mlops'
+import {
+  useModelTraffic,
+  useSetModelTraffic,
+  weightSum,
+  TRAFFIC_ALIASES,
+} from '@/lib/traffic'
 
 // ── promotion panel (guided gate, F9 R4) ──────────────────────────────────────
 
@@ -46,6 +53,109 @@ function PromotionPanel({ name }: { name: string }) {
       <p className="text-xs text-muted-foreground">
         Approval: {chk.approval.required ? `required (${chk.approval.state ?? 'pending'})` : 'not required'}
       </p>
+    </div>
+  )
+}
+
+// ── traffic split editor (exa serve traffic) ─────────────────────────────────
+
+function TrafficPanel({ name }: { name: string }) {
+  const admin = isAdmin()
+  const { data, isLoading } = useModelTraffic(name)
+  const setTraffic = useSetModelTraffic(name)
+  const [weights, setWeights] = useState<Record<string, number>>({})
+  const [msg, setMsg] = useState<string | null>(null)
+
+  // Seed the editable weights from the loaded rules (or zeros) whenever the model or the
+  // underlying rules change. Adjusting state during render (guarded by a seed key) is the
+  // React-idiomatic reset — an effect would fight the lint rule and add a render pass.
+  const [seedKey, setSeedKey] = useState('')
+  const currentKey = `${name}:${data === undefined ? 'loading' : JSON.stringify(data?.rules ?? {})}`
+  if (data !== undefined && seedKey !== currentKey) {
+    const base: Record<string, number> = {}
+    for (const a of TRAFFIC_ALIASES) base[a] = data?.rules?.[a] ?? 0
+    for (const [a, v] of Object.entries(data?.rules ?? {})) if (!(a in base)) base[a] = v
+    setWeights(base)
+    setSeedKey(currentKey)
+    setMsg(null)
+  }
+
+  const total = weightSum(weights)
+  const set = (alias: string, v: string) =>
+    setWeights((w) => ({ ...w, [alias]: Math.max(0, Math.min(100, Number(v) || 0)) }))
+
+  const save = async () => {
+    setMsg(null)
+    // Drop zero-weight aliases (matches the backend) before sending.
+    const rules = Object.fromEntries(Object.entries(weights).filter(([, v]) => v > 0))
+    try {
+      await setTraffic.mutateAsync(rules)
+      setMsg('Traffic split updated.')
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to update traffic split')
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Split className="size-4 text-muted-foreground" aria-hidden="true" />
+        <h3 className="text-sm font-semibold">Traffic split — {name}</h3>
+      </div>
+      {isLoading ? (
+        <Skeleton className="h-16 w-full" />
+      ) : !admin ? (
+        <div className="text-xs text-muted-foreground space-y-1">
+          {Object.keys(data?.rules ?? {}).length === 0 ? (
+            <p>No traffic split set (100% Production by default).</p>
+          ) : (
+            Object.entries(data!.rules).map(([a, v]) => (
+              <div key={a} className="flex justify-between font-mono">
+                <span>{a}</span>
+                <span>{v}%</span>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {Object.keys(weights).map((alias) => (
+            <label key={alias} className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">{alias}</span>
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={weights[alias]}
+                  onChange={(e) => set(alias, e.target.value)}
+                  className="w-16 rounded-md px-2 py-1 text-right font-mono"
+                  style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }}
+                />
+                <span className="text-muted-foreground">%</span>
+              </span>
+            </label>
+          ))}
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-xs font-mono" style={{ color: total === 100 ? 'var(--success-text)' : 'var(--error-text)' }}>
+              Σ {total}%
+            </span>
+            <button
+              onClick={save}
+              disabled={total !== 100 || setTraffic.isPending}
+              className="rounded-md px-3 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: 'oklch(0.64 0.20 265)', border: '1px solid oklch(0.64 0.20 265 / 60%)', color: 'oklch(0.99 0 0)' }}
+            >
+              {setTraffic.isPending ? 'Saving…' : 'Set split'}
+            </button>
+          </div>
+          {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
+          <p className="text-[11px] text-muted-foreground font-mono">
+            exa serve traffic {name}
+            {Object.entries(weights).filter(([, v]) => v > 0).map(([a, v]) => ` --${a.toLowerCase()} ${v}`).join('')}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -159,11 +269,14 @@ export function MlopsConsole() {
           <RegistryGrid rows={rows} selected={selected} onSelect={setSelected} />
           <div className="space-y-3">
             {selected ? (
-              <PromotionPanel name={selected} />
+              <>
+                <PromotionPanel name={selected} />
+                <TrafficPanel name={selected} />
+              </>
             ) : (
               <EmptyState
                 title="Select a model"
-                description="Pick a model to see its guided promotion gate."
+                description="Pick a model to see its promotion gate and traffic split."
               />
             )}
           </div>
