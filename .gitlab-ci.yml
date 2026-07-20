@@ -102,7 +102,9 @@ sanity:check-structure:
     - test -d platform/services/dashboard
     - test -d platform/services/control_plane
     - test -f platform/infra/docker-compose/docker-compose.yml
-    - test -d pipelines/models
+    # Models moved from pipelines/models/ to the use-case packs (ADR 0094 platform/use-case split);
+    # verify the default pack's model dir instead of the retired pipelines/models/.
+    - test -d usecases/seanergy/models
     - echo "Structure OK"
 
 # D7 (ADR 0011): block any commit that introduces a plaintext secret. Uses the
