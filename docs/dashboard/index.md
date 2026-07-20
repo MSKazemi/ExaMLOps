@@ -17,7 +17,7 @@ simulator) through deep links, health checks, and a reverse proxy.
 | **Services** | viewer/admin | Start / stop / restart stack services, live status badges, tail Docker logs |
 | **Pipelines** | viewer/admin | Prefect deployment status, recent run history, admin trigger button per deployment |
 | **Datasets** | viewer | Dataset list from the configured model zoo (GitLab) |
-| **Docs** | viewer | Rendered repo documentation |
+| **Documents** | viewer | Rendered repo documentation (README + `docs/`), at `/documents` |
 | **Config** | admin | Service URLs, Grafana API key, GitLab token, encrypted secrets; ModelZoo Integration section with webhook URL and auto-retrain toggle |
 | **Approvals** | admin | Pending model change approvals from CI — approve to fire Prefect training or reject with optional reason |
 | **Audit** | admin | Chronological config write history (values never recorded) |

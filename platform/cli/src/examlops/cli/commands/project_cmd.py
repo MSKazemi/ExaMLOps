@@ -211,7 +211,10 @@ def show(
             [
                 "Budget",
                 (
-                    f"{budget.get('gpu_hours', 0)} GPU-h · ${budget.get('cost_usd', 0)}"
+                    # platform_db stores gpu_hours_budget / cost_budget; tolerate the older
+                    # gpu_hours / cost_usd names too so a set budget always renders.
+                    f"{budget.get('gpu_hours_budget', budget.get('gpu_hours', 0))} GPU-h"
+                    f" · ${budget.get('cost_budget', budget.get('cost_usd', 0))}"
                     if budget
                     else "(none)"
                 ),
