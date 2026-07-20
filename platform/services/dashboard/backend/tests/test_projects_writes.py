@@ -134,3 +134,66 @@ async def test_bind_storage_requires_admin(client, platform_db):
         headers={"Authorization": f"Bearer {viewer}"},
     )
     assert r.status_code == 403
+
+
+async def test_update_project_quota_requires_admin(client, platform_db):
+    admin = await _login(client, ADMIN_PW)
+    await _create_project(client, admin)
+    viewer = await _login(client, VIEWER_PW)
+    r = await client.put(
+        "/api/v1/projects/research",
+        json={"cpuLimit": 16},
+        headers={"Authorization": f"Bearer {viewer}"},
+    )
+    assert r.status_code == 403
+
+
+async def test_update_project_quota_budget_namespace(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    await _create_project(client, token)
+    r = await client.put(
+        "/api/v1/projects/research",
+        json={
+            "cpuLimit": 16,
+            "memoryLimitGb": 64,
+            "storageGb": 200,
+            "gpuLimit": 2,
+            "description": "edited",
+            "networkName": "examlops-research-ns",
+            "gpuHoursBudget": 100,
+            "costBudget": 250,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["quotaUpdated"] is True
+    assert body["budgetUpdated"] is True
+    # Reflected in the anatomy view (viewer).
+    v = await _login(client, VIEWER_PW)
+    a = await client.get("/api/v1/projects/research", headers={"Authorization": f"Bearer {v}"})
+    anat = a.json()
+    assert anat["quota"]["cpuLimit"] == 16
+    assert anat["quota"]["memoryLimitGb"] == 64
+    assert anat["quota"]["gpuLimit"] == 2
+    assert anat["namespace"] == "examlops-research-ns"
+    assert anat["description"] == "edited"
+    assert anat["budget"]["gpuHours"] == 100
+    assert anat["budget"]["costUsd"] == 250
+    # Audited.
+    conn = sqlite3.connect(platform_db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE action='project_updated' AND target='research'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 1
+
+
+async def test_update_project_unknown_404(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.put(
+        "/api/v1/projects/ghost",
+        json={"cpuLimit": 8},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404

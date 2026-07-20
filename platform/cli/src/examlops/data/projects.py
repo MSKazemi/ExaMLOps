@@ -558,13 +558,23 @@ def update_project_quota(
     storage_gb: float | None = None,
     gpu_limit: int | None = None,
     description: str | None = None,
+    network_name: str | None = None,
 ) -> bool:
-    """Update quota fields for a project. Returns True if found and updated."""
+    """Update quota fields for a project. Returns True if found and updated.
+
+    ``network_name`` sets the project's isolated namespace / network (the boundary a
+    Compose/K8s runtime binds resources into). Pass an empty string to clear it.
+    """
     init_db()
     with get_db() as conn:
         row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
         if not row:
             return False
+        if network_name is not None:
+            conn.execute(
+                "UPDATE projects SET network_name=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
+                (network_name or None, name),
+            )
         if cpu_limit is not None:
             conn.execute(
                 "UPDATE projects SET cpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",

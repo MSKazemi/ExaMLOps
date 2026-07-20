@@ -253,3 +253,64 @@ async def test_workbench_status_unknown_404(client, platform_db):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 404
+
+
+async def test_workbench_create_requires_admin(client, platform_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/v1/workbenches",
+        json={"project": "research", "name": "nb2"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 403
+
+
+async def test_workbench_create_and_delete(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    # A project must exist for a workbench to bind to (examlops.workbenches parity path).
+    pr = await client.post(
+        "/api/v1/projects",
+        json={"name": "research", "cpuLimit": 4, "memoryLimitGb": 8, "storageGb": 50},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert pr.status_code in (201, 409), pr.text
+    r = await client.post(
+        "/api/v1/workbenches",
+        json={"project": "research", "name": "nb2", "image": "jupyter/minimal-notebook:latest"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["name"] == "nb2"
+    assert body["project"] == "research"
+    assert body["status"] == "STOPPED"
+    assert body["volume"] == "research-nb2-data"  # per-workbench local persistent volume
+    # Appears in the (viewer) list for the project.
+    v = await _login(client, VIEWER_PW)
+    lr = await client.get(
+        "/api/v1/workbenches?project=research", headers={"Authorization": f"Bearer {v}"}
+    )
+    assert "nb2" in {w["name"] for w in lr.json()}
+    # Audited.
+    conn = sqlite3.connect(platform_db)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action='workbench_created' AND target='nb2'"
+        ).fetchone()[0]
+        == 1
+    )
+    conn.close()
+    # Delete it.
+    dr = await client.delete(
+        "/api/v1/workbenches/research/nb2", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert dr.status_code == 200, dr.text
+    assert dr.json()["deleted"] is True
+
+
+async def test_workbench_delete_unknown_404(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.delete(
+        "/api/v1/workbenches/research/ghost", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 404

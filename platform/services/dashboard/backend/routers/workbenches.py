@@ -57,6 +57,19 @@ def _require_manage(principal: dict) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, deny_reason(role, PROJECT_MANAGE))
 
 
+def _examlops_workbenches():
+    """Lazy, guarded import of the shared CLI code path (503 if the package is unavailable)."""
+    try:
+        from examlops import workbenches as _wb  # type: ignore
+
+        return _wb
+    except ImportError as exc:  # pragma: no cover - only when examlops is not installed
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "workbench writes require the examlops package (not available in this deployment)",
+        ) from exc
+
+
 def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, details: dict) -> None:
     conn.execute(
         "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
@@ -100,6 +113,60 @@ async def list_workbenches_view(
         return []
 
 
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_workbench_view(
+    payload: dict = Body(...), principal: dict = Depends(_admin)
+) -> dict:
+    """Create a project-bound workbench (notebook) — admin / project.manage; audited.
+
+    Body: ``{project, name, image?, cpu?, memoryGb?}``. Reuses ``examlops.workbenches.create_workbench``
+    (the same code path as ``exa workbench create``) so the dashboard can never drift from the CLI.
+    Registers a per-workbench storage volume and a ``kind='storage'`` project resource. Status STOPPED.
+    """
+    _require_manage(principal)
+    project = (payload.get("project") or "").strip()
+    name = (payload.get("name") or "").strip()
+    image = (payload.get("image") or "").strip() or None
+    if not project:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is required")
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "name is required")
+    wb = _examlops_workbenches()
+    actor = principal.get("sub", "?")
+    try:
+        created = wb.create_workbench(
+            name,
+            project,
+            image=image,
+            cpu=payload.get("cpu"),
+            memory_gb=payload.get("memoryGb"),
+            created_by=actor,
+        )
+    except wb.WorkbenchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"workbench '{name}' already exists in project '{project}'",
+        ) from exc
+    conn = _connect()
+    _ensure_table(conn)
+    _audit(conn, actor, "workbench_created", name, {"project": project, "image": image})
+    conn.commit()
+    conn.close()
+    return {
+        "name": created["name"],
+        "project": created["project"],
+        "image": created["image"],
+        "cpu": created["cpu"],
+        "memoryGb": created["memory_gb"],
+        "volume": created["storage_volume"],
+        "status": created["status"],
+        "createdAt": created.get("created_at"),
+        "createdBy": created.get("created_by"),
+    }
+
+
 @router.post("/{project}/{name}/status")
 async def set_status_view(
     project: str,
@@ -107,28 +174,58 @@ async def set_status_view(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
 ) -> dict:
-    """Set a workbench's status to RUNNING or STOPPED (admin / project.manage; audited)."""
+    """Set a workbench's status to RUNNING or STOPPED (admin / project.manage; audited).
+
+    Routes through ``examlops.workbenches`` so RUNNING returns the runtime launch spec — image,
+    mounted volume, and the project's Named Connections injected as env vars (secret values are
+    resolved server-side and never surfaced key-by-key here beyond the count).
+    """
     _require_manage(principal)
     desired = (payload.get("status") or "").upper()
     if desired not in {"RUNNING", "STOPPED"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "status must be RUNNING or STOPPED")
+    wb = _examlops_workbenches()
+    actor = principal.get("sub", "?")
+    result: dict = {"project": project, "name": name, "status": desired}
+    try:
+        if desired == "RUNNING":
+            spec = wb.start_workbench(name, project, actor=actor)
+            result["image"] = spec.get("image")
+            result["volume"] = spec.get("volume")
+            # Surface only the injected env var *names* (not values) so the UI can show wiring.
+            result["injectedEnv"] = sorted((spec.get("env") or {}).keys())
+        else:
+            if not wb.stop_workbench(name, project):
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND,
+                    f"workbench '{name}' not found in project '{project}'",
+                )
+    except wb.WorkbenchError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     conn = _connect()
     _ensure_table(conn)
-    cur = conn.execute(
-        "UPDATE workbenches SET status=? WHERE project=? AND name=?", (desired, project, name)
-    )
-    if cur.rowcount == 0:
-        conn.close()
+    _audit(conn, actor, "workbench_status_changed", name, {"project": project, "status": desired})
+    conn.commit()
+    conn.close()
+    return result
+
+
+@router.delete("/{project}/{name}", status_code=status.HTTP_200_OK)
+async def delete_workbench_view(
+    project: str,
+    name: str,
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Delete a workbench definition (admin / project.manage; audited)."""
+    _require_manage(principal)
+    wb = _examlops_workbenches()
+    if not wb.delete_workbench(name, project):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"workbench '{name}' not found in project '{project}'"
         )
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "workbench_status_changed",
-        name,
-        {"project": project, "status": desired},
-    )
+    conn = _connect()
+    _ensure_table(conn)
+    _audit(conn, principal.get("sub", "?"), "workbench_deleted", name, {"project": project})
     conn.commit()
     conn.close()
-    return {"project": project, "name": name, "status": desired}
+    return {"project": project, "name": name, "deleted": True}

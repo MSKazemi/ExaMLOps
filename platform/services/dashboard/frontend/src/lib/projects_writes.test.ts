@@ -52,3 +52,17 @@ describe('bindStorage', () => {
     })
   })
 })
+
+describe('updateProject', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('PUTs the editable fields to the encoded project path', async () => {
+    mockFetch.mockResolvedValue({ name: 'research', quotaUpdated: true, budgetUpdated: true })
+    const { updateProject } = await import('./projects')
+    await updateProject('research', { cpuLimit: 16, networkName: 'ns', gpuHoursBudget: 100 })
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/projects/research', {
+      method: 'PUT',
+      body: JSON.stringify({ cpuLimit: 16, networkName: 'ns', gpuHoursBudget: 100 }),
+    })
+  })
+})
