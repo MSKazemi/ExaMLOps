@@ -33,8 +33,14 @@ def retrain(
     ),
 ) -> None:
     """Trigger a Prefect training run via the Control Plane."""
+    from examlops.usecase import default_dataset_for
+
     cfg = load_config()
-    dataset_name = dataset or "PM100Dataset"
+    # No hardcoded dataset (ADR 0094): fall back to the model's primary dataset from the pack YAML.
+    dataset_name = dataset or default_dataset_for(model)
+    if not dataset_name:
+        _output.error(f"--dataset is required (no default dataset in {model}'s YAML)")
+        raise typer.Exit(1)
     backend_name = backend.value if backend is not None else None
     body = {
         "model_name": model,

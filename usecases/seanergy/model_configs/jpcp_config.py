@@ -13,7 +13,7 @@ from typing import ClassVar
 
 import numpy as np
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _MODELZOO = _REPO_ROOT / "modelzoo"
 for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:

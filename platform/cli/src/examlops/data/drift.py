@@ -146,7 +146,7 @@ def set_drift_auto_retrain(
     model: str,
     enabled: bool,
     min_z_score: float = 3.0,
-    dataset_name: str = "PM100Dataset",
+    dataset_name: str = "",  # no hardcoded dataset (ADR 0094) — caller supplies it
     cooldown_s: int = 3600,
 ) -> None:
     with get_db() as conn:

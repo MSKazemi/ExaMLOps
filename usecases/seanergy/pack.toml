@@ -1,0 +1,39 @@
+# Seanergy use-case pack (ADR 0094).
+#
+# Declares everything the ExaMLOps platform engine needs to run THIS use case's content,
+# so the platform core names no concrete model/dataset/framework. Point the platform at a
+# different pack with EXAMLOPS_USECASE_DIR=/path/to/other-pack.
+
+[pack]
+name = "seanergy"
+description = "Seanergy HPC use case — power-consumption / job models on the modelzoo framework."
+# Extra sys.path entries the pack's code needs, relative to this pack dir.
+# The upstream model library lives at <repo>/modelzoo.
+pythonpath = ["../../modelzoo"]
+
+[content]
+# Per-model YAML registry dir + the importable Python package of transform shims,
+# both relative to this pack dir. The pack dir is placed on sys.path so `config_package`
+# is importable as a top-level package.
+models_dir = "models"
+config_package = "model_configs"
+
+[framework]
+# The ML framework this pack's models are built on. The engine resolves these
+# "module:attr" specs at load time instead of importing anything by name.
+model_base        = "seanergys_modelzoo.models.common.seanergys_model:SeanergysModel"
+config_base       = "seanergys_modelzoo.models.common.seanergys_configurator:SeanergysModelConfiguration"
+pipeline_step     = "seanergys_modelzoo.decorators:pipeline_step"
+model_params      = "seanergys_modelzoo.models.common.seanergys_configurator:SeanergysModelParams"
+dataloader        = "seanergys_modelzoo.dataloader.seanergys_dataloader:SeanergysDataloader"
+dataloader_params = "seanergys_modelzoo.models.common.seanergys_configurator:SeanergysDataloaderParams"
+get_backend       = "seanergys_modelzoo.datasets._backends:get_backend"
+framework_adapter = "seanergys_modelzoo.models.common.framework_adapter:adapter_for"
+model_task        = "seanergys_modelzoo.models.common.seanergys_model:SeanergysModelTask"
+# Package whose directory is scanned for concrete model classes.
+tasks_root        = "seanergys_modelzoo.models.tasks"
+
+[datasets]
+# Dataset name (as referenced in the per-model YAML) -> "module:Class".
+PM100Dataset = "seanergys_modelzoo.datasets.pm100:PM100Dataset"
+FDataDataset = "seanergys_modelzoo.datasets.f_data:FDataDataset"

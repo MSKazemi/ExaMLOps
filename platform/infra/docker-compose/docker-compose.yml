@@ -422,7 +422,9 @@ services:
       PUBLIC_PREFECT_URL: http://${PUBLIC_HOST:-localhost}:14200
       PUBLIC_RAY_SERVE_URL: http://${PUBLIC_HOST:-localhost}:18001
       REPO_ROOT: /repo
-      MODELS_YAML_DIR: /repo/pipelines/models
+      # Use-case content lives in a pack, separate from the platform (ADR 0094).
+      EXAMLOPS_USECASE_DIR: /repo/usecases/seanergy
+      MODELS_YAML_DIR: /repo/usecases/seanergy/models
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: dashboard
@@ -528,7 +530,7 @@ services:
       CONTROL_PLANE_TOKEN: "${CONTROL_PLANE_TOKEN:-}"
       SEANERBUS_DEFAULT_MODEL: "${SEANERBUS_DEFAULT_MODEL:-JPCP}"
       SEANERBUS_DEFAULT_ALIAS: "${SEANERBUS_DEFAULT_ALIAS:-Production}"
-      MODELS_YAML_DIR: "/app/pipelines/models"
+      MODELS_YAML_DIR: "/app/usecases/seanergy/models"
     env_file:
       - path: .env
         required: true

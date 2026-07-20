@@ -1,6 +1,6 @@
 """Per-model YAML loader for ExaMLOps.
 
-Each model has its own YAML file at pipelines/models/<name>.yaml.
+Each model has its own YAML file at the active pack's models/<name>.yaml.
 This module parses those files into typed dataclasses consumed by
 pipeline_generator.py and other system components.
 """
