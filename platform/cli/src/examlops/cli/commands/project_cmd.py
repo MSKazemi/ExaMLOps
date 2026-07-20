@@ -1,13 +1,13 @@
-"""``exa project`` — ExaMLOps Projects (modeled on Red Hat OpenShift AI Data Science Projects).
+"""``exa project`` — ExaMLOps Projects (the unified project workspace).
 
 A **Project** is a named resource envelope that groups ML models and services and enforces
-CPU/memory/storage/GPU limits on their Docker containers.  The concept is ported directly from
-RHOAI (Red Hat OpenShift AI):
+CPU/memory/storage/GPU limits on their Docker containers.  It maps the familiar
+namespace/quota/isolation primitives onto ExaMLOps's Docker + SQLite substrate:
 
-* RHOAI ``Namespace`` + ``ResourceQuota`` → ExaMLOps ``Project`` in ``platform.db``
-* RHOAI ``LimitRange`` → Docker Compose ``deploy.resources.limits`` (per-service)
-* RHOAI ``NetworkPolicy`` → Docker ``networks.<project>-network``
-* RHOAI ``PersistentVolumeClaim`` → Docker named ``volumes`` with size annotations
+* Namespace + resource quota → ExaMLOps ``Project`` in ``platform.db``
+* Per-service limit range → Docker Compose ``deploy.resources.limits`` (per-service)
+* Network isolation policy → Docker ``networks.<project>-network``
+* Persistent storage claim → Docker named ``volumes`` with size annotations
 
 Key commands::
 
@@ -29,21 +29,26 @@ import typer
 import yaml
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.projects import (
     add_project_member,
     archive_project,
     assign_resource_to_project,
+    bind_project_connection,
     create_project,
     delete_project,
+    ensure_project_storage,
     get_project,
     get_project_full,
-    init_db,
+    get_project_pipelines,
+    get_project_storage,
     list_project_members,
     list_project_models,
     list_projects,
+    refresh_project_usage,
     remove_project_member,
     update_project_quota,
-    write_audit_event,
 )
 
 app = typer.Typer(
@@ -206,7 +211,10 @@ def show(
             [
                 "Budget",
                 (
-                    f"{budget.get('gpu_hours', 0)} GPU-h · ${budget.get('cost_usd', 0)}"
+                    # platform_db stores gpu_hours_budget / cost_budget; tolerate the older
+                    # gpu_hours / cost_usd names too so a set budget always renders.
+                    f"{budget.get('gpu_hours_budget', budget.get('gpu_hours', 0))} GPU-h"
+                    f" · ${budget.get('cost_budget', budget.get('cost_usd', 0))}"
                     if budget
                     else "(none)"
                 ),
@@ -227,6 +235,131 @@ def show(
                 [m["subject"], m["role"], m.get("granted_by") or "-", (m.get("when") or "")[:19]]
                 for m in members
             ],
+        )
+
+    # ── P8 anatomy: storage · connections · pipelines ─────────────────────────
+    storage = full.get("storage")
+    if storage:
+        used_gb = (storage.get("used_bytes") or 0) / 1e9
+        quota = storage.get("quota_gb")
+        _output.print_table(
+            "Storage",
+            ["Field", "Value"],
+            [
+                ["Location", f"s3://{storage['bucket']}/{storage['prefix']}"],
+                ["Used", f"{used_gb:.2f} GB" + (f" / {quota:.0f} GB" if quota else "")],
+                ["Connection", storage.get("connection_ref") or "—"],
+            ],
+        )
+    connections = full.get("connections") or []
+    if connections:
+        _output.print_table(
+            "Connections",
+            ["Name", "Kind", "Secret"],
+            [
+                [c["name"], c.get("kind") or "—", "✓" if c.get("has_secret") else "✗"]
+                for c in connections
+            ],
+        )
+    pipelines = full.get("pipelines") or {}
+    pf, ry = pipelines.get("prefect"), pipelines.get("rayserve")
+    if pf or ry:
+        rows = []
+        if pf:
+            rows.append(
+                [
+                    "Prefect (training)",
+                    ", ".join(pf.get("deployments") or []) or "—",
+                    pf.get("schedule") or "—",
+                    pf.get("status") or "unknown",
+                ]
+            )
+        if ry:
+            rows.append(
+                [
+                    "Ray Serve (serving)",
+                    ", ".join(ry.get("models") or []) or "—",
+                    ("split" if ry.get("traffic") else "—"),
+                    ry.get("status") or "unknown",
+                ]
+            )
+        _output.print_table("Pipelines", ["Surface", "Members", "Schedule/Traffic", "Status"], rows)
+
+
+@app.command("storage")
+def storage_cmd(
+    name: str = typer.Argument(..., help="Project name"),
+    bind_connection: str | None = typer.Option(
+        None, "--bind-connection", help="Point storage at a P2 S3 connection (by name)"
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-probe used bytes from MinIO"),
+) -> None:
+    """Show (or bind/refresh) the project's MinIO storage location (P6)."""
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    ensure_project_storage(name)
+    if bind_connection:
+        if bind_project_connection(name, bind_connection, actor=os.getenv("EXAMLOPS_ACTOR")):
+            _output.ok(f"Bound storage of '{name}' to connection '{bind_connection}'")
+        else:
+            _output.error(f"Could not bind '{bind_connection}' (missing or not an s3 connection)")
+            raise typer.Exit(1)
+    if refresh:
+        refresh_project_usage(name)
+    rec = get_project_storage(name)
+    if _output.json_mode:
+        _output.print_json(rec)
+        return
+    used_gb = (rec.get("used_bytes") or 0) / 1e9
+    quota = rec.get("quota_gb")
+    _output.print_table(
+        f"Storage: {name}",
+        ["Field", "Value"],
+        [
+            ["Location", f"s3://{rec['bucket']}/{rec['prefix']}"],
+            ["Subpaths", "artifacts/ · datasets/ · cache/"],
+            ["Used", f"{used_gb:.2f} GB" + (f" / {quota:.0f} GB" if quota else "")],
+            ["Connection", rec.get("connection_ref") or "—"],
+        ],
+    )
+
+
+@app.command("pipelines")
+def pipelines_cmd(name: str = typer.Argument(..., help="Project name")) -> None:
+    """Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7)."""
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    pipes = get_project_pipelines(name)
+    if _output.json_mode:
+        _output.print_json(pipes)
+        return
+    pf, ry = pipes.get("prefect"), pipes.get("rayserve")
+    if not pf and not ry:
+        _output.info(
+            f"No pipelines for '{name}' yet. Assign models: exa project assign {name} <M> --kind model"
+        )
+        return
+    if pf:
+        _output.print_table(
+            "Prefect pipeline (training)",
+            ["Field", "Value"],
+            [
+                ["Deployments", ", ".join(pf.get("deployments") or []) or "—"],
+                ["Schedule", pf.get("schedule") or "—"],
+                ["Last run", pf.get("last_run_at") or "—"],
+                ["Status", pf.get("status") or "unknown"],
+            ],
+        )
+    if ry:
+        _output.print_table(
+            "Ray Serve pipeline (serving)",
+            ["Model", "Traffic split"],
+            [[m, str(ry.get("traffic", {}).get(m, "—"))] for m in (ry.get("models") or [])]
+            or [["—", "—"]],
         )
 
 
@@ -351,7 +484,7 @@ def add_member(
     subject: str = typer.Argument(..., help="User/subject id"),
     role: str = typer.Option("viewer", "--role", "-r", help="owner | editor | viewer"),
 ) -> None:
-    """Add a person to a project (owner ⊇ editor ⊇ viewer; RHOAI Admin/Edit/View)."""
+    """Add a person to a project (owner ⊇ editor ⊇ viewer)."""
     init_db()
     if role not in {"owner", "editor", "viewer"}:
         _output.error("--role must be one of: owner, editor, viewer")
@@ -415,6 +548,69 @@ def current() -> None:
         _output.info(f"Active project: [bold]{proj}[/bold]")
     else:
         _output.info("No active project. Set one: exa project use <name>")
+
+
+# --- Project FinOps & monitoring (P4, ADR 0089) -------------------------------
+
+
+@app.command()
+def cost(
+    name: str = typer.Argument(..., help="Project name"),
+) -> None:
+    """Show per-project cost attribution (GPU-hours · USD · carbon)."""
+    from examlops.project_finops import cost_summary
+
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    s = cost_summary(name)
+    if _output.json_mode:
+        _output.print_json(s)
+        return
+    _output.print_table(
+        f"Cost — {name}",
+        ["Field", "Value"],
+        [
+            ["GPU-hours (attributed)", f"{s['gpu_hours']:.2f}"],
+            ["Cost USD (attributed)", f"${s['cost_usd']:.2f}"],
+            ["Carbon (g CO2e)", f"{s['carbon_grams_co2e']:.1f}"],
+            ["Cost records", str(s["records"])],
+            ["GPU-hours (union w/ legacy)", f"{s['union_gpu_hours']:.2f}"],
+        ],
+    )
+
+
+@app.command()
+def budget(
+    name: str = typer.Argument(..., help="Project name"),
+) -> None:
+    """Show budget/quota status and flag breaches (exit 1 if over budget)."""
+    from examlops.project_finops import budget_status
+
+    init_db()
+    if not get_project(name):
+        _output.error(f"Project '{name}' not found")
+        raise typer.Exit(1)
+    st = budget_status(name, actor=_actor(), audit=True)
+    if _output.json_mode:
+        _output.print_json(st)
+    else:
+        cons = st["consumption"]
+        _output.print_table(
+            f"Budget — {name}",
+            ["Field", "Value"],
+            [
+                ["Consumed GPU-h", f"{cons['gpu_hours']:.2f}"],
+                ["Consumed USD", f"${cons['cost_usd']:.2f}"],
+                ["Budget", str(st["budget"] or "(none)")],
+                ["Over budget", "YES" if st["over_budget"] else "no"],
+            ],
+        )
+        for b in st["breaches"]:
+            _output.warning(f"BREACH: {b}")
+    if st["over_budget"]:
+        raise typer.Exit(1)
 
 
 @app.command(epilog=_EXAMPLES_COMPOSE)
@@ -620,7 +816,7 @@ def access(
     obj: str | None = typer.Option(None, "--object", help="Show all grants on an object"),
 ) -> None:
     """List RBAC relations (by subject and/or object)."""
-    from examlops.platform_db import list_relations
+    from examlops.data.governance import list_relations
 
     rows = list_relations(subject=subject, obj=obj)
     if _output.json_mode:

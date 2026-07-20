@@ -15,13 +15,14 @@ from typing import Any
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.data_assets import (
     get_dataset_revision,
     get_dataset_revisions,
-    init_db,
+    purge_telemetry,
     record_data_quality_check,
     record_dataset_revision,
-    write_audit_event,
 )
 
 app = typer.Typer(
@@ -297,3 +298,44 @@ def validate(
             f"Data contract FAILED for {dataset}: {len(result.errors)} error-severity violation(s).",
             exit_code=1,
         )
+
+
+_EX_RETENTION = (
+    "Examples:\n\n"
+    "  exa data retention-prune --days 90 --dry-run\n\n"
+    "  exa data retention-prune --days 30 --vacuum"
+)
+
+
+@app.command("retention-prune", epilog=_EX_RETENTION)
+def retention_prune(
+    days: int = typer.Option(90, "--days", help="Delete telemetry older than this many days"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be pruned; change nothing"
+    ),
+    vacuum: bool = typer.Option(False, "--vacuum", help="Reclaim freed pages after pruning"),
+) -> None:
+    """Prune unbounded per-inference telemetry (drift / input snapshots) older than --days.
+
+    Never touches the tamper-evident audit log or FinOps cost history. Use --dry-run first to see the
+    row counts, then run without it (optionally with --vacuum) to reclaim space.
+    """
+    init_db()
+    counts = purge_telemetry(days, dry_run=dry_run, vacuum=vacuum)
+    total = sum(counts.values())
+    if not dry_run and total:
+        write_audit_event(
+            "exa-data", _actor(), "telemetry_pruned", None, {"days": days, "counts": counts}
+        )
+    if _output.json_mode:
+        _output.print_json({"dry_run": dry_run, "days": days, "counts": counts, "total": total})
+        return
+    verb = "Would prune" if dry_run else "Pruned"
+    _output.print_table(
+        f"{verb} telemetry older than {days}d",
+        ["Table", "Rows"],
+        [[t, str(n)] for t, n in counts.items()],
+    )
+    _output.info(
+        f"{verb} {total} row(s)." + ("" if dry_run else " (audit + cost history retained)")
+    )

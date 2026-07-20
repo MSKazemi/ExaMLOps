@@ -14,6 +14,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+from dbconn import connect
+
 
 @dataclass(frozen=True)
 class FlagDef:
@@ -33,7 +35,9 @@ FLAG_DEFS: dict[str, FlagDef] = {
     "facilityConsole": FlagDef("facilityConsole", "F6 exascale facility console", default=True),
     "commandPalette": FlagDef("commandPalette", "F2 ⌘K command palette", default=True),
     "llmopsConsole": FlagDef("llmopsConsole", "F10 LLMOps console", default=True),
-    "projectsConsole": FlagDef("projectsConsole", "Projects workspace console (ADR 0086)", default=True),
+    "projectsConsole": FlagDef(
+        "projectsConsole", "Projects workspace console (ADR 0086)", default=True
+    ),
     # Example staged rollout: admins always, everyone else at 50%.
     "incidentTimeline": FlagDef(
         "incidentTimeline",
@@ -97,7 +101,7 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
 
 def _load_overrides(db_path: str) -> dict[str, bool]:
     try:
-        conn = sqlite3.connect(db_path)
+        conn = connect(db_path)
     except sqlite3.Error:  # pragma: no cover
         return {}
     try:
@@ -144,7 +148,7 @@ def set_override(db_path: str, name: str, enabled: bool, actor: str) -> bool:
     """
     if name not in FLAG_DEFS:
         return False
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         _ensure_table(conn)
         conn.execute(

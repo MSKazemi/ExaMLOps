@@ -77,10 +77,14 @@ class LocalExecutor:
 
     def put(self, local: str, remote: str) -> None:
         Path(remote).parent.mkdir(parents=True, exist_ok=True)
+        if os.path.realpath(local) == os.path.realpath(remote):
+            return  # local transport with a shared workdir — source already at the target
         shutil.copy(local, remote)
 
     def get(self, remote: str, local: str) -> None:
         Path(local).parent.mkdir(parents=True, exist_ok=True)
+        if os.path.realpath(remote) == os.path.realpath(local):
+            return  # source already at the target (worker runs on the compute node)
         shutil.copy(remote, local)
 
     def close(self) -> None:  # noqa: D401 - nothing to release
@@ -115,11 +119,31 @@ class SSHExecutor:
 
     # ── connection management ────────────────────────────────────────────────
 
+    @staticmethod
+    def _auto_add_host_keys() -> bool:
+        """Whether to auto-trust unknown SSH host keys (insecure; explicit opt-in only)."""
+        return os.getenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     def _connect(self):
         import paramiko  # noqa: PLC0415 - optional dep, only needed for SSH transport
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Verify host identity against the operator's known_hosts and REJECT unknown keys by
+        # default — AutoAddPolicy blindly trusts any key and enables trivial MITM. Set
+        # EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS=1 only for a trusted first-connect/dev flow.
+        client.load_system_host_keys()
+        try:
+            client.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+        except (OSError, FileNotFoundError):
+            pass  # no user known_hosts file yet — system keys + policy still apply
+        client.set_missing_host_key_policy(
+            paramiko.AutoAddPolicy() if self._auto_add_host_keys() else paramiko.RejectPolicy()
+        )
         client.connect(
             hostname=self.host,
             port=self.port,

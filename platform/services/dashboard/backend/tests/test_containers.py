@@ -15,9 +15,15 @@ def _make_mock_container(service: str, status: str = "running", health: str = "h
         "State": {
             "StartedAt": "2026-05-18T08:00:00Z",
             "Health": {"Status": health},
-        }
+        },
+        # Real Docker container-list payload carries the image name here; the code must read
+        # it from attrs (not ``c.image``, which triggers a forbidden /images inspect on a
+        # hardened docker-socket-proxy → 403 → 500). See routers.containers._image_ref.
+        "Config": {"Image": f"examlops/{service}:latest"},
+        "Image": f"examlops/{service}:latest",
     }
-    c.image.tags = [f"examlops/{service}:latest"]
+    # A distinct value on c.image proves the code reads attrs, not c.image.
+    c.image.tags = ["should-not-be-read:tag"]
     return c
 
 
@@ -52,6 +58,8 @@ def test_list_containers_returns_all(mock_client_fn, _mock_proj):
     assert data["containers"][0]["display_name"] == "Ray Serve"
     assert data["containers"][0]["status"] == "running"
     assert data["containers"][0]["health"] == "healthy"
+    # Image comes from attrs, never c.image (which would 403 through the socket proxy).
+    assert data["containers"][0]["image"] == "examlops/ray-serving:latest"
     assert data["containers"][1]["status"] == "exited"
 
 

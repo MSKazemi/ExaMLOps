@@ -9,6 +9,7 @@ import yaml
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
+from examlops.usecase import models_dir as _usecase_models_dir
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -16,7 +17,8 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
-MODELS_DIR = Path("pipelines/models")
+# Per-model YAML lives in the active use-case pack (ADR 0094), not the platform (env-resolved).
+MODELS_DIR = _usecase_models_dir()
 
 _EXAMPLES_LIST = "Examples:\n\n  exa dataplane list\n\n  exa --json dataplane list"
 _EXAMPLES_INIT = "Examples:\n\n  exa dataplane init-uuids"

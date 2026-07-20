@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from typing import Any
+
+from dbconn import connect
 
 # `exa` subcommands that mutate state — a proposal for one of these must be gated behind human
 # confirmation + the approval flow (R5). Everything else is read-only and safe to run as-is.
@@ -152,7 +153,7 @@ def audit_copilot(
 ) -> bool:
     """Audit a copilot query to ``audit_events`` (F11 §6 / D4). Best-effort."""
     try:
-        conn = sqlite3.connect(db_path)
+        conn = connect(db_path)
         try:
             if not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"

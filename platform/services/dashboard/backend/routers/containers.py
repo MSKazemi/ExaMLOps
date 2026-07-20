@@ -82,16 +82,32 @@ def _health(container) -> str:
     return h.get("Status", "none") if h else "none"
 
 
+def _image_ref(c) -> str:
+    """Image name for a container without touching the ``/images`` API.
+
+    ``c.image`` triggers an image-inspect round-trip, which a hardened
+    docker-socket-proxy (IMAGES endpoint disabled) rejects with 403 → a 500 for
+    the whole request. The container-list/inspect payload already carries the
+    image reference (``Config.Image`` on inspect, ``Image`` on the list summary),
+    so read it from ``attrs`` instead. Falls back to the short image id.
+    """
+    attrs = getattr(c, "attrs", {}) or {}
+    ref = (attrs.get("Config", {}) or {}).get("Image") or attrs.get("Image") or ""
+    if ref and not ref.startswith("sha256:"):
+        return ref
+    image_id = attrs.get("ImageID") or ref
+    return image_id.split(":")[-1][:12] if image_id else "unknown"
+
+
 def _container_info(c) -> dict[str, Any]:
     service = c.labels.get("com.docker.compose.service", c.name)
-    tags = c.image.tags
     return {
         "name": service,
         "display_name": DISPLAY_NAMES.get(service, service.replace("-", " ").title()),
         "status": c.status,
         "health": _health(c),
         "uptime": _uptime(c),
-        "image": tags[0] if tags else c.image.id.split(":")[-1][:12],
+        "image": _image_ref(c),
     }
 
 

@@ -61,10 +61,12 @@ services:
       - |
         mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
         mc mb --ignore-existing local/mlflow-artifacts &&
-        echo '[minio-init] bucket mlflow-artifacts ready.'
+        mc mb --ignore-existing local/$${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects} &&
+        echo '[minio-init] buckets mlflow-artifacts + project storage ready.'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
     restart: "no"
 
   mlflow:
@@ -195,7 +197,11 @@ services:
     mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
     environment:
       CONTROL_PLANE_PORT: "8002"
-      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-changeme}
+      # No insecure default: unset/placeholder tokens fail closed (write endpoints 503).
+      # Set CONTROL_PLANE_TOKEN in .env to enable POST /retrain (item 0.8 / QW6).
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      # Allowed-hosts scoping (item 0.8): "*"=dev; set a comma-separated allow-list in prod.
+      CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-*}
       PREFECT_API_URL: http://orchestrator:4200/api
       PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-examlops_scheduled_training/nightly}
       MODELZOO_WEBHOOK_SECRET: ${MODELZOO_WEBHOOK_SECRET:-}
@@ -262,6 +268,9 @@ services:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # Delivery secrets (Slack/PagerDuty/heartbeat) read at notify time; gitignored,
+      # absent files degrade that receiver to a no-op. See alertmanager-secrets/README.md.
+      - ./alertmanager-secrets:/etc/alertmanager/secrets:ro
       - alertmanager_data:/alertmanager
     ports:
       - "19093:9093"
@@ -289,10 +298,12 @@ services:
     profiles: [monitoring]
     container_name: examlops-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Env-driven so production overrides the dev default (item 0.8). In prod set a strong
+      # GRAFANA_ADMIN_PASSWORD and GRAFANA_ANONYMOUS_ENABLED=false — see production-hardening.md.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-true}
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - grafana_data:/var/lib/grafana
@@ -338,6 +349,39 @@ services:
       - loki
     restart: unless-stopped
 
+  # Scoped Docker API proxy (item 0.6). The dashboard needs container start/stop/restart +
+  # logs, but a raw rw /var/run/docker.sock mount is root-equivalent host takeover. This proxy
+  # holds the socket read-only and exposes ONLY the allow-listed API sections (containers + POST
+  # for lifecycle); IMAGES/EXEC/VOLUMES/NETWORKS/SWARM/SECRETS/AUTH are all denied. No published
+  # port — reachable only on the internal compose network.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2.0
+    container_name: examlops-docker-socket-proxy
+    environment:
+      CONTAINERS: "1"   # list/inspect/logs
+      POST: "1"         # allow POST → start/stop/restart (scoped to permitted sections)
+      # Everything else denied (defaults to 0), explicit for auditability:
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      EXEC: "0"
+      INFO: "0"
+      AUTH: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ../../..
@@ -347,6 +391,9 @@ services:
     container_name: examlops-dashboard
     mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}
     environment:
+      # Talk to Docker through the scoped proxy, NOT the raw socket (item 0.6).
+      # docker.from_env() honors DOCKER_HOST, so no code change is needed.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       MLFLOW_URL: http://mlflow:5000
       PREFECT_URL: http://orchestrator:4200
       RAY_SERVE_URL: http://ray-serving:8001
@@ -375,7 +422,9 @@ services:
       PUBLIC_PREFECT_URL: http://${PUBLIC_HOST:-localhost}:14200
       PUBLIC_RAY_SERVE_URL: http://${PUBLIC_HOST:-localhost}:18001
       REPO_ROOT: /repo
-      MODELS_YAML_DIR: /repo/pipelines/models
+      # Use-case content lives in a pack, separate from the platform (ADR 0094).
+      EXAMLOPS_USECASE_DIR: /repo/usecases/seanergy
+      MODELS_YAML_DIR: /repo/usecases/seanergy/models
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: dashboard
@@ -388,6 +437,21 @@ services:
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099
       SLURM_MODE: ${EXAMLOPS_SLURM_MODE:-mock}
       PLATFORM_DB: /repo/platform.db
+      # Point the /documents docs router (routers/docs.py) at the bind-mounted repo so the
+      # Documents page serves the live README.md + docs/** during dev. Takes precedence over the
+      # image's baked docs/ copy (Dockerfile.dashboard) — that copy is the fallback for K8s/PVC
+      # where /repo is not mounted. Without either, the tree resolves empty ("No results").
+      EXAMLOPS_DOCS_ROOT: /repo
+      # Authored calculation providers (ADR 0074) live under the bind-mounted repo so they persist
+      # across restarts and are shared with the CLI/pipeline (all resolve the same path).
+      EXAMLOPS_PROVIDERS_DIR: ${EXAMLOPS_PROVIDERS_DIR:-/repo/.providers}
+      # The dashboard's config-write routers (projects storage, named connections) call the
+      # SAME `examlops.*` code paths as the `exa` CLI (phase 42) instead of re-implementing them,
+      # so the UI can never drift from the CLI and secrets flow through one store. The examlops
+      # source is bind-mounted at /repo (see REPO_ROOT / MODELS_YAML_DIR above); putting its src
+      # dir on PYTHONPATH makes it importable. Without this, those write paths degrade to 503
+      # ("… requires the examlops package (not available in this deployment)").
+      PYTHONPATH: /repo/platform/cli/src
     ports:
       - "18099:8099"
     depends_on:
@@ -395,9 +459,13 @@ services:
         condition: service_healthy
       control-plane:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Raw docker.sock replaced by the scoped proxy (DOCKER_HOST above) — item 0.6.
+      # NB (prod): the whole-repo rw bind below is a dev convenience so the host CLI and the
+      # container share one platform.db; K8s (Phase 1.1) replaces it with a least-priv PVC.
       - ../../../:/repo:rw
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]
@@ -426,6 +494,10 @@ services:
       DOCKER_NETWORK_NAME: examlops_default
       MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Host path of the platform repo — bind-mounted into each spawned notebook (read-only) so a
+      # notebook can `import examlops` for plugin/provider management (ADR 0074); the .providers
+      # subdir is mounted read-write so authored plugins are shared with the CLI/dashboard.
+      EXAMLOPS_HOST_REPO: ${EXAMLOPS_HOST_REPO:-/<DATA_DIR>/examlops}
     env_file:
       - path: .env
         required: true
@@ -465,7 +537,7 @@ services:
       CONTROL_PLANE_TOKEN: "${CONTROL_PLANE_TOKEN:-}"
       DATAPLANE_DEFAULT_MODEL: "${DATAPLANE_DEFAULT_MODEL:-JPCP}"
       DATAPLANE_DEFAULT_ALIAS: "${DATAPLANE_DEFAULT_ALIAS:-Production}"
-      MODELS_YAML_DIR: "/app/pipelines/models"
+      MODELS_YAML_DIR: "/app/usecases/seanergy/models"
     env_file:
       - path: .env
         required: true

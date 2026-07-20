@@ -1,0 +1,13 @@
+apiVersion: v2
+name: examlops
+description: >-
+  ExaMLOps enterprise reference topology — stateless, horizontally-scalable control-plane,
+  dashboard, and agent tiers behind an ingress, designed for HA Postgres (CloudNativePG) and
+  distributed MinIO (Phase 1 item 1.1). Compose remains dev-only; this chart is the production shape.
+type: application
+version: 0.1.0
+appVersion: "0.37.0"
+keywords: [mlops, hpc, kubernetes, ha]
+maintainers:
+  - name: ExaMLOps
+home: https://github.com/MSKazemi/ExaMLOps

@@ -65,9 +65,76 @@ class LeastLoadedProvider(Provider):
         return {"score": (idle_gpus - ask_gpus) * 100 + (idle_nodes - ask_nodes)}
 
 
+class _GreenProvider(Provider):
+    """Base for carbon-/cost-aware placement (Phase 5 item 5.3).
+
+    Starts from the least-loaded headroom score, then penalizes a cluster's **grid carbon intensity**
+    (``carbon_intensity`` gCO₂e/kWh) and **GPU cost** (``cost_per_gpu_hour`` USD) — both passed
+    through from the cluster's declared capabilities (or a live signal). A cluster with no such data
+    scores exactly like least-loaded, so this degrades to the default where the signal is absent.
+    Subclasses set the weights, so operators get carbon-first, cost-first, or balanced placement by
+    selecting a provider name — no code change (ADR 0077).
+    """
+
+    _W_CARBON = 0.0
+    _W_COST = 0.0
+
+    def metadata(self) -> ProviderMeta:
+        return ProviderMeta(
+            methodology=(
+                f"headroom − {self._W_CARBON}·carbon_intensity − {self._W_COST}·cost_per_gpu_hour·100"
+            ),
+            outputs=("score",),
+            params=("idle_gpus", "idle_nodes", "carbon_intensity", "cost_per_gpu_hour"),
+        )
+
+    def compute(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
+        base = (inputs.get("idle_gpus", 0) - inputs.get("ask_gpus", 0)) * 100 + (
+            inputs.get("idle_nodes", 0) - inputs.get("ask_nodes", 0)
+        )
+        score = float(base)
+        ci = inputs.get("carbon_intensity")
+        if ci is not None:
+            score -= self._W_CARBON * float(ci)
+        cost = inputs.get("cost_per_gpu_hour")
+        if cost is not None:
+            score -= self._W_COST * float(cost) * 100.0
+        return {"score": score}
+
+
+class CarbonAwareProvider(_GreenProvider):
+    """Prefer the greenest cluster that fits (carbon penalty dominates)."""
+
+    name = "carbon-aware"
+    version = "1.0"
+    _W_CARBON = 2.0
+    _W_COST = 0.5
+
+
+class CostAwareProvider(_GreenProvider):
+    """Prefer the cheapest cluster that fits (cost penalty dominates)."""
+
+    name = "cost-aware"
+    version = "1.0"
+    _W_CARBON = 0.5
+    _W_COST = 2.0
+
+
+class BalancedGreenProvider(_GreenProvider):
+    """Balance headroom, carbon, and cost."""
+
+    name = "carbon-cost-balanced"
+    version = "1.0"
+    _W_CARBON = 1.0
+    _W_COST = 1.0
+
+
 def register_builtins() -> None:
     """Register the built-in placement providers on the global registry (idempotent)."""
     register_provider(DOMAIN, "least-loaded", LeastLoadedProvider, default=True)
+    register_provider(DOMAIN, "carbon-aware", CarbonAwareProvider)
+    register_provider(DOMAIN, "cost-aware", CostAwareProvider)
+    register_provider(DOMAIN, "carbon-cost-balanced", BalancedGreenProvider)
 
 
 def resolve_placement_score_fn(override: str | None = None) -> ScoreFn:

@@ -154,7 +154,7 @@ export interface DocSection {
 export const useDocsTree = () =>
   useQuery<DocSection[]>({
     queryKey: ['docs', 'tree'],
-    queryFn: () => apiFetch<DocSection[]>('/api/docs/tree'),
+    queryFn: () => apiFetch<DocSection[]>('/api/documents/tree'),
     staleTime: 60_000,
   })
 
@@ -163,7 +163,7 @@ export const useDocContent = (path: string | null) =>
     queryKey: ['docs', 'content', path],
     queryFn: async () => {
       const token = getToken()
-      const res = await fetch(`/api/docs/content?path=${encodeURIComponent(path!)}`, {
+      const res = await fetch(`/api/documents/content?path=${encodeURIComponent(path!)}`, {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },

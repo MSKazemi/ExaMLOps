@@ -43,6 +43,7 @@ def estimate_cost_via_provider(
     cpu_hours: float = 0.0,
     *,
     provider: str | None = None,
+    project: str | None = None,
     config: dict | None = None,
     **overrides: float,
 ) -> dict:
@@ -50,12 +51,25 @@ def estimate_cost_via_provider(
 
     Resolution and coefficient layering mirror ``carbon.estimate_carbon_via_provider``: explicit
     ``provider`` → ``EXAMLOPS_COST_PROVIDER`` env → ``[finops.cost]`` config → the built-in
-    ``flat-rate`` default. Returns ``{cost_usd, provider, methodology}``; degrades to the default on
-    any resolution error so cost recording never hard-fails.
+    ``flat-rate`` default. When ``project`` is given, that project's notebook/dashboard-authored
+    providers are loaded first so ``--provider <name>`` resolves to them. Returns
+    ``{cost_usd, provider, methodology}``; degrades to the default on any resolution error so cost
+    recording never hard-fails.
     """
     from ..providers import get_provider
     from ..providers.loader import load_domain_config, resolve_provider
     from . import cost_providers  # noqa: F401 - importing registers the built-ins
+
+    if project:
+        try:
+            from ..providers import get_active_provider, load_project_providers
+
+            load_project_providers(project)
+            # With no explicit choice, honour the project's active-provider selection for this domain.
+            if provider is None:
+                provider = get_active_provider(project, "cost")
+        except Exception:
+            pass  # authored providers are additive — never block the built-in path
 
     block = dict(config) if config is not None else load_domain_config("cost")
     coeffs = dict(block.get("coefficients") or {})

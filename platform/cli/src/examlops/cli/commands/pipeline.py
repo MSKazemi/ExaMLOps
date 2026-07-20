@@ -11,12 +11,9 @@ from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
 from examlops.cli.commands import hpo_cmd
-from examlops.platform_db import (
-    get_db,
-    init_db,
-    set_promotion_rule,
-    write_audit_event,
-)
+from examlops.data import get_db, init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.serving import set_promotion_rule
 from examlops.promotion_providers import resolve_promotion_eval_fn
 
 app = typer.Typer(
@@ -57,7 +54,7 @@ _EXAMPLES_EXPORT = (
 )
 _EXAMPLES_VALIDATE = (
     "Examples:\n\n"
-    "  # Validate pipelines/models/*.yaml against Python model shims\n"
+    "  # Validate the pack's models/*.yaml against Python model shims\n"
     "  exa pipeline validate"
 )
 
@@ -162,17 +159,32 @@ def run(
     gpus: int = typer.Option(
         0, "--gpus", "-g", help="GPUs to request (for --cluster auto placement)"
     ),
+    project: str | None = typer.Option(
+        None,
+        "--project",
+        "-p",
+        help="Scope the run to a Project (ADR 0088): tags the run and attributes its cost",
+    ),
 ):
     """Run training pipeline(s) locally via Prefect."""
     if cluster and not _resolve_cluster_env(cluster, gpus):
         return  # resolution failed / not approved — message already printed
+    # P3 (ADR 0088): scope the run to a Project so its MLflow run + recorded cost are attributed.
+    if project:
+        os.environ["EXAMLOPS_PROJECT"] = project
+        if model:
+            from examlops.data import init_db as _init_db
+            from examlops.data.projects import assign_resource_to_project
+
+            _init_db()
+            assign_resource_to_project(project, "model", model, added_by=os.getenv("USER"))
     # A1 (spec R12): a pinned revision must be materialisable — verify it was
     # recorded before we launch, and exit non-zero otherwise.
     if dataset_revision:
         if not dataset:
             _output.error("--dataset-revision requires --dataset to identify the pinned dataset.")
-        from examlops.platform_db import get_dataset_revision
-        from examlops.platform_db import init_db as _init_db
+        from examlops.data import init_db as _init_db
+        from examlops.data.data_assets import get_dataset_revision
 
         _init_db()
         if get_dataset_revision(dataset, dataset_revision) is None:
@@ -225,7 +237,7 @@ def export_registry():
 
 @app.command(epilog=_EXAMPLES_VALIDATE)
 def validate():
-    """Validate pipelines/models/*.yaml against Python model shims."""
+    """Validate the pack's models/*.yaml against Python model shims."""
     _run_pytest(["tests/unit/test_registry_integrity.py", "-v", "-k", "yaml"])
 
 
@@ -512,6 +524,102 @@ def promote(
         )
         _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
 
+    # C6 — SLO error-budget gate: when EXAMLOPS_SLO_GATE_ENABLED and a gate-flagged SLO
+    # has an exhausted budget, refuse to promote (unless --force, audited). No-op otherwise.
+    from examlops.cli.commands.slo_cmd import gate_enabled as _slo_gate_enabled
+
+    if _slo_gate_enabled():
+        from examlops.data.governance import list_slo_specs
+        from examlops.slo import budget_exhausted
+
+        exhausted = [
+            s["name"]
+            for s in list_slo_specs(model=model)
+            if s["gate_promotion"] and budget_exhausted(model, s["name"], tenant=s["tenant"])
+        ]
+        if exhausted:
+            actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+            if not force:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "promotion_blocked_by_slo",
+                    model,
+                    {"version": version, "exhausted_slos": exhausted},
+                )
+                _output.error(
+                    f"SLO budget exhausted for {model}: {', '.join(exhausted)}. "
+                    "Use --force to override (audited).",
+                )
+                return
+            write_audit_event(
+                "cli",
+                actor,
+                "slo_gate_override",
+                model,
+                {"version": version, "to": to_alias, "exhausted_slos": exhausted, "forced": True},
+            )
+            _output.warning(
+                f"SLO budget exhausted but --force set; overriding: {', '.join(exhausted)}"
+            )
+
+    # D1 — EU AI Act classification gate (R2): an in-scope system with no risk tier
+    # MUST NOT be promoted until it is classified (unconditional; --force-overridable, audited).
+    from examlops.compliance import promotion_blocked_reason
+
+    compliance_reason = promotion_blocked_reason(model)
+    if compliance_reason:
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_compliance",
+                model,
+                {"version": version, "reason": compliance_reason},
+            )
+            _output.error(
+                f"Promotion blocked: {compliance_reason}. Use --force to override (audited).",
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "compliance_gate_override",
+            model,
+            {"version": version, "reason": compliance_reason, "forced": True},
+        )
+        _output.warning(f"Compliance gate ({compliance_reason}) overridden with --force.")
+
+    # C8 — fairness gate: when EXAMLOPS_FAIRNESS_GATE_ENABLED and a gate-flagged model
+    # exceeds its disparity threshold, refuse to promote (unless --force, audited).
+    if os.getenv("EXAMLOPS_FAIRNESS_GATE_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+        from examlops.fairness import fairness_gate
+
+        if fairness_gate(model):
+            actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+            if not force:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "promotion_blocked_by_fairness",
+                    model,
+                    {"version": version},
+                )
+                _output.error(
+                    f"Fairness disparity exceeds threshold for {model}. "
+                    "Use --force to override (audited).",
+                )
+                return
+            write_audit_event(
+                "cli",
+                actor,
+                "fairness_gate_override",
+                model,
+                {"version": version, "to": to_alias, "forced": True},
+            )
+            _output.warning("Fairness disparity exceeded but --force set; overriding.")
+
     if not _output.confirm(
         f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
     ):
@@ -645,8 +753,8 @@ def promote_delete(
     all_rules: bool = typer.Option(False, "--all", help="Delete ALL promotion rules"),
 ) -> None:
     """Delete saved metric-gated promotion rules."""
-    from examlops.platform_db import get_db as _get_db
-    from examlops.platform_db import init_db as _init_db
+    from examlops.data import get_db as _get_db
+    from examlops.data import init_db as _init_db
 
     _init_db()
     if all_rules:

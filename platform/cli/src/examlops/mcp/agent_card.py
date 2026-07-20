@@ -83,7 +83,34 @@ def build_agent_card(
         "interfaces": {
             "mcp": {"transports": ["stdio", "http"]},
         },
+        "securitySchemes": _security_schemes(),
     }
     if base_url:
         card["url"] = base_url.rstrip("/")
     return card
+
+
+def _security_schemes() -> dict[str, Any]:
+    """Advertise how a caller authenticates (A2A ``securitySchemes``, item 2.2).
+
+    When OIDC SSO is configured (``EXAMLOPS_OIDC_ISSUER``) the card declares an OAuth2/OIDC bearer
+    scheme so peers know to present an IdP-issued token; otherwise it declares the platform bearer
+    token. Either way the card no longer implies the agent is unauthenticated — the audit finding
+    that Skipper's A2A card lacked ``securitySchemes`` entirely.
+    """
+    import os
+
+    issuer = os.getenv("EXAMLOPS_OIDC_ISSUER", "").strip()
+    if issuer:
+        scheme: dict[str, Any] = {
+            "type": "openIdConnect",
+            "description": "IdP-issued OIDC access token (RS256, verified against the issuer JWKS).",
+            "openIdConnectUrl": issuer.rstrip("/") + "/.well-known/openid-configuration",
+        }
+    else:
+        scheme = {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "Platform bearer token (Authorization: Bearer <token>).",
+        }
+    return {"default": scheme}

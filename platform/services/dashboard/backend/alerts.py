@@ -15,13 +15,14 @@ import json
 import sqlite3
 from typing import Any
 
+from dbconn import connect
+
 # Severity ordering for sorting the inbox (most severe first).
 _SEVERITY_RANK = {"critical": 0, "error": 1, "warn": 2, "info": 3}
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
     return conn
 
 
@@ -169,7 +170,7 @@ def active_alerts(db_path: str) -> dict[str, Any]:
 def acknowledge(db_path: str, alert_id: str, actor: str) -> bool:
     """Audit an alert acknowledgement to ``audit_events`` (F12 R3 / D4). Best-effort."""
     try:
-        conn = sqlite3.connect(db_path)
+        conn = connect(db_path)
         try:
             if not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"

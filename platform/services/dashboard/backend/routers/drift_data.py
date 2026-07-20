@@ -1,21 +1,37 @@
-"""Drift monitoring data — reads from shared platform.db drift tables."""
+"""Drift monitoring data — reads/writes the shared platform.db drift tables.
+
+Reads (viewer): prediction/input drift status + auto-retrain config. Writes (admin, audited):
+set a baseline, clear snapshots, and enable/disable drift-triggered auto-retrain — the same
+operations as ``exa drift baseline|reset|auto-retrain``, reusing the ``examlops.data.drift`` code
+paths so the dashboard can't drift from the CLI.
+"""
 
 from __future__ import annotations
 
 import json
 import math
 import os
-import sqlite3
 
 from auth import require_role
-from fastapi import APIRouter, Depends, Query
+from dbconn import connect
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 router = APIRouter(prefix="/drift", tags=["drift"])
 _viewer = require_role("viewer")
+_admin = require_role("admin")
 
 _SNAPSHOT_WINDOW = 100
+_BASELINE_WINDOW = 100
+_MIN_BASELINE_SNAPSHOTS = 10
 _WARN_Z = 2.0
 _CRIT_Z = 3.0
+
+
+def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
+    conn.execute(
+        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+        ("dashboard", actor, action, target, json.dumps(details)),
+    )
 
 
 def _db_path() -> str:
@@ -36,8 +52,7 @@ async def drift_status(
 ) -> list[dict]:
     """Prediction drift status for all models (or one model)."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         if model:
             models_list = [model]
         else:
@@ -85,8 +100,7 @@ async def drift_status(
 async def drift_auto_retrain(_=Depends(_viewer)) -> list[dict]:
     """Auto-retrain configuration for all models."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
         conn.close()
         return [dict(r) for r in rows]
@@ -102,8 +116,7 @@ async def input_drift_status(
     """Input embedding distribution drift status."""
     INPUT_WINDOW = 200
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         if model:
             models_list = [model]
         else:
@@ -157,3 +170,129 @@ async def input_drift_status(
         return results
     except Exception:
         return []
+
+
+# ── writes (admin, audited) ───────────────────────────────────────────────────
+
+
+def _examlops_drift():
+    """Lazy, guarded import of the shared CLI drift code path (503 if unavailable)."""
+    try:
+        from examlops.data import drift as _d  # type: ignore
+
+        return _d
+    except ImportError as exc:  # pragma: no cover - only when examlops is not installed
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "drift writes require the examlops package (not available in this deployment)",
+        ) from exc
+
+
+@router.post("/baseline/{model}")
+async def set_baseline(
+    model: str,
+    dry_run: bool = Query(False),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Store the current rolling stats as the drift baseline for a model (admin; audited).
+
+    Mirrors ``exa drift baseline``: needs ≥10 recent snapshots. ``?dry_run=true`` previews the
+    baseline without writing it.
+    """
+    conn = connect(_db_path())
+    rows = conn.execute(
+        "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC LIMIT ?",
+        (model, _BASELINE_WINDOW),
+    ).fetchall()
+    preds = [r["prediction"] for r in rows]
+    if len(preds) < _MIN_BASELINE_SNAPSHOTS:
+        conn.close()
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Need at least {_MIN_BASELINE_SNAPSHOTS} snapshots, have {len(preds)}. "
+            "Run the bridge to collect predictions first.",
+        )
+    stats = _compute_stats(preds)
+    if dry_run:
+        conn.close()
+        return {
+            "dryRun": True,
+            "model": model,
+            "wouldSet": {k: round(v, 4) for k, v in stats.items()},
+        }
+    conn.close()
+    drift = _examlops_drift()
+    drift.set_drift_baseline(model, stats)
+    conn = connect(_db_path())
+    _audit(conn, principal.get("sub", "?"), "drift_baseline_set", model, stats)
+    conn.commit()
+    conn.close()
+    return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+
+
+@router.post("/reset/{model}")
+async def reset_snapshots(
+    model: str,
+    dry_run: bool = Query(False),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Clear all drift snapshots for a model — keeps the baseline (admin; audited).
+
+    Mirrors ``exa drift reset``. ``?dry_run=true`` reports the count without deleting.
+    """
+    conn = connect(_db_path())
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM drift_snapshots WHERE model=?", (model,)
+    ).fetchone()["c"]
+    if dry_run:
+        conn.close()
+        return {"dryRun": True, "model": model, "wouldClear": n}
+    if n:
+        conn.execute("DELETE FROM drift_snapshots WHERE model=?", (model,))
+        _audit(conn, principal.get("sub", "?"), "drift_reset", model, {"cleared": n})
+        conn.commit()
+    conn.close()
+    return {"model": model, "cleared": n}
+
+
+@router.post("/auto-retrain/{model}")
+async def configure_auto_retrain(
+    model: str,
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Enable/disable drift-triggered auto-retrain for a model (admin; audited).
+
+    Body: ``{enabled: bool, dataset?: str, minZ?: float, cooldown?: int}``. Mirrors
+    ``exa drift auto-retrain enable|disable`` via ``examlops.data.drift.set_drift_auto_retrain``.
+    A dataset is required when enabling.
+    """
+    enabled = bool(payload.get("enabled"))
+    dataset = (payload.get("dataset") or "").strip()
+    min_z = float(payload.get("minZ", 3.0))
+    cooldown = int(payload.get("cooldown", 3600))
+    if enabled and not dataset:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "dataset is required to enable auto-retrain"
+        )
+    drift = _examlops_drift()
+    drift.set_drift_auto_retrain(
+        model, enabled=enabled, min_z_score=min_z, dataset_name=dataset, cooldown_s=cooldown
+    )
+    conn = connect(_db_path())
+    _audit(
+        conn,
+        principal.get("sub", "?"),
+        "drift_auto_retrain_configured",
+        model,
+        {"enabled": enabled, "dataset": dataset, "minZ": min_z, "cooldown": cooldown},
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "model": model,
+        "enabled": enabled,
+        "dataset": dataset,
+        "minZ": min_z,
+        "cooldown": cooldown,
+    }

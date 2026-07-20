@@ -1,0 +1,74 @@
+# NIST AI Risk Management Framework (AI RMF 1.0) control backbone + GenAI Profile.
+# Versioned catalogue (D2, ADR 0027). Each control: id, function, description, the
+# platform evidence it requires, and a crosswalk to EU AI Act (D1) + ISO/IEC 42001.
+#
+# This is EVIDENCE COVERAGE, not certification. `evidence` keys map to collectors in
+# examlops.compliance (shared with D1) so the two frameworks share one evidence layer.
+version: "1.0.0"
+framework: NIST AI RMF 1.0 (+ GenAI Profile 2024)
+controls:
+  # ---- GOVERN ----
+  - id: GOVERN-1.1
+    function: Govern
+    description: Legal/regulatory requirements are understood, managed, documented.
+    evidence: [record_keeping]
+    eu_ai_act: "Art. 12"
+    iso_42001: "A.6.2"
+  - id: GOVERN-4.1
+    function: Govern
+    description: Roles/responsibilities and access are documented and enforced (RBAC).
+    evidence: [record_keeping]
+    eu_ai_act: "Annex IV §2(b)"
+    iso_42001: "A.5.3"
+  # ---- MAP ----
+  - id: MAP-1.1
+    function: Map
+    description: Intended purpose, context, and risk classification are established.
+    evidence: [system_description]
+    eu_ai_act: "Annex IV §1"
+    iso_42001: "A.6.1"
+  - id: MAP-2.3
+    function: Map
+    description: Data provenance and lineage of the AI system are documented.
+    evidence: [development_process]
+    eu_ai_act: "Annex IV §2(b)"
+    iso_42001: "A.7.4"
+  # ---- MEASURE ----
+  - id: MEASURE-2.3
+    function: Measure
+    description: System performance is evaluated against defined metrics.
+    evidence: [performance]
+    eu_ai_act: "Annex IV §3"
+    iso_42001: "A.6.2"
+  - id: MEASURE-2.11
+    function: Measure
+    description: Fairness / bias across subgroups is measured and monitored.
+    evidence: [fairness]
+    eu_ai_act: "Annex IV §3"
+    iso_42001: "A.7.5"
+  - id: MEASURE-2.7
+    function: Measure
+    description: Model integrity and provenance are verifiable (SBOM/signature).
+    evidence: [integrity]
+    eu_ai_act: "Annex IV §2(e)"
+    iso_42001: "A.7.4"
+  # ---- MANAGE ----
+  - id: MANAGE-2.2
+    function: Manage
+    description: Post-deployment monitoring detects drift/degradation and triggers response.
+    evidence: [monitoring]
+    eu_ai_act: "Annex IV §8"
+    iso_42001: "A.8.3"
+  - id: MANAGE-4.1
+    function: Manage
+    description: Operational events are logged to an immutable, auditable trail.
+    evidence: [record_keeping]
+    eu_ai_act: "Art. 12"
+    iso_42001: "A.8.4"
+  # ---- GenAI Profile ----
+  - id: GENAI-3.2
+    function: Manage
+    description: GenAI guardrails (prompt-injection / PII / toxicity) are enforced.
+    evidence: [risk_management]
+    eu_ai_act: "Annex IV §5"
+    iso_42001: "A.8.2"

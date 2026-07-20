@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/quality", tags=["quality"])
@@ -21,8 +21,7 @@ def _db_path() -> str:
 async def get_quality_history(model: str, _=Depends(_viewer)) -> list[dict]:
     """Return the last 20 data quality check results for *model*."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             """SELECT id, ts, model, dataset, status, passed, failed, details_json, actor
                FROM data_quality_checks

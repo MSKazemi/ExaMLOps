@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir /app/dataplane-pkg
 
 # Copy bridge client code from ai-productions
 COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
-COPY ${AI_PRODUCTIONS_DIR}/pipelines/models /app/pipelines/models
+COPY ${AI_PRODUCTIONS_DIR}/usecases/seanergy/models /app/usecases/seanergy/models
 
 WORKDIR /app
 

@@ -172,10 +172,17 @@ def deploy_from_registry(
             return results
 
         schedule = Cron(p["cron"]) if p["cron"] else None
+        # Tag the deployment with its owning Project (ADR 0088) so a team's runs are filterable.
+        try:
+            from examlops.project_scope import prefect_tags as _prefect_tags
+
+            _tags = _prefect_tags(model_name)
+        except Exception:
+            _tags = ["examlops", "training"]
         dep = _model_flow.to_deployment(
             name=p["deployment_name"],
             schedules=[schedule] if schedule else [],
-            tags=["examlops", "training"],
+            tags=_tags,
             work_pool_name=p["work_pool"],
         )
         deployments.append(dep)

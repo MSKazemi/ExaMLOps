@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import os
 import sqlite3
+import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -44,7 +47,104 @@ def write_retry[T](fn: Callable[[], T]) -> T:
     return _rdb.write_retry(fn)
 
 
-def init_db() -> None:
+# --- Central write-retry coverage (enterprise-readiness Phase 0, item 0.4) -------------------
+# Every mutating helper in this module must survive a transient ``database is locked`` past the
+# busy_timeout, and must never let a lost write vanish inside a fire-and-forget caller. Rather than
+# hand-decorate ~80 helpers (churn + drift as new ones land), :func:`_install_write_retry` runs once
+# at import and transparently wraps every public helper whose source performs a write, skipping the
+# two that already call :func:`write_retry` internally (the audit hash-chain + atomic drift claim).
+# The wrap is idempotent-safe: these helpers open a fresh ``get_db()`` transaction, so a lock error
+# means nothing committed and re-running the whole function cannot double-write.
+
+_WRITE_MARKERS = ("INSERT ", "UPDATE ", "DELETE ", " REPLACE", "OR REPLACE", "BEGIN IMMEDIATE")
+
+
+def _wrap_mutating[T](fn: Callable[..., T]) -> Callable[..., T]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> T:
+        return _rdb.write_retry(lambda: fn(*args, **kwargs))
+
+    wrapper._wr_wrapped = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def install_write_retry(module_name: str) -> None:
+    """Wrap all mutating public helpers **in ``module_name``** with :func:`write_retry` (item 0.4).
+
+    Auto-discovers writers by source inspection so coverage is self-maintaining: a new mutating
+    helper is protected the moment it lands, no allow-list to update. Degrades to a no-op if source
+    is unavailable (frozen/zipimport). Generalized (parametric on the module) so a relocated
+    per-domain module (item 4.5 body relocation) can call ``install_write_retry(__name__)`` to
+    protect its own mutating helpers exactly as ``platform_db`` does — the auto-wrapper is no longer
+    hard-coupled to this one module."""
+    mod = sys.modules[module_name]
+    for name, obj in list(vars(mod).items()):
+        if name.startswith("_") or not inspect.isfunction(obj):
+            continue
+        if getattr(obj, "__module__", None) != module_name or getattr(obj, "_wr_wrapped", False):
+            continue
+        try:
+            src = inspect.getsource(obj)
+        except (OSError, TypeError):  # pragma: no cover - frozen/zipimport fallback
+            continue
+        if not any(marker in src for marker in _WRITE_MARKERS):
+            continue  # pure reader — nothing to protect
+        if "write_retry(" in src:
+            continue  # already self-retries (write_audit_event, claim_drift_trigger)
+        setattr(mod, name, _wrap_mutating(obj))
+
+
+def _install_write_retry() -> None:  # back-compat wrapper for this module
+    install_write_retry(__name__)
+
+
+@contextmanager
+def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
+    """A hardened connection holding an IMMEDIATE (RESERVED) write lock for the whole txn.
+
+    Use this for read-modify-write sequences that must be atomic against other *writer
+    processes* — chiefly the audit hash-chain, where reading the current head and appending
+    the next link must not interleave with another writer (or the chain forks: two rows chain
+    off the same parent and :func:`verify_audit_chain` reports a prev_hash mismatch). The plain
+    :func:`get_db` opens a *deferred* transaction, so its head-read runs before any lock is
+    held; ``BEGIN IMMEDIATE`` takes the RESERVED lock up front instead. Pair with
+    :func:`write_retry` so a lost lock race (``database is locked`` after busy_timeout) retries
+    the whole transaction rather than corrupting or dropping the write.
+    """
+    conn = _rdb.connect(_db_path())
+    conn.isolation_level = None  # drive BEGIN/COMMIT explicitly (no implicit deferred txn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+# Process-level sentinel of DB paths whose schema has been created this process, so the full
+# CREATE-TABLE-IF-NOT-EXISTS script + column migrations run once — not on every one of the ~165
+# defensive `init_db()` calls, which otherwise churned a write lock on hot read paths (item 0.5/QW8).
+_INITIALIZED_PATHS: set[str] = set()
+
+
+def init_db(*, force: bool = False) -> None:
+    """Create the platform schema. Idempotent, and near-free after the first call per DB path.
+
+    The 100+-table DDL and additive column migrations run once per process per ``PLATFORM_DB``
+    path (guarded by :data:`_INITIALIZED_PATHS`); subsequent calls short-circuit. Pass
+    ``force=True`` to re-run regardless — e.g. after intentionally dropping tables in a test.
+    In-memory DBs are never cached, since each new connection is a distinct database.
+    """
+    path = _db_path()
+    cacheable = path not in (":memory:", "") and not path.startswith("file::memory:")
+    if not force and cacheable and path in _INITIALIZED_PATHS:
+        return
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS audit_events (
@@ -153,6 +253,10 @@ def init_db() -> None:
                 partition   TEXT,                   -- Slurm partition / Flux queue
                 captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Capacity/availability queries filter by (cluster, state); index it so fleet-scale
+            -- node snapshots don't force a full scan (Phase 0 bonus win).
+            CREATE INDEX IF NOT EXISTS ix_hpc_nodes_cluster_state
+                ON hpc_nodes (cluster, state);
             CREATE TABLE IF NOT EXISTS hpc_clusters (
                 name            TEXT PRIMARY KEY,
                 scheduler       TEXT NOT NULL,        -- flux|slurm|unmanaged|mock
@@ -599,6 +703,70 @@ def init_db() -> None:
                 value       TEXT NOT NULL,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- Phase 1 item 1.2 — externalized coordination primitives (distributed lock,
+            -- idempotency dedup, fixed-window rate limit). DB-backed so they work cross-PROCESS
+            -- today (CLI + control-plane + agent share platform.db); the same Coordinator seam
+            -- swaps to Redis for cross-HOST HA with no caller change.
+            CREATE TABLE IF NOT EXISTS coord_locks (
+                key        TEXT PRIMARY KEY,
+                holder     TEXT NOT NULL,
+                expires_at DATETIME NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS coord_idempotency (
+                key        TEXT PRIMARY KEY,
+                first_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS coord_rate (
+                bucket       TEXT PRIMARY KEY,
+                window_start DATETIME NOT NULL,
+                count        INTEGER NOT NULL DEFAULT 0
+            );
+            -- Phase 1 item 1.5 — durable admission-control queue between every trigger
+            -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
+            -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the
+            -- cluster. Survives a restart; a crashed worker's 'running' item is reclaimable by TTL.
+            CREATE TABLE IF NOT EXISTS admission_queue (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                project      TEXT,
+                kind         TEXT NOT NULL,           -- retrain | pipeline | ...
+                payload      TEXT NOT NULL,           -- JSON
+                priority     INTEGER NOT NULL DEFAULT 0,   -- higher runs first within a tenant
+                state        TEXT NOT NULL DEFAULT 'queued', -- queued|running|done|rejected|failed
+                enqueued_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at   DATETIME,
+                finished_at  DATETIME,
+                reason       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_admission_state_tenant
+                ON admission_queue (state, tenant, priority, id);
+            -- Phase 1 item 1.3 — transactional outbox for the NovaFabric event backbone. A domain
+            -- write and its event enqueue commit together (same DB txn); a relay then publishes each
+            -- row exactly once to the broker (NATS/Kafka/Redis-Streams) and stamps published_at.
+            -- Replaces O(models×replicas) polling + the in-process realtime singleton.
+            CREATE TABLE IF NOT EXISTS event_outbox (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic        TEXT NOT NULL,
+                payload      TEXT NOT NULL,           -- JSON
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                published_at DATETIME,                -- NULL until relayed
+                claimed_at   DATETIME,                -- set when a relay claims it (visibility lease)
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                last_error   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_event_outbox_unpublished
+                ON event_outbox (published_at, id);
+            -- Phase 0 item 0.12 — single-row distributed cycle lease so overlapping cron
+            -- runs (or multiple agent replicas) don't scan/act concurrently. TTL-based so a
+            -- crashed holder's lease auto-expires. Correctness of no-double-retrain is already
+            -- guaranteed by claim_drift_trigger; this is the coarser cycle-level guard.
+            CREATE TABLE IF NOT EXISTS autopilot_lease (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                holder      TEXT NOT NULL,
+                acquired_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at  DATETIME NOT NULL
+            );
             -- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013).
             CREATE TABLE IF NOT EXISTS model_signatures (
                 model       TEXT NOT NULL,
@@ -635,6 +803,7 @@ def init_db() -> None:
                 path        TEXT NOT NULL,
                 tenant      TEXT NOT NULL DEFAULT 'default',
                 ciphertext  TEXT NOT NULL,
+                key_id      TEXT,                   -- KEK the ciphertext is wrapped under (2.3)
                 version     INTEGER NOT NULL DEFAULT 1,
                 updated_by  TEXT,
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -834,14 +1003,553 @@ def init_db() -> None:
                 added_by  TEXT,
                 PRIMARY KEY (project, kind, ref)
             );
+            -- Project Anatomy · P6 — per-project storage location (ADR 0091).
+            CREATE TABLE IF NOT EXISTS project_storage (
+                project        TEXT PRIMARY KEY,
+                bucket         TEXT NOT NULL,
+                prefix         TEXT NOT NULL,       -- '<project>/'
+                connection_ref TEXT,                -- optional P2 s3 connection name
+                quota_gb       REAL,
+                used_bytes     INTEGER NOT NULL DEFAULT 0,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Project Anatomy · P7 — the project's two pipeline surfaces (ADR 0092).
+            CREATE TABLE IF NOT EXISTS project_pipelines (
+                project      TEXT NOT NULL,
+                kind         TEXT NOT NULL,         -- 'prefect' | 'rayserve'
+                ref          TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'unknown',
+                schedule     TEXT,
+                last_run_at  DATETIME,
+                updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, kind)
+            );
+            -- Next-Gen 40 · C4 — AgentOps: per-session agent traces (ADR 0021).
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id  TEXT PRIMARY KEY,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                agent       TEXT,               -- logical agent name (e.g. skipper)
+                model       TEXT,
+                steps       INTEGER NOT NULL DEFAULT 0,
+                tool_calls  INTEGER NOT NULL DEFAULT 0,
+                errors      INTEGER NOT NULL DEFAULT 0,
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd    REAL NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'ok',  -- ok | anomaly | error
+                anomalies   TEXT,               -- JSON list of detected anomaly codes
+                started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at    DATETIME
+            );
+            -- Next-Gen 40 · C4 — per tool-call analytics (success rate, loops, latency).
+            CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                step        INTEGER NOT NULL DEFAULT 0,
+                tool        TEXT NOT NULL,
+                args_digest TEXT,               -- redacted (D8) hash of args for loop detection
+                ok          INTEGER NOT NULL DEFAULT 1,
+                error       TEXT,
+                latency_ms  REAL,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C5 — unified advanced drift events (ADR 0022).
+            -- drift_kind ∈ feature | prediction | input_embedding | concept | data_quality.
+            CREATE TABLE IF NOT EXISTS drift_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                drift_kind TEXT NOT NULL,
+                severity   TEXT NOT NULL DEFAULT 'OK',   -- OK | WARN | CRITICAL
+                score      REAL,                          -- test statistic (kind-specific)
+                metric     TEXT,                          -- realized metric name (concept)
+                detail     TEXT,                          -- JSON: profile / test params
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C5 — label-free performance estimates vs realized (ADR 0022).
+            CREATE TABLE IF NOT EXISTS perf_estimates (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                metric     TEXT NOT NULL,
+                estimated  REAL,                          -- CBPE/DLE pre-label estimate
+                realized   REAL,                          -- filled once labels arrive
+                baseline   REAL,
+                method     TEXT NOT NULL DEFAULT 'cbpe-like',
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C6 — model-quality SLO specs (OpenSLO-style) (ADR 0023).
+            CREATE TABLE IF NOT EXISTS slo_specs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                model       TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                name        TEXT NOT NULL,      -- SLO name (e.g. latency-p99, groundedness)
+                sli_source  TEXT NOT NULL,      -- c1 | c2 | c5 | availability | prometheus
+                sli_query   TEXT,               -- PromQL / SLI expression
+                target      REAL NOT NULL,      -- objective ratio (0..1), e.g. 0.99
+                window      TEXT NOT NULL DEFAULT '30d',
+                higher_is_better INTEGER NOT NULL DEFAULT 1,
+                version     INTEGER NOT NULL DEFAULT 1,
+                gate_promotion INTEGER NOT NULL DEFAULT 0,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(model, tenant, name)
+            );
+            -- Next-Gen 40 · C6 — SLI good/total samples feeding budget + burn rate.
+            CREATE TABLE IF NOT EXISTS slo_samples (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                model   TEXT NOT NULL,
+                tenant  TEXT NOT NULL DEFAULT 'default',
+                name    TEXT NOT NULL,
+                good    REAL NOT NULL DEFAULT 0,   -- events meeting the SLI this interval
+                total   REAL NOT NULL DEFAULT 0,   -- total events this interval
+                ts      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C7 — champion-challenger config (ADR 0024).
+            CREATE TABLE IF NOT EXISTS challenger_config (
+                model               TEXT PRIMARY KEY,
+                tenant              TEXT NOT NULL DEFAULT 'default',
+                challenger_version  TEXT NOT NULL,
+                mirror_pct          INTEGER NOT NULL DEFAULT 100,
+                min_delta           REAL NOT NULL DEFAULT 0.0,
+                alpha               REAL NOT NULL DEFAULT 0.05,
+                min_samples         INTEGER NOT NULL DEFAULT 100,
+                auto_promote        INTEGER NOT NULL DEFAULT 0,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by          TEXT
+            );
+            -- Next-Gen 40 · C7 — per-request champion vs challenger scored samples.
+            CREATE TABLE IF NOT EXISTS challenger_samples (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                request_hash    TEXT,
+                champion_pred   REAL,
+                challenger_pred REAL,
+                label           REAL,          -- filled as ground truth / C2 judge arrives
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C8 — fairness / subgroup monitoring config (ADR 0025).
+            CREATE TABLE IF NOT EXISTS fairness_config (
+                model          TEXT PRIMARY KEY,
+                tenant         TEXT NOT NULL DEFAULT 'default',
+                slice_attrs    TEXT NOT NULL DEFAULT '[]',  -- JSON list of slicing attributes
+                threshold      REAL NOT NULL DEFAULT 0.1,   -- max allowed disparity
+                min_samples    INTEGER NOT NULL DEFAULT 30, -- noise guard per slice
+                gate_promotion INTEGER NOT NULL DEFAULT 0,
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · C8 — per-request fairness samples (slice attr + pred + label).
+            CREATE TABLE IF NOT EXISTS fairness_samples (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                model       TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                slice_attr  TEXT NOT NULL,
+                slice_value TEXT NOT NULL,
+                prediction  REAL,
+                label       REAL,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · D1 — EU AI Act compliance: risk classification + conformity (ADR 0012).
+            CREATE TABLE IF NOT EXISTS compliance_systems (
+                model               TEXT PRIMARY KEY,
+                tenant              TEXT NOT NULL DEFAULT 'default',
+                in_scope            INTEGER NOT NULL DEFAULT 1,
+                risk_tier           TEXT,       -- prohibited | high | limited | minimal
+                intended_purpose    TEXT,
+                deployment_context  TEXT,
+                conformity_state    TEXT NOT NULL DEFAULT 'draft',  -- draft|documented|assessed|declared
+                updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by          TEXT
+            );
+            -- Next-Gen 40 · D1 — versioned generated technical files (Annex IV).
+            CREATE TABLE IF NOT EXISTS technical_files (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                model        TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                gaps         INTEGER NOT NULL DEFAULT 0,   -- count of flagged missing sections
+                content      TEXT NOT NULL,
+                generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                generated_by TEXT
+            );
+            -- Next-Gen 40 · D4 — signed checkpoints over the hash-chained audit trail (ADR 0028).
+            CREATE TABLE IF NOT EXISTS audit_checkpoints (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                head_id    INTEGER NOT NULL,   -- audit_events.id at the chain head
+                head_hash  TEXT NOT NULL,      -- hash of the head event
+                signature  TEXT NOT NULL,      -- detached signature over head_hash (D7 key)
+                key_id     TEXT,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · D4 — append-only enforcement: block UPDATE/DELETE at the DB level (R3).
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only (D4)'); END;
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only (D4)'); END;
+            -- Next-Gen 40 · A6 — Croissant dataset cards + structured model cards (ADR 0037).
+            CREATE TABLE IF NOT EXISTS dataset_cards (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset        TEXT NOT NULL,
+                revision       TEXT,
+                version        INTEGER NOT NULL DEFAULT 1,
+                croissant_json TEXT NOT NULL,
+                created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS model_card_records (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                model        TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                completeness REAL NOT NULL DEFAULT 0,
+                card_json    TEXT NOT NULL,
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by   TEXT
+            );
+            -- Next-Gen 40 · E3 — fractional GPU allocations (ADR 0030).
+            CREATE TABLE IF NOT EXISTS gpu_allocations (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                mechanism  TEXT NOT NULL,      -- mig | timeslice | whole
+                fraction   REAL NOT NULL,
+                isolation  TEXT NOT NULL,      -- hardware | soft | exclusive
+                gpu_index  INTEGER,
+                note       TEXT,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E5 — per-model autoscaling scale events (ADR 0031).
+            -- (autoscale_config predates this; new policy columns are added via
+            --  _COLUMN_MIGRATIONS below to preserve the Phase-24 stub table.)
+            CREATE TABLE IF NOT EXISTS scale_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                model         TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                from_replicas INTEGER NOT NULL,
+                to_replicas   INTEGER NOT NULL,
+                reason        TEXT,
+                metric_value  REAL,
+                cold_start_s  REAL,
+                ts            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · A3 — feature store (single train/serve definition; ADR 0017).
+            -- Feast-compatible semantics with a pure-Python fallback (no Feast/Redis required).
+            CREATE TABLE IF NOT EXISTS feature_views (
+                name             TEXT PRIMARY KEY,
+                entity           TEXT NOT NULL,
+                features_json    TEXT NOT NULL,      -- ["embedding","pclass",...]
+                source           TEXT,               -- offline source hint (parquet/table)
+                ttl_seconds      INTEGER NOT NULL DEFAULT 0,
+                dataset_revision TEXT,               -- A1 revision this view was applied against
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Offline store: append-only event log (point-in-time source of truth).
+            CREATE TABLE IF NOT EXISTS feature_records (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                view        TEXT NOT NULL,
+                entity_id   TEXT NOT NULL,
+                event_ts    DATETIME NOT NULL,
+                values_json TEXT NOT NULL,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_feature_records_lookup
+                ON feature_records (view, entity_id, event_ts);
+            -- Online store: latest materialized snapshot per entity (low-latency read).
+            CREATE TABLE IF NOT EXISTS online_features (
+                view            TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                event_ts        DATETIME NOT NULL,
+                values_json     TEXT NOT NULL,
+                materialized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (view, entity_id)
+            );
+            -- A3 materialization runs (freshness monitoring → C5). Distinct from the
+            -- Phase-24 `feature_materializations` stub (different schema).
+            CREATE TABLE IF NOT EXISTS feature_view_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                view            TEXT NOT NULL,
+                start_ts        DATETIME,
+                end_ts          DATETIME,
+                rows            INTEGER NOT NULL DEFAULT 0,
+                materialized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · A4 — declarative asset-centric pipelines (ADR 0036).
+            -- Asset registry + freshness state; the DAG coincides with the A2 lineage graph.
+            CREATE TABLE IF NOT EXISTS assets (
+                name             TEXT PRIMARY KEY,
+                kind             TEXT NOT NULL DEFAULT 'model',  -- dataset | feature | model
+                deps_json        TEXT NOT NULL DEFAULT '[]',
+                description      TEXT,
+                current_version  INTEGER NOT NULL DEFAULT 0,
+                built_from_json  TEXT,                           -- {upstream: version_at_build}
+                last_materialized_at DATETIME,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS asset_materializations (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                version         INTEGER NOT NULL,
+                built_from_json TEXT,
+                run_id          TEXT,
+                actor           TEXT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E7 — federated & privacy-preserving training (ADR 0040).
+            CREATE TABLE IF NOT EXISTS federated_runs (
+                run_id           TEXT PRIMARY KEY,
+                strategy         TEXT NOT NULL DEFAULT 'fedavg',
+                dp_enabled       INTEGER NOT NULL DEFAULT 0,
+                secure_agg       INTEGER NOT NULL DEFAULT 0,
+                epsilon          REAL NOT NULL DEFAULT 0,
+                delta            REAL NOT NULL DEFAULT 0,
+                epsilon_per_round REAL NOT NULL DEFAULT 0,
+                rounds_completed INTEGER NOT NULL DEFAULT 0,
+                status           TEXT NOT NULL DEFAULT 'initialized',
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS federated_sites (
+                run_id     TEXT NOT NULL,
+                site       TEXT NOT NULL,
+                authorized INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (run_id, site)
+            );
+            CREATE TABLE IF NOT EXISTS federated_rounds (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id             TEXT NOT NULL,
+                round_num          INTEGER NOT NULL,
+                global_metric      REAL,
+                sites_participated INTEGER NOT NULL DEFAULT 0,
+                epsilon            REAL,
+                created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).
+            CREATE TABLE IF NOT EXISTS device_pools (
+                name              TEXT PRIMARY KEY,
+                target            TEXT NOT NULL DEFAULT 'hpc',      -- hpc|cloud
+                accelerator       TEXT NOT NULL DEFAULT 'nvidia',   -- nvidia|amd|intel-gaudi|tpu|cpu
+                capabilities      TEXT,                             -- JSON list of capability tags
+                count             INTEGER NOT NULL DEFAULT 0,
+                region            TEXT,
+                cost_per_hour     REAL NOT NULL DEFAULT 0,
+                carbon_factor     REAL NOT NULL DEFAULT 0,          -- gCO2e per device-hour
+                supports_fractions INTEGER NOT NULL DEFAULT 0,
+                status            TEXT NOT NULL DEFAULT 'active',
+                created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS placement_decisions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                workload              TEXT NOT NULL,
+                accelerator_requested TEXT,
+                device_chosen         TEXT,
+                pool                  TEXT,
+                target                TEXT,
+                region                TEXT,
+                decision              TEXT NOT NULL,   -- placed|fallback|rejected
+                fraction_honored      INTEGER NOT NULL DEFAULT 1,
+                reason                TEXT,
+                created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS burst_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                workload      TEXT NOT NULL,
+                from_pool     TEXT,
+                to_pool       TEXT,
+                residency     TEXT,
+                allowed       INTEGER NOT NULL DEFAULT 0,
+                reason        TEXT,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E4 — inference gateway & KV-cache-aware routing (ADR 0039).
+            CREATE TABLE IF NOT EXISTS inference_gateway_config (
+                model         TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                mode          TEXT NOT NULL DEFAULT 'round_robin',  -- round_robin|cache_aware
+                slo_latency_ms REAL,
+                disaggregate  INTEGER NOT NULL DEFAULT 0,
+                prefill_pool  TEXT,
+                decode_pool   TEXT,
+                updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS routing_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT NOT NULL,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                prefix_key TEXT,
+                replica    TEXT,
+                decision   TEXT NOT NULL,   -- affinity|load_aware|round_robin
+                hit        INTEGER NOT NULL DEFAULT 0,
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B8 — structured output & reasoning ops (ADR 0035).
+            CREATE TABLE IF NOT EXISTS reasoning_usage (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                request_id      TEXT,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                reasoning_cost  REAL NOT NULL DEFAULT 0,
+                output_cost     REAL NOT NULL DEFAULT 0,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS reasoning_traces (
+                request_id     TEXT PRIMARY KEY,
+                tenant         TEXT NOT NULL DEFAULT 'default',
+                redacted_trace TEXT NOT NULL,
+                expires_at     REAL,
+                ts             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS structured_output_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                model      TEXT,
+                tenant     TEXT NOT NULL DEFAULT 'default',
+                outcome    TEXT NOT NULL,   -- valid | repaired | failed
+                ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · B6 — embedding lifecycle & reindexing (ADR 0043).
+            CREATE TABLE IF NOT EXISTS encoders (
+                encoder_id    TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                version       TEXT NOT NULL,
+                dim           INTEGER NOT NULL,
+                metric        TEXT NOT NULL DEFAULT 'cosine',
+                normalization TEXT NOT NULL DEFAULT 'l2',
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- B6 encoder-lifecycle state per collection (distinct from the B5
+            -- `vector_collections` store table, which has a different schema).
+            CREATE TABLE IF NOT EXISTS embedding_collections (
+                collection         TEXT NOT NULL,
+                tenant             TEXT NOT NULL DEFAULT 'default',
+                active_encoder_id  TEXT,
+                staging_encoder_id TEXT,
+                status             TEXT NOT NULL DEFAULT 'active',  -- active|building|switching
+                updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (collection, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS reindex_jobs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection    TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                from_encoder  TEXT,
+                to_encoder    TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'building',  -- building|verified|switched|aborted
+                recall        REAL,
+                docs_reindexed INTEGER NOT NULL DEFAULT 0,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
+            CREATE TABLE IF NOT EXISTS distributed_runs (
+                run_id           TEXT PRIMARY KEY,
+                model            TEXT NOT NULL,
+                nodes            INTEGER NOT NULL DEFAULT 1,
+                gpus_per_node    INTEGER NOT NULL DEFAULT 1,
+                strategy         TEXT NOT NULL DEFAULT 'fsdp',   -- fsdp | zero | megatron
+                status           TEXT NOT NULL DEFAULT 'running', -- running|failed|resumed|complete
+                dataset_revision TEXT,
+                checkpoint_every TEXT,
+                cost_gpu_hours   REAL,
+                resumes          INTEGER NOT NULL DEFAULT 0,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS training_checkpoints (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id         TEXT NOT NULL,
+                step           INTEGER NOT NULL,
+                epoch          INTEGER NOT NULL,
+                shard_count    INTEGER NOT NULL DEFAULT 1,
+                uri            TEXT,
+                state_json     TEXT NOT NULL,
+                integrity_hash TEXT NOT NULL,
+                mlflow_run_id  TEXT,
+                created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_training_checkpoints_run
+                ON training_checkpoints (run_id, step);
+            -- Next-Gen 40 · D5 — signed, versioned policy bundles (ADR 0029).
+            CREATE TABLE IF NOT EXISTS policy_bundles (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                version      INTEGER NOT NULL DEFAULT 1,
+                content_hash TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                signature    TEXT,
+                algo         TEXT,
+                signed_by    TEXT,
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_policy_bundles_tenant ON policy_bundles (tenant, version);
+            -- Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
+            CREATE TABLE IF NOT EXISTS lora_adapters (
+                adapter_id       TEXT PRIMARY KEY,
+                base_ref         TEXT NOT NULL,
+                method           TEXT NOT NULL DEFAULT 'lora',   -- lora | qlora | full
+                rank             INTEGER,
+                target_modules   TEXT,
+                dataset_revision TEXT,
+                eval_score       REAL,
+                eval_floor       REAL,
+                promoted         INTEGER NOT NULL DEFAULT 0,
+                signature        TEXT,
+                signed_by        TEXT,
+                cost_gpu_hours   REAL,
+                created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_lora_adapters_base ON lora_adapters (base_ref);
+            -- Next-Gen 40 · A8 — signed reproducibility bundles (ADR 0038).
+            CREATE TABLE IF NOT EXISTS repro_bundles (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                model         TEXT NOT NULL,
+                version       TEXT NOT NULL,
+                bundle_version INTEGER NOT NULL DEFAULT 1,
+                manifest_json TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                signature     TEXT,             -- NULL when no signing key (degraded)
+                algo          TEXT,
+                signed_by     TEXT,
+                created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_repro_bundles_mv
+                ON repro_bundles (model, version, bundle_version);
         """)
         _migrate_columns(conn)
+    if cacheable:
+        _INITIALIZED_PATHS.add(path)
 
 
 # Idempotent additive column migrations for tables that predate a feature.
 # ``ALTER TABLE ADD COLUMN`` errors if the column already exists, so we gate on
 # PRAGMA table_info. Keep entries here forever — they are cheap and self-skipping.
 _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
+    "audit_events": {
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        "prev_hash": "TEXT",
+        "hash": "TEXT",
+    },
+    # E5 autoscaling (ADR 0031): richer policy columns on the Phase-24 autoscale_config stub.
+    "autoscale_config": {
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        "target_metric": "TEXT NOT NULL DEFAULT 'queue_depth'",
+        "target_value": "REAL NOT NULL DEFAULT 10",
+        "scale_to_zero_after_s": "INTEGER NOT NULL DEFAULT 0",
+        "warm_pool": "INTEGER NOT NULL DEFAULT 0",
+        "stabilization_s": "INTEGER NOT NULL DEFAULT 30",
+        "cooldown_s": "INTEGER NOT NULL DEFAULT 60",
+        "gpu_fraction": "REAL NOT NULL DEFAULT 1.0",
+        "enabled": "INTEGER NOT NULL DEFAULT 1",
+    },
     # #8 Real HPO/AutoML: Optuna study bookkeeping on the existing hpo tables.
     "hpo_studies": {
         "study_name": "TEXT",
@@ -867,6 +1575,11 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "model_costs": {
         "project": "TEXT",
     },
+    # D7/2.3 envelope encryption: which KEK (key_id) each secret is wrapped under, so keys can be
+    # rotated online and old ciphertext rewrapped. NULL = the legacy single-key era.
+    "secrets_store": {
+        "key_id": "TEXT",
+    },
 }
 
 
@@ -878,399 +1591,120 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
-def write_audit_event(
+def _audit_canonical(
     source: str,
     actor: str | None,
     action: str,
     target: str | None,
-    details: dict[str, Any] | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-            (source, actor, action, target, json.dumps(details) if details else None),
-        )
+    details_json: str | None,
+    tenant: str,
+    ts: str,
+) -> str:
+    """Deterministic serialization of an audit event for the D4 hash chain (R1)."""
+    return json.dumps(
+        {
+            "source": source,
+            "actor": actor,
+            "action": action,
+            "target": target,
+            "details": details_json,
+            "tenant": tenant,
+            "ts": ts,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def write_drift_snapshot(model: str, alias: str, prediction: float, job_id: str | None) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO drift_snapshots (model, alias, prediction, job_id) VALUES (?,?,?,?)",
-            (model, alias, prediction, job_id),
-        )
+def _audit_hash(prev_hash: str, canonical: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"{prev_hash}‖{canonical}".encode()).hexdigest()
 
 
-def set_traffic_rules(model: str, rules: dict[str, int], updated_by: str | None = None) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO traffic_rules (model, rules, updated_by) VALUES (?,?,?)",
-            (model, json.dumps(rules), updated_by),
-        )
 
 
-def get_traffic_rules(model: str) -> dict[str, int] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (model,)).fetchone()
-    if row is None:
-        return None
-    return json.loads(row["rules"])
 
 
-def set_promotion_rule(
-    model: str,
-    metric: str,
-    operator: str,
-    threshold: float,
-    from_alias: str = "Staging",
-    to_alias: str = "Production",
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO promotion_rules
-               (model, metric, operator, threshold, from_alias, to_alias)
-               VALUES (?,?,?,?,?,?)""",
-            (model, metric, operator, threshold, from_alias, to_alias),
-        )
+# Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
+# relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
+from examlops.data.serving import (disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, get_device_pools, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_promotion_rule, set_traffic_rules)  # noqa: E402, E501, F401, I001
 
 
-def get_promotion_rule(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM promotion_rules WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def set_drift_baseline(model: str, stats: dict[str, float]) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO drift_baselines (model, stats) VALUES (?,?)",
-            (model, json.dumps(stats)),
-        )
 
 
-def get_drift_baseline(model: str) -> dict[str, float] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT stats FROM drift_baselines WHERE model=?", (model,)).fetchone()
-    return json.loads(row["stats"]) if row else None
 
 
-def write_input_snapshot(
-    model: str, alias: str, emb_norm: float, emb_mean: float, emb_std: float, job_id: str | None
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO input_snapshots (model, alias, emb_norm, emb_mean, emb_std, job_id) "
-            "VALUES (?,?,?,?,?,?)",
-            (model, alias, emb_norm, emb_mean, emb_std, job_id),
-        )
 
 
-def set_input_baseline(model: str, stats: dict[str, Any]) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO input_baselines (model, stats) VALUES (?,?)",
-            (model, json.dumps(stats)),
-        )
 
 
-def get_input_baseline(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT stats FROM input_baselines WHERE model=?", (model,)).fetchone()
-    return json.loads(row["stats"]) if row else None
 
 
-def set_drift_auto_retrain(
-    model: str,
-    enabled: bool,
-    min_z_score: float = 3.0,
-    dataset_name: str = "PM100Dataset",
-    cooldown_s: int = 3600,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO drift_auto_retrain
-               (model, enabled, min_z_score, dataset_name, cooldown_s)
-               VALUES (?,?,?,?,?)""",
-            (model, int(enabled), min_z_score, dataset_name, cooldown_s),
-        )
 
 
-def get_drift_auto_retrain(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM drift_auto_retrain WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_drift_auto_retrain() -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_drift_trigger(model: str) -> None:
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE drift_auto_retrain SET last_triggered=CURRENT_TIMESTAMP WHERE model=?",
-            (model,),
-        )
 
 
-def record_model_cost(
-    model_name: str,
-    version: int,
-    run_id: str | None,
-    job_id: str | None,
-    gpu_hours: float | None,
-    cost_usd: float | None,
-    project: str | None = None,
-) -> None:
-    import datetime
-
-    # Attribute the cost to the model's project (ADR 0086) when not passed explicitly.
-    if project is None:
-        project = get_project_for_model(model_name)
-    recorded_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_costs
-               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project),
-        )
 
 
-def get_model_costs(model_name: str) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
-            (model_name,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+# High-volume, append-only, per-inference telemetry tables that grow unbounded and are safe to
+# TTL-prune. Deliberately EXCLUDES audit_events (tamper-evident hash chain — deleting rows breaks
+# verify_audit_chain) and model_costs / carbon_records (FinOps history must be retained). Item QW9.
+_PRUNABLE_TELEMETRY: tuple[str, ...] = ("drift_snapshots", "input_snapshots")
 
 
-def record_hpc_job(
-    job_id: str,
-    scheduler: str,
-    flow_run_id: str | None,
-    model: str,
-    dataset: str,
-    nodes: int | None = None,
-    gpus: int | None = None,
-    cpus: int | None = None,
-    submit_time: str | None = None,
-    mlflow_run_id: str | None = None,
-) -> None:
-    """Insert (or upsert) an HPC job tracking row.
-
-    Idempotent on ``(scheduler, job_id)`` so a Prefect task retry that resubmits does
-    not create duplicate rows.
-    """
-    import datetime
-
-    submit_time = submit_time or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO hpc_jobs
-                   (job_id, scheduler, flow_run_id, model, dataset, state,
-                    submit_time, nodes, gpus, cpus, mlflow_run_id)
-               VALUES (?,?,?,?,?,'SUBMITTED',?,?,?,?,?)
-               ON CONFLICT(scheduler, job_id) DO UPDATE SET
-                   flow_run_id=excluded.flow_run_id,
-                   model=excluded.model,
-                   dataset=excluded.dataset,
-                   nodes=excluded.nodes,
-                   gpus=excluded.gpus,
-                   cpus=excluded.cpus,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (
-                job_id,
-                scheduler,
-                flow_run_id,
-                model,
-                dataset,
-                submit_time,
-                nodes,
-                gpus,
-                cpus,
-                mlflow_run_id,
-            ),
-        )
 
 
-def update_hpc_job(
-    job_id: str,
-    scheduler: str,
-    *,
-    state: str | None = None,
-    start_time: str | None = None,
-    end_time: str | None = None,
-    exit_code: int | None = None,
-    queue_seconds: float | None = None,
-    run_seconds: float | None = None,
-    mlflow_run_id: str | None = None,
-) -> None:
-    """Update mutable fields of an existing hpc_jobs row (no-op if none provided)."""
-    fields = {
-        "state": state,
-        "start_time": start_time,
-        "end_time": end_time,
-        "exit_code": exit_code,
-        "queue_seconds": queue_seconds,
-        "run_seconds": run_seconds,
-        "mlflow_run_id": mlflow_run_id,
-    }
-    sets = {k: v for k, v in fields.items() if v is not None}
-    if not sets:
-        return
-    assignments = ", ".join(f"{k}=?" for k in sets)
-    with get_db() as conn:
-        conn.execute(
-            f"UPDATE hpc_jobs SET {assignments}, updated_at=CURRENT_TIMESTAMP "
-            "WHERE scheduler=? AND job_id=?",
-            (*sets.values(), scheduler, job_id),
-        )
 
 
-def get_hpc_jobs(model: str | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        if model:
-            rows = conn.execute(
-                "SELECT * FROM hpc_jobs WHERE model=? ORDER BY id DESC", (model,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_jobs ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def record_node_snapshot(cluster: str, scheduler: str, nodes: list[dict[str, Any]]) -> int:
-    """Replace the stored node inventory for ``cluster`` with a fresh snapshot.
-
-    Snapshot semantics (latest wins): existing rows for the cluster are deleted and the
-    current ``nodes`` (dicts shaped like ``discovery.NodeInfo.to_dict()``) are inserted.
-    Returns the number of node rows written.
-    """
-    with get_db() as conn:
-        conn.execute("DELETE FROM hpc_nodes WHERE cluster=?", (cluster,))
-        conn.executemany(
-            """INSERT INTO hpc_nodes
-                   (cluster, scheduler, node, cpus, memory_mb, gpus, gpu_model, state, partition)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            [
-                (
-                    cluster,
-                    scheduler,
-                    n.get("name"),
-                    n.get("cpus"),
-                    n.get("memory_mb"),
-                    n.get("gpus", 0) or 0,
-                    n.get("gpu_model"),
-                    n.get("state"),
-                    n.get("partition"),
-                )
-                for n in nodes
-            ],
-        )
-    return len(nodes)
+# Coordination primitives (item 1.2) now LIVE in examlops.data.coordination (item 4.5 body
+# relocation); re-exported here for backward compatibility. data.coordination imports the shared
+# get_db/_immediate_write/write_retry defined above, so there is no import cycle.
+# noqa: E402, I001 — mid-module re-export must stay here (data.coordination needs get_db/etc.
+# defined above → no import cycle).
+from examlops.data.coordination import coord_check_and_set_idempotent, coord_rate_allow, coord_try_lock, coord_unlock  # noqa: E402, E501, F401, I001
+# admission helpers now LIVE in examlops.data.admission (item 4.5 body relocation); re-exported
+# for back-compat (data.admission imports get_db/etc. defined above → no cycle).
+from examlops.data.admission import admission_stats, claim_next_admission, complete_admission, enqueue_admission  # noqa: E402, E501, F401, I001
+# events helpers now LIVE in examlops.data.events (item 4.5 body relocation); re-exported
+# for back-compat (data.events imports get_db/etc. defined above → no cycle).
+from examlops.data.events import (claim_outbox_batch, create_federated_run, enqueue_event, get_federated_run, get_federated_sites, get_reasoning_trace, lineage_graph, lineage_impact, list_burst_events, list_federated_rounds, mark_event_failed, mark_event_published, outbox_stats, reasoning_usage_summary, record_burst_event, record_cache_event, record_federated_round, record_lineage_event, record_reasoning_usage, record_routing_event, record_structured_output_event, register_federated_site, routing_stats, store_reasoning_trace, structured_output_stats)  # noqa: E402, E501, F401, I001
 
 
-def get_node_snapshot(cluster: str | None = None) -> list[dict[str, Any]]:
-    """Return the latest stored node inventory, optionally filtered to one cluster."""
-    with get_db() as conn:
-        if cluster:
-            rows = conn.execute(
-                "SELECT * FROM hpc_nodes WHERE cluster=? ORDER BY node ASC", (cluster,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_nodes ORDER BY cluster ASC, node ASC").fetchall()
-    return [dict(r) for r in rows]
 
 
-def upsert_cluster(
-    name: str,
-    scheduler: str,
-    *,
-    transport: str = "ssh",
-    host: str | None = None,
-    ssh_user: str | None = None,
-    ssh_port: int | None = 22,
-    ssh_key: str | None = None,
-    key_fingerprint: str | None = None,
-    capabilities: dict[str, Any] | None = None,
-    requested_by: str | None = None,
-) -> None:
-    """Insert or update a cluster *definition* — state is never changed here.
-
-    A brand-new cluster starts ``PENDING`` (the table default). Re-running discovery on an
-    already-approved (or already-rejected) cluster refreshes its definition + capabilities
-    but leaves its ``state``/``approved_by`` intact, so re-probing can never silently
-    authorize or de-authorize a cluster. State transitions go through
-    :func:`set_cluster_state`.
-    """
-    caps = json.dumps(capabilities) if capabilities else None
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO hpc_clusters
-                   (name, scheduler, transport, host, ssh_user, ssh_port, ssh_key,
-                    key_fingerprint, capabilities, requested_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(name) DO UPDATE SET
-                   scheduler=excluded.scheduler,
-                   transport=excluded.transport,
-                   host=excluded.host,
-                   ssh_user=excluded.ssh_user,
-                   ssh_port=excluded.ssh_port,
-                   ssh_key=excluded.ssh_key,
-                   key_fingerprint=excluded.key_fingerprint,
-                   capabilities=excluded.capabilities,
-                   updated_at=CURRENT_TIMESTAMP""",
-            (
-                name,
-                scheduler,
-                transport,
-                host,
-                ssh_user,
-                ssh_port,
-                ssh_key,
-                key_fingerprint,
-                caps,
-                requested_by,
-            ),
-        )
 
 
-def set_cluster_state(
-    name: str,
-    state: str,
-    *,
-    approved_by: str | None = None,
-    reason: str | None = None,
-) -> bool:
-    """Transition a cluster's state (PENDING|ACTIVE|REJECTED). Returns False if unknown."""
-    with get_db() as conn:
-        cur = conn.execute(
-            """UPDATE hpc_clusters
-                   SET state=?, approved_by=COALESCE(?, approved_by),
-                       reason=COALESCE(?, reason), updated_at=CURRENT_TIMESTAMP
-                 WHERE name=?""",
-            (state, approved_by, reason, name),
-        )
-        return cur.rowcount > 0
 
 
-def get_cluster(name: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM hpc_clusters WHERE name=?", (name,)).fetchone()
-    return dict(row) if row else None
 
 
-def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        if state:
-            rows = conn.execute(
-                "SELECT * FROM hpc_clusters WHERE state=? ORDER BY name ASC", (state,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM hpc_clusters ORDER BY name ASC").fetchall()
-    return [dict(r) for r in rows]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ======================================================================
@@ -1280,203 +1714,37 @@ def get_clusters(state: str | None = None) -> list[dict[str, Any]]:
 
 
 # ---- #3 Elastic autoscaling --------------------------------------------------
-def set_autoscale_config(
-    model: str,
-    min_replicas: int,
-    max_replicas: int,
-    target_ongoing: int = 8,
-    updated_by: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO autoscale_config
-               (model, min_replicas, max_replicas, target_ongoing, updated_by)
-               VALUES (?,?,?,?,?)""",
-            (model, min_replicas, max_replicas, target_ongoing, updated_by),
-        )
-
-
-def get_autoscale_config(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM autoscale_config WHERE model=?", (model,)).fetchone()
-    return dict(row) if row else None
+# E5 (ADR 0031): set_autoscale_config / get_autoscale_config are defined near the end of
+# this module with the full policy schema (min/max/target/scale-to-zero/warm-pool/etc.).
 
 
 # ---- #9 Ground-truth feedback loop -------------------------------------------
-def write_prediction(
-    model: str,
-    alias: str,
-    request_hash: str,
-    prediction: float,
-    features_json: str | None = None,
-    job_id: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO predictions
-               (model, alias, request_hash, prediction, features_json, job_id)
-               VALUES (?,?,?,?,?,?)""",
-            (model, alias, request_hash, prediction, features_json, job_id),
-        )
 
 
-def write_ground_truth(request_hash: str, label: float, source: str = "manual") -> None:
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO ground_truth (request_hash, label, source) VALUES (?,?,?)",
-            (request_hash, label, source),
-        )
 
 
-def join_predictions_with_truth(model: str, alias: str | None = None) -> list[dict[str, Any]]:
-    """Return prediction/label pairs for a model (optionally one alias).
-
-    The join key is ``request_hash`` — a stable digest of the inference input the
-    serving path already computes for drift logging. Feeds live-accuracy metrics
-    (#9), the A/B stats engine (#13), canary analysis (#11) and eval (#14).
-    """
-    sql = (
-        "SELECT p.model, p.alias, p.request_hash, p.prediction, g.label, g.source "
-        "FROM predictions p JOIN ground_truth g ON p.request_hash = g.request_hash "
-        "WHERE p.model=?"
-    )
-    params: list[Any] = [model]
-    if alias is not None:
-        sql += " AND p.alias=?"
-        params.append(alias)
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
-def write_live_metric(
-    model: str,
-    alias: str,
-    metric: str,
-    value: float,
-    n: int = 0,
-    window_start: str | None = None,
-    window_end: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO live_metrics
-               (model, alias, metric, value, n, window_start, window_end)
-               VALUES (?,?,?,?,?,?,?)""",
-            (model, alias, metric, value, n, window_start, window_end),
-        )
 
 
-def get_live_metrics(model: str, alias: str | None = None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM live_metrics WHERE model=?"
-    params: list[Any] = [model]
-    if alias is not None:
-        sql += " AND alias=?"
-        params.append(alias)
-    sql += " ORDER BY id DESC"
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---- #18 Fairness gates ------------------------------------------------------
-def set_fairness_gate(
-    model: str, sensitive_feature: str, metric: str, max_disparity: float
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO fairness_gates
-               (model, sensitive_feature, metric, max_disparity) VALUES (?,?,?,?)""",
-            (model, sensitive_feature, metric, max_disparity),
-        )
 
 
-def get_fairness_gates(model: str) -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM fairness_gates WHERE model=?", (model,)).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ---- #20 FinOps budgets ------------------------------------------------------
-def set_project_budget(
-    project: str,
-    gpu_hours_budget: float | None,
-    cost_budget: float | None,
-    period: str = "monthly",
-    updated_by: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO project_budgets
-               (project, gpu_hours_budget, cost_budget, period, updated_by)
-               VALUES (?,?,?,?,?)""",
-            (project, gpu_hours_budget, cost_budget, period, updated_by),
-        )
 
 
-def get_project_budget(project: str) -> dict[str, Any] | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM project_budgets WHERE project=?", (project,)).fetchone()
-    return dict(row) if row else None
 
 
-def write_carbon_record(
-    model: str,
-    run_id: str | None,
-    kwh: float | None,
-    co2e_g: float | None,
-    grid_intensity: float | None = None,
-    provider: str | None = None,
-) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity, provider)
-               VALUES (?,?,?,?,?,?)""",
-            (run_id, model, kwh, co2e_g, grid_intensity, provider),
-        )
 
 
-def get_carbon_records(model: str | None = None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM carbon_records"
-    params: list[Any] = []
-    if model is not None:
-        sql += " WHERE model=?"
-        params.append(model)
-    sql += " ORDER BY id DESC"
-    with get_db() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_project_budgets() -> list[dict[str, Any]]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM project_budgets ORDER BY project").fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_project_consumption(project: str) -> dict[str, float]:
-    """Sum recorded GPU-hours and cost attributed to a project (ADR 0086).
-
-    Resolves the project's models from the unified membership tables — ``project_resources``
-    (kind='model') ∪ ``project_models`` ∪ ``namespace_models`` (back-compat alias) — so budgets
-    enforce against the real training spend tracked by ``exa models cost``, whether a model was
-    grouped via the new Projects surface or the legacy namespace surface.
-    """
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """WITH members(model) AS (
-                   SELECT ref  FROM project_resources WHERE project = ? AND kind = 'model'
-                   UNION SELECT model FROM project_models   WHERE project   = ?
-                   UNION SELECT model FROM namespace_models WHERE namespace = ?
-               )
-               SELECT COALESCE(SUM(c.gpu_hours), 0) AS gpu_hours,
-                      COALESCE(SUM(c.cost_usd), 0)  AS cost_usd
-               FROM members m
-               JOIN model_costs c ON c.model_name = m.model""",
-            (project, project, project),
-        ).fetchone()
-    return {"gpu_hours": float(row["gpu_hours"]), "cost_usd": float(row["cost_usd"])}
 
 
 def _actor() -> str:
@@ -1486,163 +1754,20 @@ def _actor() -> str:
 # ── ExaMLOps Projects (RHOAI-style resource envelopes for Docker) ─────────────
 
 
-def create_project(
-    name: str,
-    *,
-    description: str | None = None,
-    cpu_limit: float = 4.0,
-    memory_limit_gb: float = 8.0,
-    storage_gb: float = 50.0,
-    gpu_limit: int = 0,
-    created_by: str | None = None,
-) -> None:
-    """Create a new project with resource quotas."""
-    init_db()
-    network_name = f"examlops-{name}"
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO projects
-               (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,
-                network_name, created_by)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                name,
-                description,
-                cpu_limit,
-                memory_limit_gb,
-                storage_gb,
-                gpu_limit,
-                network_name,
-                created_by,
-            ),
-        )
 
 
-def get_project(name: str) -> dict[str, Any] | None:
-    """Return project row as dict, or None if not found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
-    return dict(row) if row else None
 
 
-def list_projects(status: str | None = None) -> list[dict[str, Any]]:
-    """Return all projects, optionally filtered by status (ACTIVE/ARCHIVED)."""
-    init_db()
-    with get_db() as conn:
-        if status:
-            rows = conn.execute(
-                "SELECT * FROM projects WHERE status=? ORDER BY name", (status,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-    return [dict(r) for r in rows]
 
 
-def update_project_quota(
-    name: str,
-    *,
-    cpu_limit: float | None = None,
-    memory_limit_gb: float | None = None,
-    storage_gb: float | None = None,
-    gpu_limit: int | None = None,
-    description: str | None = None,
-) -> bool:
-    """Update quota fields for a project. Returns True if found and updated."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        if cpu_limit is not None:
-            conn.execute(
-                "UPDATE projects SET cpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (cpu_limit, name),
-            )
-        if memory_limit_gb is not None:
-            conn.execute(
-                "UPDATE projects SET memory_limit_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (memory_limit_gb, name),
-            )
-        if storage_gb is not None:
-            conn.execute(
-                "UPDATE projects SET storage_gb=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (storage_gb, name),
-            )
-        if gpu_limit is not None:
-            conn.execute(
-                "UPDATE projects SET gpu_limit=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (gpu_limit, name),
-            )
-        if description is not None:
-            conn.execute(
-                "UPDATE projects SET description=?, updated_at=CURRENT_TIMESTAMP WHERE name=?",
-                (description, name),
-            )
-    return True
 
 
-def archive_project(name: str) -> bool:
-    """Set project status to ARCHIVED. Returns True if found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            "UPDATE projects SET status='ARCHIVED', updated_at=CURRENT_TIMESTAMP WHERE name=?",
-            (name,),
-        )
-    return True
 
 
-def delete_project(name: str) -> bool:
-    """Delete a project and its model assignments. Returns True if found."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
-        if not row:
-            return False
-        conn.execute("DELETE FROM project_models WHERE project=?", (name,))
-        conn.execute("DELETE FROM project_resources WHERE project=?", (name,))
-        conn.execute("DELETE FROM projects WHERE name=?", (name,))
-    return True
 
 
-def assign_model_to_project(project: str, model: str, added_by: str | None = None) -> bool:
-    """Assign a model to a project. Returns False if project not found.
-
-    Dual-writes the legacy ``project_models`` table and the unified ``project_resources``
-    membership (ADR 0086, ``kind='model'``) so both stay consistent during the transition.
-    """
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)",
-            (project, model),
-        )
-        conn.execute(
-            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
-               VALUES (?, 'model', ?, ?)""",
-            (project, model, added_by),
-        )
-    return True
 
 
-def list_project_models(project: str) -> list[str]:
-    """Return model names assigned to a project (unified: project_resources ∪ project_models)."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            """SELECT ref AS model FROM project_resources WHERE project=? AND kind='model'
-               UNION SELECT model FROM project_models WHERE project=?
-               ORDER BY model""",
-            (project, project),
-        ).fetchall()
-    return [r["model"] for r in rows]
 
 
 # ── Unified Project workspace: generic resource membership (ADR 0086) ─────────
@@ -1651,215 +1776,36 @@ def list_project_models(project: str) -> list[str]:
 _RESOURCE_KINDS = {"model", "pipeline", "serving_endpoint", "connection", "dataset", "storage"}
 
 
-def assign_resource_to_project(
-    project: str, kind: str, ref: str, added_by: str | None = None
-) -> bool:
-    """Attach any resource (by ``kind``/``ref``) to a project. False if project not found.
-
-    ``kind='model'`` also mirrors into the legacy ``project_models`` table for back-compat.
-    """
-    if kind not in _RESOURCE_KINDS:
-        raise ValueError(
-            f"unknown resource kind: {kind!r} (expected one of {sorted(_RESOURCE_KINDS)})"
-        )
-    if kind == "model":
-        return assign_model_to_project(project, ref, added_by=added_by)
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT name FROM projects WHERE name=?", (project,)).fetchone()
-        if not row:
-            return False
-        conn.execute(
-            """INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by)
-               VALUES (?,?,?,?)""",
-            (project, kind, ref, added_by),
-        )
-    return True
 
 
-def remove_project_resource(project: str, kind: str, ref: str) -> bool:
-    """Detach a resource from a project. Returns True if a row was removed."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM project_resources WHERE project=? AND kind=? AND ref=?",
-            (project, kind, ref),
-        )
-        if kind == "model":
-            conn.execute("DELETE FROM project_models WHERE project=? AND model=?", (project, ref))
-        removed = cur.rowcount > 0
-    return removed
 
 
-def list_project_resources(project: str, kind: str | None = None) -> dict[str, list[str]]:
-    """Return a project's resources grouped by kind ({kind: [ref, ...]})."""
-    init_db()
-    with get_db() as conn:
-        if kind:
-            rows = conn.execute(
-                "SELECT kind, ref FROM project_resources WHERE project=? AND kind=? ORDER BY ref",
-                (project, kind),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT kind, ref FROM project_resources WHERE project=? ORDER BY kind, ref",
-                (project,),
-            ).fetchall()
-    grouped: dict[str, list[str]] = {}
-    for r in rows:
-        grouped.setdefault(r["kind"], []).append(r["ref"])
-    # models also come from the legacy table (union)
-    if kind in (None, "model"):
-        legacy = {m for m in list_project_models(project)}
-        grouped["model"] = sorted(set(grouped.get("model", [])) | legacy)
-        if not grouped["model"]:
-            grouped.pop("model", None)
-    return grouped
 
 
-def get_project_for_model(model: str) -> str | None:
-    """Return the first project a model belongs to, or None (used for cost attribution)."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            """SELECT project FROM project_resources WHERE kind='model' AND ref=?
-               UNION SELECT project FROM project_models WHERE model=?
-               LIMIT 1""",
-            (model, model),
-        ).fetchone()
-    return row["project"] if row else None
 
 
 # ── People membership + permissions via D6 authz (ADR 0086, no new ACL table) ─
 
 
-def add_project_member(project: str, subject: str, role: str, actor: str | None = None) -> None:
-    """Add a person to a project with an ``owner|editor|viewer`` role (wraps authz.grant)."""
-    if role not in {"owner", "editor", "viewer"}:
-        raise ValueError("role must be one of: owner, editor, viewer")
-    from examlops.authz import grant as _grant
-
-    _grant(subject, role, f"project:{project}", actor=actor)
 
 
-def remove_project_member(
-    project: str, subject: str, role: str | None = None, actor: str | None = None
-) -> int:
-    """Remove a person's grant(s) on a project (wraps authz.revoke). Returns rows removed."""
-    from examlops.authz import revoke as _revoke
-
-    roles = [role] if role else ["owner", "editor", "viewer"]
-    return sum(_revoke(subject, r, f"project:{project}", actor=actor) for r in roles)
 
 
-def list_project_members(project: str) -> list[dict[str, Any]]:
-    """Return the people granted a relation directly on ``project:<name>``."""
-    rows = list_relations(obj=f"project:{project}")
-    return [
-        {
-            "subject": r["subject"],
-            "role": r["relation"],
-            "granted_by": r.get("actor"),
-            "when": r.get("created_at"),
-        }
-        for r in rows
-    ]
 
 
-def get_project_full(name: str) -> dict[str, Any] | None:
-    """Full project anatomy for ``exa project show`` and the dashboard detail endpoint.
-
-    Returns None for an unknown project (ADR 0086 R5).
-    """
-    project = get_project(name)
-    if not project:
-        return None
-    return {
-        **project,
-        "resources": list_project_resources(name),
-        "members": list_project_members(name),
-        "budget": get_project_budget(name),
-        "consumption": get_project_consumption(name),
-    }
 
 
 # ── Autopilot (ADR 0085): self-driving closed-loop detect→retrain→promote ────
 
 
-def get_autopilot_config(key: str) -> str | None:
-    """Return a value from autopilot_config, or None if not set."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM autopilot_config WHERE key=?", (key,)).fetchone()
-    return row["value"] if row else None
 
 
-def set_autopilot_config(key: str, value: str) -> None:
-    """Upsert a key/value pair in autopilot_config."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO autopilot_config (key, value, updated_at) "
-            "VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (key, value),
-        )
 
 
-def create_autopilot_run(
-    triggered_by: str = "manual",
-    model_filter: str | None = None,
-    dry_run: bool = False,
-    enabled_state: str = "enabled",
-) -> int:
-    """Insert a new autopilot_runs row and return its id."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            """INSERT INTO autopilot_runs
-               (triggered_by, model_filter, dry_run, enabled_state)
-               VALUES (?,?,?,?)""",
-            (triggered_by, model_filter, int(dry_run), enabled_state),
-        )
-        return cur.lastrowid  # type: ignore[return-value]
 
 
-def update_autopilot_run(
-    run_id: int,
-    *,
-    retrains_triggered: int = 0,
-    promotions_made: int = 0,
-    policy_blocks: int = 0,
-    human_required: int = 0,
-    skipped: int = 0,
-    summary: dict[str, Any] | None = None,
-) -> None:
-    """Update counts and summary for a completed autopilot run."""
-    with get_db() as conn:
-        conn.execute(
-            """UPDATE autopilot_runs
-               SET retrains_triggered=?, promotions_made=?, policy_blocks=?,
-                   human_required=?, skipped=?, summary=?
-               WHERE id=?""",
-            (
-                retrains_triggered,
-                promotions_made,
-                policy_blocks,
-                human_required,
-                skipped,
-                json.dumps(summary) if summary else None,
-                run_id,
-            ),
-        )
 
 
-def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
-    """Return the last N autopilot run records, newest first."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM autopilot_runs ORDER BY id DESC LIMIT ?", (last_n,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · A1 — dataset revisions (ADR 0003) --------------------------
@@ -1868,216 +1814,34 @@ def list_autopilot_runs(last_n: int = 10) -> list[dict[str, Any]]:
 # module never imports the pipelines package (avoids a layering cycle).
 
 
-def record_dataset_revision(
-    rev: Any,
-    *,
-    mlflow_run_id: str | None = None,
-    row_count: int | None = None,
-    byte_count: int | None = None,
-    actor: str | None = None,
-) -> None:
-    """Record a resolved dataset revision.
-
-    Idempotent on ``(backend, dataset, revision_id)`` (spec R5): re-recording the
-    same revision is a no-op and never raises a UNIQUE-constraint error.
-    """
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO dataset_revisions
-                   (backend, dataset, revision_id, kind, uri, schema_hash,
-                    mlflow_run_id, row_count, byte_count, actor)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(backend, dataset, revision_id) DO NOTHING""",
-            (
-                rev.backend,
-                rev.dataset,
-                rev.revision_id,
-                getattr(rev, "kind", "content"),
-                getattr(rev, "uri", None),
-                getattr(rev, "schema_hash", None),
-                mlflow_run_id,
-                row_count,
-                byte_count,
-                actor,
-            ),
-        )
 
 
-def get_dataset_revisions(dataset: str, backend: str | None = None) -> list[dict[str, Any]]:
-    """Return recorded revisions for ``dataset`` newest-first (spec R9).
-
-    When ``backend`` is given, restrict to that backend.
-    """
-    init_db()
-    with get_db() as conn:
-        if backend:
-            rows = conn.execute(
-                "SELECT * FROM dataset_revisions WHERE dataset=? AND backend=? ORDER BY id DESC",
-                (dataset, backend),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM dataset_revisions WHERE dataset=? ORDER BY id DESC",
-                (dataset,),
-            ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def get_dataset_revision(
-    dataset: str, revision_id: str, backend: str | None = None
-) -> dict[str, Any] | None:
-    """Return a single recorded revision by id, or None if absent."""
-    for row in get_dataset_revisions(dataset, backend):
-        if row["revision_id"] == revision_id:
-            return row
-    return None
 
 
 # --- Next-Gen 40 · A5 — data contracts / quality gates (ADR 0005) ------------
 
 
-def record_data_quality_check(
-    dataset: str,
-    result: Any,
-    *,
-    revision: str | None = None,
-    stage: str = "train",
-    model: str = "-",
-    actor: str | None = None,
-) -> None:
-    """Record a contract-validation outcome (spec R7).
-
-    ``result`` is a QualityResult-like object exposing ``passed``, ``score``, and
-    ``checks`` (kept duck-typed so this layer never imports the pipelines package).
-    """
-    init_db()
-    checks = list(getattr(result, "checks", []))
-    passed_n = sum(1 for c in checks if c.get("passed"))
-    failed_n = len(checks) - passed_n
-    status = "PASS" if getattr(result, "passed", False) else "FAIL"
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO data_quality_checks
-                   (model, dataset, status, passed, failed, details_json, actor,
-                    revision, stage, score)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (
-                model,
-                dataset,
-                status,
-                passed_n,
-                failed_n,
-                json.dumps(checks),
-                actor,
-                revision,
-                stage,
-                float(getattr(result, "score", 0.0)),
-            ),
-        )
 
 
-def get_data_quality_checks(dataset: str, last_n: int = 20) -> list[dict[str, Any]]:
-    """Return recent quality-check rows for ``dataset``, newest first."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM data_quality_checks WHERE dataset=? ORDER BY id DESC LIMIT ?",
-            (dataset, last_n),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · B1 — prompt registry (ADR 0009) ---------------------------
 
 
-def create_prompt_version(
-    name: str,
-    template: str,
-    *,
-    variables: list[str] | None = None,
-    tags: dict[str, Any] | None = None,
-    actor: str | None = None,
-) -> int:
-    """Create a new immutable prompt version (spec R1). Returns the new version number."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) AS v FROM prompt_versions WHERE name=?", (name,)
-        ).fetchone()
-        version = int(row["v"]) + 1
-        conn.execute(
-            """INSERT INTO prompt_versions (name, version, template, variables, tags, actor)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                name,
-                version,
-                template,
-                json.dumps(variables or []),
-                json.dumps(tags or {}),
-                actor,
-            ),
-        )
-    return version
 
 
-def get_prompt_version(name: str, version: int) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM prompt_versions WHERE name=? AND version=?", (name, version)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def list_prompt_versions(name: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM prompt_versions WHERE name=? ORDER BY version DESC", (name,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_prompt_names() -> list[str]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT DISTINCT name FROM prompt_versions ORDER BY name").fetchall()
-    return [r["name"] for r in rows]
 
 
-def set_prompt_label(name: str, label: str, version: int) -> None:
-    """Point a label at a version (spec R8). Caller writes the audit event (R9)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO prompt_labels (name, label, version, updated_at)
-               VALUES (?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(name, label) DO UPDATE SET
-                   version=excluded.version, updated_at=CURRENT_TIMESTAMP""",
-            (name, label, version),
-        )
 
 
-def get_prompt_by_label(name: str, label: str) -> dict[str, Any] | None:
-    """Resolve ``name@label`` to its pinned prompt version (spec R3)."""
-    init_db()
-    with get_db() as conn:
-        lab = conn.execute(
-            "SELECT version FROM prompt_labels WHERE name=? AND label=?", (name, label)
-        ).fetchone()
-    if lab is None:
-        return None
-    return get_prompt_version(name, int(lab["version"]))
 
 
-def list_prompt_labels(name: str) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM prompt_labels WHERE name=? ORDER BY label", (name,)
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · D7 — local encrypted secrets store (ADR 0011) --------------
@@ -2085,531 +1849,403 @@ def list_prompt_labels(name: str) -> list[dict[str, Any]]:
 # examlops.secrets client so this DB layer never sees a plaintext secret.
 
 
-def put_secret_ciphertext(
-    path: str, tenant: str, ciphertext: str, *, updated_by: str | None = None
-) -> int:
-    """Upsert an encrypted secret, bumping its version. Returns the new version."""
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT version FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
-        ).fetchone()
-        version = (int(row["version"]) + 1) if row else 1
-        conn.execute(
-            """INSERT INTO secrets_store (path, tenant, ciphertext, version, updated_by, updated_at)
-               VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(path, tenant) DO UPDATE SET
-                   ciphertext=excluded.ciphertext, version=excluded.version,
-                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
-            (path, tenant, ciphertext, version, updated_by),
-        )
-    return version
 
 
-def get_secret_ciphertext(path: str, tenant: str) -> str | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT ciphertext FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
-        ).fetchone()
-    return row["ciphertext"] if row else None
 
 
-def list_secret_paths(tenant: str | None = None) -> list[dict[str, Any]]:
-    """List secret metadata (path/tenant/version/updated_at) — never values."""
-    init_db()
-    with get_db() as conn:
-        if tenant:
-            rows = conn.execute(
-                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
-                "WHERE tenant=? ORDER BY path",
-                (tenant,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
-                "ORDER BY tenant, path"
-            ).fetchall()
-    return [dict(r) for r in rows]
+
+
+
+
 
 
 # --- Next-Gen 40 · D6 — authz relations (ADR 0014) ---------------------------
 
 
-def grant_relation(subject: str, relation: str, obj: str, *, actor: str | None = None) -> None:
-    """Grant ``subject`` a ``relation`` on ``obj`` (idempotent)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO authz_relations (subject, relation, object, actor)
-               VALUES (?,?,?,?)
-               ON CONFLICT(subject, relation, object) DO NOTHING""",
-            (subject, relation, obj, actor),
-        )
 
 
-def revoke_relation(subject: str, relation: str, obj: str) -> int:
-    """Revoke a relation. Returns rows deleted (0 if none)."""
-    init_db()
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM authz_relations WHERE subject=? AND relation=? AND object=?",
-            (subject, relation, obj),
-        )
-        return cur.rowcount
 
 
-def get_relations_for(subject: str, obj: str) -> list[str]:
-    """Return the relations ``subject`` holds directly on ``obj``."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT relation FROM authz_relations WHERE subject=? AND object=?", (subject, obj)
-        ).fetchall()
-    return [r["relation"] for r in rows]
 
 
-def list_relations(subject: str | None = None, obj: str | None = None) -> list[dict[str, Any]]:
-    init_db()
-    clauses, params = [], []
-    if subject:
-        clauses.append("subject=?")
-        params.append(subject)
-    if obj:
-        clauses.append("object=?")
-        params.append(obj)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM authz_relations{where} ORDER BY object, subject", params
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
-def list_objects_for(subject: str) -> list[dict[str, Any]]:
-    """All (object, relation) pairs granted to ``subject``."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT object, relation FROM authz_relations WHERE subject=? ORDER BY object",
-            (subject,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --- Next-Gen 40 · D3 — model signing + AI-BOM (ADR 0013) --------------------
 
 
-def store_model_signature(
-    model: str,
-    version: str,
-    digest: str,
-    signature: str,
-    *,
-    algo: str = "hmac-sha256",
-    cert: str | None = None,
-    signed_by: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_signatures
-                   (model, version, digest, algo, signature, cert, signed_by, signed_at)
-               VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(model, version) DO UPDATE SET
-                   digest=excluded.digest, algo=excluded.algo, signature=excluded.signature,
-                   cert=excluded.cert, signed_by=excluded.signed_by, signed_at=CURRENT_TIMESTAMP""",
-            (model, version, digest, algo, signature, cert, signed_by),
-        )
 
 
-def get_model_signature(model: str, version: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM model_signatures WHERE model=? AND version=?", (model, version)
-        ).fetchone()
-    return dict(row) if row else None
 
 
-def store_model_bom(model: str, version: str, bom: dict[str, Any]) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO model_boms (model, version, bom_json, created_at)
-               VALUES (?,?,?,CURRENT_TIMESTAMP)
-               ON CONFLICT(model, version) DO UPDATE SET
-                   bom_json=excluded.bom_json, created_at=CURRENT_TIMESTAMP""",
-            (model, version, json.dumps(bom)),
-        )
 
 
-def get_model_bom(model: str, version: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT bom_json FROM model_boms WHERE model=? AND version=?", (model, version)
-        ).fetchone()
-    return json.loads(row["bom_json"]) if row else None
 
 
 # ── A2 — OpenLineage dual-write + graph/impact queries (ADR 0004) ─────────────
 
 
-def record_lineage_event(
-    run_id: str,
-    job: str,
-    event_type: str,
-    *,
-    inputs: list[dict[str, str]] | None = None,
-    outputs: list[dict[str, str]] | None = None,
-    dataset_revision: str | None = None,
-    mlflow_run_id: str | None = None,
-    model: str | None = None,
-    model_version: str | None = None,
-    trace_id: str | None = None,
-    facets: dict[str, Any] | None = None,
-) -> None:
-    """Upsert a lineage run event + its I/O nodes (the operational source of truth)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO lineage_events
-                   (run_id, job, event_type, dataset_revision, mlflow_run_id,
-                    model, model_version, trace_id, facets_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                run_id,
-                job,
-                event_type,
-                dataset_revision,
-                mlflow_run_id,
-                model,
-                model_version,
-                trace_id,
-                json.dumps(facets) if facets else None,
-            ),
-        )
-        for direction, nodes in (("input", inputs or []), ("output", outputs or [])):
-            for node in nodes:
-                conn.execute(
-                    """INSERT OR IGNORE INTO lineage_io
-                           (run_id, direction, node_type, node_name)
-                       VALUES (?,?,?,?)""",
-                    (run_id, direction, node.get("type", "dataset"), node["name"]),
-                )
 
 
-def lineage_graph(model: str) -> dict[str, Any]:
-    """Return upstream (datasets/runs) + downstream (deployments) nodes for a model."""
-    init_db()
-    with get_db() as conn:
-        runs = conn.execute(
-            "SELECT * FROM lineage_events WHERE model=? ORDER BY ts DESC", (model,)
-        ).fetchall()
-        run_ids = [r["run_id"] for r in runs]
-        io_rows: list[dict[str, Any]] = []
-        for rid in run_ids:
-            io_rows.extend(
-                dict(r)
-                for r in conn.execute("SELECT * FROM lineage_io WHERE run_id=?", (rid,)).fetchall()
-            )
-    return {
-        "model": model,
-        "runs": [dict(r) for r in runs],
-        "upstream": [r for r in io_rows if r["direction"] == "input"],
-        "downstream": [r for r in io_rows if r["direction"] == "output"],
-    }
 
 
-def lineage_impact(dataset_revision: str) -> list[dict[str, Any]]:
-    """List every model version derived (transitively) from a dataset revision."""
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            """SELECT DISTINCT model, model_version, run_id, mlflow_run_id
-               FROM lineage_events
-               WHERE dataset_revision=? AND model IS NOT NULL
-               ORDER BY model, model_version""",
-            (dataset_revision,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ── C2 — continuous-eval suite results (ADR 0007) ─────────────────────────────
 
 
-def record_eval_result(
-    suite: str,
-    model: str,
-    scores: dict[str, float],
-    *,
-    run_id: str,
-    model_version: str | None = None,
-    alias: str | None = None,
-    sample_size: int = 0,
-    judge: dict[str, str] | None = None,
-    dataset_revision: str | None = None,
-) -> None:
-    """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8)."""
-    init_db()
-    judge_model = (judge or {}).get("model")
-    judge_prompt = (judge or {}).get("prompt_version")
-    with get_db() as conn:
-        for metric, score in scores.items():
-            conn.execute(
-                """INSERT OR IGNORE INTO eval_suite_results
-                       (suite, model, model_version, alias, metric, score, sample_size,
-                        judge_model, judge_prompt_version, dataset_revision, run_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    suite,
-                    model,
-                    model_version,
-                    alias,
-                    metric,
-                    float(score),
-                    sample_size,
-                    judge_model,
-                    judge_prompt,
-                    dataset_revision,
-                    run_id,
-                ),
-            )
 
 
-def get_eval_results(
-    model: str, suite: str | None = None, *, alias: str | None = None
-) -> list[dict[str, Any]]:
-    init_db()
-    q = "SELECT * FROM eval_suite_results WHERE model=?"
-    params: list[Any] = [model]
-    if suite:
-        q += " AND suite=?"
-        params.append(suite)
-    if alias:
-        q += " AND alias=?"
-        params.append(alias)
-    q += " ORDER BY ts DESC"
-    with get_db() as conn:
-        return [dict(r) for r in conn.execute(q, params).fetchall()]
 
 
 # ── C3 — eval regression gate config + reports (ADR 0008) ─────────────────────
 
 
-def set_eval_gate(
-    model: str,
-    suite: str,
-    metrics: list[dict[str, Any]],
-    *,
-    baseline_alias: str = "Production",
-    mode: str = "block",
-    updated_by: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO eval_gates (model, suite, baseline_alias, metrics_json, mode, updated_by)
-               VALUES (?,?,?,?,?,?)
-               ON CONFLICT(model) DO UPDATE SET
-                   suite=excluded.suite, baseline_alias=excluded.baseline_alias,
-                   metrics_json=excluded.metrics_json, mode=excluded.mode,
-                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
-            (model, suite, baseline_alias, json.dumps(metrics), mode, updated_by),
-        )
 
 
-def get_eval_gate(model: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM eval_gates WHERE model=?", (model,)).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["metrics"] = json.loads(d.pop("metrics_json"))
-    return d
 
 
-def record_gate_report(
-    model: str,
-    passed: bool,
-    mode: str,
-    report: dict[str, Any],
-    *,
-    candidate: str | None = None,
-    baseline: str | None = None,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO gate_reports (model, candidate, baseline, passed, mode, report_json)
-               VALUES (?,?,?,?,?,?)""",
-            (model, candidate, baseline, 1 if passed else 0, mode, json.dumps(report)),
-        )
 
 
-def get_gate_reports(model: str, limit: int = 20) -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM gate_reports WHERE model=? ORDER BY ts DESC LIMIT ?", (model, limit)
-        ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["report"] = json.loads(d.pop("report_json"))
-        out.append(d)
-    return out
 
 
 # ── B2 — model-gateway virtual keys + per-call cost (ADR 0010) ────────────────
 
 
-def create_virtual_key(
-    key_hash: str,
-    *,
-    tenant: str = "default",
-    project: str = "default",
-    models: list[str] | None = None,
-    budget_usd: float | None = None,
-    created_by: str | None = None,
-) -> None:
-    """Store a virtual key (only its hash — never the raw key)."""
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO virtual_keys
-                   (key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by)
-               VALUES (?,?,?,?,?,
-                   COALESCE((SELECT spent_usd FROM virtual_keys WHERE key_hash=?), 0), ?)""",
-            (
-                key_hash,
-                tenant,
-                project,
-                json.dumps(models or []),
-                budget_usd,
-                key_hash,
-                created_by,
-            ),
-        )
 
 
-def get_virtual_key(key_hash: str) -> dict[str, Any] | None:
-    init_db()
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["models"] = json.loads(d.pop("models_json"))
-    return d
 
 
-def list_virtual_keys() -> list[dict[str, Any]]:
-    init_db()
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM virtual_keys ORDER BY created_at DESC").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["models"] = json.loads(d.pop("models_json"))
-        out.append(d)
-    return out
 
 
-def add_key_spend(key_hash: str, cost_usd: float) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE virtual_keys SET spent_usd = spent_usd + ? WHERE key_hash=?",
-            (cost_usd, key_hash),
-        )
 
 
-def revoke_virtual_key(key_hash: str) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute("UPDATE virtual_keys SET revoked=1 WHERE key_hash=?", (key_hash,))
 
 
-def record_gateway_call(
-    key_hash: str | None,
-    model: str,
-    *,
-    backend: str | None = None,
-    cost_usd: float = 0.0,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO gateway_calls
-                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens)
-               VALUES (?,?,?,?,?,?)""",
-            (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens),
-        )
 
 
-def total_gateway_cost(key_hash: str | None = None) -> float:
-    init_db()
-    with get_db() as conn:
-        if key_hash:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls WHERE key_hash=?",
-                (key_hash,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd),0) AS t FROM gateway_calls"
-            ).fetchone()
-    return float(row["t"])
 
 
 # ── B3 — semantic-cache savings (ADR 0018) ────────────────────────────────────
 
 
-def record_cache_event(
-    tenant: str,
-    model: str,
-    *,
-    hit: bool,
-    similarity: float | None = None,
-    tokens_saved: int = 0,
-    cost_saved: float = 0.0,
-) -> None:
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO cache_events (tenant, model, hit, similarity, tokens_saved, cost_saved)
-               VALUES (?,?,?,?,?,?)""",
-            (tenant, model, 1 if hit else 0, similarity, tokens_saved, cost_saved),
-        )
 
 
-def cache_stats(tenant: str | None = None) -> dict[str, Any]:
-    """Aggregate hit-rate + measured savings (R7) — for the dashboard caching panel."""
-    init_db()
-    where = "WHERE tenant=?" if tenant else ""
-    params = (tenant,) if tenant else ()
-    with get_db() as conn:
-        row = conn.execute(
-            f"""SELECT
-                    COALESCE(SUM(hit),0)              AS hits,
-                    COALESCE(SUM(1-hit),0)            AS misses,
-                    COUNT(*)                          AS total,
-                    COALESCE(SUM(tokens_saved),0)     AS tokens_saved,
-                    COALESCE(SUM(cost_saved),0)       AS cost_saved
-                FROM cache_events {where}""",
-            params,
-        ).fetchone()
-    hits, total = int(row["hits"]), int(row["total"])
-    return {
-        "hits": hits,
-        "misses": int(row["misses"]),
-        "total": total,
-        "hit_rate": (hits / total) if total else 0.0,
-        "tokens_saved": int(row["tokens_saved"]),
-        "cost_saved": float(row["cost_saved"]),
-    }
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C4 — AgentOps: agent trace & tool-call analytics (ADR 0021).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C5 — advanced drift: concept / label-free perf / data quality (ADR 0022).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C6 — model-quality SLOs / SLIs & burn-rate (ADR 0023).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C7 — champion-challenger / shadow scoreboard (ADR 0024).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · C8 — fairness & subgroup performance monitoring (ADR 0025).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D1 — EU AI Act compliance (ADR 0012).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D4 — immutable, tamper-evident audit trail (ADR 0028).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A6 — Croissant dataset cards + structured model cards (ADR 0037).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E5 — autoscaling & scale-to-zero (ADR 0031).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A3 — feature store (single train/serve definition; ADR 0017).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A4 — declarative asset-centric pipelines (ADR 0036).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · A8 — signed reproducibility bundles (ADR 0038).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B7 — PEFT/LoRA adapter registry (ADR 0044).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · D5 — signed, versioned policy bundles (ADR 0029).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B6 — embedding lifecycle & reindexing (ADR 0043).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+_UNSET = object()  # sentinel: distinguish "don't change" from "set to NULL"
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · B8 — structured output & reasoning ops (ADR 0035).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E4 — inference gateway & KV-cache-aware routing (ADR 0039).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E7 — federated & privacy-preserving training (ADR 0040).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Next-Gen 40 · E8 — heterogeneous hardware & hybrid HPC↔cloud (ADR 0041).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Project Anatomy · P6 — per-project storage location (ADR 0091).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Project Anatomy · P7 — the project's two pipeline surfaces (ADR 0092).
+# ---------------------------------------------------------------------------
+_PIPELINE_KINDS = ("prefect", "rayserve")
+
+
+
+
+
+
+# Install central write-retry coverage once the whole module (all helpers) is defined.
+
+
+# ── Per-domain body relocation (item 4.5): helpers below LIVE in examlops.data.*; re-exported
+# for back-compat (at END so every primitive/constant + install_write_retry is defined first).
+from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
+from examlops.data.audit import (audit_chain_head, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
+from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
+from examlops.data.drift import (claim_drift_trigger, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
+from examlops.data.evaluation import (get_eval_gate, get_eval_results, get_gate_reports, list_perf_estimates, record_eval_result, record_gate_report, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
+from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
+from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
+from examlops.data.governance import (get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
+from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
+from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001
+from examlops.data.prompts import (create_prompt_version, get_prompt_by_label, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label)  # noqa: E402, E501, F401, I001
+from examlops.data.registry import (get_dataset_card, get_model_bom, get_model_card, get_model_signature, register_device_pool, save_dataset_card, save_model_card, store_model_bom, store_model_signature)  # noqa: E402, E501, F401, I001
+from examlops.data.secrets import (all_secret_records, get_secret_ciphertext, get_secret_record, list_secret_paths, put_secret_ciphertext)  # noqa: E402, E501, F401, I001
+
+_install_write_retry()  # wrap platform_db's own remaining mutating helpers (if any)

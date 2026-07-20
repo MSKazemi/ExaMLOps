@@ -41,6 +41,11 @@ exa pipeline run --model JPCP --dataset PM100Dataset --dummy
 EXAMLOPS_SLURM_MODE=slurm exa pipeline run --dummy
 ```
 
+`--dummy` is forwarded to the compute node in real (`slurm`/`flux`) mode too, so it trains on
+the small dummy split — the fast way to smoke-test a cluster end-to-end. Omit it to train on
+the full dataset. For the complete train → wait → fetch → MLflow → promote walkthrough on a
+real cluster, see **[../guides/hpc-training-workflow.md](../guides/hpc-training-workflow.md)**.
+
 ## How it works
 
 **Mock** — `slurm_submit_task` runs `model.train_step(loader)` inline, dumps the estimator

@@ -59,6 +59,20 @@ RESOURCES: tuple[ResourceSpec, ...] = (
         fn=tools.model_detail,
         tags=("registry",),
     ),
+    ResourceSpec(
+        uri="examlops://projects",
+        name="Projects",
+        description="All ExaMLOps Projects (workspaces) with status and resource quota.",
+        fn=tools.project_list,
+        tags=("projects",),
+    ),
+    ResourceSpec(
+        uri="examlops://project/{name}",
+        name="Project anatomy",
+        description="Full anatomy of one Project: quota, resources by kind, members, budget, consumption.",
+        fn=tools.project_detail,
+        tags=("projects",),
+    ),
 )
 
 

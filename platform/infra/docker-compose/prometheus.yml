@@ -1,6 +1,11 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Stamped onto every scraped series and every alert, so the Alertmanager route tree can
+  # branch by cluster/tenant. Override per-deployment (env-templated in prod / per-fleet).
+  external_labels:
+    cluster: local
+    tenant: default
 
 alerting:
   alertmanagers:
@@ -9,6 +14,13 @@ alerting:
 
 rule_files:
   - /etc/prometheus/alert_rules.yml
+
+# HA / long-term metrics (item 3.3): ship scraped samples to Mimir/Thanos on object storage for
+# unlimited retention + horizontal query. Disabled in dev (no Mimir); uncomment + set the URL in
+# prod. The OTel Collector (otel-collector-config.yml) also remote-writes OTLP metrics there.
+# remote_write:
+#   - url: http://mimir:9009/api/v1/push
+#     queue_config: {max_shards: 30, capacity: 10000}
 
 scrape_configs:
   # Ray Serve metrics — auto-exported by Ray's built-in Prometheus integration.

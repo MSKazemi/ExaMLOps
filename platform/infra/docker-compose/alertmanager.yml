@@ -1,17 +1,97 @@
-# Minimal Alertmanager routing. The default receiver has no delivery integration,
-# so alerts are visible in the Alertmanager UI (http://localhost:19093). To deliver to
-# Slack, uncomment the slack_configs block and provide a webhook URL via your secret manager.
+# ExaMLOps Alertmanager — real route tree (severity/cluster/service), PagerDuty + Slack
+# receivers, inhibition, and a delivery heartbeat (item 3.4 / QW3).
+#
+# SECRETS ARE NOT COMMITTED. Every credential is read from a file under
+# /etc/alertmanager/secrets/ at notification time (mounted from ./alertmanager-secrets/,
+# gitignored). If a file is absent that one receiver degrades to a no-op — the config
+# still loads and every other path keeps working. See alertmanager-secrets/README.md.
+global:
+  resolve_timeout: 5m
+  # Global Slack webhook (per-receiver blocks below only set the channel). Optional.
+  slack_api_url_file: /etc/alertmanager/secrets/slack_api_url
+
+# The routing tree. Root is a no-op sink; every real alert matches a child route.
 route:
-  receiver: default
-  group_by: ['alertname']
+  receiver: 'null'
+  group_by: ['alertname', 'cluster', 'service']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 3h
+  routes:
+    # ── Delivery heartbeat ────────────────────────────────────────────────────
+    # The always-firing Watchdog alert is forwarded to an external dead-man's-switch
+    # (healthchecks.io / PagerDuty heartbeat / Grafana Cloud). Fast + frequent, never
+    # grouped away. If these pings STOP, the external monitor fires — proving the whole
+    # Prometheus → Alertmanager → receiver path, not just that Alertmanager is up.
+    - matchers:
+        - alertname = "Watchdog"
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 50s
+      continue: false
+
+    # ── Critical → page (PagerDuty) AND Slack ─────────────────────────────────
+    - matchers:
+        - severity = "critical"
+      receiver: critical
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 1h
+
+    # ── Warning → Slack only ──────────────────────────────────────────────────
+    - matchers:
+        - severity = "warning"
+      receiver: warning
+      group_wait: 30s
+      repeat_interval: 4h
 
 receivers:
-  - name: default
-  # - name: default
-  #   slack_configs:
-  #     - api_url: <SLACK_WEBHOOK_URL>
-  #       channel: '#mlops-alerts'
-  #       send_resolved: true
+  - name: 'null'
+
+  - name: heartbeat
+    webhook_configs:
+      # url_file so the snitch token stays out of git (Alertmanager v0.26+).
+      - url_file: /etc/alertmanager/secrets/heartbeat_url
+        send_resolved: false
+
+  - name: critical
+    pagerduty_configs:
+      - routing_key_file: /etc/alertmanager/secrets/pagerduty_routing_key
+        severity: critical
+        send_resolved: true
+        description: '{{ .CommonLabels.alertname }} [{{ .CommonLabels.cluster }}/{{ .CommonLabels.service }}]'
+    slack_configs:
+      - channel: '#mlops-alerts-critical'
+        send_resolved: true
+        title: '🔴 {{ .CommonLabels.alertname }} [{{ .CommonLabels.severity }}] {{ .CommonLabels.cluster }}/{{ .CommonLabels.service }}'
+        text: >-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: warning
+    slack_configs:
+      - channel: '#mlops-alerts'
+        send_resolved: true
+        title: '🟠 {{ .CommonLabels.alertname }} [{{ .CommonLabels.severity }}] {{ .CommonLabels.cluster }}/{{ .CommonLabels.service }}'
+        text: >-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+inhibit_rules:
+  # Don't double-notify: a critical alert mutes any warning for the SAME service+cluster.
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['cluster', 'service']
+
+  # If a scrape target/service is entirely down, mute its derived symptom alerts (they're
+  # just consequences of the outage) within the same cluster+service.
+  - source_matchers:
+      - alertname =~ "TargetDown|ControlPlaneDown|RayServeTargetDown|DataPlaneBridgeDown"
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ['cluster', 'service']

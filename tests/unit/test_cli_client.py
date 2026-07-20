@@ -55,3 +55,11 @@ def test_get_raises_client_error_on_connection_error():
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
         with pytest.raises(ClientError, match="unreachable"):
             get("http://localhost:18002/health")
+
+
+def test_get_wraps_read_timeout_as_client_error():
+    # A bare read-phase socket TimeoutError (not wrapped in URLError) must surface as a
+    # ClientError so callers (CLI, MCP tools) degrade gracefully instead of crashing.
+    with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with pytest.raises(ClientError, match="Timed out"):
+            get("http://localhost:9/slow")

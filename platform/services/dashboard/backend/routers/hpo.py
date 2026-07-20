@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/hpo", tags=["hpo"])
@@ -20,8 +20,7 @@ def _db_path() -> str:
 async def get_studies(_=Depends(_viewer)) -> list[dict]:
     """Last 50 HPO studies, most recent first."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             "SELECT id, ts, model, dataset, n_trials, metric, status,"
             "       flow_run_id, best_params_json, best_value, actor"
@@ -37,8 +36,7 @@ async def get_studies(_=Depends(_viewer)) -> list[dict]:
 async def get_trials(study_id: int, _=Depends(_viewer)) -> list[dict]:
     """All HPO trials for a given study."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         rows = conn.execute(
             "SELECT id, study_id, ts, trial_num, params_json, value"
             " FROM hpo_trials WHERE study_id=? ORDER BY trial_num",

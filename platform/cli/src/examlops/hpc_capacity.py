@@ -11,6 +11,9 @@ substrate) rather than duplicated here.
 from __future__ import annotations
 
 import os
+import threading
+import time
+from typing import Any
 
 from examlops.hpc_placement import node_capacity
 
@@ -20,6 +23,52 @@ def _gpu_cost_per_hour() -> float:
         return float(os.getenv("GPU_COST_PER_HOUR", "2.50"))
     except ValueError:
         return 2.50
+
+
+# ── TTL-cached fleet capacity summary (Phase 1 item 1.9) ─────────────────────────────────────
+# Repeated `exa hpc capacity` / dashboard `/fleet` calls re-derive the same per-cluster rollup.
+# At fleet scale the SQL GROUP BY is cheap, but a short TTL cache collapses bursts (a dashboard
+# with N widgets, or a NOC wall refreshing) into one query per window.
+_CAP_TTL_DEFAULT = 30.0
+_cap_cache_lock = threading.Lock()
+_cap_cache: dict[str | None, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def _cap_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("EXAMLOPS_HPC_CAPACITY_TTL", str(_CAP_TTL_DEFAULT))))
+    except ValueError:
+        return _CAP_TTL_DEFAULT
+
+
+def capacity_summary(
+    cluster: str | None = None, *, ttl: float | None = None, _now: float | None = None
+) -> dict[str, dict[str, Any]]:
+    """Per-cluster node-capacity rollup via SQL aggregation, TTL-cached (item 1.9).
+
+    Returns ``{cluster: {total_nodes, idle_nodes, total_gpus, idle_gpus, idle_cpus, by_state}}``.
+    ``ttl <= 0`` disables caching. ``_now`` is injectable for tests.
+    """
+    from examlops.data.hpc import aggregate_node_capacity
+
+    ttl = _cap_ttl() if ttl is None else ttl
+    now = time.monotonic() if _now is None else _now
+    if ttl > 0:
+        with _cap_cache_lock:
+            hit = _cap_cache.get(cluster)
+            if hit is not None and (now - hit[0]) < ttl:
+                return hit[1]
+    result = aggregate_node_capacity(cluster)
+    if ttl > 0:
+        with _cap_cache_lock:
+            _cap_cache[cluster] = (now, result)
+    return result
+
+
+def invalidate_capacity_cache() -> None:
+    """Drop the TTL cache (call after a fresh node snapshot is recorded)."""
+    with _cap_cache_lock:
+        _cap_cache.clear()
 
 
 def gpu_hours_by_scheduler(jobs: list[dict]) -> dict[str, float]:

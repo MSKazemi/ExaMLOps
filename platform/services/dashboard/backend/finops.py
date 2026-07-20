@@ -14,6 +14,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from dbconn import connect
+
 # Carbon estimation is inherently approximate (grid intensity varies hourly, TDP ≠ actual draw).
 # Surface a coarse relative uncertainty so the UI can show error bars rather than false precision.
 # These are the fallback figures for the platform's default methodology; when records were produced
@@ -42,8 +44,7 @@ def _provider_metadata(provider_name: str) -> tuple[str | None, float | None]:
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
     return conn
 
 

@@ -17,6 +17,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: serving
         annotations:
           summary: "Ray Serve error rate > 5%"
           description: "Prediction error rate is {{ $value | humanizePercentage }} over the last 5 min."
@@ -29,6 +30,7 @@ groups:
         for: 5m
         labels:
           severity: critical
+          service: serving
         annotations:
           summary: "Ray Serve error rate > 20% (CRITICAL)"
           description: "Prediction error rate is {{ $value | humanizePercentage }} — immediate action required."
@@ -41,6 +43,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: serving
         annotations:
           summary: "Ray Serve p99 latency > 1 s"
           description: "p99 prediction latency is {{ $value | humanizeDuration }} over the last 10 min."
@@ -53,6 +56,7 @@ groups:
         for: 5m
         labels:
           severity: critical
+          service: serving
         annotations:
           summary: "Ray Serve p99 latency > 3 s (CRITICAL)"
           description: "p99 prediction latency is {{ $value | humanizeDuration }}."
@@ -62,6 +66,7 @@ groups:
         for: 5m
         labels:
           severity: critical
+          service: serving
         annotations:
           summary: "No models loaded in Ray Serve"
           description: "ray_examlops_models_loaded = 0 for 5 min — inference is impossible."
@@ -71,6 +76,7 @@ groups:
         for: 0m
         labels:
           severity: warning
+          service: serving
         annotations:
           summary: "Ray Serve model reload failed ({{ $labels.model_name }})"
           description: "{{ $value }} failed reload(s) for model {{ $labels.model_name }} in 15 min."
@@ -83,6 +89,7 @@ groups:
         for: 5m
         labels:
           severity: critical
+          service: serving
         annotations:
           summary: "SLO error budget burn rate > 14.4× (1 h window)"
           description: "Error budget burn rate is {{ $value | humanize }}×. At this rate the 30-day 0.5% budget expires in < 2 hours."
@@ -95,6 +102,7 @@ groups:
         for: 60m
         labels:
           severity: warning
+          service: serving
         annotations:
           summary: "SLO error budget burn rate > 3× (6 h window)"
           description: "Error budget burn rate is {{ $value | humanize }}× over the last 6 hours."
@@ -108,6 +116,7 @@ groups:
         for: 2m
         labels:
           severity: critical
+          service: dataplane
         annotations:
           summary: "DataPlane bridge is offline"
           description: "dataplane_bridge_up = 0 for 2 min — inference requests from the bus are failing."
@@ -120,6 +129,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: dataplane
         annotations:
           summary: "DataPlane inference error rate > 5%"
           description: "Bridge inference error rate is {{ $value | humanizePercentage }} over the last 5 min."
@@ -132,6 +142,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: dataplane
         annotations:
           summary: "DataPlane p99 latency > 500 ms"
           description: "DataPlane p99 inference latency is {{ $value | humanizeDuration }}."
@@ -145,6 +156,7 @@ groups:
         for: 2m
         labels:
           severity: critical
+          service: control-plane
         annotations:
           summary: "Control plane is down"
           description: "control_plane scrape target has been unreachable for 2 min — retrains and approvals are blocked."
@@ -154,6 +166,7 @@ groups:
         for: 30m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "Oldest pending approval > 24 h"
           description: "An approval request has been waiting {{ $value | humanizeDuration }}."
@@ -163,6 +176,7 @@ groups:
         for: 15m
         labels:
           severity: critical
+          service: control-plane
         annotations:
           summary: "Oldest pending approval > 72 h (CRITICAL)"
           description: "An approval has been waiting {{ $value | humanizeDuration }} and will be auto-expired."
@@ -172,6 +186,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "Approval queue > 10 pending"
           description: "{{ $value }} approvals are pending — operator review may be backlogged."
@@ -184,6 +199,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "Retrain error rate > 20%"
           description: "{{ $value | humanizePercentage }} of retrain requests are failing in the last 15 min."
@@ -193,6 +209,7 @@ groups:
         for: 0m
         labels:
           severity: critical
+          service: control-plane
         annotations:
           summary: "Prefect circuit breaker OPENED"
           description: "The Prefect gateway circuit breaker has opened — control plane is fast-failing retrain requests."
@@ -202,6 +219,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "Prefect retry rate > 0.1/s"
           description: "Control plane is retrying Prefect calls at {{ $value | humanize }}/s — Prefect may be degraded."
@@ -214,6 +232,7 @@ groups:
         for: 15m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "Retrain dispatch p99 > 5 min"
           description: "Scheduling a retrain is taking {{ $value | humanizeDuration }} at p99."
@@ -223,6 +242,7 @@ groups:
         for: 0m
         labels:
           severity: warning
+          service: control-plane
         annotations:
           summary: "{{ $value }} approvals auto-expired in 1 h"
           description: "High auto-expiry volume — operators may not be reviewing approvals or APPROVAL_EXPIRY_HOURS is too short."
@@ -236,6 +256,7 @@ groups:
         for: 5m
         labels:
           severity: critical
+          service: platform
         annotations:
           summary: "Prometheus target {{ $labels.job }} is down"
           description: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) unreachable for 5 min."
@@ -245,6 +266,7 @@ groups:
         for: 3m
         labels:
           severity: critical
+          service: platform
         annotations:
           summary: "Ray Serve metrics endpoint down"
           description: "Cannot scrape Ray Serve at {{ $labels.instance }} — inference metrics are dark."
@@ -254,6 +276,7 @@ groups:
         for: 3m
         labels:
           severity: warning
+          service: platform
         annotations:
           summary: "Loki is down — logs not being stored"
           description: "Loki has been unreachable for 3 min."
@@ -263,6 +286,7 @@ groups:
         for: 3m
         labels:
           severity: warning
+          service: platform
         annotations:
           summary: "Tempo is down — traces not being stored"
           description: "Tempo has been unreachable for 3 min."
@@ -272,6 +296,24 @@ groups:
         for: 3m
         labels:
           severity: warning
+          service: platform
         annotations:
           summary: "Alertmanager is down — notifications silenced"
           description: "Alertmanager has been unreachable for 3 min."
+
+  # ── Delivery heartbeat (dead-man's-switch) ────────────────────────────────────
+  # Always firing. Routed to the Alertmanager `heartbeat` receiver → external monitor.
+  # If these pings STOP arriving, the whole Prometheus→Alertmanager→receiver path is
+  # broken (item 3.4 / QW3). This is what proves alert *delivery*, not just liveness.
+  - name: examlops-heartbeat
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        for: 0m
+        labels:
+          severity: none
+          service: heartbeat
+        annotations:
+          summary: "Alerting pipeline heartbeat (always firing)"
+          description: "If this stops reaching the external dead-man's-switch, alert delivery is down."
+

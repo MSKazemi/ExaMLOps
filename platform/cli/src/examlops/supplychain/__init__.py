@@ -87,7 +87,7 @@ def sign_model(
     model: str, version: str, artifact_paths: Iterable[Path], *, actor: str | None = None
 ) -> Signature:
     """Sign a model artifact bundle and store the signature (spec R1/R2)."""
-    from examlops.platform_db import store_model_signature
+    from examlops.data.registry import store_model_signature
 
     digest = artifact_digest(artifact_paths)
     sig = _hmac_sign(digest)
@@ -99,7 +99,7 @@ def sign_model(
 
 def verify_model(model: str, version: str, artifact_paths: Iterable[Path]) -> VerifyResult:
     """Verify a model's signature against the current artifact bytes (spec R6, cached R8)."""
-    from examlops.platform_db import get_model_signature
+    from examlops.data.registry import get_model_signature
 
     row = get_model_signature(model, version)
     if row is None:
@@ -144,7 +144,7 @@ def generate_ai_bom(
     dependencies: list[str] | None = None,
 ) -> dict:
     """Emit a CycloneDX-style AI-BOM for a model version (spec R3/R4)."""
-    from examlops.platform_db import store_model_bom
+    from examlops.data.registry import store_model_bom
 
     deps = dependencies or _key_dependency_versions()
     bom = {
@@ -189,7 +189,7 @@ def _key_dependency_versions() -> list[str]:
 
 def _audit(action: str, model: str, version: str, actor: str | None, extra: dict) -> None:
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import write_audit_event
 
         write_audit_event("exa-supplychain", actor, action, f"{model}@{version}", extra)
     except Exception:

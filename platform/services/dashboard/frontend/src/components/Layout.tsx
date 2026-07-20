@@ -16,11 +16,13 @@ import {
   Activity,
   Boxes,
   Cpu,
+  FolderKanban,
   DollarSign,
   FileCheck,
   Bot,
   BellRing,
   Flag,
+  Sparkles,
   LogOut,
   Sun,
   Moon,
@@ -43,8 +45,10 @@ const BASE_NAV = [
   { path: '/',          label: 'Overview', icon: LayoutDashboard, adminOnly: false },
   { path: '/services',  label: 'Services', icon: Server,          adminOnly: false },
   { path: '/models',    label: 'Models',   icon: Box,             adminOnly: false },
+  { path: '/projects',  label: 'Projects', icon: FolderKanban,    adminOnly: false },
   { path: '/mlops',     label: 'MLOps',    icon: Boxes,           adminOnly: false },
   { path: '/llmops',    label: 'LLMOps',   icon: Bot,             adminOnly: false },
+  { path: '/nextgen',   label: 'Next-Gen', icon: Sparkles,        adminOnly: false },
   { path: '/datasets',   label: 'Datasets',  icon: Database,   adminOnly: false },
   { path: '/pipelines', label: 'Pipelines', icon: GitBranch,     adminOnly: false },
   { path: '/facility',  label: 'Facility',  icon: Cpu,           adminOnly: false },
@@ -60,7 +64,7 @@ const BASE_NAV = [
   { path: '/flags',     label: 'Flags',     icon: Flag,          adminOnly: true  },
   { path: '/approvals', label: 'Approvals', icon: ClipboardCheck, adminOnly: true  },
   { path: '/status',    label: 'Status',    icon: Activity,      adminOnly: false },
-  { path: '/docs',      label: 'Docs',     icon: BookOpen,        adminOnly: false },
+  { path: '/documents', label: 'Documents', icon: BookOpen,        adminOnly: false },
 ] as const
 
 const THEMES: { value: Theme; icon: typeof Sun; label: string }[] = [

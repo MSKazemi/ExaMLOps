@@ -379,20 +379,39 @@ async def _call_pipeline(job: HpcJobV1, override_model: str | None = None) -> tu
         run_id[:8] if run_id else "--------",
         latency_ms,
     )
-    if prediction is not None:
-        write_drift_snapshot(model_name, alias, float(prediction), str(job.job_id))
     embedding = features.get("embedding") or features.get("features", {}).get("embedding")
+    # The three per-inference SQLite writes are offloaded to a worker thread so they never block
+    # the asyncio event loop (they take the platform.db write lock / wait out busy_timeout). QW10.
+    await asyncio.to_thread(
+        _persist_inference_telemetry, model_name, alias, prediction, embedding, str(job.job_id)
+    )
+    return prediction, run_id, version
+
+
+def _persist_inference_telemetry(
+    model_name: str,
+    alias: str,
+    prediction: float | None,
+    embedding: object,
+    job_id: str,
+) -> None:
+    """The per-inference drift / input-embedding / audit SQLite writes, bundled so they run in a
+    single worker-thread hop off the asyncio loop (QW10). Kept as one function so the hot inference
+    path makes exactly one ``to_thread`` transition."""
+    if prediction is not None:
+        write_drift_snapshot(model_name, alias, float(prediction), job_id)
     if embedding:
         import math as _math
-        vals = list(embedding)
+
+        vals = list(embedding)  # type: ignore[call-overload]
         n = len(vals)
         emb_mean = sum(vals) / n
         emb_std = _math.sqrt(sum((v - emb_mean) ** 2 for v in vals) / n) if n > 1 else 0.0
         emb_norm = _math.sqrt(sum(v * v for v in vals))
-        write_input_snapshot(model_name, alias, emb_norm, emb_mean, emb_std, str(job.job_id))
-    write_audit_event("bridge", None, "inference_served", model_name,
-                      {"alias": alias, "job_id": str(job.job_id)})
-    return prediction, run_id, version
+        write_input_snapshot(model_name, alias, emb_norm, emb_mean, emb_std, job_id)
+    write_audit_event(
+        "bridge", None, "inference_served", model_name, {"alias": alias, "job_id": job_id}
+    )
 
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────

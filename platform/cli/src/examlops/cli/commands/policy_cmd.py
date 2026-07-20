@@ -88,3 +88,134 @@ def test(
         return
     style = {"allow": _output.ok, "deny": _output.error}.get(decision.effect, _output.warning)
     style(f"{action}: {decision.effect} — {decision.reason}")
+
+
+def _parse_set(pairs: list[str] | None) -> dict[str, object]:
+    context: dict[str, object] = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            _output.error(f"--set expects key=value, got: {pair!r}")
+            raise typer.Exit(2)
+        key, _, raw = pair.partition("=")
+        if raw.lower() in {"true", "false"}:
+            value: object = raw.lower() == "true"
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                try:
+                    value = float(raw)
+                except ValueError:
+                    value = raw
+        context[key.strip()] = value
+    return context
+
+
+@app.command("eval")
+def eval_decision(
+    decision: str = typer.Argument(
+        ..., help="Governed decision point (promotion/supply_chain/budget/…)"
+    ),
+    action: str = typer.Option(..., "--action", help="Action verb (promote/deploy/allocate/…)"),
+    subject: str = typer.Option(None, "--subject", help="Who is acting"),
+    resource: str = typer.Option(None, "--resource", help="What is acted on (e.g. JPCP/17)"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+    set_: list[str] = typer.Option(None, "--set", "-s", help="Context key=value (repeatable)"),
+    dry_run: bool = typer.Option(True, "--dry-run/--enforce", help="Explain without auditing (R5)"),
+) -> None:
+    """Evaluate a structured governance decision via the PolicyEngine (D5, R1/R5/GWT-5)."""
+    from examlops.policy_engine import PolicyInput, evaluate
+
+    pinput = PolicyInput(
+        action=action, subject=subject, resource=resource, tenant=tenant, context=_parse_set(set_)
+    )
+    result = evaluate(decision, pinput, audit=not dry_run)
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "decision": decision,
+                "allow": result.allow,
+                "effect": result.effect,
+                "engine": result.engine,
+                "reasons": result.reasons,
+            }
+        )
+        return
+    # An eval that reports 'deny' is a successful evaluation, not a command failure — use a
+    # non-exiting style (ok for allow, warning for deny/approval) so --dry-run never exits 1.
+    style = _output.ok if result.allow else _output.warning
+    style(f"{decision}: {result.effect} [{result.engine}] — {'; '.join(result.reasons)}")
+
+
+bundle_app = typer.Typer(no_args_is_help=True, help="Signed, versioned policy bundles (D5)")
+app.add_typer(bundle_app, name="bundle")
+
+
+@bundle_app.command("sign")
+def bundle_sign(
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Version + sign the effective policy bundle for a tenant (R2)."""
+    import os as _os
+
+    from examlops.policy_engine import sign_bundle
+
+    actor = _os.getenv("EXAMLOPS_ACTOR") or _os.getenv("USER") or "unknown"
+    result = sign_bundle(tenant, actor=actor)
+    if _output.json_mode:
+        _output.print_json(result)
+        return
+    _output.ok(
+        f"Signed policy bundle {tenant} v{result['version']} (hash {result['content_hash'][:16]}…)"
+    )
+    if not result["signed"]:
+        _output.warning("  unsigned — set EXAMLOPS_SIGNING_KEY to sign.")
+
+
+@bundle_app.command("verify")
+def bundle_verify(
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+    version: int = typer.Option(None, "--version", help="Specific version (default latest)"),
+) -> None:
+    """Verify a stored policy bundle's hash + signature (R2). Exit 1 if invalid."""
+    from examlops.policy_engine import verify_bundle
+
+    result = verify_bundle(tenant, version)
+    if _output.json_mode:
+        _output.print_json(result)
+        raise typer.Exit(0 if result["valid"] else 1)
+    if result["valid"]:
+        _output.ok(f"Policy bundle {tenant} is valid.")
+    else:
+        _output.error(f"Policy bundle {tenant} INVALID: {'; '.join(result['reasons'])}")
+    raise typer.Exit(0 if result["valid"] else 1)
+
+
+@bundle_app.command("list")
+def bundle_list(
+    tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
+) -> None:
+    """List signed policy bundle versions."""
+    from examlops.data.governance import list_policy_bundles
+
+    bundles = list_policy_bundles(tenant)
+    if _output.json_mode:
+        _output.print_json(bundles)
+        return
+    if not bundles:
+        _output.info("No policy bundles signed. Use: exa policy bundle sign")
+        return
+    _output.print_table(
+        "Policy Bundles",
+        ["Tenant", "Version", "Hash", "Signed", "Created"],
+        [
+            [
+                b["tenant"],
+                str(b["version"]),
+                b["content_hash"][:12],
+                "yes" if b["signature"] else "no",
+                str(b["created_at"]),
+            ]
+            for b in bundles
+        ],
+    )

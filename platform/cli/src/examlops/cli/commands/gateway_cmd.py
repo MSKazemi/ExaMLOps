@@ -58,7 +58,7 @@ def key_issue(
 @key_app.command("list")
 def key_list() -> None:
     """List virtual keys (hashes only)."""
-    from examlops.platform_db import list_virtual_keys
+    from examlops.data.gateway import list_virtual_keys
 
     keys = list_virtual_keys()
     if _output.json_mode:
@@ -88,7 +88,9 @@ def key_list() -> None:
 @key_app.command("revoke")
 def key_revoke(key_hash: str = typer.Argument(..., help="Key hash prefix or full hash")) -> None:
     """Revoke a virtual key by its stored hash."""
-    from examlops.platform_db import list_virtual_keys, revoke_virtual_key, write_audit_event
+    from examlops.data.audit import write_audit_event
+    from examlops.data.gateway import list_virtual_keys
+    from examlops.data.governance import revoke_virtual_key
 
     matches = [k for k in list_virtual_keys() if k["key_hash"].startswith(key_hash)]
     if not matches:
@@ -114,7 +116,7 @@ def cache_stats_cmd(
     tenant: str | None = typer.Option(None, "--tenant", help="Filter to one tenant"),
 ) -> None:
     """Show semantic-cache hit-rate and token/cost savings (B3)."""
-    from examlops.platform_db import cache_stats
+    from examlops.data.gateway import cache_stats
 
     stats = cache_stats(tenant)
     if _output.json_mode:
@@ -170,3 +172,115 @@ def chat(
         return
     tag = " (cached)" if comp.cached else ""
     _output.ok(f"[{comp.backend}] {comp.text}  (cost ${comp.cost_usd:.6f}){tag}")
+
+
+# ── B8: structured output + reasoning ops (ADR 0035) ──────────────────────────
+schema_app = typer.Typer(no_args_is_help=True, help="Structured output — schema-constrained (B8)")
+app.add_typer(schema_app, name="schema")
+
+reasoning_app = typer.Typer(
+    no_args_is_help=True, help="Reasoning ops — budget/accounting/trace (B8)"
+)
+app.add_typer(reasoning_app, name="reasoning")
+
+
+@schema_app.command("test")
+def schema_test(
+    schema_file: str = typer.Argument(..., help="Path to a JSON Schema file"),
+    object_file: str = typer.Argument(..., help="Path to a JSON object to validate"),
+    repair: bool = typer.Option(True, "--repair/--no-repair", help="Attempt repair on invalid"),
+) -> None:
+    """Validate (and optionally repair) an object against a JSON Schema (R1/R8)."""
+    import json as _json
+
+    from examlops.structured import repair_object, validate_object
+
+    with open(schema_file) as fh:
+        schema = _json.load(fh)
+    with open(object_file) as fh:
+        obj = _json.load(fh)
+    errors = validate_object(obj, schema)
+    if not errors:
+        _output.ok("Object is valid against the schema.")
+        return
+    if repair:
+        fixed = repair_object(obj, schema)
+        if not validate_object(fixed, schema):
+            _output.warning("Invalid — repaired to a valid object:")
+            _output.info(_json.dumps(fixed, indent=2))
+            return
+    _output.error(f"Invalid: {'; '.join(errors)}")
+    raise typer.Exit(1)
+
+
+@reasoning_app.command("account")
+def reasoning_account(
+    model: str = typer.Argument(..., help="Model name"),
+    reasoning_tokens: int = typer.Option(..., "--reasoning", help="Reasoning (thinking) tokens"),
+    output_tokens: int = typer.Option(..., "--output", help="Output tokens"),
+    reasoning_rate: float = typer.Option(0.0, "--reasoning-rate", help="$/reasoning token"),
+    output_rate: float = typer.Option(0.0, "--output-rate", help="$/output token"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Account reasoning vs output tokens/cost separately (R5)."""
+    from examlops.structured import account_reasoning
+
+    result = account_reasoning(
+        model,
+        reasoning_tokens,
+        output_tokens,
+        reasoning_rate=reasoning_rate,
+        output_rate=output_rate,
+        tenant=tenant,
+    )
+    if _output.json_mode:
+        _output.print_json(result)
+        return
+    _output.ok(
+        f"{model}: reasoning {result['reasoning_tokens']}tok (${result['reasoning_cost']}) + "
+        f"output {result['output_tokens']}tok (${result['output_cost']}) = ${result['total_cost']}"
+    )
+
+
+@reasoning_app.command("budget")
+def reasoning_budget(
+    requested: int = typer.Argument(..., help="Requested thinking tokens"),
+    max_thinking: int = typer.Option(..., "--max", help="Reasoning budget (max thinking tokens)"),
+) -> None:
+    """Show how a reasoning budget caps a request (R4)."""
+    from examlops.structured import ReasoningBudget
+
+    allowed, cut = ReasoningBudget(max_thinking).enforce(requested)
+    if _output.json_mode:
+        _output.print_json({"requested": requested, "allowed": allowed, "cut": cut})
+        return
+    if cut:
+        _output.warning(f"Thinking cut off at {allowed} tokens (requested {requested}).")
+    else:
+        _output.ok(f"Within budget: {allowed} thinking tokens.")
+
+
+@reasoning_app.command("stats")
+def reasoning_stats(
+    model: str = typer.Option(None, "--model", help="Filter by model"),
+    tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
+) -> None:
+    """Reasoning-vs-output token/cost split + structured-output outcomes."""
+    from examlops.data.events import reasoning_usage_summary, structured_output_stats
+
+    summary = reasoning_usage_summary(model, tenant)
+    outcomes = structured_output_stats()
+    if _output.json_mode:
+        _output.print_json({"reasoning": summary, "structured_output": outcomes})
+        return
+    _output.print_record(
+        {
+            "reasoning_tokens": summary["reasoning_tokens"],
+            "output_tokens": summary["output_tokens"],
+            "reasoning_cost": f"${summary['reasoning_cost']:.6f}",
+            "output_cost": f"${summary['output_cost']:.6f}",
+            "structured_valid": outcomes.get("valid", 0),
+            "structured_repaired": outcomes.get("repaired", 0),
+            "structured_failed": outcomes.get("failed", 0),
+        }
+    )

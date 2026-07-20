@@ -47,7 +47,7 @@ async def get_model_uuids(
     _role: str = Depends(require_role("viewer")),
 ) -> dict:
     """Return {model_name: uuid_or_null} for all models in the YAML registry."""
-    models_dir = os.getenv("MODELS_YAML_DIR", "pipelines/models")
+    models_dir = os.getenv("MODELS_YAML_DIR", "usecases/seanergy/models")
     result: dict[str, str | None] = {}
     models_path = Path(models_dir)
     if not models_path.is_dir():

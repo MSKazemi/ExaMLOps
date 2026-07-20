@@ -56,6 +56,26 @@ def platform_triage() -> str:
     )
 
 
+def review_project(name: str) -> str:
+    """Guide the agent through auditing a Project workspace (ADR 0086)."""
+    return (
+        f"You are reviewing the ExaMLOps Project (workspace) '{name}'.\n\n"
+        "Follow this procedure:\n"
+        f"1. Read the resource `examlops://project/{name}` for the full anatomy — resources by "
+        "kind, members and their roles, quota, budget, and consumption.\n"
+        f"2. Call `project_cost` for '{name}' to see attributed GPU-hours, USD, carbon, and "
+        "whether it is over budget or GPU quota.\n"
+        "3. Flag governance risks: is there at least one owner? Any editor/viewer that looks "
+        "stale? Resources assigned but no members, or vice-versa?\n"
+        "4. Flag FinOps risks: consumption near or over budget; models with cost but not "
+        "attributed to any project (unaccounted spend).\n"
+        "5. Produce a short prioritised report. If a change is warranted (add an owner, adjust "
+        "the budget, assign an orphaned model), recommend the exact `exa project ...` command. "
+        "Do NOT make membership or assignment changes yourself unless explicitly asked — those "
+        "are gated, audited writes."
+    )
+
+
 @dataclass(frozen=True)
 class PromptSpec:
     fn: Callable[..., str]
@@ -75,6 +95,7 @@ PROMPTS: tuple[PromptSpec, ...] = (
     PromptSpec(diagnose_drift, tags=("drift", "diagnostics")),
     PromptSpec(promote_safely, tags=("promotion", "governance")),
     PromptSpec(platform_triage, tags=("status", "diagnostics")),
+    PromptSpec(review_project, tags=("projects", "governance", "finops")),
 )
 
 

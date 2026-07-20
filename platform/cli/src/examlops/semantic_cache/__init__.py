@@ -160,7 +160,7 @@ class SemanticCache:
         self, tenant: str, model: str, *, hit: bool, similarity: float, entry: CacheEntry | None
     ) -> None:
         try:
-            from examlops.platform_db import record_cache_event
+            from examlops.data.events import record_cache_event
 
             record_cache_event(
                 tenant,

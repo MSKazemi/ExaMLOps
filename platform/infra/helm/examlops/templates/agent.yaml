@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "examlops.fullname" . }}-agent
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # readiness-gated: never drop below desired during upgrade
+      maxSurge: 1
+  replicas: {{ .Values.agent.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "examlops.labels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: {{ include "examlops.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "examlops.image" (dict "root" . "svc" .Values.agent) }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: {{ .Values.agent.port }}}
+          envFrom:
+            - configMapRef:
+                name: {{ include "examlops.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "examlops.fullname" . }}-agent
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "examlops.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: agent
+  ports:
+    - {name: http, port: {{ .Values.agent.port }}, targetPort: http}

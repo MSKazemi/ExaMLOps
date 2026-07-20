@@ -39,6 +39,9 @@ const Alerts = lazy(() => import('@/pages/Alerts').then((m) => ({ default: m.Ale
 const Flags = lazy(() => import('@/pages/Flags').then((m) => ({ default: m.Flags })))
 const NocWall = lazy(() => import('@/pages/NocWall').then((m) => ({ default: m.NocWall })))
 const Preferences = lazy(() => import('@/pages/Preferences').then((m) => ({ default: m.Preferences })))
+const Projects = lazy(() => import('@/pages/Projects').then((m) => ({ default: m.Projects })))
+const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ default: m.ProjectDetail })))
+const NextGen = lazy(() => import('@/pages/NextGen').then((m) => ({ default: m.NextGen })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -110,7 +113,7 @@ export default function App() {
                       <Route path="/datasets" element={<Datasets />} />
                       <Route path="/config" element={<Config />} />
                       <Route path="/audit" element={<Audit />} />
-                      <Route path="/docs" element={<Docs />} />
+                      <Route path="/documents" element={<Docs />} />
                       <Route path="/dataplane" element={<DataPlane />} />
                       <Route path="/approvals" element={<Approvals />} />
                       <Route path="/pipelines" element={<Pipelines />} />
@@ -123,6 +126,13 @@ export default function App() {
                       {isEnabled('facilityConsole') && (
                         <Route path="/facility" element={<FacilityConsole />} />
                       )}
+                      {isEnabled('projectsConsole') && (
+                        <>
+                          <Route path="/projects" element={<Projects />} />
+                          <Route path="/projects/:name" element={<ProjectDetail />} />
+                        </>
+                      )}
+                      <Route path="/nextgen" element={<NextGen />} />
                       <Route path="/finops" element={<Finops />} />
                       <Route path="/status" element={<SelfObs />} />
                       <Route path="/governance" element={<Governance />} />

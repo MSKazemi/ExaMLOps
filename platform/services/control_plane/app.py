@@ -155,6 +155,33 @@ except ImportError:
 
 CONTROL_PLANE_PORT = int(os.getenv("CONTROL_PLANE_PORT", "8002"))
 CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
+
+# Well-known placeholder tokens are rejected outright (fail closed): a deploy that ships with an
+# example/default token is effectively unauthenticated (Phase 0 item 0.8 / QW6).
+_WEAK_TOKENS = frozenset(
+    {
+        "changeme",
+        "change-me",
+        "change_me",
+        "changethis",
+        "changeme123",
+        "placeholder",
+        "example",
+        "your-token-here",
+        "yourtoken",
+        "todo",
+        "none",
+        "null",
+    }
+)
+
+
+def _token_is_usable() -> bool:
+    """True only when a real token is configured — not unset and not a known placeholder."""
+    t = CONTROL_PLANE_TOKEN.strip()
+    return bool(t) and t.lower() not in _WEAK_TOKENS
+
+
 PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:4200/api").rstrip("/")
 PREFECT_DEPLOYMENT_NAME = os.getenv(
     "PREFECT_DEPLOYMENT_NAME", "examlops_scheduled_training/nightly"
@@ -466,8 +493,16 @@ def _run_startup_checks() -> None:
         logger.error("Startup check FAILED — registry: %s", exc)
         checks["registry"] = f"fail: {exc}"
 
-    checks["token"] = "ok" if CONTROL_PLANE_TOKEN else "missing"
-    if not CONTROL_PLANE_TOKEN:
+    if _token_is_usable():
+        checks["token"] = "ok"
+    elif CONTROL_PLANE_TOKEN.strip():
+        checks["token"] = "weak"
+        logger.error(
+            "Startup check FAILED — CONTROL_PLANE_TOKEN is a known placeholder "
+            "(e.g. 'changeme'); write endpoints return 503 until a real token is set"
+        )
+    else:
+        checks["token"] = "missing"
         logger.error("Startup check FAILED — CONTROL_PLANE_TOKEN unset; POST /retrain returns 503")
 
     _startup_checks = checks
@@ -628,15 +663,26 @@ app = FastAPI(
 app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_RequestIDMiddleware)
 
+# Allowed-hosts scoping (item 0.8): reject Host-header spoofing. Defaults permissive ("*")
+# for local dev; set CONTROL_PLANE_ALLOWED_HOSTS to a comma-separated allow-list in prod
+# (e.g. "control-plane.internal,cp.example.org").
+_allowed_hosts = [
+    h.strip() for h in os.getenv("CONTROL_PLANE_ALLOWED_HOSTS", "*").split(",") if h.strip()
+]
+if _allowed_hosts and _allowed_hosts != ["*"]:
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+
 
 # ─── Auth & rate limiting ─────────────────────────────────────────────────────
 
 
 def _require_token(authorization: str | None = Header(default=None)) -> None:
-    if not CONTROL_PLANE_TOKEN:
+    if not _token_is_usable():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Control plane not configured (CONTROL_PLANE_TOKEN unset)",
+            "Control plane not configured (CONTROL_PLANE_TOKEN unset or a known placeholder)",
         )
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
@@ -1098,7 +1144,7 @@ def health() -> dict[str, Any]:
         "status": "ok" if all_ok else "degraded",
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
-        "auth_configured": bool(CONTROL_PLANE_TOKEN),
+        "auth_configured": _token_is_usable(),
         "models": _get_registry(),
         "pending_approvals": pending_count,
         "startup_checks": _startup_checks,

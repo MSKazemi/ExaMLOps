@@ -1,9 +1,10 @@
 """
 pipeline_generator — Auto-pipeline generator for ExaMLOps.
 
-At startup, auto-discovers all (model, config) pairs by scanning:
-  • modelzoo/modelzoo/models/tasks/**/*.py  → DataplaneModel subclasses
-  • pipelines/model_configs/*.py                      → DataplaneModelConfiguration subclasses
+At startup, auto-discovers all (model, config) pairs from the active use-case pack (ADR 0094;
+default ``usecases/seanergy``, override with ``EXAMLOPS_USECASE_DIR``) by scanning:
+  • the pack's model ``tasks_root`` package  → framework model subclasses
+  • the pack's ``config_package``            → framework config subclasses
 
 Each config class must declare MODEL_CLASS = <ModelClass> to be matched.
 Matched pairs are registered automatically — no manual wiring needed.
@@ -70,14 +71,27 @@ for _p in (str(_REPO_ROOT), str(_PLATFORM), str(_MODELZOO), str(_SLURM_ADAPTER_D
         sys.path.insert(0, _p)
 
 from ci.utils import retrieve_instances_from_file
-from modelzoo.decorators import pipeline_step  # noqa: F401 — re-exported for callers
-from modelzoo.models.common.dataplane_configurator import DataplaneModelConfiguration
-from modelzoo.models.common.dataplane_model import DataplaneModel
 
+from pipelines import usecase as _usecase  # noqa: E402
 from pipelines.model_loader import ModelYAMLConfig, scan_model_yamls  # noqa: E402
 
 # registry_loader has no imports from this module — no circular import risk.
 from pipelines.registry_loader import export_registry, load_registry, resolve_entries  # noqa: E402
+
+# ── Use-case framework bindings (ADR 0094) ──────────────────────────────────────
+# The active pack (default usecases/seanergy; override with EXAMLOPS_USECASE_DIR) supplies the
+# ML-framework base classes + helpers. The engine resolves them through the loader so it imports
+# nothing use-case-specific by name; a different pack swaps the whole binding.
+_FRAMEWORK = _usecase.framework()
+DataplaneModel = _FRAMEWORK["model_base"]
+DataplaneModelConfiguration = _FRAMEWORK["config_base"]
+pipeline_step = _FRAMEWORK["pipeline_step"]  # re-exported for callers  # noqa: F401
+_ModelParams = _FRAMEWORK["model_params"]
+_Dataloader = _FRAMEWORK["dataloader"]
+_DataloaderParams = _FRAMEWORK["dataloader_params"]
+_get_backend = _FRAMEWORK["get_backend"]
+_adapter_for = _FRAMEWORK["framework_adapter"]
+DataplaneModelTask = _FRAMEWORK["model_task"]
 
 # ── Model Registry ─────────────────────────────────────────────────────────────
 #
@@ -98,10 +112,10 @@ MODEL_REGISTRY: dict[
 
 def discover_models() -> dict[str, type[DataplaneModel]]:
     """
-    Scan modelzoo/modelzoo/models/tasks/**/*.py and return every
-    concrete DataplaneModel subclass found, keyed by class name.
+    Scan the active pack's model ``tasks_root`` package (ADR 0094) and return every
+    concrete model subclass found, keyed by class name.
     """
-    tasks_root = _MODELZOO / "modelzoo" / "models" / "tasks"
+    tasks_root = _usecase.tasks_dir()
     found: dict[str, type[DataplaneModel]] = {}
     for py_file in sorted(tasks_root.rglob("*.py")):
         if py_file.name.startswith("_"):
@@ -116,10 +130,10 @@ def discover_models() -> dict[str, type[DataplaneModel]]:
 
 def discover_configs() -> dict[str, type[DataplaneModelConfiguration]]:
     """
-    Scan pipelines/model_configs/*.py and return every concrete
+    Scan the pack's model_configs/*.py and return every concrete
     DataplaneModelConfiguration subclass found, keyed by class name.
     """
-    configs_dir = _REPO_ROOT / "pipelines" / "model_configs"
+    configs_dir = _usecase.config_dir()
     found: dict[str, type[DataplaneModelConfiguration]] = {}
     for py_file in sorted(configs_dir.glob("*.py")):
         if py_file.name.startswith("_"):
@@ -133,7 +147,7 @@ def discover_configs() -> dict[str, type[DataplaneModelConfiguration]]:
 
 
 def auto_register_all() -> None:
-    """Scan pipelines/models/*.yaml and register each enabled model.
+    """Scan the pack's models/*.yaml and register each enabled model.
 
     Replaces the old Python class-scanning auto-discovery. Each YAML file
     provides the full declarative config; the Python shim (config_class field)
@@ -277,7 +291,7 @@ def make_prefect_tasks_from_model(model_cls: type[DataplaneModel]) -> dict[str, 
 
 # ── YAML-backed config helpers ────────────────────────────────────────────────
 
-_MODELS_DIR = _REPO_ROOT / "pipelines" / "models"
+_MODELS_DIR = _usecase.models_dir()
 
 _DATASET_CLASS_MAP: dict[str, type] | None = None
 
@@ -285,13 +299,7 @@ _DATASET_CLASS_MAP: dict[str, type] | None = None
 def _get_dataset_class_map() -> dict[str, type]:
     global _DATASET_CLASS_MAP
     if _DATASET_CLASS_MAP is None:
-        from modelzoo.datasets.f_data import FDataDataset
-        from modelzoo.datasets.pm100 import PM100Dataset
-
-        _DATASET_CLASS_MAP = {
-            "PM100Dataset": PM100Dataset,
-            "FDataDataset": FDataDataset,
-        }
+        _DATASET_CLASS_MAP = _usecase.dataset_registry()
     return _DATASET_CLASS_MAP
 
 
@@ -308,7 +316,7 @@ def _import_shim(config_class: str):
     E.g. 'jpcp_config.JPCPConfiguration' → pipelines.model_configs.jpcp_config.JPCPConfiguration
     """
     module_name, class_name = config_class.rsplit(".", 1)
-    module = importlib.import_module(f"pipelines.model_configs.{module_name}")
+    module = importlib.import_module(f"{_usecase.config_package()}.{module_name}")
     return getattr(module, class_name)
 
 
@@ -334,13 +342,7 @@ def _build_train_components(
     backend_name: str | None,
 ) -> tuple:
     """Build (model, dataset, loader) from YAML config + Python shim transforms."""
-    from modelzoo.dataloader.dataplane_dataloader import DataplaneDataloader
-    from modelzoo.datasets._backends import get_backend
-    from modelzoo.models.common.dataplane_configurator import (
-        DataplaneDataloaderParams,
-        DataplaneModelParams,
-    )
-
+    # Framework helpers come from the active pack (ADR 0094) — bound at module load.
     ds_name = dataset_cls.__name__
     ds_entry = yaml_cfg.dataset(ds_name)
     split_cfg = yaml_cfg.split_config(ds_name, split)
@@ -352,7 +354,7 @@ def _build_train_components(
     if raw_embedding is not None:
         model_dict["embedding_type"] = shim.resolve_embedding_type(raw_embedding)
     model_dict["model_hyperparameters"] = hyperparameters
-    model_params = DataplaneModelParams(**model_dict)
+    model_params = _ModelParams(**model_dict)
 
     model = shim.MODEL_CLASS(**model_params.to_dict())
 
@@ -385,13 +387,13 @@ def _build_train_components(
     # Backend: YAML default overridden by runtime arg
     effective_backend = backend_name or ds_entry.backend
     if effective_backend and effective_backend != "zenodo":
-        ds_kwargs["backend"] = get_backend(effective_backend)
+        ds_kwargs["backend"] = _get_backend(effective_backend)
     else:
         ds_kwargs["use_zenodo_url"] = True
 
-    loader_params = DataplaneDataloaderParams(batch_size=ds_entry.batch_size)
+    loader_params = _DataloaderParams(batch_size=ds_entry.batch_size)
     dataset = dataset_cls(**ds_kwargs)
-    loader = DataplaneDataloader(dataset, **loader_params.to_dict())
+    loader = _Dataloader(dataset, **loader_params.to_dict())
     return model, dataset, loader
 
 
@@ -724,6 +726,7 @@ def slurm_submit_task(
     loader: Any,
     model_name: str,
     dataset_cls_name: str,
+    is_dummy: bool = False,
 ) -> tuple[str, str | None]:
     """
     Submit training to HPC (or run inline for mock mode).
@@ -772,6 +775,9 @@ def slurm_submit_task(
     local_job_dir = Path(adapter.working_dir) / run_uuid
     local_job_dir.mkdir(parents=True, exist_ok=True)
     bash_script = local_job_dir / "run.sh"
+    # Forward --dummy so a real-scheduler smoke test trains on the small dummy split
+    # instead of the full dataset (parity with mock mode and the CLI --dummy flag).
+    dummy_flag = " --dummy" if is_dummy else ""
     bash_script.write_text(
         "#!/bin/bash\n"
         f"mkdir -p {remote_dir}\n"
@@ -779,7 +785,7 @@ def slurm_submit_task(
         f"  --model {model_name} \\\n"
         f"  --dataset {dataset_cls_name} \\\n"
         f"  --output {remote_model} \\\n"
-        f"  --mlflow-uri {mlflow_uri}\n"
+        f"  --mlflow-uri {mlflow_uri}{dummy_flag}\n"
     )
     bash_script.chmod(0o755)
 
@@ -864,10 +870,8 @@ def result_fetch_task(
 
     # Phase 5: dispatch on framework. Sklearn models keep using joblib; PyTorch
     # / HuggingFace models load via their adapter so the same code path serves
-    # every framework.
-    from modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
-
-    adapter = adapter_for(model_init)
+    # every framework. The adapter comes from the active pack (ADR 0094).
+    adapter = _adapter_for(model_init)
     loaded_estimator = adapter.load(model_init, Path(artifact_path))
     print(
         f"[result_fetch] Loaded {adapter.flavour} estimator from {artifact_path} "
@@ -891,8 +895,6 @@ def evaluate_task(
     backend_name: str | None = None,
 ) -> dict:
     """Evaluate the trained model on the validation split. Returns metrics dict."""
-    from modelzoo.models.common.dataplane_model import DataplaneModelTask
-
     _, config_cls, _ = MODEL_REGISTRY[model_name]
     ds_cls = _resolve_dataset_cls(config_cls, dataset_cls_name)
     _, _, val_loader = config_cls.get_train_components(
@@ -985,17 +987,38 @@ def log_mlflow_task(
     registered_model_name = inference_params["model_id"]
 
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000"))
-    mlflow.set_experiment(f"{model_name.lower()}_{dataset_name.lower()}")
+    # Project Anatomy P6 (ADR 0091): when the model belongs to a project, route its artifacts into
+    # the project's own storage prefix via a per-project MLflow experiment. Fail-open — any error
+    # (no project, MLflow unavailable) falls back to the default per-model experiment, so a
+    # non-project run is completely unaffected.
+    _experiment = f"{model_name.lower()}_{dataset_name.lower()}"
+    try:
+        from examlops.platform_db import (  # noqa: PLC0415
+            ensure_project_storage,
+            project_experiment,
+        )
+        from examlops.project_scope import resolve_project  # noqa: PLC0415
+
+        _project = resolve_project(model_name)
+        if _project:
+            _store = ensure_project_storage(_project)
+            _experiment = project_experiment(_project)
+            _artifact_loc = (
+                f"s3://{_store['bucket']}/{_store['prefix']}artifacts" if _store else None
+            )
+            if mlflow.get_experiment_by_name(_experiment) is None and _artifact_loc:
+                mlflow.create_experiment(_experiment, artifact_location=_artifact_loc)
+    except Exception:
+        _experiment = f"{model_name.lower()}_{dataset_name.lower()}"
+    mlflow.set_experiment(_experiment)
 
     registration = {"version": None, "run_id": None, "status": "Staging"}
 
     # Phase 5: pick the right MLflow flavour based on the model's framework
     # attribute (sklearn / pytorch / huggingface). Legacy sklearn models without
     # ``framework`` set fall through to the SklearnFrameworkAdapter — same
-    # behaviour as before.
-    from modelzoo.models.common.framework_adapter import adapter_for  # noqa: PLC0415
-
-    adapter = adapter_for(model)
+    # behaviour as before. The adapter comes from the active pack (ADR 0094).
+    adapter = _adapter_for(model)
 
     with mlflow.start_run(run_name=f"{model_name}_{dataset_name}"):
         mlflow.log_param("model_name", model_name)
@@ -1262,7 +1285,9 @@ def training_flow(
     print(f"{'=' * 60}\n")
 
     model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
-    job_id, artifact_hint = slurm_submit_task(model_init, loader, model_name, dataset_cls_name)
+    job_id, artifact_hint = slurm_submit_task(
+        model_init, loader, model_name, dataset_cls_name, is_dummy
+    )
     state, artifact_path = slurm_wait_task(job_id, artifact_hint)
     model = result_fetch_task(
         state, artifact_path, model_name, dataset_cls_name, is_dummy, backend_name

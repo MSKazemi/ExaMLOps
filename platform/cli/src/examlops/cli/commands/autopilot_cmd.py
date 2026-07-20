@@ -19,24 +19,25 @@ Design notes (ADR 0085):
 from __future__ import annotations
 
 import os
+import socket
 from typing import Any
 
 import typer
 
 from examlops.cli import _output
-from examlops.platform_db import (
+from examlops.data import init_db
+from examlops.data.audit import write_audit_event
+from examlops.data.autopilot import (
+    claim_autopilot_lease,
     create_autopilot_run,
     get_autopilot_config,
-    get_drift_baseline,
-    get_promotion_rule,
-    init_db,
     list_autopilot_runs,
-    list_drift_auto_retrain,
-    record_drift_trigger,
+    release_autopilot_lease,
     set_autopilot_config,
     update_autopilot_run,
-    write_audit_event,
 )
+from examlops.data.drift import claim_drift_trigger, get_drift_baseline, list_drift_auto_retrain
+from examlops.data.serving import get_promotion_rule
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -61,6 +62,29 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 
 _SNAPSHOT_WINDOW = 50  # same as drift.py
+
+# Safety cap: the most retrains one cycle will fire, so a fleet-wide drift event (or a bug) can
+# never launch an unbounded retrain storm. Overridable via EXAMLOPS_AUTOPILOT_MAX_RETRAINS.
+_DEFAULT_MAX_RETRAINS_PER_CYCLE = 10
+
+
+def _max_retrains_per_cycle() -> int:
+    raw = os.getenv("EXAMLOPS_AUTOPILOT_MAX_RETRAINS")
+    if raw and raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _DEFAULT_MAX_RETRAINS_PER_CYCLE
+
+
+# TTL for the distributed cycle lease (item 0.12). Long enough to cover a full cycle incl. the
+# HPC dispatch waits; short enough that a crashed holder frees the lease within one cron interval.
+_DEFAULT_LEASE_TTL_S = 900
+
+
+def _lease_ttl_s() -> int:
+    raw = os.getenv("EXAMLOPS_AUTOPILOT_LEASE_TTL")
+    if raw and raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _DEFAULT_LEASE_TTL_S
 
 
 def _actor() -> str:
@@ -151,7 +175,7 @@ def run_cycle(
     function (not a CLI callback) so tests can call it directly.
     """
     from examlops.cli._config import load_config
-    from examlops.platform_db import get_db
+    from examlops.data import get_db
 
     init_db()
     actor = _actor()
@@ -167,290 +191,361 @@ def run_cycle(
         )
         return {"enabled": False, "reason": "autopilot disabled — run: exa autopilot enable"}
 
-    run_id = create_autopilot_run(
-        triggered_by=triggered_by,
-        model_filter=model_filter,
-        dry_run=dry_run,
-        enabled_state="enabled",
-    )
-
-    retrains: list[dict[str, Any]] = []
-    promotions: list[dict[str, Any]] = []
-    blocks: list[dict[str, Any]] = []
-    hitl: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-
-    cfg = load_config()
-
-    # ── 1. Drift scan → trigger retrains ────────────────────────────────────
-    auto_retrain_cfgs = {c["model"]: c for c in list_drift_auto_retrain() if c["enabled"]}
-
-    # Determine which models to scan
-    if model_filter:
-        scan_models = [model_filter] if model_filter in auto_retrain_cfgs else []
-        if model_filter and model_filter not in auto_retrain_cfgs:
-            skipped.append({"model": model_filter, "reason": "no auto-retrain config"})
-    else:
-        scan_models = list(auto_retrain_cfgs.keys())
-
-    import datetime
-
-    for model in scan_models:
-        ar = auto_retrain_cfgs[model]
-
-        # Read drift snapshots
-        with get_db() as conn:
-            snap_rows = conn.execute(
-                "SELECT prediction FROM drift_snapshots WHERE model=? "
-                "ORDER BY ts DESC, rowid DESC LIMIT ?",
-                (model, _SNAPSHOT_WINDOW),
-            ).fetchall()
-        preds = [r["prediction"] for r in snap_rows]
-        if not preds:
-            skipped.append({"model": model, "reason": "no drift snapshots"})
-            continue
-
-        baseline = get_drift_baseline(model)
-        z, status = _compute_z(preds, baseline)
-
-        if status not in ("CRITICAL", "WARNING") or z < ar["min_z_score"]:
-            skipped.append(
-                {"model": model, "reason": f"z={z:.2f} below threshold {ar['min_z_score']}"}
-            )
-            continue
-
-        # Cooldown check
-        if ar["last_triggered"]:
-            try:
-                last = datetime.datetime.fromisoformat(ar["last_triggered"])
-                elapsed = (datetime.datetime.utcnow() - last).total_seconds()
-                if elapsed < ar["cooldown_s"]:
-                    skipped.append(
-                        {"model": model, "reason": f"cooldown {elapsed:.0f}/{ar['cooldown_s']}s"}
-                    )
-                    continue
-            except ValueError:
-                pass
-
-        # Policy check: autopilot_trigger
-        outcome, reason = _policy_decide(
-            "autopilot_trigger",
-            {"model": model, "z_score": z, "dataset": ar["dataset_name"]},
-        )
-        if outcome == "deny":
-            blocks.append({"model": model, "gate": "autopilot_trigger", "reason": reason})
+    # ── distributed cycle lease (item 0.12) — one active cycle at a time ─────
+    lease_holder = f"{socket.gethostname()}:{os.getpid()}"
+    lease_held = False
+    if not dry_run:
+        lease_held = claim_autopilot_lease(lease_holder, _lease_ttl_s())
+        if not lease_held:
             write_audit_event(
                 "autopilot",
                 actor,
-                "policy_denied",
-                model,
-                {"gate": "autopilot_trigger", "z_score": z, "reason": reason},
+                "autopilot_skipped",
+                model_filter,
+                {"reason": "another autopilot cycle holds the lease"},
             )
-            continue
-        if outcome == "require_approval":
-            hitl.append({"model": model, "gate": "autopilot_trigger", "z_score": z})
-            write_audit_event(
-                "autopilot",
-                actor,
-                "human_approval_required",
-                model,
-                {
-                    "gate": "autopilot_trigger",
-                    "z_score": z,
-                    "message": "autopilot trigger requires human approval",
-                },
-            )
-            continue
-
-        # Trigger retrain (or dry-run)
-        if dry_run:
-            retrains.append({"model": model, "z_score": z, "action": "would retrain"})
-        else:
-            try:
-                result = _call_retrain(cfg, model, ar["dataset_name"])
-                record_drift_trigger(model)
-                write_audit_event(
-                    "autopilot",
-                    actor,
-                    "autopilot_retrain_triggered",
-                    model,
-                    {"z_score": z, "flow_run_id": result.get("flow_run_id")},
-                )
-                retrains.append(
-                    {"model": model, "z_score": z, "flow_run_id": result.get("flow_run_id")}
-                )
-            except Exception as exc:
-                write_audit_event(
-                    "autopilot", actor, "autopilot_retrain_error", model, {"error": str(exc)}
-                )
-                skipped.append({"model": model, "reason": f"retrain error: {exc}"})
-
-    # ── 2. Promote: check models with promotion rules + Staging version ──────
-    with get_db() as conn:
-        rule_rows = conn.execute("SELECT model FROM promotion_rules WHERE enabled=1").fetchall()
-    promo_models = [r["model"] for r in rule_rows]
-    if model_filter:
-        promo_models = [m for m in promo_models if m.upper() == model_filter.upper()]
-
-    for model in promo_models:
-        rule = get_promotion_rule(model)
-        if not rule:
-            continue
-
-        # Get Staging metrics
-        metrics = _get_staging_metrics(model)
-        if metrics is None:
-            skipped.append({"model": model, "reason": "no Staging version or MLflow unavailable"})
-            continue
-
-        metric_val = metrics.get(rule["metric"])
-        if metric_val is None:
-            skipped.append(
-                {"model": model, "reason": f"metric '{rule['metric']}' not in Staging run"}
-            )
-            continue
-
-        # Metric gate (promotion provider)
-        try:
-            from examlops.promotion_providers import resolve_promotion_eval_fn
-
-            _eval = resolve_promotion_eval_fn()
-            passes, _ = _eval(metric_val, rule["threshold"], rule["operator"])
-        except Exception:
-            op_map = {
-                "lt": lambda v, t: v < t,
-                "lte": lambda v, t: v <= t,
-                "gt": lambda v, t: v > t,
-                "gte": lambda v, t: v >= t,
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "another autopilot cycle is already running (lease held)",
             }
-            op_fn = op_map.get(rule["operator"], lambda v, t: False)
-            passes = op_fn(metric_val, rule["threshold"])
-
-        if not passes:
-            skipped.append(
-                {
-                    "model": model,
-                    "reason": f"metric {rule['metric']}={metric_val:.4f} does not pass {rule['operator']} {rule['threshold']}",
-                }
-            )
-            continue
-
-        # Policy check: autopilot_promote
-        outcome, reason = _policy_decide(
-            "autopilot_promote",
-            {
-                "model": model,
-                "metric": rule["metric"],
-                "metric_val": metric_val,
-                "threshold": rule["threshold"],
-                "operator": rule["operator"],
-            },
+    try:
+        run_id = create_autopilot_run(
+            triggered_by=triggered_by,
+            model_filter=model_filter,
+            dry_run=dry_run,
+            enabled_state="enabled",
         )
-        if outcome == "deny":
-            blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
-            write_audit_event(
-                "autopilot",
-                actor,
-                "policy_denied",
-                model,
-                {"gate": "autopilot_promote", "metric": rule["metric"], "metric_val": metric_val},
-            )
-            continue
-        if outcome == "require_approval":
-            hitl.append(
-                {
-                    "model": model,
-                    "gate": "autopilot_promote",
-                    "metric": rule["metric"],
-                    "metric_val": metric_val,
-                }
-            )
-            write_audit_event(
-                "autopilot",
-                actor,
-                "human_approval_required",
-                model,
-                {
-                    "gate": "autopilot_promote",
-                    "metric": rule["metric"],
-                    "metric_val": metric_val,
-                    "message": "autopilot promotion requires human approval",
-                },
-            )
-            continue
 
-        # Promote
-        if dry_run:
-            promotions.append(
-                {
-                    "model": model,
-                    "metric": rule["metric"],
-                    "metric_val": metric_val,
-                    "action": "would promote",
-                }
-            )
+        retrains: list[dict[str, Any]] = []
+        promotions: list[dict[str, Any]] = []
+        blocks: list[dict[str, Any]] = []
+        hitl: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        cfg = load_config()
+
+        # ── 1. Drift scan → trigger retrains ────────────────────────────────────
+        auto_retrain_cfgs = {c["model"]: c for c in list_drift_auto_retrain() if c["enabled"]}
+
+        # Determine which models to scan
+        if model_filter:
+            scan_models = [model_filter] if model_filter in auto_retrain_cfgs else []
+            if model_filter and model_filter not in auto_retrain_cfgs:
+                skipped.append({"model": model_filter, "reason": "no auto-retrain config"})
         else:
-            try:
-                _do_promote(model, from_alias=rule["from_alias"], to_alias=rule["to_alias"])
+            scan_models = list(auto_retrain_cfgs.keys())
+
+        import datetime
+
+        max_retrains = _max_retrains_per_cycle()
+        triggered_this_cycle = 0
+
+        for model in scan_models:
+            ar = auto_retrain_cfgs[model]
+
+            # Read drift snapshots
+            with get_db() as conn:
+                snap_rows = conn.execute(
+                    "SELECT prediction FROM drift_snapshots WHERE model=? "
+                    "ORDER BY ts DESC, rowid DESC LIMIT ?",
+                    (model, _SNAPSHOT_WINDOW),
+                ).fetchall()
+            preds = [r["prediction"] for r in snap_rows]
+            if not preds:
+                skipped.append({"model": model, "reason": "no drift snapshots"})
+                continue
+
+            baseline = get_drift_baseline(model)
+            z, status = _compute_z(preds, baseline)
+
+            if status not in ("CRITICAL", "WARNING") or z < ar["min_z_score"]:
+                skipped.append(
+                    {"model": model, "reason": f"z={z:.2f} below threshold {ar['min_z_score']}"}
+                )
+                continue
+
+            # Cooldown check
+            if ar["last_triggered"]:
+                try:
+                    last = datetime.datetime.fromisoformat(ar["last_triggered"])
+                    elapsed = (datetime.datetime.utcnow() - last).total_seconds()
+                    if elapsed < ar["cooldown_s"]:
+                        skipped.append(
+                            {
+                                "model": model,
+                                "reason": f"cooldown {elapsed:.0f}/{ar['cooldown_s']}s",
+                            }
+                        )
+                        continue
+                except ValueError:
+                    pass
+
+            # Policy check: autopilot_trigger
+            outcome, reason = _policy_decide(
+                "autopilot_trigger",
+                {"model": model, "z_score": z, "dataset": ar["dataset_name"]},
+            )
+            if outcome == "deny":
+                blocks.append({"model": model, "gate": "autopilot_trigger", "reason": reason})
                 write_audit_event(
                     "autopilot",
                     actor,
-                    "autopilot_promoted",
+                    "policy_denied",
+                    model,
+                    {"gate": "autopilot_trigger", "z_score": z, "reason": reason},
+                )
+                continue
+            if outcome == "require_approval":
+                hitl.append({"model": model, "gate": "autopilot_trigger", "z_score": z})
+                write_audit_event(
+                    "autopilot",
+                    actor,
+                    "human_approval_required",
                     model,
                     {
-                        "metric": rule["metric"],
-                        "metric_val": metric_val,
-                        "from": rule["from_alias"],
-                        "to": rule["to_alias"],
+                        "gate": "autopilot_trigger",
+                        "z_score": z,
+                        "message": "autopilot trigger requires human approval",
                     },
                 )
+                continue
+
+            # Trigger retrain (or dry-run)
+            if dry_run:
+                retrains.append({"model": model, "z_score": z, "action": "would retrain"})
+            else:
+                # Per-cycle storm cap: never fire more than N retrains in one cycle.
+                if triggered_this_cycle >= max_retrains:
+                    skipped.append(
+                        {
+                            "model": model,
+                            "reason": f"per-cycle retrain cap ({max_retrains}) reached",
+                        }
+                    )
+                    continue
+                # Atomic cooldown claim — closes the TOCTOU: check-and-stamp is one locked write, so an
+                # overlapping cycle cannot also claim this model and double-fire the retrain.
+                if not claim_drift_trigger(model, ar["cooldown_s"]):
+                    skipped.append(
+                        {
+                            "model": model,
+                            "reason": "cooldown active (claimed by a concurrent cycle)",
+                        }
+                    )
+                    continue
+                try:
+                    result = _call_retrain(cfg, model, ar["dataset_name"])
+                    triggered_this_cycle += 1
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autopilot_retrain_triggered",
+                        model,
+                        {"z_score": z, "flow_run_id": result.get("flow_run_id")},
+                    )
+                    retrains.append(
+                        {"model": model, "z_score": z, "flow_run_id": result.get("flow_run_id")}
+                    )
+                except Exception as exc:
+                    write_audit_event(
+                        "autopilot", actor, "autopilot_retrain_error", model, {"error": str(exc)}
+                    )
+                    skipped.append({"model": model, "reason": f"retrain error: {exc}"})
+
+        # ── 2. Promote: check models with promotion rules + Staging version ──────
+        with get_db() as conn:
+            rule_rows = conn.execute("SELECT model FROM promotion_rules WHERE enabled=1").fetchall()
+        promo_models = [r["model"] for r in rule_rows]
+        if model_filter:
+            promo_models = [m for m in promo_models if m.upper() == model_filter.upper()]
+
+        for model in promo_models:
+            rule = get_promotion_rule(model)
+            if not rule:
+                continue
+
+            # Get Staging metrics
+            metrics = _get_staging_metrics(model)
+            if metrics is None:
+                skipped.append(
+                    {"model": model, "reason": "no Staging version or MLflow unavailable"}
+                )
+                continue
+
+            metric_val = metrics.get(rule["metric"])
+            if metric_val is None:
+                skipped.append(
+                    {"model": model, "reason": f"metric '{rule['metric']}' not in Staging run"}
+                )
+                continue
+
+            # Metric gate (promotion provider)
+            try:
+                from examlops.promotion_providers import resolve_promotion_eval_fn
+
+                _eval = resolve_promotion_eval_fn()
+                passes, _ = _eval(metric_val, rule["threshold"], rule["operator"])
+            except Exception:
+                op_map = {
+                    "lt": lambda v, t: v < t,
+                    "lte": lambda v, t: v <= t,
+                    "gt": lambda v, t: v > t,
+                    "gte": lambda v, t: v >= t,
+                }
+                op_fn = op_map.get(rule["operator"], lambda v, t: False)
+                passes = op_fn(metric_val, rule["threshold"])
+
+            if not passes:
+                skipped.append(
+                    {
+                        "model": model,
+                        "reason": f"metric {rule['metric']}={metric_val:.4f} does not pass {rule['operator']} {rule['threshold']}",
+                    }
+                )
+                continue
+
+            # Policy check: autopilot_promote
+            outcome, reason = _policy_decide(
+                "autopilot_promote",
+                {
+                    "model": model,
+                    "metric": rule["metric"],
+                    "metric_val": metric_val,
+                    "threshold": rule["threshold"],
+                    "operator": rule["operator"],
+                },
+            )
+            if outcome == "deny":
+                blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
+                write_audit_event(
+                    "autopilot",
+                    actor,
+                    "policy_denied",
+                    model,
+                    {
+                        "gate": "autopilot_promote",
+                        "metric": rule["metric"],
+                        "metric_val": metric_val,
+                    },
+                )
+                continue
+            if outcome == "require_approval":
+                hitl.append(
+                    {
+                        "model": model,
+                        "gate": "autopilot_promote",
+                        "metric": rule["metric"],
+                        "metric_val": metric_val,
+                    }
+                )
+                write_audit_event(
+                    "autopilot",
+                    actor,
+                    "human_approval_required",
+                    model,
+                    {
+                        "gate": "autopilot_promote",
+                        "metric": rule["metric"],
+                        "metric_val": metric_val,
+                        "message": "autopilot promotion requires human approval",
+                    },
+                )
+                continue
+
+            # Promote
+            if dry_run:
                 promotions.append(
                     {
                         "model": model,
                         "metric": rule["metric"],
                         "metric_val": metric_val,
-                        "promoted_to": rule["to_alias"],
+                        "action": "would promote",
                     }
                 )
-            except Exception as exc:
-                write_audit_event(
-                    "autopilot", actor, "autopilot_promote_error", model, {"error": str(exc)}
-                )
-                skipped.append({"model": model, "reason": f"promote error: {exc}"})
+            else:
+                try:
+                    _do_promote(model, from_alias=rule["from_alias"], to_alias=rule["to_alias"])
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autopilot_promoted",
+                        model,
+                        {
+                            "metric": rule["metric"],
+                            "metric_val": metric_val,
+                            "from": rule["from_alias"],
+                            "to": rule["to_alias"],
+                        },
+                    )
+                    promotions.append(
+                        {
+                            "model": model,
+                            "metric": rule["metric"],
+                            "metric_val": metric_val,
+                            "promoted_to": rule["to_alias"],
+                        }
+                    )
+                except Exception as exc:
+                    write_audit_event(
+                        "autopilot", actor, "autopilot_promote_error", model, {"error": str(exc)}
+                    )
+                    skipped.append({"model": model, "reason": f"promote error: {exc}"})
 
-    # ── 3. Record run ────────────────────────────────────────────────────────
-    summary = {
-        "retrains": retrains,
-        "promotions": promotions,
-        "policy_blocks": blocks,
-        "human_required": hitl,
-        "skipped": skipped,
-    }
-    update_autopilot_run(
-        run_id,
-        retrains_triggered=len(retrains),
-        promotions_made=len(promotions),
-        policy_blocks=len(blocks),
-        human_required=len(hitl),
-        skipped=len(skipped),
-        summary=summary,
-    )
-    write_audit_event(
-        "autopilot",
-        actor,
-        "autopilot_cycle_complete",
-        model_filter,
-        {
-            "run_id": run_id,
-            "dry_run": dry_run,
-            "retrains": len(retrains),
-            "promotions": len(promotions),
-            "policy_blocks": len(blocks),
-            "human_required": len(hitl),
-        },
-    )
+        # ── 3. Record run ────────────────────────────────────────────────────────
+        summary = {
+            "retrains": retrains,
+            "promotions": promotions,
+            "policy_blocks": blocks,
+            "human_required": hitl,
+            "skipped": skipped,
+        }
+        update_autopilot_run(
+            run_id,
+            retrains_triggered=len(retrains),
+            promotions_made=len(promotions),
+            policy_blocks=len(blocks),
+            human_required=len(hitl),
+            skipped=len(skipped),
+            summary=summary,
+        )
+        write_audit_event(
+            "autopilot",
+            actor,
+            "autopilot_cycle_complete",
+            model_filter,
+            {
+                "run_id": run_id,
+                "dry_run": dry_run,
+                "retrains": len(retrains),
+                "promotions": len(promotions),
+                "policy_blocks": len(blocks),
+                "human_required": len(hitl),
+            },
+        )
+        # Publish to the NovaFabric event backbone (item 1.3) so subscribers (dashboard SSE,
+        # notifiers, downstream automations) react without polling. Best-effort: a broker outage
+        # must never fail the cycle — the outbox row is durable and the relay retries.
+        try:
+            from examlops import events
 
-    return {"run_id": run_id, "dry_run": dry_run, **summary}
+            events.publish(
+                "autopilot.cycle_complete",
+                {
+                    "run_id": run_id,
+                    "model_filter": model_filter,
+                    "retrains": len(retrains),
+                    "promotions": len(promotions),
+                    "dry_run": dry_run,
+                },
+            )
+        except Exception:  # noqa: BLE001 - event publish is best-effort
+            pass
+
+        return {"run_id": run_id, "dry_run": dry_run, **summary}
+    finally:
+        if lease_held:
+            release_autopilot_lease(lease_holder)
 
 
 # ── CLI commands ─────────────────────────────────────────────────────────────

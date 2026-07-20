@@ -54,6 +54,11 @@ def _send(req: urllib.request.Request, url: str, timeout: float = 10.0) -> Any:
         _raise_http(exc, url)
     except urllib.error.URLError as exc:
         _raise_url(exc, url)
+    except TimeoutError as exc:
+        # A read-phase socket timeout is raised bare (not wrapped in URLError), so it would
+        # otherwise leak past every caller. Wrap it so callers catching ClientError degrade
+        # gracefully (e.g. MCP tools return an ok:False envelope instead of crashing).
+        raise ClientError(f"Timed out after {timeout:g}s connecting to {url}") from exc
 
 
 def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:

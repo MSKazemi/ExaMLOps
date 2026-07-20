@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examlops"
-version = "0.33.0"
+version = "0.37.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 dependencies = [
@@ -37,9 +37,19 @@ analysis = [
 finops = [
     "simpleeval>=1.0",
 ]
+# OIDC SSO access-token validation (examlops.oidc, Phase 2 item 2.1). PyJWT is
+# imported lazily inside oidc.py, so the core CLI works without it; installing
+# this extra enables RS256 token verification against a configured JWKS.
+oidc = [
+    "pyjwt>=2.10",
+]
 
 [project.scripts]
 exa = "examlops.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# D2 NIST AI RMF catalogue (and any other in-package data files) must ship in wheels.
+examlops = ["governance/*.yaml"]

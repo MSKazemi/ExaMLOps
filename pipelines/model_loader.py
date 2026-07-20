@@ -1,6 +1,6 @@
 """Per-model YAML loader for ExaMLOps.
 
-Each model has its own YAML file at pipelines/models/<name>.yaml.
+Each model has its own YAML file at the active pack's models/<name>.yaml.
 This module parses those files into typed dataclasses consumed by
 pipeline_generator.py and other system components.
 """
@@ -47,6 +47,7 @@ class ModelYAMLConfig:
     prefect: dict[str, Any] = field(default_factory=dict)
     inference: dict[str, Any] = field(default_factory=dict)
     dataplane_uuid: str | None = None
+    project: str | None = None  # owning Project (ADR 0088), optional default membership
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -106,6 +107,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         prefect=raw.get("prefect", {}),
         inference=raw.get("inference", {}),
         dataplane_uuid=raw.get("dataplane_uuid") or None,
+        project=raw.get("project") or None,
     )
 
 

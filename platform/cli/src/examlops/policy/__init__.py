@@ -125,7 +125,8 @@ def decide(
 def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:
     """Record the decision to ``audit_events`` (never raises — audit failure must not block ops)."""
     try:
-        from examlops.platform_db import _actor, write_audit_event
+        from examlops.data.audit import write_audit_event
+        from examlops.platform_db import _actor
 
         write_audit_event(
             source="exa-policy",

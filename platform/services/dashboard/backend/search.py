@@ -16,6 +16,7 @@ import sqlite3
 from typing import Any
 
 import mlops
+from dbconn import connect
 
 # Static navigation targets — always searchable, no DB needed (F1 pages).
 _PAGES: list[tuple[str, str]] = [
@@ -30,7 +31,7 @@ _PAGES: list[tuple[str, str]] = [
     ("Approvals", "/approvals"),
     ("Audit", "/audit"),
     ("Config", "/config"),
-    ("Docs", "/docs"),
+    ("Docs", "/documents"),
 ]
 
 
@@ -63,8 +64,7 @@ def _is_subsequence(q: str, t: str) -> bool:
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
     return conn
 
 

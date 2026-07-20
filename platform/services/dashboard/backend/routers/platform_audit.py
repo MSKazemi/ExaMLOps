@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 
 from auth import require_role
+from dbconn import connect
 from fastapi import APIRouter, Depends, Query
 
 router = APIRouter(prefix="/platform-audit", tags=["platform-audit"])
@@ -30,8 +30,7 @@ async def get_platform_audit(
 ) -> dict:
     """Read platform audit_events from shared platform.db."""
     try:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
+        conn = connect(_db_path())
         query = (
             "SELECT id, ts, source, actor, action, target, details "
             "FROM audit_events WHERE ts >= datetime('now', ?) "

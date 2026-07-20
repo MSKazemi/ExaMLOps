@@ -177,7 +177,7 @@ def run_suite(
     """Execute a suite and (by default) persist per-metric scores to platform_db (R6/R7)."""
     result = suite.run(items)
     if persist:
-        from examlops.platform_db import record_eval_result
+        from examlops.data.evaluation import record_eval_result
 
         record_eval_result(
             suite.name,
