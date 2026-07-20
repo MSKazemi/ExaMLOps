@@ -5,7 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-07-20
+
 ### Added
+
+- **feat(providers): notebook/CLI/dashboard-authored, per-project, AST-sandboxed calculation
+  providers (ADR 0074).** Author the Python behind any calculation (FinOps `cost`/`carbon`, `drift`,
+  `promotion`, `llm_*`) from a **Jupyter notebook**, the CLI, or the **dashboard** — per-project, with
+  no pip-install. `examlops.providers.sandbox` AST-allowlist gate (rejects `import`/`eval`/`exec`/
+  `open`/`getattr`/dunder-access/`globals`; `Provider`/`ProviderMeta`/`math` pre-injected);
+  `providers.authoring` per-project store (`$EXAMLOPS_PROVIDERS_DIR/<project>/<domain>/<name>.py`) +
+  `register_from_source`/`save_provider`/`set_active_provider`/list/read/delete; `exa providers
+  author|authored|show|activate|rm|validate`; dashboard **Providers** card on each project (code
+  editor + Validate + Activate/Delete, `project.manage`-gated + audited); FinOps
+  `estimate_cost/carbon_via_provider(project=)` honour the project's active provider. JupyterHub
+  notebooks now mount the repo + shared provider store so `import examlops` works; starter notebook
+  `docs/notebooks/manage-providers.ipynb`. Guide `docs/guides/authored-providers.md`.
+- **feat(dashboard): project workspace is now editable end-to-end.** Create/start/stop/delete a
+  project **workbench (notebook)** from the UI (own persistent volume, injected project connections);
+  edit **quota** (CPU/mem/storage/GPU), **budgets**, and the isolated **namespace** via a new
+  `PUT /api/v1/projects/{name}`; namespace surfaced as a badge.
+- **feat(dashboard): editable serving traffic split** from the MLOps console (per-alias weights,
+  sum-to-100 gate) via `PUT /api/platform-data/traffic-rules/{model}` — `exa serve traffic` parity.
+- **feat(dashboard): editable drift actions** — Set-baseline / Reset / auto-retrain enable-disable
+  per model on the Drift page (`exa drift baseline|reset|auto-retrain` parity); fixed the no-op
+  Drift Refresh button.
+
+### Fixed
+
+- **fix(dashboard): `GET /api/containers` 500 (Services tab).** The hardened docker-socket-proxy
+  forbids the `/images` endpoint, so reading `c.image` raised 403 → 500 and the Services tab was
+  blank. Image name is now read from the container-list attrs instead.
+- **fix(cli): read-phase socket timeouts wrapped as `ClientError`.** `_client._send` caught
+  `HTTPError`/`URLError` but a bare read-phase `TimeoutError` leaked past every caller, crashing MCP
+  read tools (and intermittently reddening the surface-contract gate). Now degrades gracefully.
+
+### Added (pre-existing, this cycle)
 
 - **docs(hpc): new guide `docs/guides/hpc-training-workflow.md` — run a Prefect `training_flow` on a
   real Slurm/Flux cluster end-to-end** (scheduler × transport axes, resource env vars, `local` vs

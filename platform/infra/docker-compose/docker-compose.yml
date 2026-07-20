@@ -494,6 +494,10 @@ services:
       DOCKER_NETWORK_NAME: examlops_default
       MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Host path of the platform repo — bind-mounted into each spawned notebook (read-only) so a
+      # notebook can `import examlops` for plugin/provider management (ADR 0074); the .providers
+      # subdir is mounted read-write so authored plugins are shared with the CLI/dashboard.
+      EXAMLOPS_HOST_REPO: ${EXAMLOPS_HOST_REPO:-/nfs/share01/examlops}
     env_file:
       - path: .env
         required: true
