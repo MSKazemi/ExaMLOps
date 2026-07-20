@@ -75,3 +75,30 @@ describe('setWorkbenchStatus', () => {
     )
   })
 })
+
+describe('createWorkbench', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('POSTs project + body to the collection endpoint', async () => {
+    mockFetch.mockResolvedValue({})
+    const { createWorkbench } = await import('./workbenches')
+    await createWorkbench('research', { name: 'nb2', image: 'jupyter/minimal-notebook:latest' })
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/workbenches', {
+      method: 'POST',
+      body: JSON.stringify({ project: 'research', name: 'nb2', image: 'jupyter/minimal-notebook:latest' }),
+    })
+  })
+})
+
+describe('deleteWorkbench', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('DELETEs the encoded project/name path', async () => {
+    mockFetch.mockResolvedValue({ project: 'my research', name: 'nb 2', deleted: true })
+    const { deleteWorkbench } = await import('./workbenches')
+    await deleteWorkbench('my research', 'nb 2')
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/workbenches/my%20research/nb%202', {
+      method: 'DELETE',
+    })
+  })
+})

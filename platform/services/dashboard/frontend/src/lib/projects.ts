@@ -79,6 +79,8 @@ export interface ProjectDetail {
   name: string
   description: string
   status: string
+  // Isolated namespace / network the project's resources bind into (optional — older backends omit)
+  namespace?: string | null
   quota: ProjectQuota
   resources: Record<string, string[]>
   members: ProjectMember[]
@@ -216,6 +218,33 @@ export const removeMember = (
 export const deleteProject = (name: string): Promise<{ name: string; deleted: boolean }> =>
   apiFetch(`/api/v1/projects/${encodeURIComponent(name)}`, { method: 'DELETE' })
 
+/** Editable project fields. All optional — only sent keys are updated (PATCH-like PUT). */
+export interface UpdateProjectBody {
+  description?: string
+  cpuLimit?: number
+  memoryLimitGb?: number
+  storageGb?: number
+  gpuLimit?: number
+  networkName?: string
+  gpuHoursBudget?: number
+  costBudget?: number
+}
+
+export interface UpdateProjectResult {
+  name: string
+  quotaUpdated: boolean
+  budgetUpdated: boolean
+}
+
+export const updateProject = (
+  name: string,
+  body: UpdateProjectBody,
+): Promise<UpdateProjectResult> =>
+  apiFetch<UpdateProjectResult>(`/api/v1/projects/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+
 export interface BindStorageBody {
   connectionRef?: string
 }
@@ -308,6 +337,17 @@ export const useBindStorage = (name: string) => {
     mutationFn: (body: BindStorageBody) => bindStorage(name, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects', 'detail', name] })
+    },
+  })
+}
+
+export const useUpdateProject = (name: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UpdateProjectBody) => updateProject(name, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects', 'detail', name] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
     },
   })
 }

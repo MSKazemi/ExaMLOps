@@ -3,22 +3,25 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, FolderKanban, Layers, Users, Cpu, DollarSign, Gauge,
   PlusCircle, X, Clock, UserPlus, Plug, FlaskConical, Lock, Check,
-  Play, Square, HardDrive, Workflow, Trash2, PlugZap,
+  Play, Square, HardDrive, Workflow, Trash2, PlugZap, Pencil, Boxes,
 } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
 import { isAdmin } from '@/lib/auth'
 import {
   useProject, useAssignResource, useAddMember, useRemoveMember, useDeleteProject,
-  useBindStorage, statusToken, budgetUsage,
+  useBindStorage, useUpdateProject, statusToken, budgetUsage,
   storageUsagePct, bytesToGb,
   RESOURCE_KINDS, MEMBER_ROLES,
-  type AssignResourceBody, type AddMemberBody,
+  type AssignResourceBody, type AddMemberBody, type UpdateProjectBody, type ProjectDetail as ProjectDetailT,
 } from '@/lib/projects'
 import {
   useConnections, useCreateConnection, useDeleteConnection, useTestConnection,
   CONNECTION_KINDS, type CreateConnectionBody, type ConnectionKind,
 } from '@/lib/connections'
-import { useWorkbenches, useSetWorkbenchStatus, nextStatus } from '@/lib/workbenches'
+import {
+  useWorkbenches, useSetWorkbenchStatus, useCreateWorkbench, useDeleteWorkbench,
+  nextStatus, type CreateWorkbenchBody,
+} from '@/lib/workbenches'
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   ok:       { bg: 'oklch(0.72 0.18 155 / 12%)', border: 'oklch(0.72 0.18 155 / 30%)', text: 'var(--success-text)' },
@@ -349,12 +352,67 @@ function ConnectionsCard({ project, admin }: { project: string; admin: boolean }
   )
 }
 
+function CreateWorkbenchModal({ project, onClose }: { project: string; onClose: () => void }) {
+  const [name, setName] = useState('')
+  const [image, setImage] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const create = useCreateWorkbench(project)
+
+  const handleSubmit = async () => {
+    setError(null)
+    const body: CreateWorkbenchBody = { name: name.trim() }
+    if (image.trim()) body.image = image.trim()
+    try {
+      await create.mutateAsync(body)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create workbench')
+    }
+  }
+
+  const cli = `exa workbench create ${name || '<name>'} --project ${project}` +
+    (image.trim() ? ` --image ${image.trim()}` : '')
+  return (
+    <Modal title="New Workbench" cli={cli} onClose={onClose} onSubmit={handleSubmit}
+      submitting={create.isPending} disabled={!name.trim()} error={error}>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Name</span>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="notebook"
+          className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
+      </label>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Image (optional)</span>
+        <input value={image} onChange={e => setImage(e.target.value)}
+          placeholder="jupyter/scipy-notebook:latest"
+          className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        Creates a project-bound notebook with its own persistent volume
+        (<span className="font-mono">{project}-{name || '<name>'}-data</span>). Start it to inject
+        the project's connections as environment variables.
+      </p>
+    </Modal>
+  )
+}
+
 function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }) {
   const { data, isLoading } = useWorkbenches(project)
   const setStatus = useSetWorkbenchStatus(project)
+  const del = useDeleteWorkbench(project)
+  const [showNew, setShowNew] = useState(false)
+
+  const newBtn = admin ? (
+    <button onClick={() => setShowNew(true)}
+      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium"
+      style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+      <PlusCircle className="w-3 h-3" /> New workbench
+    </button>
+  ) : undefined
 
   return (
-    <SectionCard icon={FlaskConical} title="Workbenches">
+    <SectionCard icon={FlaskConical} title="Workbenches" action={newBtn}>
       {isLoading ? (
         <p className="text-sm text-muted-foreground italic">Loading workbenches…</p>
       ) : data && data.length > 0 ? (
@@ -363,6 +421,7 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
             const running = wb.status === 'RUNNING'
             const next = nextStatus(wb.status)
             const busy = setStatus.isPending && setStatus.variables?.name === wb.name
+            const delBusy = del.isPending && del.variables === wb.name
             return (
               <div key={wb.name}
                 className="flex items-center gap-3 rounded-lg px-3 py-2.5"
@@ -378,23 +437,35 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground font-mono truncate">{wb.image}</p>
-                  {admin && (
-                    <p className="text-[11px] font-mono text-muted-foreground">
-                      exa workbench {running ? 'stop' : 'start'} {wb.name} --project {project}
+                  {wb.volume && (
+                    <p className="text-[11px] text-muted-foreground font-mono truncate flex items-center gap-1">
+                      <HardDrive className="w-3 h-3 shrink-0" /> {wb.volume}
                     </p>
                   )}
                 </div>
                 {admin && (
-                  <button
-                    onClick={() => setStatus.mutate({ name: wb.name, status: next })}
-                    disabled={busy}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={running
-                      ? { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }
-                      : { background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
-                    {running ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                    {busy ? '…' : running ? 'Stop' : 'Start'}
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => setStatus.mutate({ name: wb.name, status: next })}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                      style={running
+                        ? { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }
+                        : { background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+                      {running ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                      {busy ? '…' : running ? 'Stop' : 'Start'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm(`Delete workbench "${wb.name}"? Its volume is not deleted.`)) return
+                        del.mutate(wb.name)
+                      }}
+                      disabled={delBusy} title="Delete workbench"
+                      className="inline-flex items-center rounded-lg px-2 py-1 text-xs font-medium disabled:opacity-50"
+                      style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
                 )}
               </div>
             )
@@ -402,8 +473,11 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
         </div>
       ) : (
         <EmptyState icon={FlaskConical} title="No workbenches yet"
-          description="Spin one up with `exa workbench create` to get an interactive environment scoped to this project." />
+          description={admin
+            ? 'Click "New workbench" to spin up an interactive notebook scoped to this project.'
+            : 'Spin one up with `exa workbench create` to get an interactive environment scoped to this project.'} />
       )}
+      {showNew && <CreateWorkbenchModal project={project} onClose={() => setShowNew(false)} />}
     </SectionCard>
   )
 }
@@ -490,11 +564,90 @@ function StorageCard({ project, storage, admin, onBind }: {
   )
 }
 
+function EditProjectModal({ project, onClose }: { project: ProjectDetailT; onClose: () => void }) {
+  const [description, setDescription] = useState(project.description ?? '')
+  const [cpuLimit, setCpuLimit] = useState(String(project.quota.cpuLimit))
+  const [memoryLimitGb, setMemoryLimitGb] = useState(String(project.quota.memoryLimitGb))
+  const [storageGb, setStorageGb] = useState(String(project.quota.storageGb))
+  const [gpuLimit, setGpuLimit] = useState(String(project.quota.gpuLimit))
+  const [networkName, setNetworkName] = useState(project.namespace ?? '')
+  const [gpuHoursBudget, setGpuHoursBudget] = useState(
+    project.budget ? String(project.budget.gpuHours) : '',
+  )
+  const [costBudget, setCostBudget] = useState(
+    project.budget ? String(project.budget.costUsd) : '',
+  )
+  const [error, setError] = useState<string | null>(null)
+  const update = useUpdateProject(project.name)
+
+  const handleSubmit = async () => {
+    setError(null)
+    const body: UpdateProjectBody = { description, networkName }
+    const num = (s: string) => (s.trim() === '' ? undefined : Number(s))
+    body.cpuLimit = num(cpuLimit)
+    body.memoryLimitGb = num(memoryLimitGb)
+    body.storageGb = num(storageGb)
+    body.gpuLimit = num(gpuLimit)
+    if (gpuHoursBudget.trim() !== '' || costBudget.trim() !== '') {
+      body.gpuHoursBudget = num(gpuHoursBudget)
+      body.costBudget = num(costBudget)
+    }
+    try {
+      await update.mutateAsync(body)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update project')
+    }
+  }
+
+  const numField = (
+    label: string, value: string, set: (v: string) => void, unit: string,
+  ) => (
+    <label className="block space-y-1">
+      <span className="text-xs font-medium text-muted-foreground">{label} <span className="text-[10px]">({unit})</span></span>
+      <input type="number" min="0" value={value} onChange={e => set(e.target.value)}
+        className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+        style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
+    </label>
+  )
+
+  const cli = `exa project quota ${project.name} --cpu ${cpuLimit} --memory ${memoryLimitGb} --storage ${storageGb} --gpu ${gpuLimit}`
+  return (
+    <Modal title="Edit Project" cli={cli} onClose={onClose} onSubmit={handleSubmit}
+      submitting={update.isPending} disabled={false} error={error}>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Description</span>
+        <input value={description} onChange={e => setDescription(e.target.value)}
+          className="w-full rounded-lg px-3 py-2 text-sm"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        {numField('CPU', cpuLimit, setCpuLimit, 'cores')}
+        {numField('Memory', memoryLimitGb, setMemoryLimitGb, 'GB')}
+        {numField('Storage', storageGb, setStorageGb, 'GB')}
+        {numField('GPU', gpuLimit, setGpuLimit, 'units')}
+      </div>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Namespace / network</span>
+        <input value={networkName} onChange={e => setNetworkName(e.target.value)}
+          placeholder={`examlops-${project.name}`}
+          className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
+        <span className="text-[10px] text-muted-foreground">Isolated namespace the project's resources bind into.</span>
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        {numField('GPU-hour budget', gpuHoursBudget, setGpuHoursBudget, 'h')}
+        {numField('Cost budget', costBudget, setCostBudget, 'USD')}
+      </div>
+    </Modal>
+  )
+}
+
 export function ProjectDetail() {
   const { name } = useParams<{ name: string }>()
   const navigate = useNavigate()
   const { data, isLoading, error } = useProject(name ?? '')
-  const [modal, setModal] = useState<'resource' | 'member' | 'storage' | null>(null)
+  const [modal, setModal] = useState<'resource' | 'member' | 'storage' | 'edit' | null>(null)
   const admin = isAdmin()
   const removeMember = useRemoveMember(name ?? '')
   const delProject = useDeleteProject()
@@ -537,6 +690,14 @@ export function ProjectDetail() {
     </button>
   ) : undefined
 
+  const editBtn = admin ? (
+    <button onClick={() => setModal('edit')}
+      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium"
+      style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+      <Pencil className="w-3 h-3" /> Edit
+    </button>
+  ) : undefined
+
   return (
     <div className="p-6 space-y-5 max-w-4xl mx-auto">
       <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
@@ -555,6 +716,12 @@ export function ProjectDetail() {
             </span>
           </div>
           {data.description && <p className="text-sm text-muted-foreground max-w-2xl">{data.description}</p>}
+          {data.namespace && (
+            <p className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md"
+              style={{ background: 'var(--surface-2)', border: '1px solid var(--border-sm)', color: 'var(--subtle-text)' }}>
+              <Boxes className="w-3 h-3" /> {data.namespace}
+            </p>
+          )}
         </div>
         <div className="text-right text-xs text-muted-foreground shrink-0 space-y-0.5">
           <p className="flex items-center gap-1 justify-end"><Clock className="w-3 h-3" /> {String(data.createdAt).slice(0, 19).replace('T', ' ')}</p>
@@ -563,7 +730,7 @@ export function ProjectDetail() {
       </div>
 
       {/* Quota */}
-      <SectionCard icon={Cpu} title="Quota">
+      <SectionCard icon={Cpu} title="Quota" action={editBtn}>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <QuotaMetric label="CPU" value={data.quota.cpuLimit} unit="cores" />
           <QuotaMetric label="Memory" value={data.quota.memoryLimitGb} unit="GB" />
@@ -573,7 +740,7 @@ export function ProjectDetail() {
       </SectionCard>
 
       {/* Budget vs Consumption */}
-      <SectionCard icon={DollarSign} title="Budget & Consumption">
+      <SectionCard icon={DollarSign} title="Budget & Consumption" action={editBtn}>
         {data.budget ? (
           <div className="space-y-3">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -734,6 +901,7 @@ export function ProjectDetail() {
       {modal === 'resource' && admin && <AssignResourceModal name={data.name} onClose={() => setModal(null)} />}
       {modal === 'member' && admin && <AddMemberModal name={data.name} onClose={() => setModal(null)} />}
       {modal === 'storage' && admin && <BindStorageModal project={data.name} onClose={() => setModal(null)} />}
+      {modal === 'edit' && admin && <EditProjectModal project={data} onClose={() => setModal(null)} />}
     </div>
   )
 }

@@ -186,6 +186,8 @@ async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
         "name": p["name"],
         "description": p["description"],
         "status": p["status"],
+        # Isolated namespace / network the project's resources bind into (ADR 0084/0086).
+        "namespace": p["network_name"],
         "quota": {
             "cpuLimit": p["cpu_limit"],
             "memoryLimitGb": p["memory_limit_gb"],
@@ -302,6 +304,82 @@ def _require_manage(principal: dict) -> None:
     role = principal.get("role", "")
     if not can(role, PROJECT_MANAGE):
         raise HTTPException(status.HTTP_403_FORBIDDEN, deny_reason(role, PROJECT_MANAGE))
+
+
+def _examlops_projects():
+    """Lazy, guarded import of the shared platform_db code path (503 if unavailable)."""
+    try:
+        from examlops import platform_db as _pdb  # type: ignore
+
+        return _pdb
+    except ImportError as exc:  # pragma: no cover - only when examlops is not installed
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "project edits require the examlops package (not available in this deployment)",
+        ) from exc
+
+
+@router.put("/{name}")
+async def update_project_view(
+    name: str, payload: dict = Body(...), principal: dict = Depends(_admin)
+) -> dict:
+    """Edit a project's quota, budget, description and namespace (admin / project.manage; audited).
+
+    Body (all optional): ``{description, cpuLimit, memoryLimitGb, storageGb, gpuLimit,
+    networkName, gpuHoursBudget, costBudget}``. Quota + namespace route through
+    ``examlops.platform_db.update_project_quota``; budget through ``set_project_budget`` — the same
+    code paths as ``exa project`` so the dashboard can never drift from the CLI.
+    """
+    _require_manage(principal)
+    conn = _connect()
+    _ensure_tables(conn)
+    if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+        conn.close()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    conn.close()
+    pdb = _examlops_projects()
+    actor = principal.get("sub", "?")
+
+    def _num(key: str, cast):
+        v = payload.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return cast(v)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{key} must be numeric") from exc
+
+    quota_changed = pdb.update_project_quota(
+        name,
+        cpu_limit=_num("cpuLimit", float),
+        memory_limit_gb=_num("memoryLimitGb", float),
+        storage_gb=_num("storageGb", float),
+        gpu_limit=_num("gpuLimit", int),
+        description=payload.get("description"),
+        network_name=payload.get("networkName"),
+    )
+
+    budget_changed = False
+    if "gpuHoursBudget" in payload or "costBudget" in payload:
+        pdb.set_project_budget(
+            name,
+            _num("gpuHoursBudget", float),
+            _num("costBudget", float),
+            updated_by=actor,
+        )
+        budget_changed = True
+
+    conn = _connect()
+    _audit(
+        conn,
+        actor,
+        "project_updated",
+        name,
+        {"via": "dashboard", "quota": quota_changed, "budget": budget_changed},
+    )
+    conn.commit()
+    conn.close()
+    return {"name": name, "quotaUpdated": quota_changed, "budgetUpdated": budget_changed}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
