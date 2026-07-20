@@ -27,6 +27,7 @@ for p in (str(REPO_ROOT), str(MODELZOO)):
         sys.path.insert(0, p)
 
 from pipelines.pipeline_generator import MODEL_REGISTRY  # noqa: E402
+from pipelines.usecase import models_dir  # noqa: E402
 
 REQUIRED_INFERENCE_KEYS = (
     "model_id",
@@ -117,7 +118,9 @@ def test_no_duplicate_model_ids():
 
 # ── Phase 14: Per-model YAML file guards ──────────────────────────────────────
 
-_MODELS_DIR = REPO_ROOT / "pipelines" / "models"
+# Active use-case pack's model dir (ADR 0094); previously the in-tree ``pipelines/models``,
+# which now resolves empty and would make this integrity guard pass vacuously.
+_MODELS_DIR = models_dir()
 
 REQUIRED_YAML_FIELDS = (
     "name",

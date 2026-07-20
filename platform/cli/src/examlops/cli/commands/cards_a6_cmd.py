@@ -40,8 +40,12 @@ def dataset_card(
     """Emit + validate a Croissant JSON-LD dataset card (R1/R2)."""
     from examlops.cards import croissant_record, validate_croissant
     from examlops.data.registry import save_dataset_card
+    from examlops.usecase import dataset_schema
 
-    record = croissant_record(dataset, revision=revision, license=license_)
+    # The dataset's column schema is use-case content — read it from the active pack (ADR 0094).
+    record = croissant_record(
+        dataset, revision=revision, license=license_, schema=dataset_schema(dataset)
+    )
     errors = validate_croissant(record)
     if errors:
         for e in errors:

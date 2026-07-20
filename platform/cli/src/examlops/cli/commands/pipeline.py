@@ -54,7 +54,7 @@ _EXAMPLES_EXPORT = (
 )
 _EXAMPLES_VALIDATE = (
     "Examples:\n\n"
-    "  # Validate pipelines/models/*.yaml against Python model shims\n"
+    "  # Validate the pack's models/*.yaml against Python model shims\n"
     "  exa pipeline validate"
 )
 
@@ -237,7 +237,7 @@ def export_registry():
 
 @app.command(epilog=_EXAMPLES_VALIDATE)
 def validate():
-    """Validate pipelines/models/*.yaml against Python model shims."""
+    """Validate the pack's models/*.yaml against Python model shims."""
     _run_pytest(["tests/unit/test_registry_integrity.py", "-v", "-k", "yaml"])
 
 

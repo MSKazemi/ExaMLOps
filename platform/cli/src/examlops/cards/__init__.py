@@ -24,12 +24,10 @@ from examlops import data as platform_db
 CROISSANT_CONTEXT = "http://mlcommons.org/croissant/1.0"
 NOT_PROVIDED = "not provided"
 
-# The real FData parquet columns (see CLAUDE.md "FData Parquet Schema").
-_FDATA_FIELDS = [
-    {"name": "pclass", "dataType": "sc:Text", "description": "memory-bound | compute-bound class"},
-    {"name": "mbwidth", "dataType": "sc:Float", "description": "memory bandwidth (double)"},
-    {"name": "embedding", "dataType": "sc:Float", "description": "384-dim feature embedding"},
-]
+# The platform knows no concrete dataset's columns (ADR 0094) — a dataset's field schema is
+# use-case content, supplied by the caller (from the pack's datasets/schemas.json). When none is
+# provided we emit a single explicit "not provided" field rather than fabricating columns (R4).
+_PLACEHOLDER_FIELDS = [{"name": "record", "dataType": "sc:Text", "description": NOT_PROVIDED}]
 
 # Fields a complete model card should carry (R6 completeness scoring).
 _CARD_FIELDS = [
@@ -44,18 +42,34 @@ _CARD_FIELDS = [
 
 
 def croissant_record(
-    dataset: str, *, revision: str | None = None, license: str = "CC-BY-4.0"
+    dataset: str,
+    *,
+    revision: str | None = None,
+    license: str = "CC-BY-4.0",
+    schema: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a Croissant JSON-LD record for a dataset version (R1)."""
+    """Build a Croissant JSON-LD record for a dataset version (R1).
+
+    ``schema`` is the dataset's field list (``[{name, dataType, description}, …]``), supplied by
+    the use-case pack. When omitted, it is resolved from the active pack's
+    ``datasets/schemas.json`` (via ``examlops.usecase.dataset_schema``); if the pack declares no
+    schema for the dataset, an explicit "not provided" placeholder field is used — the platform
+    reads a concrete dataset's columns from the pack, never fabricates them (ADR 0094 / R4).
+    """
+    if schema is None:
+        from examlops.usecase import dataset_schema
+
+        schema = dataset_schema(dataset)
+    source = schema if schema else _PLACEHOLDER_FIELDS
     fields = [
         {
             "@type": "cr:Field",
             "@id": f"{dataset}/{f['name']}",
             "name": f["name"],
-            "dataType": f["dataType"],
-            "description": f["description"],
+            "dataType": f.get("dataType", "sc:Text"),
+            "description": f.get("description", NOT_PROVIDED),
         }
-        for f in _FDATA_FIELDS
+        for f in source
     ]
     return {
         "@context": CROISSANT_CONTEXT,

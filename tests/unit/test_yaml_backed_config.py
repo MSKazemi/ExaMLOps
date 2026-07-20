@@ -10,7 +10,10 @@ for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-MODELS_DIR = REPO_ROOT / "pipelines" / "models"
+from pipelines.usecase import models_dir  # noqa: E402
+
+# Resolve the active use-case pack's model dir (ADR 0094), not the pre-migration in-tree path.
+MODELS_DIR = models_dir()
 
 
 def _make_backed(model_name: str):
