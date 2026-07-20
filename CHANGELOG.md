@@ -39,6 +39,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - **fix(cli): read-phase socket timeouts wrapped as `ClientError`.** `_client._send` caught
   `HTTPError`/`URLError` but a bare read-phase `TimeoutError` leaked past every caller, crashing MCP
   read tools (and intermittently reddening the surface-contract gate). Now degrades gracefully.
+- **fix(ci): `sanity:check-structure` unblocked.** The GitLab structure gate still asserted
+  `test -d pipelines/models`, a directory retired by the ADR 0094 platform/use-case split (models
+  moved to `usecases/seanergy/models/`), so **every** pipeline failed at the sanity stage — tests and
+  deploy never ran. The check now verifies the use-case pack's model dir.
 
 ### Added (pre-existing, this cycle)
 
