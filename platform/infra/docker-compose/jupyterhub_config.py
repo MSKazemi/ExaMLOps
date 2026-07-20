@@ -13,8 +13,17 @@ c.JupyterHub.spawner_class = "dockerspawner.DockerSpawner"
 c.DockerSpawner.image = "examlops-jupyterlab"
 c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK_NAME", "examlops_default")
 
-# Per-user home dir → named Docker volume (created on first login).
-c.DockerSpawner.volumes = {"jupyter-user-{username}": "/home/jovyan/work"}
+# Per-user home dir → named Docker volume (created on first login). Plus the platform repo,
+# bind-mounted read-only at /repo so a notebook can `import examlops` for plugin/provider
+# management (ADR 0074); the authored-providers dir is mounted read-write so notebook-authored
+# providers are shared with the CLI/dashboard/serving. DockerSpawner spawns *sibling* containers
+# via the Docker socket, so these are HOST paths (EXAMLOPS_HOST_REPO on the deploy node).
+_HOST_REPO = os.environ.get("EXAMLOPS_HOST_REPO", "/nfs/share01/examlops")
+c.DockerSpawner.volumes = {
+    "jupyter-user-{username}": "/home/jovyan/work",
+    _HOST_REPO: {"bind": "/repo", "mode": "ro"},
+    f"{_HOST_REPO}/.providers": {"bind": "/repo/.providers", "mode": "rw"},
+}
 
 # ── Stack environment injected into every user container ───────────────────
 # Internal Docker hostnames work because user containers join examlops_default.
@@ -26,6 +35,12 @@ c.DockerSpawner.environment = {
     "PREFECT_API_URL":        "http://orchestrator:4200/api",
     "RAY_SERVE_URL":          "http://ray-serving:8001",
     "CONTROL_PLANE_URL":      "http://control-plane:8002",
+    # Make `import examlops` work in notebooks (dependency-free providers pkg) and share
+    # authored plugins with the rest of the platform (ADR 0074).
+    "PYTHONPATH":             "/repo/platform/cli/src",
+    "EXAMLOPS_PROVIDERS_DIR": "/repo/.providers",
+    "EXAMLOPS_USECASE_DIR":   "/repo/usecases/seanergy",
+    "PLATFORM_DB":            "/repo/platform.db",
 }
 
 # ── Hub networking ─────────────────────────────────────────────────────────

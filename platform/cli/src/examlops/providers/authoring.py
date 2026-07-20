@@ -39,6 +39,38 @@ from .sandbox import compile_provider, validate_source
 _SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
+def _shared_mkdir(path: Path) -> None:
+    """Create a provider dir tree that any platform process can write to.
+
+    The provider store is written by processes running as different uids (the dashboard container
+    as root, a Jupyter notebook as ``jovyan``, the CLI as the host user), so new dirs are made
+    world-writable and the umask is bypassed via an explicit ``chmod``. This is a deliberate
+    dev-phase choice for a *shared* authoring store; a hardened deployment should instead give all
+    writers a common uid/group (or a POSIX default ACL on the store root).
+    """
+    for parent in reversed(path.parents):
+        if str(parent).startswith(str(providers_root())) and not parent.exists():
+            parent.mkdir(exist_ok=True)
+            try:
+                parent.chmod(0o777)
+            except OSError:
+                pass
+    if not path.exists():
+        path.mkdir(exist_ok=True)
+        try:
+            path.chmod(0o777)
+        except OSError:
+            pass
+
+
+def _make_shared(path: Path, mode: int) -> None:
+    """Best-effort chmod so a file/dir written by one process is editable by the others."""
+    try:
+        path.chmod(mode)
+    except OSError:
+        pass
+
+
 def providers_root() -> Path:
     """Root dir for authored providers (``$EXAMLOPS_PROVIDERS_DIR`` or ``~/.config/examlops/providers``)."""
     env = os.getenv("EXAMLOPS_PROVIDERS_DIR")
@@ -92,8 +124,9 @@ def save_provider(
     path = provider_path(project, domain, name)
     # Validate + compile *before* writing so invalid source never lands on disk.
     cls = compile_provider(code)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _shared_mkdir(path.parent)
     path.write_text(code, encoding="utf-8")
+    _make_shared(path, 0o666)  # editable by the other platform writers (dashboard/CLI/notebook)
     register_provider(_check("domain", domain), _check("name", name), cls)
     return {
         "domain": domain,
@@ -119,8 +152,9 @@ def set_active_provider(project: str, domain: str, name: str) -> None:
             f"provider {name!r} (domain {domain!r}) not found in project {project!r}"
         )
     marker = _active_marker(project, domain)
-    marker.parent.mkdir(parents=True, exist_ok=True)
+    _shared_mkdir(marker.parent)
     marker.write_text(name, encoding="utf-8")
+    _make_shared(marker, 0o666)
 
 
 def get_active_provider(project: str, domain: str) -> str | None:
