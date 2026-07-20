@@ -3,9 +3,9 @@ import { apiFetch } from './api'
 
 // ── view types (mirror the backend workbenches router) ───────────────────────
 //
-// Workbenches (P5, ADR 0090) are project-scoped interactive environments. The dashboard shows
-// them read-mostly: viewers see status; admins can start/stop. Provisioning (image, volume,
-// injected connections) stays in the CLI (`exa workbench create`).
+// Workbenches (P5, ADR 0090) are project-scoped interactive environments (the notebook a project
+// owns). Viewers see status; admins can create, start/stop, and delete. Every mutation reuses the
+// same `examlops.workbenches` code path as `exa workbench create`, so the UI can't drift from the CLI.
 
 export type WorkbenchStatus = 'RUNNING' | 'STOPPED'
 
@@ -26,6 +26,23 @@ export interface SetWorkbenchStatusBody {
   status: WorkbenchStatus
 }
 
+export interface CreateWorkbenchBody {
+  name: string
+  image?: string
+  cpu?: number
+  memoryGb?: number
+}
+
+/** Launch spec returned when a workbench is started (image, mounted volume, injected env keys). */
+export interface WorkbenchStatusResult {
+  project: string
+  name: string
+  status: WorkbenchStatus
+  image?: string
+  volume?: string
+  injectedEnv?: string[]
+}
+
 // ── pure helper (unit-tested) ─────────────────────────────────────────────────
 
 /** The status a Start/Stop toggle should move a workbench to. Pure. */
@@ -42,10 +59,27 @@ export const setWorkbenchStatus = (
   project: string,
   name: string,
   status: WorkbenchStatus,
-): Promise<{ project: string; name: string; status: WorkbenchStatus }> =>
+): Promise<WorkbenchStatusResult> =>
   apiFetch(`/api/v1/workbenches/${encodeURIComponent(project)}/${encodeURIComponent(name)}/status`, {
     method: 'POST',
     body: JSON.stringify({ status }),
+  })
+
+export const createWorkbench = (
+  project: string,
+  body: CreateWorkbenchBody,
+): Promise<WorkbenchSummary> =>
+  apiFetch<WorkbenchSummary>('/api/v1/workbenches', {
+    method: 'POST',
+    body: JSON.stringify({ project, ...body }),
+  })
+
+export const deleteWorkbench = (
+  project: string,
+  name: string,
+): Promise<{ project: string; name: string; deleted: boolean }> =>
+  apiFetch(`/api/v1/workbenches/${encodeURIComponent(project)}/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
   })
 
 // ── data hooks ────────────────────────────────────────────────────────────────
@@ -64,6 +98,28 @@ export const useSetWorkbenchStatus = (project: string) => {
       setWorkbenchStatus(project, name, status),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workbenches', project] })
+    },
+  })
+}
+
+export const useCreateWorkbench = (project: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: CreateWorkbenchBody) => createWorkbench(project, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workbenches', project] })
+      qc.invalidateQueries({ queryKey: ['projects', 'detail', project] })
+    },
+  })
+}
+
+export const useDeleteWorkbench = (project: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => deleteWorkbench(project, name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workbenches', project] })
+      qc.invalidateQueries({ queryKey: ['projects', 'detail', project] })
     },
   })
 }
