@@ -1,9 +1,11 @@
 import { useState } from 'react'
-import { Activity, RefreshCw } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { Activity, RefreshCw, Target, Eraser, Power } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { isAdmin } from '@/lib/auth'
+import { useSetDriftBaseline, useResetDrift, useSetAutoRetrain } from '@/lib/drift'
 
 /** Shared loading placeholder for the drift tables (F3 Skeleton convention). */
 function TableSkeleton() {
@@ -62,6 +64,30 @@ function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
     queryKey: ['drift-status'],
     queryFn: () => apiFetch<DriftStatus[]>('/api/drift/status'),
   })
+  const admin = isAdmin()
+  const baseline = useSetDriftBaseline()
+  const reset = useResetDrift()
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const runBaseline = async (model: string) => {
+    setMsg(null)
+    try {
+      const r = await baseline.mutateAsync(model)
+      setMsg(`Baseline set for ${model} (μ=${r.baseline.mean?.toFixed(3)}, n=${r.baseline.n}).`)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to set baseline')
+    }
+  }
+  const runReset = async (model: string) => {
+    if (!window.confirm(`Clear all drift snapshots for ${model}? The baseline is kept.`)) return
+    setMsg(null)
+    try {
+      const r = await reset.mutateAsync(model)
+      setMsg(`Cleared ${r.cleared} snapshot(s) for ${model}.`)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to reset')
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -80,6 +106,13 @@ function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
         <p className="text-sm rounded-lg px-4 py-3"
           style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
           Failed to load drift status.
+        </p>
+      )}
+
+      {msg && (
+        <p className="text-xs rounded-lg px-3 py-2"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+          {msg}
         </p>
       )}
 
@@ -105,10 +138,14 @@ function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
                 <th className="px-4 py-2.5">Z-score</th>
                 <th className="px-4 py-2.5">Status</th>
                 <th className="px-4 py-2.5">Snapshots</th>
+                {admin && <th className="px-4 py-2.5 text-right">Actions</th>}
               </tr>
             </thead>
             <tbody style={{ background: 'var(--surface-0)' }}>
-              {rows.map(row => (
+              {rows.map(row => {
+                const busy = (baseline.isPending && baseline.variables === row.model) ||
+                  (reset.isPending && reset.variables === row.model)
+                return (
                 <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
                   <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
                   <td className="px-4 py-3 font-mono text-xs">{row.live_mean.toFixed(4)}</td>
@@ -121,8 +158,22 @@ function PredictionDriftTab({ onRefresh }: { onRefresh: () => void }) {
                     {row.status}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.n_snapshots}</td>
+                  {admin && (
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => runBaseline(row.model)} disabled={busy} title="Set current stats as baseline"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium mr-1.5 disabled:opacity-50"
+                        style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+                        <Target className="w-3 h-3" /> Baseline
+                      </button>
+                      <button onClick={() => runReset(row.model)} disabled={busy} title="Clear drift snapshots"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
+                        style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+                        <Eraser className="w-3 h-3" /> Reset
+                      </button>
+                    </td>
+                  )}
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -208,6 +259,24 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
     queryKey: ['drift-auto-retrain'],
     queryFn: () => apiFetch<AutoRetrain[]>('/api/drift/auto-retrain'),
   })
+  const admin = isAdmin()
+  const setAR = useSetAutoRetrain()
+
+  const toggle = async (row: AutoRetrain) => {
+    if (row.enabled) {
+      await setAR.mutateAsync({ model: row.model, body: { enabled: false } })
+      return
+    }
+    let dataset = row.dataset_name
+    if (!dataset) {
+      dataset = window.prompt(`Dataset to train ${row.model} on when drift fires?`) || ''
+      if (!dataset) return
+    }
+    await setAR.mutateAsync({
+      model: row.model,
+      body: { enabled: true, dataset, minZ: row.min_z_score, cooldown: row.cooldown_s },
+    })
+  }
 
   return (
     <div className="space-y-4">
@@ -250,10 +319,13 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
                 <th className="px-4 py-2.5">Dataset</th>
                 <th className="px-4 py-2.5">Cooldown (s)</th>
                 <th className="px-4 py-2.5">Last Triggered</th>
+                {admin && <th className="px-4 py-2.5 text-right">Actions</th>}
               </tr>
             </thead>
             <tbody style={{ background: 'var(--surface-0)' }}>
-              {rows.map(row => (
+              {rows.map(row => {
+                const busy = setAR.isPending && setAR.variables?.model === row.model
+                return (
                 <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
                   <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
                   <td className="px-4 py-3 text-xs">
@@ -273,8 +345,20 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
                   <td className="px-4 py-3 text-xs text-muted-foreground">
                     {row.last_triggered ? new Date(row.last_triggered).toLocaleString() : '—'}
                   </td>
+                  {admin && (
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => toggle(row)} disabled={busy}
+                        title={row.enabled ? 'Disable auto-retrain' : 'Enable auto-retrain'}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
+                        style={row.enabled
+                          ? { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }
+                          : { background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }}>
+                        <Power className="w-3 h-3" /> {busy ? '…' : row.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    </td>
+                  )}
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -287,6 +371,7 @@ type DriftTab = 'prediction' | 'input' | 'auto-retrain'
 
 export function Drift() {
   const [activeTab, setActiveTab] = useState<DriftTab>('prediction')
+  const qc = useQueryClient()
 
   const tabs: { id: DriftTab; label: string }[] = [
     { id: 'prediction', label: 'Prediction Drift' },
@@ -294,8 +379,12 @@ export function Drift() {
     { id: 'auto-retrain', label: 'Auto-Retrain' },
   ]
 
-  // Simple no-op for refresh — queries have their own refetch
-  const handleRefresh = () => {}
+  // Refetch the three drift queries so the visible tables update on demand.
+  const handleRefresh = () => {
+    qc.invalidateQueries({ queryKey: ['drift-status'] })
+    qc.invalidateQueries({ queryKey: ['drift-input-status'] })
+    qc.invalidateQueries({ queryKey: ['drift-auto-retrain'] })
+  }
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
