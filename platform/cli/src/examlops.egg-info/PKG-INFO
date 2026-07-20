@@ -17,3 +17,5 @@ Requires-Dist: numpy>=1.26; extra == "analysis"
 Requires-Dist: scipy>=1.11; extra == "analysis"
 Provides-Extra: finops
 Requires-Dist: simpleeval>=1.0; extra == "finops"
+Provides-Extra: oidc
+Requires-Dist: pyjwt>=2.10; extra == "oidc"

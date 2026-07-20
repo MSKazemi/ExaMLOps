@@ -30,7 +30,7 @@ export const COMMANDS: Command[] = [
   { id: 'nav-approvals', label: 'Go to Approvals', to: '/approvals', scopes: ['admin'], group: 'Navigate' },
   { id: 'nav-audit', label: 'Go to Audit', to: '/audit', scopes: ['admin'], group: 'Navigate' },
   { id: 'nav-config', label: 'Go to Config', to: '/config', group: 'Navigate' },
-  { id: 'nav-docs', label: 'Go to Docs', to: '/documents', group: 'Navigate' },
+  { id: 'nav-docs', label: 'Go to Documents', to: '/documents', group: 'Navigate' },
   // Actions carry an `exa` equivalent for GUI↔CLI parity; the run/confirm gate lives in the page.
   {
     id: 'act-status', label: 'Copy: platform status command', group: 'Actions',
