@@ -1,17 +1,23 @@
 """Workbenches (ADR 0090) — dashboard surface over the platform.db ``workbenches`` table.
 
-A workbench is an on-demand, project-bound dev environment. This router lists workbenches (viewer)
-and toggles their RUNNING/STOPPED status (admin / project.manage; audited). Status is *intent* —
-the actual pod spawn is delegated to the runtime (JupyterHub/Docker), matching the ADR 0084
-boundary; the dashboard records and reports intent, it does not spawn containers itself. Creation
-and env-var injection (which resolve a project's Named Connections) stay CLI-only.
+A workbench is an on-demand, project-bound dev environment. This router lists/creates workbenches
+and toggles their RUNNING/STOPPED status (admin / project.manage; audited). RUNNING actually
+**spawns a JupyterHub named server** — the dashboard's docker-socket-proxy forbids container
+creation, so the Hub (which holds real Docker access and proxies HTTP/WebSocket on 18888) is the
+spawner; the dashboard calls its REST API with a service token and returns the Open URL. When the
+Hub env is unset the router degrades to intent-only (DB status flip, no spawn), so tests and the
+no-Hub dev path keep working.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import sqlite3
+import urllib.error
+import urllib.request
 
 from auth import require_role
 from capabilities import PROJECT_MANAGE, can, deny_reason
@@ -77,7 +83,70 @@ def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, detai
     )
 
 
+# ── JupyterHub named-server spawning (ADR 0090) ────────────────────────────────
+# The dashboard's docker-socket-proxy forbids container creation, so a workbench is spawned as a
+# JupyterHub *named server* (the Hub holds real Docker access + proxies HTTP/WS on 18888). When the
+# Hub env is unset the router degrades to intent-only (DB status flip, no spawn), so tests + the
+# no-Hub dev path keep working.
+
+
+def _hub_cfg() -> dict:
+    return {
+        "api": os.getenv("JUPYTERHUB_API_URL", "").rstrip("/"),
+        "public": os.getenv("JUPYTERHUB_PUBLIC_URL", "").rstrip("/"),
+        "token": os.getenv("JUPYTERHUB_DASHBOARD_TOKEN", ""),
+        "user": os.getenv("JUPYTERHUB_WORKBENCH_USER", "admin"),
+    }
+
+
+def _hub_enabled() -> bool:
+    c = _hub_cfg()
+    return bool(c["api"] and c["token"])
+
+
+def _server_name(project: str, name: str) -> str:
+    """URL-safe JupyterHub named-server id encoding project+workbench."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", f"{project}-{name}").strip("-")[:48]
+
+
+def _open_url(project: str, name: str) -> str | None:
+    c = _hub_cfg()
+    if not c["public"]:
+        return None
+    return f"{c['public']}/user/{c['user']}/{_server_name(project, name)}/lab"
+
+
+def _hub_request(method: str, path: str) -> int:
+    """One Hub REST call (sync — run via to_thread). Returns the HTTP status (0 on transport error)."""
+    c = _hub_cfg()
+    req = urllib.request.Request(
+        c["api"] + path,
+        method=method,
+        headers={"Authorization": "token " + c["token"], "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - fixed internal Hub URL
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code  # 400 = already running/stopped, 409 = user exists — all non-fatal
+    except Exception:
+        return 0
+
+
+def _hub_spawn(project: str, name: str) -> None:
+    c = _hub_cfg()
+    server = _server_name(project, name)
+    _hub_request("POST", f"/users/{c['user']}")  # ensure user exists (409 if present)
+    _hub_request("POST", f"/users/{c['user']}/servers/{server}")  # 201/202 spawn, 400 if running
+
+
+def _hub_stop(project: str, name: str) -> None:
+    c = _hub_cfg()
+    _hub_request("DELETE", f"/users/{c['user']}/servers/{_server_name(project, name)}")
+
+
 def _row_to_view(r: sqlite3.Row) -> dict:
+    running = (r["status"] or "").upper() == "RUNNING"
     return {
         "name": r["name"],
         "project": r["project"],
@@ -88,6 +157,8 @@ def _row_to_view(r: sqlite3.Row) -> dict:
         "status": r["status"],
         "createdAt": r["created_at"],
         "createdBy": r["created_by"],
+        # Open URL for a running workbench (None when the Hub isn't wired) — computed, not stored.
+        "url": _open_url(r["project"], r["name"]) if (running and _hub_enabled()) else None,
     }
 
 
@@ -194,12 +265,19 @@ async def set_status_view(
             result["volume"] = spec.get("volume")
             # Surface only the injected env var *names* (not values) so the UI can show wiring.
             result["injectedEnv"] = sorted((spec.get("env") or {}).keys())
+            # Actually spawn the JupyterHub named server (off the event loop). Degrades to
+            # intent-only when the Hub isn't wired, so the DB status still reflects RUNNING.
+            if _hub_enabled():
+                await asyncio.to_thread(_hub_spawn, project, name)
+                result["url"] = _open_url(project, name)
         else:
             if not wb.stop_workbench(name, project):
                 raise HTTPException(
                     status.HTTP_404_NOT_FOUND,
                     f"workbench '{name}' not found in project '{project}'",
                 )
+            if _hub_enabled():
+                await asyncio.to_thread(_hub_stop, project, name)
     except wb.WorkbenchError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     conn = _connect()
@@ -223,6 +301,8 @@ async def delete_workbench_view(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"workbench '{name}' not found in project '{project}'"
         )
+    if _hub_enabled():  # tear down its named server too
+        await asyncio.to_thread(_hub_stop, project, name)
     conn = _connect()
     _ensure_table(conn)
     _audit(conn, principal.get("sub", "?"), "workbench_deleted", name, {"project": project})
