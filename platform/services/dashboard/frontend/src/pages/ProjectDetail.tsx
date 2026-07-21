@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, FolderKanban, Layers, Users, Cpu, DollarSign, Gauge,
   PlusCircle, X, Clock, UserPlus, Plug, FlaskConical, Lock, Check,
-  Play, Square, HardDrive, Workflow, Trash2, PlugZap, Pencil, Boxes,
+  Play, Square, HardDrive, Workflow, Trash2, PlugZap, Pencil, Boxes, ExternalLink,
 } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ProvidersCard } from '@/components/ProvidersCard'
@@ -444,6 +444,13 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
                     </p>
                   )}
                 </div>
+                {running && wb.url && (
+                  <a href={wb.url} target="_blank" rel="noreferrer" title="Open the notebook"
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium shrink-0"
+                    style={{ background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }}>
+                    <ExternalLink className="w-3 h-3" /> Open
+                  </a>
+                )}
                 {admin && (
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button

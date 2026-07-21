@@ -314,3 +314,27 @@ async def test_workbench_delete_unknown_404(client, platform_db):
         "/api/v1/workbenches/research/ghost", headers={"Authorization": f"Bearer {token}"}
     )
     assert r.status_code == 404
+
+
+def test_workbench_open_url_and_server_name(monkeypatch):
+    # The Open URL + named-server id are computed deterministically from the Hub env.
+    import routers.workbenches as W
+
+    monkeypatch.setenv("JUPYTERHUB_API_URL", "http://examlops-jupyterhub:8000/hub/api")
+    monkeypatch.setenv("JUPYTERHUB_PUBLIC_URL", "http://localhost:18888")
+    monkeypatch.setenv("JUPYTERHUB_DASHBOARD_TOKEN", "tok")
+    monkeypatch.setenv("JUPYTERHUB_WORKBENCH_USER", "admin")
+    assert W._hub_enabled() is True
+    assert W._server_name("minio-demo", "test") == "minio-demo-test"
+    assert (
+        W._open_url("minio-demo", "test") == "http://localhost:18888/user/admin/minio-demo-test/lab"
+    )
+
+
+def test_workbench_url_none_without_hub(monkeypatch):
+    import routers.workbenches as W
+
+    monkeypatch.delenv("JUPYTERHUB_API_URL", raising=False)
+    monkeypatch.delenv("JUPYTERHUB_DASHBOARD_TOKEN", raising=False)
+    assert W._hub_enabled() is False
+    assert W._open_url("p", "n") is None
