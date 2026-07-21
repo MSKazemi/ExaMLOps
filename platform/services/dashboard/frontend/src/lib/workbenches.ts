@@ -19,6 +19,8 @@ export interface WorkbenchSummary {
   status: WorkbenchStatus
   createdAt: string
   createdBy: string
+  /** JupyterHub Open URL when RUNNING (null when the Hub isn't wired). */
+  url?: string | null
 }
 
 export interface SetWorkbenchStatusBody {
@@ -41,6 +43,7 @@ export interface WorkbenchStatusResult {
   image?: string
   volume?: string
   injectedEnv?: string[]
+  url?: string | null
 }
 
 // ── pure helper (unit-tested) ─────────────────────────────────────────────────

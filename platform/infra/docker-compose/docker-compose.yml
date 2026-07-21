@@ -445,6 +445,13 @@ services:
       # Authored calculation providers (ADR 0074) live under the bind-mounted repo so they persist
       # across restarts and are shared with the CLI/pipeline (all resolve the same path).
       EXAMLOPS_PROVIDERS_DIR: ${EXAMLOPS_PROVIDERS_DIR:-/repo/.providers}
+      # Project workbenches (ADR 0090) spawn as JupyterHub named servers — the Hub holds the Docker
+      # access the dashboard's socket-proxy denies. API URL is in-cluster; the public URL is what the
+      # browser's "Open" button points at (through the tunnel).
+      JUPYTERHUB_API_URL: ${JUPYTERHUB_API_URL:-http://examlops-jupyterhub:8000/hub/api}
+      JUPYTERHUB_PUBLIC_URL: "http://${PUBLIC_HOST:-localhost}:18888"
+      JUPYTERHUB_DASHBOARD_TOKEN: ${JUPYTERHUB_DASHBOARD_TOKEN:-}
+      JUPYTERHUB_WORKBENCH_USER: ${JUPYTERHUB_WORKBENCH_USER:-admin}
       # The dashboard's config-write routers (projects storage, named connections) call the
       # SAME `examlops.*` code paths as the `exa` CLI (phase 42) instead of re-implementing them,
       # so the UI can never drift from the CLI and secrets flow through one store. The examlops
@@ -498,6 +505,10 @@ services:
       # notebook can `import examlops` for plugin/provider management (ADR 0074); the .providers
       # subdir is mounted read-write so authored plugins are shared with the CLI/dashboard.
       EXAMLOPS_HOST_REPO: ${EXAMLOPS_HOST_REPO:-/<DATA_DIR>/examlops}
+      # Shared token the dashboard uses to start/stop project workbenches (named servers) via the
+      # Hub API. Set in the deploy env (never committed); when empty, the dashboard workbench
+      # Open/Start simply degrades (no spawn).
+      JUPYTERHUB_DASHBOARD_TOKEN: ${JUPYTERHUB_DASHBOARD_TOKEN:-}
     env_file:
       - path: .env
         required: true

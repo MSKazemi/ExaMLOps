@@ -20,7 +20,9 @@ c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK_NAME", "examlops_d
 # via the Docker socket, so these are HOST paths (EXAMLOPS_HOST_REPO on the deploy node).
 _HOST_REPO = os.environ.get("EXAMLOPS_HOST_REPO", "/<DATA_DIR>/examlops")
 c.DockerSpawner.volumes = {
-    "jupyter-user-{username}": "/home/jovyan/work",
+    # {servername} is empty for the default lab and the workbench name for a named server, so each
+    # project workbench gets its own persistent home volume.
+    "jupyter-user-{username}-{servername}": "/home/jovyan/work",
     _HOST_REPO: {"bind": "/repo", "mode": "ro"},
     f"{_HOST_REPO}/.providers": {"bind": "/repo/.providers", "mode": "rw"},
 }
@@ -42,6 +44,26 @@ c.DockerSpawner.environment = {
     "EXAMLOPS_USECASE_DIR":   "/repo/usecases/seanergy",
     "PLATFORM_DB":            "/repo/platform.db",
 }
+
+# ── Named servers = project workbenches (spawned by the dashboard via the Hub API) ─────────
+# A "workbench" (ADR 0090) maps to a JupyterHub named server: the dashboard's docker-socket-proxy
+# forbids container creation, so JupyterHub (which holds real Docker access) is the spawner, and it
+# also proxies HTTP+WebSocket under port 18888 so kernels work through the existing tunnel.
+c.JupyterHub.allow_named_servers = True
+c.JupyterHub.named_server_limit_per_user = 10
+
+# Privileged service token the dashboard backend uses to start/stop a user's workbench servers via
+# the Hub REST API (in-cluster at http://examlops-jupyterhub:8000 — not through the socket-proxy).
+_dash_token = os.environ.get("JUPYTERHUB_DASHBOARD_TOKEN")
+if _dash_token:
+    c.JupyterHub.services = [{"name": "dashboard", "api_token": _dash_token}]
+    c.JupyterHub.load_roles = [
+        {
+            "name": "dashboard-workbench-spawner",
+            "services": ["dashboard"],
+            "scopes": ["admin:servers", "admin:users", "list:users", "read:users"],
+        }
+    ]
 
 # ── Hub networking ─────────────────────────────────────────────────────────
 # hub_ip=0.0.0.0 → Hub listens on all interfaces inside the container.
