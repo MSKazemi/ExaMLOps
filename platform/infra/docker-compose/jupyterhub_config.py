@@ -12,6 +12,9 @@ c.JupyterHub.admin_users = {"admin"}
 c.JupyterHub.spawner_class = "dockerspawner.DockerSpawner"
 c.DockerSpawner.image = "examlops-jupyterlab"
 c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK_NAME", "examlops_default")
+# Remove a workbench's container when its server stops (the per-server *volume* persists), so a
+# stopped/deleted workbench leaves no lingering Exited container.
+c.DockerSpawner.remove = True
 
 # Per-user home dir → named Docker volume (created on first login). Plus the platform repo,
 # bind-mounted read-only at /repo so a notebook can `import examlops` for plugin/provider
