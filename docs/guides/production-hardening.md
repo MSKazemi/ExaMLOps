@@ -68,7 +68,8 @@ an old replica mid-rollout never hits a column it can't tolerate.
 
 ## Backups ✅
 
-- `exa backup create` on a schedule; `make dr-drill` proves the restore path. See
+- Whole-platform backups via the Compose `backup` sidecar (`exa backup schedule`, off-site S3 +
+  retention) or a host systemd timer; `make dr-drill` proves the restore path. See
   [backup-restore.md](backup-restore.md).
 
 ## Verifying
