@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: examlops-workspace
-Version: 0.37.0
+Version: 0.38.0
 Requires-Python: >=3.12
 Requires-Dist: examlops
 Requires-Dist: setuptools<80,>=65

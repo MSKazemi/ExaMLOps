@@ -2,7 +2,6 @@ pyproject.toml
 src/examlops/__init__.py
 src/examlops/admission.py
 src/examlops/audit_worm.py
-src/examlops/backup.py
 src/examlops/config_validate.py
 src/examlops/drift_providers.py
 src/examlops/exchange.py
@@ -25,6 +24,7 @@ src/examlops/prometheus_sd.py
 src/examlops/promotion_providers.py
 src/examlops/streaming.py
 src/examlops/units.py
+src/examlops/usecase.py
 src/examlops.egg-info/PKG-INFO
 src/examlops.egg-info/SOURCES.txt
 src/examlops.egg-info/dependency_links.txt
@@ -38,6 +38,18 @@ src/examlops/assets/__init__.py
 src/examlops/authz/__init__.py
 src/examlops/authz/openfga.py
 src/examlops/autoscale/__init__.py
+src/examlops/backup/__init__.py
+src/examlops/backup/_config.py
+src/examlops/backup/_manifest.py
+src/examlops/backup/auto.py
+src/examlops/backup/bundle.py
+src/examlops/backup/config_tier.py
+src/examlops/backup/objects_tier.py
+src/examlops/backup/postgres_tier.py
+src/examlops/backup/remote.py
+src/examlops/backup/retention.py
+src/examlops/backup/schedule.py
+src/examlops/backup/sqlite_tier.py
 src/examlops/cards/__init__.py
 src/examlops/champion_challenger/__init__.py
 src/examlops/cli/__init__.py
@@ -181,10 +193,12 @@ src/examlops/policy/__init__.py
 src/examlops/policy_engine/__init__.py
 src/examlops/prompts/__init__.py
 src/examlops/providers/__init__.py
+src/examlops/providers/authoring.py
 src/examlops/providers/base.py
 src/examlops/providers/expression.py
 src/examlops/providers/loader.py
 src/examlops/providers/registry.py
+src/examlops/providers/sandbox.py
 src/examlops/providers/yaml_provider.py
 src/examlops/rag/__init__.py
 src/examlops/reporting/__init__.py
