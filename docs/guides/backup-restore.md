@@ -1,101 +1,161 @@
 # Backup, Restore & Disaster Recovery
 
-> Enterprise-readiness Phase 0, item 0.9. The `platform.db` monolith is the data layer, event
-> bus, and security store for 5+ processes — losing it, or restoring it inconsistently, is the
-> single biggest blast-radius event on the platform. This runbook makes recovery a tested,
-> repeatable procedure with defined RPO/RTO.
+> Enterprise-readiness Phase 0, item 0.9 (extended to whole-platform DR). The platform is many data
+> stores — the `platform.db` monolith (data layer + event bus + security store), the control-plane
+> and agent SQLite DBs, the operator's on-disk config, the MLflow + Prefect Postgres metadata, and
+> the MinIO object buckets. Losing any of them, or restoring them inconsistently, is a blast-radius
+> event. This runbook makes recovery a tested, repeatable procedure with defined RPO/RTO.
 
-## What gets backed up
+## The model: one tiered bundle
 
-| Tier | Tool | Owned by |
-|---|---|---|
-| **`platform.db`** (audit, drift, cost, projects, approvals, …) | `exa backup` (SQLite online backup) | this runbook |
-| MLflow / Postgres metadata | `pg_dump` | §Postgres below |
-| MinIO artifacts (models, datasets) | `mc mirror` | §MinIO below |
+`exa backup` produces a **bundle** — a single directory capturing every tier, each with a verifiable
+manifest, aggregated into a top-level `bundle.manifest.json` with an overall status. Heavy tiers are
+**opt-in** and **degrade gracefully**: if a tool or endpoint is missing the tier is recorded as
+`skipped` (not failed) and the bundle still succeeds. The control-plane profile (SQLite + config)
+has **zero external dependencies** and always works.
 
-The `exa backup` command owns the SQLite tier — the one the `SqliteBackend` (item 0.1) runs by
-default and the hardest to recover consistently. Postgres/MinIO have first-class native tools and
-are documented here for completeness.
+| Tier | What | Tooling | Default? |
+|---|---|---|---|
+| **sqlite** | `platform.db` (audit, drift, cost, projects…) + `approvals.db` + agent/skipper DBs | online SQLite backup (built-in) | ✅ always |
+| **config** | `~/.config/examlops/` (config.toml, clusters.yaml, policy.yaml, finops.yaml, providers/); secrets **key-ids only** | tar (built-in) | ✅ always |
+| **postgres** | MLflow + Prefect metadata DBs | `pg_dump -Fc` (needs `postgresql-client`) | `--with-postgres` / `--all` |
+| **objects** | MinIO buckets `mlflow-artifacts` + `examlops-projects` | boto3 S3 mirror (`examlops[backup]`) | `--with-objects` / `--all` |
+| **content** | use-case packs, `pipelines/envs/*.yaml`, `.p2p.toml` | tar (built-in) | `--with-content` / `--all` |
 
-## `platform.db` — `exa backup`
+> **Secrets / KEK caveat.** The secrets *ciphertext* lives in `platform.db` (captured by the sqlite
+> tier), but it is useless without the KEK, which is held in the `EXAMLOPS_SECRETS_KEYS` env — never
+> on disk. The config tier records the **key-ids** present and emits a warning; it never writes the
+> plaintext KEK into the bundle. **Back up `EXAMLOPS_SECRETS_KEYS` out-of-band** (a secret manager),
+> or a restored platform cannot decrypt its secrets.
 
-The backup is an **online, transactionally-consistent snapshot** via SQLite's native backup API —
-safe to take while the CLI, agent, bridge, and control plane are actively writing. A plain
-`cp platform.db` of a live WAL database can capture a torn state; **do not** use it.
+## Creating backups
 
 ```bash
-# Create a snapshot (default ./backups) — writes platform-<UTC>.db + a .manifest.json
+# Fast control-plane bundle (all SQLite DBs + config) into ./backups
+exa backup create
+
+# Everything — + Postgres + MinIO buckets + use-case content, then replicate off-site
+exa backup create --all --push
+
+# Selective heavy tiers
+exa backup create --with-postgres --with-objects
+
+# Fail (don't skip) any requested tier that can't run — use in CI / a strict DR drill
+exa backup create --all --strict
+
+# A single classic platform.db snapshot (no tier flags → the original behaviour)
 exa backup create --out /srv/examlops/backups
-
-# List available snapshots (newest first)
-exa backup list --dir /srv/examlops/backups
-
-# Verify a snapshot BEFORE trusting it: checksum vs manifest + SQLite integrity + audit hash-chain
-exa backup verify /srv/examlops/backups/platform-20260718T120000Z.db
-
-# Restore (guarded): refuses to clobber a non-empty DB unless --force; re-verifies after
-exa backup restore /srv/examlops/backups/platform-20260718T120000Z.db --force
 ```
 
-Each snapshot ships a manifest recording its `sha256`, per-table row counts, the audit-chain head
-hash, size, and timestamp. `verify` recomputes the audit hash chain against the snapshot, so a
-tampered or corrupted backup is rejected **before** it can overwrite a live database. `restore`
-re-runs that verification on the restored file, so a bad restore fails loudly instead of silently
-leaving a broken DB.
+Every SQLite snapshot is an **online, transactionally-consistent** copy via SQLite's native backup
+API — safe to take while the CLI, agent, bridge, and control plane are writing. A plain
+`cp platform.db` of a live WAL database can capture a torn state; **do not** use it.
 
-### Scheduling
+## Verifying & restoring
 
-Run `exa backup create` from cron / a systemd timer and prune old snapshots:
+```bash
+# Verify a whole bundle: manifest + every tier item's checksum + platform.db audit hash-chain
+exa backup verify-bundle ./backups/examlops-backup-<ts>
 
-```cron
-0 * * * *  exa backup create --out /srv/examlops/backups   # hourly
-0 3 * * *  find /srv/examlops/backups -name 'platform-*.db' -mtime +14 -delete
+# Restore the SQLite + config tiers (the default) — guarded; verifies BEFORE touching anything
+exa backup restore-bundle ./backups/examlops-backup-<ts>
+
+# Restore everything incl. Postgres + objects (DANGEROUS — drops/overwrites; requires --force)
+exa backup restore-bundle ./backups/examlops-backup-<ts> \
+    --tier sqlite --tier config --tier postgres --tier objects --force
+
+# Classic single-DB restore (unchanged): refuses to clobber a non-empty DB unless --force
+exa backup restore ./backups/platform-<ts>.db --force
 ```
+
+`restore-bundle` verifies the bundle first and refuses an unverified one. Restores auto-create a
+**rollback bundle** first (a fast control-plane backup, best-effort). The SQLite tier re-verifies
+integrity + the audit chain after restoring, so a bad restore fails loudly.
+
+## Scheduling & off-site replication
+
+A dedicated Compose **backup sidecar** runs `exa backup schedule` inside the stack (reaching Postgres
+and MinIO), creating a bundle each interval, pruning per retention, and pushing off-site:
+
+```bash
+# Opt-in profile; enable off-site by setting EXAMLOPS_BACKUP_S3_URI first
+EXAMLOPS_BACKUP_S3_URI=s3://examlops-backups/nightly \
+  docker compose --profile backup up -d backup
+docker compose logs -f backup
+```
+
+For non-Docker installs, run it from a **host systemd timer** (or cron):
+
+```ini
+# /etc/systemd/system/examlops-backup.service   (Type=oneshot)
+ExecStart=/usr/local/bin/exa backup create --all --push
+# /etc/systemd/system/examlops-backup.timer
+[Timer]
+OnCalendar=daily
+```
+
+Manual off-site management:
+
+```bash
+exa backup list --remote                       # list off-site bundles
+exa backup pull examlops-backup-<ts> --dest ./restore   # fetch one (then verify-bundle)
+exa backup prune --dir ./backups --keep 14     # rotate: keep newest 14 (never the last good one)
+exa backup status                              # latest bundle, per-tier health, off-site reachability
+```
+
+### Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_BACKUP_DIR` | `./backups` | local bundle root |
+| `EXAMLOPS_BACKUP_TIERS` | `sqlite,config` | scheduled profile |
+| `EXAMLOPS_BACKUP_INTERVAL` | `3600` | scheduler seconds |
+| `EXAMLOPS_BACKUP_RETAIN` | `keep=14` | retention (`keep=N` and/or `days=D`) |
+| `EXAMLOPS_BACKUP_S3_URI` | *(off)* | off-site target `s3://bucket/prefix` |
+| `EXAMLOPS_BACKUP_S3_ENDPOINT` / `_ACCESS_KEY` / `_SECRET` | MinIO fallbacks | off-site creds (override for real AWS) |
+| `EXAMLOPS_BACKUP_PG_DBS` | `mlflow,prefect` | Postgres DBs to dump |
+| `EXAMLOPS_BACKUP_BUCKETS` | `mlflow-artifacts,<projects>` | object buckets to mirror |
+| `EXAMLOPS_BACKUP_ON_PROMOTE` | `false` | auto-backup before an autopilot promotion |
+
+A `[backup]` section in `config.toml` can set the same keys (env wins).
+
+## Auto-backup before risky operations
+
+A fast control-plane bundle is taken automatically (best-effort, never blocking) before:
+
+- `exa backup restore` / `exa backup restore-bundle` — a rollback point;
+- `exa secrets rewrap` — before re-encrypting under a new KEK;
+- an autopilot promotion (when `EXAMLOPS_BACKUP_ON_PROMOTE` is enabled).
 
 ## The DR drill (tested restore)
 
-The restore path is exercised in CI so it can never rot:
+The restore path — single-DB **and** whole-platform bundle — is exercised in CI so it can never rot:
 
 ```bash
-make dr-drill      # backup → wipe the live DB → restore → assert full recovery + valid audit chain
+make dr-drill   # backup → wipe → restore → assert full recovery + valid audit chain (all tiers)
 ```
 
-`tests/unit/test_backup_restore.py` performs the full create → destroy → restore round trip and
-asserts every row returns and the tamper-evident audit chain still verifies. Treat a red
+`tests/unit/test_backup_restore.py` (single-DB) and `tests/unit/test_backup_bundle.py`,
+`test_backup_tiers.py`, `test_backup_ops.py` (tiered bundle, retention, scheduler, off-site) perform
+full round trips with **no live stack** — heavy tiers degrade or use in-memory fakes. Treat a red
 `dr-drill` as a release blocker.
 
 ## SLOs
 
 | Objective | Target | How it's met |
 |---|---|---|
-| **RPO** (max data loss) | ≤ 1 h | hourly `exa backup create` |
-| **RTO** (time to restore) | ≤ 5 min | single `exa backup restore` (seconds for a typical DB) |
+| **RPO** (max data loss) | ≤ 1 h | hourly scheduled bundle (sidecar) |
+| **RTO** (time to restore) | ≤ 5 min | `exa backup restore-bundle` (seconds for a typical control-plane DB) |
 
-Tune the cron cadence to lower RPO; RTO scales with DB size (online backup + verify).
+Tune the interval to lower RPO; RTO scales with data size (Postgres/object tiers dominate a full DR).
 
-## Postgres (MLflow metadata)
+## Recovery order (full disaster)
 
-```bash
-# Backup
-docker compose exec -T postgres pg_dump -U mlflow mlflow | gzip > mlflow-$(date -u +%Y%m%dT%H%M%SZ).sql.gz
-# Restore (into a fresh DB)
-gunzip -c mlflow-<ts>.sql.gz | docker compose exec -T postgres psql -U mlflow mlflow
-```
+1. **objects** (MinIO artifacts must exist before the registry references resolve).
+2. **postgres** (MLflow/Prefect metadata — model versions, runs).
+3. **sqlite** (`platform.db` — audit/drift/cost/projects; agent + approvals DBs).
+4. **config** + restore `EXAMLOPS_SECRETS_KEYS` **out-of-band** so encrypted secrets decrypt.
+5. `exa doctor` + `exa status` to confirm coherence, then `exa audit verify` for the audit chain.
 
-## MinIO (artifacts)
-
-```bash
-# Mirror the buckets to an offsite target (configure `backup` alias with `mc alias set`)
-mc mirror --overwrite local/mlflow backup/mlflow
-mc mirror --overwrite local/examlops-projects backup/examlops-projects
-# Restore
-mc mirror --overwrite backup/mlflow local/mlflow
-```
-
-## Recovery order
-
-1. **MinIO** (artifacts must exist before the registry references resolve).
-2. **Postgres** (MLflow metadata — model versions, runs).
-3. **`platform.db`** (`exa backup restore`) — audit/drift/cost/projects.
-4. `exa doctor` + `exa status` to confirm the platform is coherent, then `exa audit verify` to
-   confirm the audit chain restored intact.
+`exa backup restore-bundle <dir> --tier objects --tier postgres --tier sqlite --tier config --force`
+performs 1–4 in one command.

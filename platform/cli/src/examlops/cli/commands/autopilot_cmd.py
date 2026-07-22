@@ -464,6 +464,16 @@ def run_cycle(
                     }
                 )
             else:
+                # Opt-in rollback point before a live promotion (best-effort, never blocks).
+                if os.getenv("EXAMLOPS_BACKUP_ON_PROMOTE", "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                ):
+                    from examlops.backup import auto_backup_before
+
+                    auto_backup_before(f"autopilot-promote:{model}")
                 try:
                     _do_promote(model, from_alias=rule["from_alias"], to_alias=rule["to_alias"])
                     write_audit_event(

@@ -1,0 +1,21 @@
+# Whole-platform backup sidecar (Phase 0 item 0.9, extended).
+#
+# Runs `exa backup schedule` inside the stack. Needs:
+#   * the examlops CLI with the `backup` extra (boto3) for the object + off-site tiers;
+#   * postgresql-client for the Postgres tier's pg_dump / pg_restore binaries.
+# The control-plane profile (SQLite + config) needs neither, so this image degrades gracefully if
+# Postgres/MinIO are unreachable.
+FROM python:3.12-slim
+
+# pg_dump / pg_restore / psql for the Postgres tier.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the CLI + its backup extra from the workspace source.
+COPY platform/cli /opt/examlops-cli
+RUN pip install --no-cache-dir "/opt/examlops-cli[backup]"
+
+WORKDIR /repo
+ENTRYPOINT ["exa"]
+CMD ["backup", "schedule", "--all"]

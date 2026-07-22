@@ -100,6 +100,10 @@ def rewrap_cmd(
     """
     from examlops.secrets import SecretNotFound, rewrap_secrets
 
+    if not dry_run:
+        from examlops.backup import auto_backup_before
+
+        auto_backup_before("secrets-rewrap")  # rollback point; best-effort, never blocks
     try:
         summary = rewrap_secrets(actor=_actor(), dry_run=dry_run)
     except SecretNotFound as exc:

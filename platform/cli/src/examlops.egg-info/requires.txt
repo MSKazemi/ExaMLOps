@@ -10,6 +10,9 @@ httpx>=0.27
 numpy>=1.26
 scipy>=1.11
 
+[backup]
+boto3>=1.34
+
 [finops]
 simpleeval>=1.0
 

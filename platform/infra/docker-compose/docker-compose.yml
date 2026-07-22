@@ -573,6 +573,49 @@ services:
       retries: 5
       start_period: 15s
 
+  # ── Whole-platform backup sidecar (Phase 0 item 0.9, extended) ─────────────
+  # Runs `exa backup schedule` inside the stack so it can reach Postgres + MinIO. Opt-in via the
+  # `backup` profile: `docker compose --profile backup up -d backup`. Off-site replication is
+  # enabled by setting EXAMLOPS_BACKUP_S3_URI. Degrades gracefully: any tier whose tooling/endpoint
+  # is unavailable is skipped, never crashing the cycle.
+  backup:
+    build:
+      context: ../../..
+      dockerfile: platform/infra/docker-compose/Dockerfile.backup
+    image: examlops-backup
+    container_name: examlops-backup
+    command: ["backup", "schedule", "--all"]
+    profiles:
+      - backup
+    environment:
+      EXAMLOPS_BACKUP_DIR: /backups
+      EXAMLOPS_BACKUP_INTERVAL: ${EXAMLOPS_BACKUP_INTERVAL:-3600}
+      EXAMLOPS_BACKUP_RETAIN: ${EXAMLOPS_BACKUP_RETAIN:-keep=14}
+      EXAMLOPS_BACKUP_S3_URI: ${EXAMLOPS_BACKUP_S3_URI:-}
+      EXAMLOPS_ACTOR: backup-sidecar
+      PLATFORM_DB: /repo/platform.db
+      CONTROL_PLANE_DB: /data/approvals.db
+      # Postgres tier (mlflow + prefect metadata) — reaches the postgres service over the network.
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-mlops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops}
+      EXAMLOPS_BACKUP_PG_DBS: ${EXAMLOPS_BACKUP_PG_DBS:-mlflow,prefect}
+      # Object tier (MinIO buckets) — same creds/endpoint as the rest of the stack.
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
+    volumes:
+      - ../../..:/repo:rw            # share platform.db with the rest of the stack (dev)
+      - control_plane_data:/data:ro  # read the control-plane approvals DB
+      - backups_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   minio_data:
@@ -584,6 +627,7 @@ volumes:
   tempo_data:
   jupyter_hub_data:
   control_plane_data:
+  backups_data:
 
 networks:
   seanerbus-net:

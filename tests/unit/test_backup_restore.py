@@ -19,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    # Keep the pre-op auto-backup (fired by `exa backup restore`) hermetic — off the repo cwd.
+    monkeypatch.setenv("EXAMLOPS_BACKUP_DIR", str(tmp_path / "auto"))
+    monkeypatch.setenv("MLFLOW_SQLITE_DB", str(tmp_path / "no-mlflow.db"))
     import examlops.platform_db as pdb
 
     pdb.init_db()
