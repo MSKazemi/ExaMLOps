@@ -5,6 +5,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-07-22
+
+### Added
+
+- **feat(backup): whole-platform backup & recovery — one tiered bundle (ADR 0095, extends Phase 0
+  item 0.9).** The original single-DB `exa backup` (a `platform.db`-only snapshot) is now the SQLite
+  tier of a **tiered bundle** that captures every data store: all platform SQLite DBs (`platform.db`,
+  `approvals.db`, `skipper_memory.db`, `agent_memory.db`), the on-disk **config** tree (with secrets
+  *key-ids only* — KEK stays out-of-band), **Postgres** (MLflow + Prefect via `pg_dump -Fc`),
+  **MinIO** buckets (`mlflow-artifacts` + `examlops-projects` via boto3 mirror), and use-case
+  **content**. New `examlops.backup` package (`sqlite_tier`/`postgres_tier`/`objects_tier`/
+  `config_tier`/`bundle`/`remote`/`retention`/`schedule`/`auto`); the four legacy functions
+  (`create_backup`/`verify_backup`/`restore_backup`/`list_backups`) and `exa backup
+  create|verify|restore` are preserved **byte-for-byte**. New CLI: `exa backup create --all
+  [--with-postgres|--with-objects|--with-content] [--push] [--strict]`, `verify-bundle`,
+  `restore-bundle --tier`, `schedule [--once]`, `prune`, `pull`, `list --remote`, `status`.
+- **feat(backup): graceful degradation** — any heavy tier whose tool/endpoint is unavailable is
+  recorded `skipped` (not failed); the bundle still succeeds. The default control-plane profile
+  (`sqlite` + `config`) has zero external deps. `--strict` promotes a skip to a hard failure (CI/DR).
+- **feat(backup): Compose `backup` sidecar** (opt-in `backup` profile + `Dockerfile.backup` with
+  `postgresql-client`) runs `exa backup schedule` inside the stack (reaches Postgres + MinIO), with
+  retention rotation and off-site S3 replication (`EXAMLOPS_BACKUP_S3_URI`). Host systemd-timer/cron
+  documented for non-Docker installs.
+- **feat(backup): auto-backup before risky ops** — a fast, best-effort control-plane bundle is taken
+  before `backup restore`/`restore-bundle`, `secrets rewrap`, and (opt-in via
+  `EXAMLOPS_BACKUP_ON_PROMOTE`) an autopilot promotion.
+- **chore(backup): `examlops[backup]` extra** (boto3, lazily imported); `make dr-drill` now covers
+  the whole-platform bundle round trip. New env vars `EXAMLOPS_BACKUP_DIR|TIERS|INTERVAL|RETAIN|
+  S3_URI|PG_DBS|BUCKETS|ON_PROMOTE`. Guide `docs/guides/backup-restore.md` rewritten; ADR 0095.
+
 ## [0.37.0] - 2026-07-20
 
 ### Added

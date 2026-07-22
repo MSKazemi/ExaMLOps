@@ -1,26 +1,20 @@
-"""Consistent backup / restore for the platform SQLite datastore (Phase 0 item 0.9).
+"""SQLite backup tier — online, WAL-safe snapshots of every platform SQLite datastore.
 
-The ``platform.db`` monolith is the data layer, event bus, and security store for 5+ processes
-(see the enterprise-readiness audit). Losing it — or restoring it inconsistently — is the single
-biggest blast-radius event. This module provides a **tested** backup/restore path with:
+The four legacy public functions (:func:`create_backup`, :func:`verify_backup`,
+:func:`restore_backup`, :func:`list_backups`) are preserved **byte-for-byte in behaviour** — they
+still operate on ``platform.db`` by default and are what ``exa backup create|verify|restore`` and
+``tests/unit/test_backup_restore.py`` call. They were moved here unchanged from the old
+``examlops.backup`` module and are re-exported from :mod:`examlops.backup`.
 
-  * an **online, hot backup** via SQLite's native ``Connection.backup()`` API — a
-    transactionally-consistent snapshot taken while writers are active (a plain file ``cp`` of a
-    live WAL database can capture a torn state and is NOT safe);
-  * a **manifest** (sha256 of the snapshot, table row counts, audit-chain head hash, timestamp)
-    written alongside each backup so a restore can be *verified before it is trusted*;
-  * a **guarded restore** that refuses to clobber a non-empty database unless forced, restores via
-    the online API, then re-verifies integrity + the audit hash chain — the DR-drill round trip.
-
-Postgres and MinIO backups (``pg_dump`` / ``mc mirror``) are out of process scope here — they need
-their own external tools — and are documented in ``docs/guides/backup-restore.md``; this module owns
-the SQLite tier, which is what the ``SqliteBackend`` (item 0.1) still runs on by default.
+New in the tiered-bundle design: :func:`backup_sqlite_tier` snapshots *all* known SQLite DBs (keyed
+by env var, not filename — the AGENT_* names are cross-wired) into a bundle sub-dir, degrading an
+absent optional DB to ``skipped`` rather than failing. The audit hash-chain recompute only applies
+to the DB that actually carries an ``audit_events`` table (``platform.db``).
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +22,19 @@ from typing import Any
 
 from examlops.resilience import db as _rdb
 
+from ._manifest import OK, SKIPPED, TierResult, rollup_status, sha256_file
+
 _MANIFEST_SUFFIX = ".manifest.json"
+
+# The SQLite datastores that make up the platform, keyed by env var (with its default path) so a
+# relocated DB is still found. ``platform.db`` is resolved specially via ``platform_db._db_path()``.
+_SQLITE_DBS: list[dict[str, str]] = [
+    {"name": "platform", "env": "PLATFORM_DB", "default": ""},  # default resolved dynamically
+    {"name": "approvals", "env": "CONTROL_PLANE_DB", "default": "/data/approvals.db"},
+    {"name": "skipper_memory", "env": "AGENT_MEMORY_DB", "default": "./skipper_memory.db"},
+    {"name": "agent_memory", "env": "AGENT_DB", "default": "./agent_memory.db"},
+    {"name": "mlflow", "env": "MLFLOW_SQLITE_DB", "default": "./mlflow.db"},
+]
 
 
 def _default_db_path() -> str:
@@ -37,12 +43,17 @@ def _default_db_path() -> str:
     return _db_path()
 
 
+def _resolve_db_path(spec: dict[str, str]) -> str:
+    if spec["name"] == "platform":
+        return os.getenv("PLATFORM_DB") or _default_db_path()
+    return os.getenv(spec["env"], spec["default"])
+
+
+# ── shared low-level helpers (moved verbatim from the old module) ──────────────
+
+
 def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        while chunk := fh.read(1 << 20):
-            h.update(chunk)
-    return h.hexdigest()
+    return sha256_file(path)
 
 
 def _table_row_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -86,21 +97,12 @@ def _online_backup(src_path: str, dest_path: Path) -> None:
         src.close()
 
 
-def create_backup(out_dir: str, *, db_path: str | None = None) -> dict[str, Any]:
-    """Take an online snapshot of the platform DB into ``out_dir`` + write its manifest.
-
-    Returns the manifest dict (also persisted to ``<backup>.manifest.json``).
-    """
-    src = db_path or _default_db_path()
-    if not Path(src).exists():
-        raise FileNotFoundError(f"platform DB not found at {src}")
-    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    dest = Path(out_dir) / f"platform-{ts}.db"
+def _snapshot_one(src: str, dest: Path) -> dict[str, Any]:
+    """Snapshot one DB file into ``dest`` and return its manifest dict (not persisted here)."""
     _online_backup(src, dest)
-
     snap = _rdb.connect(str(dest))
     try:
-        manifest: dict[str, Any] = {
+        return {
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "source": str(Path(src).resolve()),
             "backup_file": dest.name,
@@ -112,11 +114,37 @@ def create_backup(out_dir: str, *, db_path: str | None = None) -> dict[str, Any]
         }
     finally:
         snap.close()
-    (dest.parent / (dest.name + _MANIFEST_SUFFIX)).write_text(json.dumps(manifest, indent=2))
+
+
+# ── legacy public API (unchanged signatures / return shapes) ───────────────────
+
+
+def create_backup(out_dir: str, *, db_path: str | None = None) -> dict[str, Any]:
+    """Take an online snapshot of the platform DB into ``out_dir`` + write its manifest.
+
+    Returns the manifest dict (also persisted to ``<backup>.manifest.json``).
+    """
+    src = db_path or _default_db_path()
+    if not Path(src).exists():
+        raise FileNotFoundError(f"platform DB not found at {src}")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    dest = Path(out_dir) / f"platform-{ts}.db"
+    manifest = _snapshot_one(src, dest)
+    _write_manifest(dest, manifest)
     return manifest
 
 
+def _write_manifest(backup_path: Path, manifest: dict[str, Any]) -> None:
+    import json
+
+    (backup_path.parent / (backup_path.name + _MANIFEST_SUFFIX)).write_text(
+        json.dumps(manifest, indent=2)
+    )
+
+
 def _read_manifest(backup_path: Path) -> dict[str, Any] | None:
+    import json
+
     mp = backup_path.parent / (backup_path.name + _MANIFEST_SUFFIX)
     if not mp.exists():
         return None
@@ -267,3 +295,76 @@ def list_backups(directory: str) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+# ── tiered-bundle API ──────────────────────────────────────────────────────────
+
+
+def backup_sqlite_tier(dest_dir: Path) -> TierResult:
+    """Snapshot every known platform SQLite DB into ``dest_dir/sqlite/``.
+
+    An absent optional DB is recorded as ``skipped`` (not an error) — a fresh install may not yet
+    have an approvals or agent DB. The platform DB missing entirely is still just ``skipped`` here;
+    the bundle-level rollup surfaces it.
+    """
+    sqlite_dir = dest_dir / "sqlite"
+    sqlite_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    items: list[dict[str, Any]] = []
+
+    for spec in _SQLITE_DBS:
+        src = _resolve_db_path(spec)
+        if not src or not Path(src).exists():
+            items.append(
+                {
+                    "name": spec["name"],
+                    "db_env": spec["env"],
+                    "status": SKIPPED,
+                    "reason": f"{spec['env']} not present at {src or spec['default']}",
+                }
+            )
+            continue
+        dest = sqlite_dir / f"{spec['name']}-{ts}.db"
+        manifest = _snapshot_one(src, dest)
+        _write_manifest(dest, manifest)
+        items.append(
+            {
+                "name": spec["name"],
+                "db_env": spec["env"],
+                "file": f"sqlite/{dest.name}",
+                "sha256": manifest["sha256"],
+                "size_bytes": manifest["size_bytes"],
+                "table_counts": manifest["table_counts"],
+                "audit_head_hash": manifest["audit_head_hash"],
+                "status": OK,
+            }
+        )
+
+    status = rollup_status([i["status"] for i in items])
+    return TierResult("sqlite", status=status, items=items)
+
+
+def restore_sqlite_tier(bundle_dir: Path, *, force: bool = False) -> list[dict[str, Any]]:
+    """Restore each SQLite DB in a bundle back to its resolved live path (guarded + re-verified)."""
+    manifest = _load_bundle_manifest(bundle_dir)
+    results: list[dict[str, Any]] = []
+    for item in manifest.get("tiers", {}).get("sqlite", {}).get("items", []):
+        if item.get("status") != OK:
+            continue
+        spec = next((s for s in _SQLITE_DBS if s["name"] == item["name"]), None)
+        if spec is None:
+            continue
+        src = bundle_dir / item["file"]
+        dest = _resolve_db_path(spec)
+        res = restore_backup(str(src), db_path=dest, force=force)
+        results.append({"name": item["name"], **res})
+    return results
+
+
+def _load_bundle_manifest(bundle_dir: Path) -> dict[str, Any]:
+    import json
+
+    mp = bundle_dir / "bundle.manifest.json"
+    if not mp.exists():
+        raise ValueError(f"no bundle.manifest.json in {bundle_dir}")
+    return json.loads(mp.read_text())
