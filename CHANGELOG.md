@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-07-29
+
+### Added
+
+- **feat(agent): hard intent-gate on Skipper memory retrieval (SM3, ADR 0034).** `recall_memory`
+  now consults a pure, dependency-free gate (`skipper.memory_gate.retrieval_allowed`) before
+  touching the store: it **blocks** a recall when the query asks for *current* platform state
+  (a temporal/live marker like "current"/"now"/"latest" co-occurring with a state noun like
+  "version"/"drift"/"cost"/"audit") and redirects the agent to the dedicated live tools, and
+  refuses empty/too-short queries. Previously this was only a soft docstring hint — now it is
+  enforced, so long-term memory can't surface stale answers as if they were live state. The gate
+  is deliberately conservative (needs *both* a marker and a state noun), so genuine "procedure for
+  handling drift" recalls still work. 13 unit tests; existing memory tests green.
+
+### Fixed
+
+- **fix(make): `make skipper-test` was missing `langgraph`/`langchain` core in its install list**,
+  so agent-test collection failed with `ModuleNotFoundError: langgraph.types`. Added them.
+
 ## [0.41.0] - 2026-07-29
 
 ### Added
