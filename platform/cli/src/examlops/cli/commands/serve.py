@@ -8,6 +8,7 @@ import typer
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
+from examlops.cli._provenance import audit_details, reason_option
 from examlops.cli.commands import explain_cmd
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
@@ -126,6 +127,7 @@ def traffic(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show the split that would be applied without changing routing"
     ),
+    reason: str | None = reason_option(),
 ):
     """Show or set traffic split across model aliases (must sum to 100)."""
     init_db()
@@ -178,7 +180,7 @@ def traffic(
 
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
     set_traffic_rules(model, rules, actor)
-    write_audit_event("cli", actor, "traffic_changed", model, rules)
+    write_audit_event("cli", actor, "traffic_changed", model, audit_details(rules, reason))
 
     cfg = load_config()
     try:

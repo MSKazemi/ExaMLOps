@@ -7,6 +7,7 @@ import typer
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import StorageBackend
+from examlops.cli._provenance import audit_details, reason_option, scope_hint
 
 _EXAMPLES = (
     "Examples:\n\n"
@@ -31,6 +32,7 @@ def retrain(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what would be scheduled without triggering it"
     ),
+    reason: str | None = reason_option(),
 ) -> None:
     """Trigger a Prefect training run via the Control Plane."""
     from examlops.usecase import default_dataset_for
@@ -76,6 +78,9 @@ def retrain(
         )
         raise typer.Exit(1)
 
+    # ── Early access-scope hint: retrain needs a Control Plane token (N5) ──────
+    scope_hint("a CONTROL_PLANE_TOKEN", bool(cfg.control_plane_token))
+
     # ── Confirm the mutation (auto-yes under --yes / --json / CI) ──────────────
     approval_note = " [policy requires approval]" if decision.requires_approval else ""
     if not _output.confirm(
@@ -100,7 +105,7 @@ def retrain(
             )
             return
 
-    _record_audit(model, dataset_name, dummy, backend_name, result)
+    _record_audit(model, dataset_name, dummy, backend_name, result, reason)
 
     _output.ok(f"Retrain scheduled for [bold]{model}[/bold] (dataset: {dataset_name})")
     _output.print_record(
@@ -116,7 +121,14 @@ def retrain(
         _output.print_json(result)
 
 
-def _record_audit(model: str, dataset: str, dummy: bool, backend: str | None, result: dict) -> None:
+def _record_audit(
+    model: str,
+    dataset: str,
+    dummy: bool,
+    backend: str | None,
+    result: dict,
+    reason: str | None = None,
+) -> None:
     """Write a best-effort audit event — never fail the command on audit errors."""
     try:
         from examlops.data.audit import write_audit_event
@@ -127,12 +139,15 @@ def _record_audit(model: str, dataset: str, dummy: bool, backend: str | None, re
             actor=actor,
             action="retrain_triggered",
             target=model.upper(),
-            details={
-                "dataset": dataset,
-                "dummy": dummy,
-                "backend": backend,
-                "flow_run_id": result.get("flow_run_id"),
-            },
+            details=audit_details(
+                {
+                    "dataset": dataset,
+                    "dummy": dummy,
+                    "backend": backend,
+                    "flow_run_id": result.get("flow_run_id"),
+                },
+                reason,
+            ),
         )
     except Exception:
         pass

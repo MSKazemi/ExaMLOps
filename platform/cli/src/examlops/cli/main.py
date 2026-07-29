@@ -164,6 +164,8 @@ class OutputFormat(StrEnum):
     json = "json"
     yaml = "yaml"
     csv = "csv"
+    md = "md"
+    html = "html"
 
 
 @app.callback()
@@ -172,7 +174,7 @@ def main(
         OutputFormat.table,
         "--output",
         "-o",
-        help="Output format: table (human) | json | yaml | csv (for scripting/agents)",
+        help="Output format: table (human) | json | yaml | csv | md | html (scripting/agents/reports)",
     ),
     json: bool = typer.Option(
         False, "--json", help="Shorthand for --output json (kept for compatibility)"

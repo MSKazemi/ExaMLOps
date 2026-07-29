@@ -24,16 +24,20 @@ output_format: str = "table"  # one of: table | json | yaml | csv
 
 
 def print_json(data: Any) -> None:
-    """Emit structured data in the active machine-readable format (json/yaml/csv).
+    """Emit structured data in the active machine-readable format (json/yaml/csv/md/html).
 
     Named ``print_json`` for historical reasons — it now dispatches on ``output_format``.
-    The whole CLI reaches structured output through this one function, so json/yaml/csv
-    support is uniform without touching individual commands.
+    The whole CLI reaches structured output through this one function, so every format is
+    uniform without touching individual commands (add a format here, all commands gain it).
     """
     if output_format == "yaml":
         typer.echo(_to_yaml(data))
     elif output_format == "csv":
         typer.echo(_to_csv(data))
+    elif output_format == "md":
+        typer.echo(_to_md(data))
+    elif output_format == "html":
+        typer.echo(_to_html(data))
     else:
         typer.echo(json.dumps(data, indent=2, default=str))
 
@@ -81,6 +85,64 @@ def _scalar(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return json.dumps(value, default=str)
     return value
+
+
+def _md_cell(value: Any) -> str:
+    """Render a value for a Markdown table cell — flattened and pipe-escaped."""
+    return str(_scalar(value)).replace("|", "\\|").replace("\n", " ")
+
+
+def _to_md(data: Any) -> str:
+    """Render structured data as a GitHub-flavoured Markdown table.
+
+    List-of-dicts → a column table; a flat dict → a two-column Key/Value table; anything
+    else degrades to a fenced JSON block so no data is silently lost (mirrors CSV).
+    """
+    if isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
+        fields: list[str] = []
+        for row in data:
+            for k in row:
+                if k not in fields:
+                    fields.append(k)
+        lines = ["| " + " | ".join(fields) + " |", "| " + " | ".join(["---"] * len(fields)) + " |"]
+        for row in data:
+            lines.append("| " + " | ".join(_md_cell(row.get(k, "")) for k in fields) + " |")
+        return "\n".join(lines)
+    if isinstance(data, dict):
+        lines = ["| Key | Value |", "| --- | --- |"]
+        for k, v in data.items():
+            lines.append(f"| {_md_cell(k)} | {_md_cell(v)} |")
+        return "\n".join(lines)
+    return f"```json\n{json.dumps(data, indent=2, default=str)}\n```"
+
+
+def _to_html(data: Any) -> str:
+    """Render structured data as a self-contained HTML ``<table>`` (values HTML-escaped).
+
+    List-of-dicts → a column table; a flat dict → a two-column table; anything else degrades
+    to an escaped ``<pre>`` JSON block.
+    """
+    import html as _html
+
+    def esc(v: Any) -> str:
+        return _html.escape(str(_scalar(v)))
+
+    if isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
+        fields = []
+        for row in data:
+            for k in row:
+                if k not in fields:
+                    fields.append(k)
+        head = "".join(f"<th>{esc(k)}</th>" for k in fields)
+        body = "".join(
+            "<tr>" + "".join(f"<td>{esc(row.get(k, ''))}</td>" for k in fields) + "</tr>"
+            for row in data
+        )
+        return f"<table>\n<thead><tr>{head}</tr></thead>\n<tbody>{body}</tbody>\n</table>"
+    if isinstance(data, dict):
+        rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in data.items())
+        return f"<table>\n<tbody>{rows}</tbody>\n</table>"
+    return f"<pre>{esc(json.dumps(data, indent=2, default=str))}</pre>"
 
 
 def ok(message: str) -> None:
