@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-07-29
+
+### Added
+
+- **feat(finops): live grid carbon-intensity provider `grid-live` (ADR 0074).** A new `carbon`
+  provider that fetches the *current* grid carbon intensity (gCO2/kWh) from an operator-configured
+  endpoint (ElectricityMaps / WattTime / a national-grid API) instead of a static factor, so carbon
+  figures track when the grid is clean vs dirty. New `examlops.finops.grid_intensity` module
+  (endpoint-agnostic JSON parse, ~5-min TTL cache, optional `{zone}` + bearer token via
+  `EXAMLOPS_GRID_INTENSITY_URL` / `_ZONE` / `_TOKEN`). **Graceful degradation**: with no endpoint,
+  an unreachable/unparseable/non-positive reading, `grid-live` falls back to the static default —
+  byte-identical to `green-ai-default` offline — so carbon accounting never breaks. An explicit
+  `grid_intensity_g_per_kwh` input always overrides the live signal. `exa finops carbon estimate
+  --provider grid-live`. 19 unit tests; existing carbon-provider math unchanged.
+
 ## [0.42.0] - 2026-07-29
 
 ### Added

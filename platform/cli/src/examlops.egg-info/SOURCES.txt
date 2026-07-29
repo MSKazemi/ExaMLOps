@@ -178,6 +178,7 @@ src/examlops/finops/carbon.py
 src/examlops/finops/carbon_providers.py
 src/examlops/finops/cost.py
 src/examlops/finops/cost_providers.py
+src/examlops/finops/grid_intensity.py
 src/examlops/gateway/__init__.py
 src/examlops/governance/__init__.py
 src/examlops/governance/catalogue.yaml
