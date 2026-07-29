@@ -20,6 +20,7 @@ from langgraph.types import interrupt
 
 from skipper import config, memory_types
 from skipper.confirm import WRITE_TOOLS, _is_affirmative
+from skipper.memory_gate import retrieval_allowed
 
 _KIND_LABEL = {
     "proc": "learned procedure",
@@ -60,6 +61,9 @@ def recall_memory(
     """
     if kind not in memory_types.KINDS:
         return f"Unknown memory kind '{kind}'. Expected one of: {', '.join(memory_types.KINDS)}."
+    allowed, reason = retrieval_allowed(query, kind)
+    if not allowed:
+        return reason
     return _format_hits(memory_types.recall(store, kind, query))
 
 
