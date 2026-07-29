@@ -10,6 +10,13 @@ ExaMLOps platform CLI — manage models, training, inference, and services.
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
 
+**Grouped help.** `exa --help` groups its commands into titled panels by MLOps concern —
+Getting Started · Training & Pipelines · Data & Features · Models & Registry · Serving &
+Inference · GenAI & LLMOps · Monitoring & Quality · HPC, Fleet & FinOps · Governance &
+Security · Projects & Workspaces · Platform & Integrations — so you can jump straight to the
+area you need. The largest sub-groups (`exa serve`, `exa models`, `exa pipeline`, `exa hpc`,
+`exa drift`, `exa project`) show panels in their own `--help` too.
+
 **Change provenance (`--reason`).** Governance-critical mutating commands accept `--reason "<why>"`,
 recorded in the audit trail (`audit_events.details.reason`) so a reviewer can see *why* a change was
 made, not just what and by whom. Currently on: `exa retrain`, `exa drift baseline|reset`,

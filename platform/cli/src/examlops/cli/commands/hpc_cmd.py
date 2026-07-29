@@ -22,8 +22,17 @@ from pathlib import Path
 import typer
 
 from examlops.cli import _output
+from examlops.cli._help import make_ordered_group
+
+# Help panels for `exa hpc` (the gpu-share sub-group is attached in main.py).
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Discovery", ["detect", "nodes", "gpus", "capacity", "prometheus-sd"]),
+    ("Registry & Approval", ["connect", "clusters", "approve", "reject"]),
+    ("Placement & Jobs", ["place", "queue", "jobs", "preflight", "gpu-share"]),
+]
 
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     help="HPC fleet discovery — auto-detect scheduler + enumerate nodes/GPUs (read-only).",
     no_args_is_help=True,
     rich_markup_mode="rich",

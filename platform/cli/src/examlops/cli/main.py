@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import difflib
 import importlib.metadata
 import os
 from enum import StrEnum
 
-import click
 import typer
 from rich.console import Console
-from typer.core import TyperGroup
 
 from examlops.cli import _output, _plugins
+from examlops.cli._help import SuggestGroup, assign_panels, make_ordered_group
 from examlops.cli.commands import (
     ab_cmd,
     admission_cmd,
@@ -119,32 +117,37 @@ _QUICK_START = (
 )
 
 
-class SuggestGroup(TyperGroup):
-    """Typer group that adds fuzzy 'Did you mean …' suggestions on unknown commands.
-
-    Modern Click (>=8.2) already suggests near-misses; this is a graceful fallback for
-    older Click and never doubles up Click's own suggestion.
-    """
-
-    def resolve_command(
-        self, ctx: click.Context, args: list[str]
-    ) -> tuple[str | None, click.Command | None, list[str]]:
-        try:
-            return super().resolve_command(ctx, args)
-        except click.UsageError as exc:
-            message = exc.message or ""
-            if "did you mean" not in message.lower():
-                typed = args[0] if args else ""
-                matches = difflib.get_close_matches(typed, self.list_commands(ctx), n=3, cutoff=0.5)
-                if matches:
-                    hint = ", ".join(repr(m) for m in matches)
-                    exc.message = f"{message} Did you mean {hint}?"  # type: ignore[misc]
-            raise
-
+# ── Command panels ────────────────────────────────────────────────────────────────────
+# Single source of truth for how ``exa --help`` groups and orders its ~60 commands. Each
+# entry is (panel title, [command/group names]); the list order is the on-screen panel
+# order (MLOps lifecycle: get started → build → serve → observe → govern → operate).
+# Add a new top-level command's name to the right panel here — the help-panel test guard
+# fails if any registered command is left out.
+_ROOT_PANELS: list[tuple[str, list[str]]] = [
+    ("Getting Started", ["status", "doctor", "ask", "explain", "env", "docs", "config", "plugins"]),
+    ("Training & Pipelines", ["pipeline", "retrain", "scaffold", "finetune", "reproduce"]),
+    ("Data & Features", ["data", "feature", "features", "assets", "cards"]),
+    ("Models & Registry", ["models", "modelzoo", "embedding"]),
+    ("Serving & Inference", ["serve", "predict", "production", "gateway", "vector", "rag"]),
+    ("GenAI & LLMOps", ["genai", "prompt", "guardrails", "agentops"]),
+    ("Monitoring & Quality", ["drift", "eval", "slo", "fairness", "autopilot"]),
+    ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
+    (
+        "Governance & Security",
+        ["approvals", "audit", "secrets", "compliance", "governance", "policy", "providers"],
+    ),
+    ("Projects & Workspaces", ["project", "namespace", "connection", "workbench"]),
+    (
+        "Platform & Integrations",
+        ["stack", "backup", "events", "admission", "exchange", "seanerbus", "mcp"],
+    ),
+]
 
 app = typer.Typer(
     name="exa",
-    cls=SuggestGroup,
+    # Ordered group keeps fuzzy 'did you mean' (SuggestGroup base) AND renders panels in
+    # the _ROOT_PANELS order rather than registration/first-seen order.
+    cls=make_ordered_group(_ROOT_PANELS, base=SuggestGroup),
     help="ExaMLOps platform CLI — manage models, training, inference, and services.",
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -391,7 +394,24 @@ app.command("doctor", epilog=doctor._EXAMPLES)(doctor.doctor)
 app.command("plugins", epilog=plugins_cmd._EXAMPLES)(plugins_cmd.plugins)
 app.command("docs", epilog=docs_cmd._EXAMPLES)(docs_cmd.docs)
 
+# Group every top-level command into its help panel (single source: _ROOT_PANELS).
+assign_panels(app, _ROOT_PANELS)
+
+# Panel the largest sub-groups too. Done here (not in each module) so every sub-typer that
+# main.py attaches to these apps (e.g. serve's shadow/ab/adapter, models' sign/verify) is
+# already registered and gets its panel. Each module owns its own ``_PANELS`` spec.
+for _sub_app, _sub_panels in (
+    (serve.app, serve._PANELS),
+    (models.app, models._PANELS),
+    (pipeline.app, pipeline._PANELS),
+    (hpc_cmd.app, hpc_cmd._PANELS),
+    (drift.app, drift._PANELS),
+    (project_cmd.app, project_cmd._PANELS),
+):
+    assign_panels(_sub_app, _sub_panels)
+
 # Third-party subcommands via entry points (examlops.cli_plugins). Resilient to failures.
+# Registered after paneling: plugin commands fall into the default "Commands" panel.
 try:
     _plugins.register(app)
 except Exception:  # pragma: no cover - never let plugin discovery break the CLI
