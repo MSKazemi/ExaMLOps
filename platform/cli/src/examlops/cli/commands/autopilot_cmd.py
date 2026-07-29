@@ -405,7 +405,11 @@ def run_cycle(
                 )
                 continue
 
-            # Policy check: autopilot_promote
+            # Policy check: autopilot_promote. Expose synthetic-only training as context so a
+            # D5 policy rule can refuse to auto-promote a synthetic-only model (A7 spec R5/GWT-5).
+            from examlops.promotion_gates import synthetic_only_training
+
+            only_synth, _synth_revs = synthetic_only_training(model)
             outcome, reason = _policy_decide(
                 "autopilot_promote",
                 {
@@ -414,6 +418,7 @@ def run_cycle(
                     "metric_val": metric_val,
                     "threshold": rule["threshold"],
                     "operator": rule["operator"],
+                    "synthetic_only": only_synth,
                 },
             )
             if outcome == "deny":

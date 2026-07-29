@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-07-29
+
+### Added
+
+- **feat(synth): synthetic-only promotion gate (A7 spec R5/GWT-5, ADR 0042).** Closes the A7
+  governance loop: a model trained **only on synthetic data** can now be refused promotion.
+  `examlops.promotion_gates` resolves a model's training dataset revisions from its A2 lineage
+  (`training_dataset_revisions`) and reports `synthetic_only_training(model)` by composing the
+  BL-001 `is_synthetic_only` primitive. Wired two ways: (1) `exa pipeline promote` blocks a
+  synthetic-only model when `EXAMLOPS_SYNTHETIC_ONLY_GATE` is enabled (mirrors the C6 SLO / C8
+  fairness gates; `--force` overrides, audited as `promotion_blocked_by_synthetic_only` /
+  `synthetic_only_gate_override`); (2) the self-driving autopilot passes `synthetic_only` in the
+  `autopilot_promote` policy context so a D5 policy rule (`when: synthetic_only == True → deny`)
+  can forbid auto-promotion. Fail-open on missing lineage (unknown provenance never blocks).
+  6 unit tests.
+- **feat(usecase): installable use-case packs via entry points (platform-usecase Stage 5, ADR
+  0094).** The platform loader (`examlops.usecase`) now discovers the active pack generically
+  from the `examlops.usecase_packs` entry-point group — a new precedence rung between
+  `EXAMLOPS_USECASE_DIR` and the bundled default — so a pip-installed pack is found with no env
+  var and no code change, while the platform still names no concrete use-case (fail-open on a
+  broken pack). The SEANERGYS pack is graduated to an installable `exa-pack-seanergy`
+  (`usecases/seanergy/pyproject.toml` + `exa_pack_seanergy.pack_root` shim; `pip install -e
+  usecases/seanergy`). Loader discovery fully unit-tested (6). Non-editable wheel data-packaging
+  is a build-host follow-up.
+
 ## [0.40.0] - 2026-07-29
 
 ### Added

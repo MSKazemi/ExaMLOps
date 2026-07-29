@@ -1,0 +1,27 @@
+# exa-pack-seanergy — the SEANERGYS use-case pack, graduated to an installable package
+# (platform-usecase split Stage 5, ADR 0094). Installing it registers the pack under the
+# `examlops.usecase_packs` entry-point group so the platform discovers it with no env var.
+#
+#   pip install -e usecases/seanergy      # editable: pack_root() points at the live tree
+#
+# Editable install is the supported path (and what the loader test exercises via a mocked
+# entry point). Shipping the YAML/config/schema data in a NON-editable wheel is a build-host
+# follow-up (add them via package-data or a data layout) and is intentionally not required for
+# the env-var / editable-install deployment flows the platform already uses.
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exa-pack-seanergy"
+version = "0.1.0"
+description = "SEANERGYS use-case pack for ExaMLOps (models, configs, dataset schemas)"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.entry-points."examlops.usecase_packs"]
+seanergy = "exa_pack_seanergy:pack_root"
+
+[tool.setuptools]
+packages = ["exa_pack_seanergy"]
