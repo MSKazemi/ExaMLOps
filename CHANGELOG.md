@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-07-29
+
+### Added
+
+- **feat(agent): procedure-write review-queue for Skipper memory (SM3, ADR 0034).** Instead of an
+  inline HITL interrupt on every `record_procedure`, procedure writes can be queued for **batch**
+  operator review — extending the Phase-11 approval-gate pattern to agent memory. New
+  `skipper.memory_review` (SQLite-backed `enqueue`/`list_pending`/`approve`/`reject`; approving
+  commits the procedure to the memory store, rejecting drops it) + `python -m skipper.memory_admin
+  review list|approve <id>|reject <id>`. When `AGENT_MEMORY_REVIEW_QUEUE=1`, `record_procedure`
+  enqueues and returns a review id instead of writing directly. **Off by default** — inline HITL
+  stays the default path. The queue lives in its own SQLite file (`AGENT_MEMORY_REVIEW_DB`),
+  separate from the memory store, so only approved procedures ever reach it. 6 unit tests.
+
+### Fixed
+
+- **fix(make): `make skipper-test` install list also omitted `langchain-openai`** (like
+  `langgraph`/`langchain` in 0.42.0) → `test_llm` failed to collect. Added it; the full agent
+  suite (141 tests) now passes.
+
 ## [0.43.0] - 2026-07-29
 
 ### Added
