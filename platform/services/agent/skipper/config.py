@@ -91,6 +91,11 @@ AGENT_ACTOR = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "operator"
 # and audit every memory mutation to platform_db.audit_events. Both default on.
 AGENT_MEMORY_REQUIRE_CONFIRM = _env_bool("AGENT_MEMORY_REQUIRE_CONFIRM", True)
 AGENT_MEMORY_AUDIT = _env_bool("AGENT_MEMORY_AUDIT", True)
+# SM3 review-queue (BL-009): when enabled, record_procedure ENQUEUES the write for batch
+# operator review (list → approve/reject via `python -m skipper.memory_admin review …`)
+# instead of the inline HITL interrupt. Off by default — inline HITL stays the default path.
+AGENT_MEMORY_REVIEW_QUEUE = _env_bool("AGENT_MEMORY_REVIEW_QUEUE", False)
+AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", "./skipper_review.db")
 
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 

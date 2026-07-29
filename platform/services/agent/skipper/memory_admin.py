@@ -46,6 +46,16 @@ def _run(args: argparse.Namespace, store) -> str:
         return f"Deleted {n} {args.kind} memory item(s)" + (
             f" for {args.scope}" if args.scope else ""
         )
+    if args.cmd == "review":
+        from skipper import memory_review
+
+        if args.review_cmd == "list":
+            return json.dumps(memory_review.list_pending(), indent=2, default=str)
+        if args.review_cmd == "approve":
+            return memory_review.approve(args.id, store, reviewer=args.operator)
+        if args.review_cmd == "reject":
+            return memory_review.reject(args.id, reviewer=args.operator, reason=args.reason)
+        raise ValueError(f"unknown review sub-command {args.review_cmd!r}")
     raise ValueError(f"unknown command {args.cmd!r}")
 
 
@@ -66,6 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument(
         "--operator", default=config.AGENT_ACTOR, help="Actor recorded in the audit log"
     )
+    # SM3 review-queue (BL-009): batch review of queued procedure writes.
+    rp = sub.add_parser("review", help="Review queued procedure writes (list/approve/reject)")
+    rsub = rp.add_subparsers(dest="review_cmd", required=True)
+    rsub.add_parser("list", help="List pending procedure reviews")
+    ap = rsub.add_parser("approve", help="Approve a review (commit to memory)")
+    ap.add_argument("id", type=int)
+    ap.add_argument("--operator", default=config.AGENT_ACTOR, help="Reviewer name")
+    jp = rsub.add_parser("reject", help="Reject a review (drop it)")
+    jp.add_argument("id", type=int)
+    jp.add_argument("--operator", default=config.AGENT_ACTOR, help="Reviewer name")
+    jp.add_argument("--reason", default="", help="Why it was rejected")
     return p
 
 
