@@ -50,9 +50,29 @@ exa finops carbon estimate --gpu-hours 12 --provider ccf-like --pue 1.3
 | **`green-ai-default`** (default) | `kWh = gpu_hours × (gpu_tdp/1000) × pue`; `co2e_g = kWh × grid_intensity` | ±30% |
 | **`codecarbon-like`** | component energy: `(gpu_tdp + cpu_tdp + ram_gb × ram_w_per_gb)/1000 × pue`, after CodeCarbon | ±25% |
 | **`ccf-like`** | `kWh = gpu_hours × energy_coeff_kwh_per_gpu_hour × pue`, after Cloud Carbon Footprint | ±30% |
+| **`grid-live`** | `green-ai-default` formula, but `grid_intensity` is fetched **live** from a configured endpoint (degrades to the static default offline) | ±20% |
 
 Coefficients (with their defaults): `gpu_tdp_watts` 400, `pue` 1.5, `grid_intensity_g_per_kwh` 300,
 `cpu_tdp_watts` 120, `ram_gb` 32, `ram_watts_per_gb` 0.3725, `energy_coeff_kwh_per_gpu_hour` 0.4.
+
+### Live grid intensity (`grid-live`)
+
+`grid-live` tracks how clean the grid is *right now* instead of using a fixed factor. Point it at a
+grid-intensity endpoint (ElectricityMaps / WattTime / a national-grid API) and it fetches the current
+gCO2/kWh (cached ~5 min):
+
+```bash
+export EXAMLOPS_GRID_INTENSITY_URL="https://api.example/carbon-intensity?fmt=json"   # may contain {zone}
+export EXAMLOPS_GRID_INTENSITY_ZONE="FR"          # optional: substituted for {zone} or appended as ?zone=
+export EXAMLOPS_GRID_INTENSITY_TOKEN="…"          # optional bearer token
+exa finops carbon estimate --gpu-hours 12 --provider grid-live
+```
+
+The response body is parsed endpoint-agnostically (common keys: `carbonIntensity` / `intensity` /
+`value`, nested one level). **Graceful degradation is guaranteed:** with no URL set, an unreachable
+endpoint, or an unparseable/non-positive reading, `grid-live` falls back to the static
+`grid_intensity_g_per_kwh` default — so carbon accounting never breaks offline. An explicit
+`grid_intensity_g_per_kwh` input always overrides the live signal.
 
 ---
 
