@@ -79,8 +79,28 @@ Two primitives support policy control of synthetic data in training:
 - `is_synthetic_only(revision_ids)` — `True` when a model was trained on synthetic data alone.
 
 A D5 policy can call `is_synthetic_only` to **forbid promoting a synthetic-only model**, and model
-quality should always be reported on a **real holdout** (spec R5). Wiring these into the autopilot
-promotion gate is tracked as a follow-up — the primitives and the gate are shipped.
+quality should always be reported on a **real holdout** (spec R5).
+
+### Synthetic-only promotion gate
+
+`examlops.promotion_gates` closes this loop end-to-end. It resolves a model's training dataset
+revisions from its A2 lineage and reports whether they are synthetic-only:
+
+- **Manual promotion** — set `EXAMLOPS_SYNTHETIC_ONLY_GATE=1` and `exa pipeline promote` refuses a
+  synthetic-only model (audited; `--force` overrides, also audited), mirroring the SLO/fairness gates.
+- **Autopilot** — the self-driving loop passes `synthetic_only` into the `autopilot_promote` policy
+  context, so a D5 policy rule forbids auto-promotion:
+
+  ```yaml
+  policies:
+    - name: no-synthetic-only-promotion
+      action: autopilot_promote
+      when: "synthetic_only == True"
+      effect: deny
+  ```
+
+The gate **fails open** on missing lineage — a model with no recorded training provenance is never
+blocked, so the gate only ever acts on positive evidence of synthetic-only training.
 
 ## Determinism
 

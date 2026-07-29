@@ -21,6 +21,7 @@ src/examlops/platform_db.py
 src/examlops/project_finops.py
 src/examlops/project_scope.py
 src/examlops/prometheus_sd.py
+src/examlops/promotion_gates.py
 src/examlops/promotion_providers.py
 src/examlops/streaming.py
 src/examlops/units.py
