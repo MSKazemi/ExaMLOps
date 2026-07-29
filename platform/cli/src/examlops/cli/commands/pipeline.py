@@ -14,6 +14,7 @@ from examlops.cli.commands import hpo_cmd
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.serving import set_promotion_rule
+from examlops.promotion_gates import synthetic_only_gate_enabled, synthetic_only_training
 from examlops.promotion_providers import resolve_promotion_eval_fn
 
 app = typer.Typer(
@@ -619,6 +620,34 @@ def promote(
                 {"version": version, "to": to_alias, "forced": True},
             )
             _output.warning("Fairness disparity exceeded but --force set; overriding.")
+
+    # A7 — synthetic-only gate (spec R5): when EXAMLOPS_SYNTHETIC_ONLY_GATE is enabled and
+    # the model was trained only on synthetic data, refuse to promote (unless --force, audited).
+    if synthetic_only_gate_enabled():
+        only_synth, synth_revs = synthetic_only_training(model)
+        if only_synth:
+            actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+            if not force:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "promotion_blocked_by_synthetic_only",
+                    model,
+                    {"version": version, "revisions": synth_revs},
+                )
+                _output.error(
+                    f"{model} was trained only on synthetic data — refusing to promote to "
+                    f"{to_alias}. Train on (or include) real data, or use --force (audited).",
+                )
+                return
+            write_audit_event(
+                "cli",
+                actor,
+                "synthetic_only_gate_override",
+                model,
+                {"version": version, "to": to_alias, "revisions": synth_revs, "forced": True},
+            )
+            _output.warning("Model is synthetic-only but --force set; overriding.")
 
     if not _output.confirm(
         f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"

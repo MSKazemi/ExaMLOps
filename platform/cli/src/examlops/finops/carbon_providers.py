@@ -143,11 +143,53 @@ class CCFLikeProvider(Provider):
         return {"kwh": kwh, "co2e_g": carbon.co2e_grams(kwh, grid)}
 
 
+class GridLiveProvider(Provider):
+    """green-ai energy formula with a **live** grid carbon-intensity signal (BL-004).
+
+    Identical to ``green-ai-default`` except the grid intensity is fetched from a configured
+    endpoint (``EXAMLOPS_GRID_INTENSITY_URL``) instead of a static default — so carbon figures
+    track when the grid is clean vs dirty. Degrades to the static default offline, and an explicit
+    ``grid_intensity_g_per_kwh`` input always wins over the live signal.
+    """
+
+    name = "grid-live"
+    version = "1.0"
+
+    def metadata(self) -> ProviderMeta:
+        return ProviderMeta(
+            methodology=(
+                "Energy = GPU-hours × (TDP/1000) × PUE; CO₂e = energy × LIVE grid intensity "
+                "fetched from EXAMLOPS_GRID_INTENSITY_URL (cached, ~5 min). Degrades to the "
+                "static default when no endpoint is configured or a fetch fails."
+            ),
+            uncertainty=0.20,
+            units={"kwh": "kWh", "co2e_g": "gCO2e"},
+            outputs=("kwh", "co2e_g"),
+            params=("gpu_hours", "gpu_tdp_watts", "pue", "grid_intensity_g_per_kwh"),
+            source="live grid-intensity endpoint (operator-configured)",
+        )
+
+    def compute(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
+        gpu_hours = _f(inputs, "gpu_hours", 0.0)
+        tdp = _f(inputs, "gpu_tdp_watts", carbon.DEFAULT_GPU_TDP_WATTS)
+        pue = _f(inputs, "pue", carbon.DEFAULT_PUE)
+        # An explicit grid override wins; otherwise use the live signal (which itself degrades
+        # to the platform's static default when unavailable).
+        if inputs.get("grid_intensity_g_per_kwh") is not None:
+            grid = _f(inputs, "grid_intensity_g_per_kwh", carbon.DEFAULT_GRID_INTENSITY_G_PER_KWH)
+        else:
+            from .grid_intensity import current_grid_intensity
+
+            grid = current_grid_intensity(carbon.DEFAULT_GRID_INTENSITY_G_PER_KWH)
+        return carbon.estimate_carbon(gpu_hours, tdp, pue, grid)
+
+
 def register_builtins() -> None:
     """Register the built-in carbon providers on the global registry (idempotent)."""
     register_provider("carbon", "green-ai-default", GreenAIDefaultProvider, default=True)
     register_provider("carbon", "codecarbon-like", CodeCarbonLikeProvider)
     register_provider("carbon", "ccf-like", CCFLikeProvider)
+    register_provider("carbon", "grid-live", GridLiveProvider)
 
 
 register_builtins()

@@ -2,13 +2,20 @@
 
 ExaMLOps platform CLI — manage models, training, inference, and services.
 
-- `--output, -o` — Output format: table (human) | json | yaml | csv (for scripting/agents)
+- `--output, -o` — Output format: table (human) | json | yaml | csv | md | html (scripting/agents/reports)
 - `--json` — Shorthand for --output json (kept for compatibility)
 - `--context, -c` — Use a named config context for this invocation
 - `--yes, -y` — Skip all confirmation prompts
 - `--quiet, -q` — Suppress non-essential output (hints, info, progress detail)
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
+
+**Change provenance (`--reason`).** Governance-critical mutating commands accept `--reason "<why>"`,
+recorded in the audit trail (`audit_events.details.reason`) so a reviewer can see *why* a change was
+made, not just what and by whom. Currently on: `exa retrain`, `exa drift baseline|reset`,
+`exa drift input baseline|reset`, `exa serve traffic`, `exa approvals approve|reject`. Commands that
+need a credential (e.g. `exa retrain` needs `CONTROL_PLANE_TOKEN`) also print an early scope hint when
+it is missing, so the requirement surfaces before the request is rejected.
 
 ## `exa admission`
 
@@ -187,15 +194,37 @@ Backup / restore the platform datastore
 
 ### `exa backup create`
 
-Take an online, transactionally-consistent snapshot of the platform DB + write its manifest.
+Snapshot the platform. Bare = single ``platform.db`` file; any tier flag = a tiered bundle.
 
 - `--out, -o` — Directory to write the backup into
+- `--all` — Full bundle: all SQLite DBs + config + Postgres + MinIO objects
+- `--bundle` — Control-plane bundle (all SQLite DBs + config) instead of one .db
+- `--with-postgres` — Include the Postgres tier
+- `--with-objects` — Include the MinIO/object-store tier
+- `--with-content` — Include use-case packs / envs / .p2p.toml
+- `--push` — Replicate the finished bundle off-site (S3)
+- `--strict` — Fail (don't skip) any requested tier that can't run
 
 ### `exa backup list`
 
-List available backups (newest first) with their manifest metadata.
+List available backups & bundles (newest first) with their manifest metadata.
 
 - `--dir, -d` — Backup directory
+- `--remote` — List off-site bundles (S3) instead
+
+### `exa backup prune`
+
+Prune old bundles by count and/or age (never removes the newest / last-good bundle).
+
+- `--dir, -d` — Backup directory
+- `--keep` — Keep the newest N bundles
+- `--days` — Keep bundles newer than N days
+
+### `exa backup pull`
+
+Download + extract an off-site bundle (verify it before restoring).
+
+- `--dest` — Directory to extract into
 
 ### `exa backup restore`
 
@@ -204,9 +233,38 @@ Restore a verified backup over the platform DB (guarded + re-verified after).
 - `--force` — Overwrite a non-empty target DB (DANGEROUS)
 - `--yes, -y` — Skip the confirmation prompt
 
+### `exa backup restore-bundle`
+
+Restore selected tiers from a verified bundle (guarded; verifies before touching anything).
+
+- `--tier` — Tier(s) to restore (repeatable). Default: sqlite + config
+- `--force` — Overwrite non-empty targets (DANGEROUS)
+- `--yes, -y` — Skip the confirmation prompt
+
+### `exa backup schedule`
+
+Run the scheduled backup loop (what the Compose ``backup`` sidecar runs).
+
+- `--interval` — Seconds between cycles (env default)
+- `--tiers` — Comma-separated tiers (env default)
+- `--out, -o` — Backup directory (env default)
+- `--push` — Replicate each bundle off-site
+- `--all` — Shorthand for --tiers sqlite,config,postgres,objects
+- `--once` — Run a single cycle then exit (for tests/CI)
+
+### `exa backup status`
+
+Show the latest bundle, per-tier health, retention count, and off-site reachability.
+
+- `--dir, -d` — Backup directory
+
 ### `exa backup verify`
 
 Verify a backup: checksum vs manifest + SQLite integrity + audit hash-chain. Exit 1 if bad.
+
+### `exa backup verify-bundle`
+
+Verify a whole bundle: manifest + every tier item's checksum + platform.db audit chain.
 
 ## `exa cards`
 
@@ -378,6 +436,44 @@ Resolve the current dataset state to a revision and record it (spec R8).
 - `--backend, -b` — Storage backend (zenodo|minio|dataplane)
 - `--path, -p` — Local file/dir of already-materialised parquet to hash
 
+### `exa data synth`
+
+Synthetic data generation + fidelity/privacy gate (Next-Gen 40 · A7, ADR 0042). SDV is an
+optional `examlops[synth]` extra; without it a pure-python Gaussian-copula fallback keeps every
+subcommand — including the release gate — working offline. See `docs/guides/synthetic-data.md`.
+
+#### `exa data synth fit`
+
+Fit a generator to real data and report what it learned (spec R1 smoke-check).
+
+- `--path, -p` — Local parquet file/dir of real data (required)
+- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--seed` — Deterministic seed
+
+#### `exa data synth generate`
+
+Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4). Exits non-zero when
+the fidelity/privacy gate blocks the dataset.
+
+- `--path, -p` — Local parquet file/dir of real data (required)
+- `--rows, -n` — Number of synthetic rows to generate (required)
+- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--seed` — Deterministic seed
+- `--min-fidelity` — Fidelity release floor (default 0.6)
+- `--min-privacy` — Privacy release floor (default 0.5)
+- `--out, -o` — Directory to write the released synthetic parquet
+- `--force` — Record even if the gate blocks (still flagged synthetic, never as real)
+
+#### `exa data synth evaluate`
+
+Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3). Exits
+non-zero when the gate fails.
+
+- `--real` — Local parquet file/dir of the real data (required)
+- `--synthetic` — Local parquet file/dir of the synthetic data (required)
+- `--min-fidelity` — Fidelity release floor (default 0.6)
+- `--min-privacy` — Privacy release floor (default 0.5)
+
 ### `exa data validate`
 
 Validate a dataset against its data contract; exit non-zero on error violations (spec R11).
@@ -409,7 +505,7 @@ Disable drift-triggered auto-retrain for a model.
 
 Enable drift-triggered auto-retrain for a model.
 
-- `--dataset, -d` — Dataset class name
+- `--dataset, -d` — Dataset class name (default: model's primary dataset)
 - `--min-z` — Z-score threshold to trigger retrain
 - `--cooldown` — Seconds between triggers
 
@@ -1570,7 +1666,7 @@ Run training pipeline(s) locally via Prefect.
 
 ### `exa pipeline validate`
 
-Validate pipelines/models/*.yaml against Python model shims.
+Validate the pack's models/*.yaml against Python model shims.
 
 ### `exa pipeline validate-model`
 
@@ -1827,11 +1923,48 @@ Show a prompt version's template (by version or name@label).
 
 Pluggable calculation providers (all domains)
 
+### `exa providers activate`
+
+Make a provider the active one for its (project, domain) — used when no --provider is given.
+
+- `--project, -p`
+
+### `exa providers author`
+
+Save a project-scoped provider from a Python file (AST-sandboxed; audited).
+
+- `--file, -f` — Python file defining a Provider subclass
+- `--project, -p` — Project that owns the provider
+
+### `exa providers authored`
+
+List a project's notebook/dashboard-authored providers (with gate status).
+
+- `--project, -p` — Project to list authored providers for
+
 ### `exa providers list`
 
 List calculation providers across every domain (built-ins + entry-point plugins + config).
 
 - `--domain, -d` — Only this domain (default: all known domains)
+
+### `exa providers rm`
+
+Delete an authored provider file (audited).
+
+- `--project, -p`
+
+### `exa providers show`
+
+Print the stored source of an authored provider.
+
+- `--project, -p`
+
+### `exa providers validate`
+
+Statically validate a provider file against the AST sandbox (exit 1 if rejected). CI-safe.
+
+- `--file, -f` — Python file to gate-check (no side effects)
 
 ## `exa rag`
 

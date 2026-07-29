@@ -91,6 +91,15 @@ AGENT_ACTOR = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "operator"
 # and audit every memory mutation to platform_db.audit_events. Both default on.
 AGENT_MEMORY_REQUIRE_CONFIRM = _env_bool("AGENT_MEMORY_REQUIRE_CONFIRM", True)
 AGENT_MEMORY_AUDIT = _env_bool("AGENT_MEMORY_AUDIT", True)
+# SM3 review-queue (BL-009): when enabled, record_procedure ENQUEUES the write for batch
+# operator review (list → approve/reject via `python -m skipper.memory_admin review …`)
+# instead of the inline HITL interrupt. Off by default — inline HITL stays the default path.
+AGENT_MEMORY_REVIEW_QUEUE = _env_bool("AGENT_MEMORY_REVIEW_QUEUE", False)
+AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", "./skipper_review.db")
+# BL-007: source the agent's platform-capability tools from the shared examlops.mcp registry
+# (single source of truth) instead of the in-repo duplicates. Off by default. Mutating MCP tools
+# remain gated by EXAMLOPS_MCP_ALLOW_WRITES.
+AGENT_USE_MCP_TOOLS = _env_bool("AGENT_USE_MCP_TOOLS", False)
 
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 

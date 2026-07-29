@@ -560,8 +560,9 @@ helm-validate: ## Lint + render + schema-validate the enterprise Helm chart (ite
 	@printf "$(GREEN)Helm chart valid (lint + render + kubectl dry-run).$(RESET)\n"
 
 dr-drill: install-dev ## Disaster-recovery drill — backup → wipe → restore round-trip (item 0.9)
-	@printf "$(BOLD)Running DR drill (backup/restore round-trip)...$(RESET)\n"
-	@.venv/bin/pytest tests/unit/test_backup_restore.py -q
+	@printf "$(BOLD)Running DR drill (single-DB + whole-platform bundle round-trip)...$(RESET)\n"
+	@.venv/bin/pytest tests/unit/test_backup_restore.py tests/unit/test_backup_bundle.py \
+		tests/unit/test_backup_tiers.py tests/unit/test_backup_ops.py -q
 	@printf "$(GREEN)DR drill passed — restore path verified (RPO=last backup, RTO=restore time).$(RESET)\n"
 
 ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
@@ -637,7 +638,7 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
 skipper-test:  ## Run the Skipper agent unit tests
-	.venv/bin/pip install -q langgraph-checkpoint-sqlite langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
+	.venv/bin/pip install -q langgraph langgraph-checkpoint-sqlite langchain langchain-anthropic langchain-openai langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
 
 agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)

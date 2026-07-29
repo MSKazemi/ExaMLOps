@@ -6,9 +6,12 @@ environment, so a deployment points the platform at its own pack without any cod
 
     RAY_MODELS_DIR / MODELS_YAML_DIR   explicit per-model YAML dir (highest precedence)
     EXAMLOPS_USECASE_DIR               pack root; YAML dir is ``<root>/models``
+    installed pack (entry point)       a pip-installed pack registered under
+                                       ``examlops.usecase_packs`` (Stage 5, ADR 0094)
     (default)                          the bundled reference pack, ``usecases/seanergy/models``
 
-This is a thin path resolver only — it imports nothing from the pipeline engine or the pack.
+This is a thin path resolver only — it imports nothing from the pipeline engine or the pack,
+and discovers installed packs *generically* by group, never naming a concrete use-case.
 """
 
 from __future__ import annotations
@@ -18,9 +21,38 @@ from pathlib import Path
 
 DEFAULT_MODELS_DIR = "usecases/seanergy/models"
 
+#: Entry-point group a graduated, pip-installable use-case pack registers under. Each entry
+#: point resolves to the pack root directory (a ``Path``/``str``) or a zero-arg callable
+#: returning it. Keeps the platform use-case-agnostic: it finds *a* pack, never names one.
+USECASE_PACK_GROUP = "examlops.usecase_packs"
+
+
+def _entry_point_pack_root() -> Path | None:
+    """Discover an installed use-case pack via the ``examlops.usecase_packs`` entry point.
+
+    Returns the first pack whose root exists, or None when none is installed / discovery
+    fails. Fail-open: a broken pack entry point never crashes path resolution.
+    """
+    try:
+        from importlib.metadata import entry_points
+
+        eps = entry_points(group=USECASE_PACK_GROUP)
+    except Exception:
+        return None
+    for ep in eps:
+        try:
+            target = ep.load()
+            root = target() if callable(target) else target
+            path = Path(root)
+        except Exception:
+            continue
+        if path.is_dir():
+            return path
+    return None
+
 
 def models_dir(default: str = DEFAULT_MODELS_DIR) -> Path:
-    """Resolve the active pack's per-model YAML directory from the environment."""
+    """Resolve the active pack's per-model YAML directory (see module docstring for precedence)."""
     for var in ("RAY_MODELS_DIR", "MODELS_YAML_DIR"):
         value = os.getenv(var)
         if value:
@@ -28,6 +60,9 @@ def models_dir(default: str = DEFAULT_MODELS_DIR) -> Path:
     pack_root = os.getenv("EXAMLOPS_USECASE_DIR")
     if pack_root:
         return Path(pack_root) / "models"
+    ep_pack = _entry_point_pack_root()
+    if ep_pack is not None:
+        return ep_pack / "models"
     return Path(default)
 
 
@@ -56,6 +91,9 @@ def _pack_dir() -> Path | None:
     root = os.getenv("EXAMLOPS_USECASE_DIR")
     if root:
         return Path(root)
+    ep_pack = _entry_point_pack_root()
+    if ep_pack is not None:
+        return ep_pack
     md = models_dir()
     # models_dir is "<pack>/models" by convention.
     return md.parent if md.name == "models" else None

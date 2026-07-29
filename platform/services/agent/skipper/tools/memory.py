@@ -20,6 +20,7 @@ from langgraph.types import interrupt
 
 from skipper import config, memory_types
 from skipper.confirm import WRITE_TOOLS, _is_affirmative
+from skipper.memory_gate import retrieval_allowed
 
 _KIND_LABEL = {
     "proc": "learned procedure",
@@ -60,6 +61,9 @@ def recall_memory(
     """
     if kind not in memory_types.KINDS:
         return f"Unknown memory kind '{kind}'. Expected one of: {', '.join(memory_types.KINDS)}."
+    allowed, reason = retrieval_allowed(query, kind)
+    if not allowed:
+        return reason
     return _format_hits(memory_types.recall(store, kind, query))
 
 
@@ -94,13 +98,23 @@ def record_procedure(
     """Save a reusable operational procedure learned from a successful run.
 
     Only record procedures that actually succeeded. Gated behind operator
-    confirmation (SM3, ADR 0034) unless AGENT_MEMORY_REQUIRE_CONFIRM=false.
+    confirmation (SM3, ADR 0034) unless AGENT_MEMORY_REQUIRE_CONFIRM=false. When
+    AGENT_MEMORY_REVIEW_QUEUE is set, the write is queued for batch operator review
+    instead (approve/reject via `python -m skipper.memory_admin review`).
 
     Args:
         task_class: The kind of task (e.g. 'safe-promote', 'drift-response').
         steps: Ordered steps of the procedure.
         success_conditions: How to tell the procedure succeeded (optional).
     """
+    if config.AGENT_MEMORY_REVIEW_QUEUE:
+        from skipper.memory_review import enqueue
+
+        rid = enqueue(task_class, steps, success_conditions, operator=config.AGENT_ACTOR)
+        return (
+            f"Queued procedure for '{task_class}' as review #{rid} — pending operator approval "
+            f"(`python -m skipper.memory_admin review approve {rid}`)."
+        )
     if config.AGENT_MEMORY_REQUIRE_CONFIRM:
         # Exclude the injected store from the interrupt payload — it is not
         # JSON-serialisable and must not enter the checkpoint.

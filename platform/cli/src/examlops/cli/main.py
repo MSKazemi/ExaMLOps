@@ -85,6 +85,7 @@ from examlops.cli.commands import (
     stack,
     status,
     supplychain_cmd,
+    synth_cmd,
     vector_cmd,
     workbench_cmd,
 )
@@ -163,6 +164,8 @@ class OutputFormat(StrEnum):
     json = "json"
     yaml = "yaml"
     csv = "csv"
+    md = "md"
+    html = "html"
 
 
 @app.callback()
@@ -171,7 +174,7 @@ def main(
         OutputFormat.table,
         "--output",
         "-o",
-        help="Output format: table (human) | json | yaml | csv (for scripting/agents)",
+        help="Output format: table (human) | json | yaml | csv | md | html (scripting/agents/reports)",
     ),
     json: bool = typer.Option(
         False, "--json", help="Shorthand for --output json (kept for compatibility)"
@@ -219,6 +222,9 @@ app.add_typer(
     data_cmd.app,
     name="data",
     help="Dataset versioning & reproducibility (revisions, diff, checkout)",
+)
+data_cmd.app.add_typer(
+    synth_cmd.app, name="synth", help="Synthetic data generation + fidelity/privacy gate (A7)"
 )
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")

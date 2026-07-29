@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examlops"
-version = "0.37.0"
+version = "0.45.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 dependencies = [
@@ -42,6 +42,19 @@ finops = [
 # this extra enables RS256 token verification against a configured JWKS.
 oidc = [
     "pyjwt>=2.10",
+]
+# Whole-platform backup — object-store (MinIO/S3) tier + off-site replication
+# (examlops.backup.objects_tier / remote). boto3 is lazily imported; the control-plane
+# backup profile (SQLite + config tiers) works without it. The Postgres tier additionally
+# needs the `pg_dump`/`pg_restore` binaries (postgresql-client) on PATH.
+backup = [
+    "boto3>=1.34",
+]
+# Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
+# imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
+# keeps every subcommand — including the fidelity/privacy release gate — working offline.
+synth = [
+    "sdv>=1.37",
 ]
 
 [project.scripts]
