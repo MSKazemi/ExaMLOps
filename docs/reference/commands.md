@@ -429,6 +429,44 @@ Resolve the current dataset state to a revision and record it (spec R8).
 - `--backend, -b` — Storage backend (zenodo|minio|dataplane)
 - `--path, -p` — Local file/dir of already-materialised parquet to hash
 
+### `exa data synth`
+
+Synthetic data generation + fidelity/privacy gate (Next-Gen 40 · A7, ADR 0042). SDV is an
+optional `examlops[synth]` extra; without it a pure-python Gaussian-copula fallback keeps every
+subcommand — including the release gate — working offline. See `docs/guides/synthetic-data.md`.
+
+#### `exa data synth fit`
+
+Fit a generator to real data and report what it learned (spec R1 smoke-check).
+
+- `--path, -p` — Local parquet file/dir of real data (required)
+- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--seed` — Deterministic seed
+
+#### `exa data synth generate`
+
+Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4). Exits non-zero when
+the fidelity/privacy gate blocks the dataset.
+
+- `--path, -p` — Local parquet file/dir of real data (required)
+- `--rows, -n` — Number of synthetic rows to generate (required)
+- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--seed` — Deterministic seed
+- `--min-fidelity` — Fidelity release floor (default 0.6)
+- `--min-privacy` — Privacy release floor (default 0.5)
+- `--out, -o` — Directory to write the released synthetic parquet
+- `--force` — Record even if the gate blocks (still flagged synthetic, never as real)
+
+#### `exa data synth evaluate`
+
+Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3). Exits
+non-zero when the gate fails.
+
+- `--real` — Local parquet file/dir of the real data (required)
+- `--synthetic` — Local parquet file/dir of the synthetic data (required)
+- `--min-fidelity` — Fidelity release floor (default 0.6)
+- `--min-privacy` — Privacy release floor (default 0.5)
+
 ### `exa data validate`
 
 Validate a dataset against its data contract; exit non-zero on error violations (spec R11).

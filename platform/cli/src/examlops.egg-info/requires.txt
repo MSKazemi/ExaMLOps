@@ -21,3 +21,6 @@ fastmcp>=3.4
 
 [oidc]
 pyjwt>=2.10
+
+[synth]
+sdv>=1.37

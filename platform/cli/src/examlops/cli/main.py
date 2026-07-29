@@ -85,6 +85,7 @@ from examlops.cli.commands import (
     stack,
     status,
     supplychain_cmd,
+    synth_cmd,
     vector_cmd,
     workbench_cmd,
 )
@@ -219,6 +220,9 @@ app.add_typer(
     data_cmd.app,
     name="data",
     help="Dataset versioning & reproducibility (revisions, diff, checkout)",
+)
+data_cmd.app.add_typer(
+    synth_cmd.app, name="synth", help="Synthetic data generation + fidelity/privacy gate (A7)"
 )
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")

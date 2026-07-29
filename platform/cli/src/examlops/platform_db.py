@@ -847,6 +847,24 @@ def init_db(*, force: bool = False) -> None:
                 created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (backend, dataset, revision_id)
             );
+            -- Next-Gen 40 · A7 — synthetic dataset gate record (ADR 0042). One row per
+            -- generated synthetic revision: the generator config + fidelity/privacy scores
+            -- and whether it passed the release gate. The `synthetic=1` flag lives on the
+            -- dataset_revisions row (spec R4); this table holds the quality/privacy provenance.
+            CREATE TABLE IF NOT EXISTS synthetic_datasets (
+                revision_id     TEXT PRIMARY KEY,
+                dataset         TEXT NOT NULL,
+                source_revision TEXT,
+                method          TEXT NOT NULL,
+                params_json     TEXT,
+                n_rows          INTEGER,
+                fidelity_score  REAL,
+                privacy_score   REAL,
+                released        INTEGER NOT NULL DEFAULT 0,
+                reasons_json    TEXT,
+                actor           TEXT,
+                created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             -- Next-Gen 40 · A2 — OpenLineage run events + I/O nodes (ADR 0004).
             -- platform_db is the operational source of truth; Marquez (if configured)
             -- holds the queryable graph. emit_lineage() dual-writes both.
@@ -1580,6 +1598,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "secrets_store": {
         "key_id": "TEXT",
     },
+    # A7 synthetic data (ADR 0042): flag a dataset revision as synthetic so it can never pass as
+    # real (spec R4), and anchor its provenance to the real source revision + generator method.
+    "dataset_revisions": {
+        "synthetic": "INTEGER NOT NULL DEFAULT 0",
+        "source_revision": "TEXT",
+        "generator": "TEXT",
+    },
 }
 
 
@@ -2236,7 +2261,7 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
 from examlops.data.audit import (audit_chain_head, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
-from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
+from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
 from examlops.data.drift import (claim_drift_trigger, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
 from examlops.data.evaluation import (get_eval_gate, get_eval_results, get_gate_reports, list_perf_estimates, record_eval_result, record_gate_report, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001

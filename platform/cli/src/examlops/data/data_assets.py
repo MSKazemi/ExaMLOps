@@ -37,6 +37,8 @@ __all__ = [
     "get_offline_features_asof",
     "get_online_feature",
     "get_repro_bundle",
+    "get_synthetic_dataset",
+    "is_synthetic_only",
     "last_materialization",
     "list_adapters",
     "list_assets",
@@ -45,15 +47,18 @@ __all__ = [
     "list_feature_views",
     "list_reindex_jobs",
     "list_repro_bundles",
+    "list_synthetic_datasets",
     "materialize_online",
     "purge_telemetry",
     "record_data_quality_check",
     "record_dataset_revision",
+    "record_synthetic_dataset",
     "register_adapter",
     "register_asset",
     "register_encoder_row",
     "set_adapter_promoted",
     "store_repro_bundle",
+    "synthetic_proportion",
     "update_distributed_run",
     "update_reindex_job",
     "upsert_collection",
@@ -484,19 +489,27 @@ def record_dataset_revision(
     row_count: int | None = None,
     byte_count: int | None = None,
     actor: str | None = None,
+    synthetic: bool = False,
+    source_revision: str | None = None,
+    generator: str | None = None,
 ) -> None:
     """Record a resolved dataset revision.
 
     Idempotent on ``(backend, dataset, revision_id)`` (spec R5): re-recording the
     same revision is a no-op and never raises a UNIQUE-constraint error.
+
+    A7 (ADR 0042): ``synthetic=True`` hard-flags the revision so it can never pass as
+    real (spec R4); ``source_revision``/``generator`` anchor its provenance to the real
+    revision it was derived from and the generator method used.
     """
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO dataset_revisions
                    (backend, dataset, revision_id, kind, uri, schema_hash,
-                    mlflow_run_id, row_count, byte_count, actor)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                    mlflow_run_id, row_count, byte_count, actor,
+                    synthetic, source_revision, generator)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(backend, dataset, revision_id) DO NOTHING""",
             (
                 rev.backend,
@@ -509,8 +522,130 @@ def record_dataset_revision(
                 row_count,
                 byte_count,
                 actor,
+                1 if synthetic else 0,
+                source_revision,
+                generator,
             ),
         )
+
+
+def record_synthetic_dataset(
+    revision_id: str,
+    dataset: str,
+    *,
+    source_revision: str | None,
+    method: str,
+    params: dict[str, Any] | None = None,
+    n_rows: int | None = None,
+    fidelity_score: float | None = None,
+    privacy_score: float | None = None,
+    released: bool = False,
+    reasons: list[str] | None = None,
+    actor: str | None = None,
+) -> None:
+    """Record the fidelity/privacy gate outcome for a synthetic revision (A7, spec R2/R3).
+
+    Idempotent on ``revision_id``: re-evaluating a revision overwrites its scores/gate
+    verdict so the latest evaluation is authoritative.
+    """
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO synthetic_datasets
+                   (revision_id, dataset, source_revision, method, params_json, n_rows,
+                    fidelity_score, privacy_score, released, reasons_json, actor)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(revision_id) DO UPDATE SET
+                   dataset=excluded.dataset, source_revision=excluded.source_revision,
+                   method=excluded.method, params_json=excluded.params_json,
+                   n_rows=excluded.n_rows, fidelity_score=excluded.fidelity_score,
+                   privacy_score=excluded.privacy_score, released=excluded.released,
+                   reasons_json=excluded.reasons_json, actor=excluded.actor""",
+            (
+                revision_id,
+                dataset,
+                source_revision,
+                method,
+                json.dumps(params or {}),
+                n_rows,
+                fidelity_score,
+                privacy_score,
+                1 if released else 0,
+                json.dumps(reasons or []),
+                actor,
+            ),
+        )
+
+
+def get_synthetic_dataset(revision_id: str) -> dict[str, Any] | None:
+    """Return the synthetic-dataset gate record for a revision, or None."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM synthetic_datasets WHERE revision_id=?", (revision_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    rec = dict(row)
+    rec["params"] = json.loads(rec.pop("params_json", None) or "{}")
+    rec["reasons"] = json.loads(rec.pop("reasons_json", None) or "[]")
+    rec["released"] = bool(rec.get("released"))
+    return rec
+
+
+def list_synthetic_datasets(dataset: str | None = None) -> list[dict[str, Any]]:
+    """List synthetic-dataset gate records, newest first (optionally filtered by dataset)."""
+    init_db()
+    with get_db() as conn:
+        if dataset is not None:
+            rows = conn.execute(
+                "SELECT * FROM synthetic_datasets WHERE dataset=? ORDER BY created_at DESC",
+                (dataset,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM synthetic_datasets ORDER BY created_at DESC"
+            ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rec = dict(row)
+        rec["params"] = json.loads(rec.pop("params_json", None) or "{}")
+        rec["reasons"] = json.loads(rec.pop("reasons_json", None) or "[]")
+        rec["released"] = bool(rec.get("released"))
+        out.append(rec)
+    return out
+
+
+def synthetic_proportion(revision_ids: list[str]) -> float:
+    """Fraction of the given dataset revisions flagged synthetic (A7, spec R5).
+
+    Unknown revision ids count as real (conservative). Returns 0.0 for an empty set.
+    """
+    ids = [r for r in revision_ids if r]
+    if not ids:
+        return 0.0
+    placeholders = ",".join("?" for _ in ids)
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT revision_id, synthetic FROM dataset_revisions WHERE revision_id IN ({placeholders})",  # noqa: S608 - placeholders are bound params, ids are values
+            ids,
+        ).fetchall()
+    flags = {r["revision_id"]: bool(r["synthetic"]) for r in rows}
+    synthetic_n = sum(1 for rid in ids if flags.get(rid, False))
+    return synthetic_n / len(ids)
+
+
+def is_synthetic_only(revision_ids: list[str]) -> bool:
+    """True iff every given revision is flagged synthetic (A7, spec R5/GWT-5).
+
+    The D5 policy layer calls this to forbid promoting a model trained on synthetic
+    data alone. An empty set is not synthetic-only (returns False).
+    """
+    ids = [r for r in revision_ids if r]
+    if not ids:
+        return False
+    return synthetic_proportion(ids) >= 1.0
 
 
 def register_adapter(

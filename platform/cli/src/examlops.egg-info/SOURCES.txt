@@ -134,6 +134,7 @@ src/examlops/cli/commands/slo_cmd.py
 src/examlops/cli/commands/stack.py
 src/examlops/cli/commands/status.py
 src/examlops/cli/commands/supplychain_cmd.py
+src/examlops/cli/commands/synth_cmd.py
 src/examlops/cli/commands/vector_cmd.py
 src/examlops/cli/commands/workbench_cmd.py
 src/examlops/compliance/__init__.py
@@ -218,6 +219,10 @@ src/examlops/slo/__init__.py
 src/examlops/storage/__init__.py
 src/examlops/structured/__init__.py
 src/examlops/supplychain/__init__.py
+src/examlops/synth/__init__.py
+src/examlops/synth/gate.py
+src/examlops/synth/generators.py
+src/examlops/synth/metrics.py
 src/examlops/telemetry/__init__.py
 src/examlops/telemetry/genai.py
 src/examlops/vector_store/__init__.py
