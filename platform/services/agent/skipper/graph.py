@@ -22,7 +22,14 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     """
     llm = build_llm(model)
     checkpointer = build_checkpointer(db_path)
-    tools = list(TOOLS)
+    # Platform-capability tools: the shared examlops.mcp registry (single source of truth) when
+    # AGENT_USE_MCP_TOOLS is set, else the in-repo tool set. Off by default → unchanged.
+    if config.AGENT_USE_MCP_TOOLS:
+        from skipper.tools.mcp_bridge import mcp_tools
+
+        tools = mcp_tools()
+    else:
+        tools = list(TOOLS)
     kwargs: dict = {}
     store = build_store(memory_db)
     if store is not None:

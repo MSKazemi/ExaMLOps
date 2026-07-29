@@ -96,6 +96,10 @@ AGENT_MEMORY_AUDIT = _env_bool("AGENT_MEMORY_AUDIT", True)
 # instead of the inline HITL interrupt. Off by default — inline HITL stays the default path.
 AGENT_MEMORY_REVIEW_QUEUE = _env_bool("AGENT_MEMORY_REVIEW_QUEUE", False)
 AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", "./skipper_review.db")
+# BL-007: source the agent's platform-capability tools from the shared examlops.mcp registry
+# (single source of truth) instead of the in-repo duplicates. Off by default. Mutating MCP tools
+# remain gated by EXAMLOPS_MCP_ALLOW_WRITES.
+AGENT_USE_MCP_TOOLS = _env_bool("AGENT_USE_MCP_TOOLS", False)
 
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 
