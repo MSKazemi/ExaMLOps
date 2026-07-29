@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **feat(serving): Enterprise LLM Serving — Track A / A1 engine binding (ADR 0096, spec §4.1).**
+  Wires the dormant B2 gateway → E2 engine seam so a locally-hosted model becomes a first-class
+  gateway backend (**R-A1**, the keystone): new `examlops.gateway.engine_backend(model_name, config)`
+  and `build_engine_router(...)` route `GatewayClient.chat()` through `examlops.engines.build_engine()`,
+  keeping the dependency direction strictly gateway → engines. `VLLMEngine.generate` now passes sampling
+  params (`temperature`/`max_tokens`/`top_p`/`stop`/`seed`) through to vLLM `SamplingParams` and returns
+  real token counts; `VLLMEngine.stream` yields incremental chunks; `VLLMEngine.health()` reflects real
+  readiness and is reachable via the new `GatewayClient.health()` surface (**R-A2/R-A3**). `build_engine`
+  gains a real **echo fallback** (**R-A8**): when `vllm`/`sglang` runtime deps are absent (CPU/CI host) it
+  degrades to `EchoEngine` with a `RuntimeWarning` (`allow_fallback=False` to require the real engine), so
+  the full gateway→engine path is exercisable with no GPU. Cost/telemetry (C1 span + FinOps) already wrap
+  `GatewayClient.chat`, so routing generation through it is cost-accounted for free. Additive and
+  backward-compatible (echo defaults unchanged). 13 GWT-backed unit tests
+  (`tests/unit/test_enterprise_llm_serving_a1.py`); ruff/mypy clean. A2–A4 (real GPU quant + eval-gate,
+  multi-node, enterprise wrap) and Track B (KServe) remain infra-gated — see
+  `.claude/plans/enterprise-llm-serving/_STATUS.md`.
+- **feat(serving): Enterprise LLM Serving — A2 partial: honest CPU quantization (R-A4).**
+  `examlops.engines.quantize_model` now emits a clear `RuntimeWarning` when no CUDA GPU is
+  reachable (new `_gpu_available()` helper: torch present + a visible device), stating that it
+  recorded **provenance-only** — the version is still signed + BOM'd (D3) but the weights are
+  unchanged, so a CPU-"quantized" version is never mistaken for a genuinely quantized artifact.
+  Real AWQ/GPTQ/FP8 quantization compute stays the GPU-gated A2 increment. 3 GWT-A4 tests. NB the
+  C3 eval-gate before promote (R-A5) was already wired in `exa pipeline promote` — verified, not
+  re-implemented.
+
 ## [0.46.0] - 2026-07-29
 
 ### Changed
