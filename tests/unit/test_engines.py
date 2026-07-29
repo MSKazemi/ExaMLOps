@@ -124,6 +124,32 @@ def test_quantize_without_artifacts_still_boms(tmp_path):
     assert get_model_bom("JPCP", "18-fp8") is not None
 
 
+# ── GWT-A4: provenance-only quantization warns on a CPU host (spec R-A4) ───────
+
+
+def test_gwta4_quantize_warns_provenance_only_on_cpu(monkeypatch):
+    monkeypatch.setattr(engines, "_gpu_available", lambda: False)
+    with pytest.warns(RuntimeWarning, match="provenance-only"):
+        v = engines.quantize_model("JPCP", "20", "awq")
+    assert v == "20-awq"  # version still registered (D3 sign + BOM path exercisable)
+
+
+def test_gwta4_quantize_no_provenance_warning_on_gpu(monkeypatch, recwarn):
+    monkeypatch.setattr(engines, "_gpu_available", lambda: True)
+    v = engines.quantize_model("JPCP", "21", "gptq")
+    assert v == "21-gptq"
+    assert not any(
+        issubclass(w.category, RuntimeWarning) and "provenance-only" in str(w.message)
+        for w in recwarn
+    )
+
+
+def test_gwta4_gpu_available_false_without_torch_cuda(monkeypatch):
+    # No torch installed ⇒ CPU host ⇒ provenance-only path.
+    monkeypatch.setattr(engines.importlib.util, "find_spec", lambda name: None)
+    assert engines._gpu_available() is False
+
+
 # ── GWT-5: spec-decode telemetry ──────────────────────────────────────────────
 
 
