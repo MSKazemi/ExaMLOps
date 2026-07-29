@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-07-29
+
+### Added
+
+- **feat(synth): synthetic data generation — `exa data synth` (Next-Gen 40 · A7, ADR 0042).**
+  Completes the flagship Next-Gen 40 (the last unimplemented feature). Fit a generator to a real
+  A1 dataset revision, generate provenance-flagged synthetic records, and gate them on **fidelity
+  + privacy** so synthetic data can never pass as real (spec R1–R6). New `examlops.synth` package
+  (`generators`/`metrics`/`gate`): `synth_fit`/`synth_generate`/`synth_evaluate`. **SDV is an
+  optional `examlops[synth]` extra** — without it a dependency-free Gaussian-copula fallback
+  (empirical marginals + rank-correlation copula for numerics, empirical frequencies for
+  categoricals, bootstrap resampling for embeddings/list columns) keeps every subcommand — and the
+  release gate — working offline, the same graceful-degradation pattern as A1 (lakeFS→content-hash).
+  Fidelity (per-column KS/TV distance + correlation preservation) and privacy
+  (distance-to-closest-record + exact-match memorisation signal) are both computed in the fallback
+  path so the gate is **never a silent no-op**; a memorising generator is flagged and blocked
+  (R3). Released datasets are recorded as **A1 revisions flagged `synthetic=true`** with an A2
+  lineage edge to the source revision + generator config (R4); `is_synthetic_only`/
+  `synthetic_proportion` primitives let a D5 policy forbid synthetic-only promotion (R5). New CLI
+  `exa data synth fit|generate|evaluate`; additive `dataset_revisions.synthetic/source_revision/
+  generator` columns (idempotent migration) + `synthetic_datasets` gate-record table. Guide
+  `docs/guides/synthetic-data.md`; 19 unit tests (GWT-1..5 + fail-closed gate + fallback
+  determinism), 96% package coverage.
+
 ## [0.38.0] - 2026-07-22
 
 ### Added
