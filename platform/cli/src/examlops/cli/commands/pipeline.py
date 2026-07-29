@@ -10,6 +10,7 @@ import typer
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay, StorageBackend
+from examlops.cli._help import make_ordered_group
 from examlops.cli.commands import hpo_cmd
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
@@ -17,7 +18,15 @@ from examlops.data.serving import set_promotion_rule
 from examlops.promotion_gates import synthetic_only_gate_enabled, synthetic_only_training
 from examlops.promotion_providers import resolve_promotion_eval_fn
 
+# Help panels for `exa pipeline` (quality/distributed/hpo sub-groups attached in main.py).
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Run & Deploy", ["run", "deploy", "list", "add-model", "export-registry"]),
+    ("Validate & Promote", ["validate", "validate-model", "promote", "promote-delete"]),
+    ("Advanced", ["hpo", "quality", "distributed"]),
+]
+
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},

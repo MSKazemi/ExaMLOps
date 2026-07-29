@@ -29,6 +29,7 @@ import typer
 import yaml
 
 from examlops.cli import _output
+from examlops.cli._help import make_ordered_group
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.projects import (
@@ -51,7 +52,16 @@ from examlops.data.projects import (
     update_project_quota,
 )
 
+# Help panels for `exa project` (all subcommands registered within this module).
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Lifecycle", ["create", "list", "show", "use", "current", "archive", "delete"]),
+    ("Resources", ["assign", "assign-model", "storage", "pipelines", "compose"]),
+    ("Members & Access", ["members", "add-member", "remove-member", "grant", "revoke", "access"]),
+    ("Quota & Cost", ["set-quota", "cost", "budget"]),
+]
+
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     no_args_is_help=True,
     rich_markup_mode="rich",
     help="ExaMLOps Projects — resource-quota envelopes (CPU/memory/storage/GPU) for Docker.",

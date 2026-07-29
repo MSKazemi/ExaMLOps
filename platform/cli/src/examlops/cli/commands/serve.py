@@ -8,13 +8,24 @@ import typer
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
+from examlops.cli._help import make_ordered_group
 from examlops.cli._provenance import audit_details, reason_option
 from examlops.cli.commands import explain_cmd
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.serving import get_traffic_rules, set_traffic_rules
 
+# Help panels for `exa serve` (title order = on-screen order). Applied in main.py after the
+# sub-typers (shadow/challenger/autoscale/routing/batch/ab/adapter) are attached there.
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Health & Deploy", ["reload", "check", "infer-check", "benchmark", "manifest", "backend"]),
+    ("Traffic & Routing", ["traffic", "traffic-list", "routing", "shadow", "ab"]),
+    ("Scaling & Batch", ["autoscale", "batch"]),
+    ("Models & Adapters", ["models", "adapter", "challenger", "explain"]),
+]
+
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},

@@ -6,6 +6,7 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.cli._help import make_ordered_group
 from examlops.cli._provenance import audit_details, reason_option
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
@@ -21,7 +22,15 @@ from examlops.data.drift import (
 )
 from examlops.drift_providers import resolve_drift_score_fn
 
+# Help panels for `exa drift` (auto-retrain and input sub-groups are added within this module).
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Detection", ["status", "snapshots", "concept", "estimate", "profile", "forecast", "events"]),
+    ("Baselines", ["baseline", "reset"]),
+    ("Response", ["trigger", "auto-retrain", "input"]),
+]
+
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},

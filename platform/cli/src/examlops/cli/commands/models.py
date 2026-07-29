@@ -9,6 +9,7 @@ import typer
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
+from examlops.cli._help import make_ordered_group
 
 _LOWER_IS_BETTER = {"rmse", "mae", "loss", "error", "mse", "mape"}
 
@@ -20,7 +21,17 @@ def _improvement_direction(metric: str) -> str:
     return "higher"
 
 
+# Help panels for `exa models`. Applied in main.py (sign/verify/bom/quantize/engine and the
+# card/rollback sub-groups are merged onto this app there).
+_PANELS: list[tuple[str, list[str]]] = [
+    ("Registry", ["list", "info", "diff", "lineage", "card"]),
+    ("Promotion", ["rollback"]),
+    ("Cost", ["cost", "cost-list"]),
+    ("Supply chain & Packaging", ["sign", "verify", "bom", "quantize", "engine"]),
+]
+
 app = typer.Typer(
+    cls=make_ordered_group(_PANELS),
     no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},

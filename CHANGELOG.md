@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-07-29
+
+### Changed
+
+- **feat(cli): grouped, best-practice `exa` help — commands are split into titled panels.**
+  `exa --help` had grown to ~60 top-level commands in a single flat "Commands" list, which
+  was hard to scan. Commands are now grouped into **11 MLOps-lifecycle panels** (Getting
+  Started · Training & Pipelines · Data & Features · Models & Registry · Serving & Inference ·
+  GenAI & LLMOps · Monitoring & Quality · HPC, Fleet & FinOps · Governance & Security ·
+  Projects & Workspaces · Platform & Integrations), rendered in a deliberate order via Typer's
+  `rich_help_panel`. The six largest sub-groups (`serve`, `models`, `pipeline`, `hpc`,
+  `drift`, `project`) are paneled too. New `examlops.cli._help` centralises the mechanism:
+  `make_ordered_group()` (a `TyperGroup` whose `list_commands` orders by a declarative panel
+  spec, so panel *and* within-panel order come from one source of truth) plus `assign_panels()`.
+  The root's fuzzy "did you mean" (`SuggestGroup`) is preserved. Purely a help-display change —
+  command resolution, `exa docs`, JSON output, and scripting are unaffected. New
+  `tests/unit/test_cli_help_panels.py` guard fails if any command is added without a panel.
+
 ## [0.45.0] - 2026-07-29
 
 ### Added
