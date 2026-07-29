@@ -638,7 +638,7 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
 skipper-test:  ## Run the Skipper agent unit tests
-	.venv/bin/pip install -q langgraph langgraph-checkpoint-sqlite langchain langchain-anthropic langchain-ollama anthropic respx fastapi uvicorn
+	.venv/bin/pip install -q langgraph langgraph-checkpoint-sqlite langchain langchain-anthropic langchain-openai langchain-ollama anthropic respx fastapi uvicorn
 	.venv/bin/pytest platform/services/agent/tests -v
 
 agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)
