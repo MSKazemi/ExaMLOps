@@ -6,6 +6,7 @@ import typer
 
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
+from examlops.cli._provenance import audit_details, reason_option
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 
@@ -72,6 +73,7 @@ def approve(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what would be approved without firing training"
     ),
+    reason: str | None = reason_option(),
 ) -> None:
     """Approve a pending model change — fires Prefect training immediately."""
     if dry_run:
@@ -100,7 +102,11 @@ def approve(
     try:
         init_db()
         write_audit_event(
-            "cli", actor, "model_approved", model, {"flow_run_id": result.get("flow_run_id")}
+            "cli",
+            actor,
+            "model_approved",
+            model,
+            audit_details({"flow_run_id": result.get("flow_run_id")}, reason),
         )
     except Exception:
         pass
