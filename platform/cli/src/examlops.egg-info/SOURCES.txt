@@ -57,6 +57,7 @@ src/examlops/cli/__init__.py
 src/examlops/cli/_client.py
 src/examlops/cli/_config.py
 src/examlops/cli/_enums.py
+src/examlops/cli/_help.py
 src/examlops/cli/_output.py
 src/examlops/cli/_plugins.py
 src/examlops/cli/_provenance.py

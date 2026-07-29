@@ -209,6 +209,22 @@ class GatewayClient:
 
         raise AllBackendsFailed("; ".join(errors) or f"no backend for model '{model}'")
 
+    def health(self) -> dict[str, bool]:
+        """Readiness of every routed backend (R-A3), reachable through the gateway.
+
+        A local-engine backend (see :func:`engine_backend`) exposes its engine's
+        ``health()``; backends without a probe are reported ready.
+        """
+        out: dict[str, bool] = {}
+        for logical, route in self.router.routes.items():
+            for name, backend in route.ordered():
+                probe = getattr(backend, "health", None)
+                try:
+                    out[f"{logical}:{name}"] = bool(probe()) if callable(probe) else True
+                except Exception:  # a probe must never break the health surface
+                    out[f"{logical}:{name}"] = False
+        return out
+
 
 def _coerce(raw: Any, model: str, backend: str) -> Completion:
     if isinstance(raw, Completion):
@@ -251,4 +267,63 @@ def build_default_router() -> Router:
     router = Router()
     default_model = os.getenv("EXAMLOPS_GATEWAY_DEFAULT_MODEL", "default")
     router.add_route(default_model, [("echo", _echo)])
+    return router
+
+
+# ── Local-engine edge (R-A1: gateway → engines.build_engine) ───────────────────
+#
+# The single wiring from the B2 gateway into the E2 engine layer. The dependency
+# direction is strictly gateway → engines (``engines`` never imports ``gateway``),
+# so a locally-hosted model (vLLM on GPU, echo on CPU/CI) becomes a first-class
+# gateway backend with routing, keys, budgets, cost + telemetry applied around it.
+
+_SAMPLING_KEYS = ("temperature", "max_tokens", "top_p", "stop", "seed")
+
+
+def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
+    """Flatten OpenAI-style chat messages into a single prompt string for an engine."""
+    return "\n".join(str(m.get("content", "")) for m in messages).strip()
+
+
+def engine_backend(model_name: str, config: Any = None) -> Backend:
+    """R-A1: a gateway :data:`Backend` that dispatches to a local ``InferenceEngine``.
+
+    ``config`` may be an ``engines.EngineConfig``, a plain ``dict`` (per-model YAML
+    ``engine:`` block), or ``None`` (defaults). On a CPU/CI host with no vLLM the
+    engine degrades to ``EchoEngine`` (R-A8), so the full gateway→engine path is
+    exercisable with no GPU. The returned callable carries ``.health`` (reachable via
+    :meth:`GatewayClient.health`) and ``.engine`` for introspection.
+    """
+    from examlops.engines import EngineConfig, build_engine
+
+    cfg = config if isinstance(config, EngineConfig) else EngineConfig()
+    if isinstance(config, dict):
+        cfg = EngineConfig.from_dict(config)
+    engine = build_engine(cfg, model_path=model_name)
+
+    def _backend(model: str, messages: list[dict[str, str]], **kw: Any) -> Completion:
+        prompt = _messages_to_prompt(messages)
+        sampling = {k: v for k, v in kw.items() if k in _SAMPLING_KEYS}
+        ec = engine.generate(prompt, **sampling)
+        return Completion(
+            text=ec.text,
+            model=model,
+            backend=engine.name,
+            prompt_tokens=ec.prompt_tokens,
+            completion_tokens=ec.completion_tokens,
+        )
+
+    _backend.health = engine.health  # type: ignore[attr-defined]
+    _backend.engine = engine  # type: ignore[attr-defined]
+    return _backend
+
+
+def build_engine_router(
+    model_name: str, config: Any = None, *, logical: str | None = None
+) -> Router:
+    """Router serving one logical model from a local engine, with echo last-resort (R-A1/R-A8)."""
+    router = Router()
+    router.add_route(
+        logical or model_name, [(f"engine:{model_name}", engine_backend(model_name, config))]
+    )
     return router
