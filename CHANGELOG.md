@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-07-29
+
+### Added
+
+- **feat(agent): Skipper can consume the platform's MCP tools directly (single source of truth,
+  exa CLI next-gen).** The platform defines its agent-callable capabilities once, in
+  `examlops.mcp.tools` (the same registry `exa mcp serve` exposes to external agents). New
+  `skipper.tools.mcp_bridge` wraps that registry as LangChain tools (preserving each tool's typed
+  signature; serialising results to JSON), so the in-repo Skipper agent can use the **same**
+  definitions instead of a parallel in-repo set that can drift. Enabled with
+  `AGENT_USE_MCP_TOOLS=1` (off by default — the in-repo tool set is unchanged); mutating MCP tools
+  stay gated by `EXAMLOPS_MCP_ALLOW_WRITES`. 6 unit tests (bridge wrapping, write-gating, graph
+  wires on the flag). Retiring the duplicate in-repo tool modules is a follow-up (needs live-agent
+  parity validation).
+
 ## [0.44.0] - 2026-07-29
 
 ### Added

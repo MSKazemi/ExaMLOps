@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: examlops
-Version: 0.44.0
+Version: 0.45.0
 Summary: ExaMLOps shared schemas and the `exa` operator CLI.
 Requires-Python: >=3.12
 Requires-Dist: typer>=0.12
