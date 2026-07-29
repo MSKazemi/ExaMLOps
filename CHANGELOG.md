@@ -5,6 +5,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-07-29
+
+### Added
+
+- **feat(cli): `--reason` change-provenance + early access-scope hints on mutating commands
+  (exa CLI next-gen N5).** Governance-critical mutations now accept `--reason "<why>"`, recorded
+  in the audit trail (`audit_events.details.reason`) so a reviewer sees *why* a change was made,
+  not just what and by whom. Applied to `exa retrain`, `exa drift baseline|reset`, `exa drift
+  input baseline|reset`, `exa serve traffic`, `exa approvals approve` (`reject` already had it) via
+  a shared `examlops.cli._provenance` helper (`reason_option` + `audit_details` fold +
+  `scope_hint`). Backward-compatible: the `reason` key is omitted when none is given. `exa retrain`
+  also surfaces an early `CONTROL_PLANE_TOKEN` hint when the credential is missing, so the
+  requirement shows *before* the request is rejected.
+- **feat(cli): `--output md|html` structured export (exa CLI next-gen N3).** Extends the central
+  `_output` format dispatch (which already did json/yaml/csv) with Markdown-table and
+  HTML-table renderers, and adds `md`/`html` to the global `OutputFormat` enum — so **every**
+  structured command (`exa status`, `exa doctor`, and all others) can emit Markdown for
+  reports/PRs or HTML for embedding, with zero per-command changes. HTML cell values are escaped
+  (no injection from data); Markdown escapes pipes and flattens newlines; non-tabular data
+  degrades to a fenced JSON block / `<pre>`.
+
 ## [0.39.0] - 2026-07-29
 
 ### Added

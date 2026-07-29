@@ -6,6 +6,7 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.cli._provenance import audit_details, reason_option
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.drift import (
@@ -135,6 +136,7 @@ def baseline(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show the baseline that would be set without writing it"
     ),
+    reason: str | None = reason_option(),
 ):
     """Store current rolling stats as the drift baseline for a model."""
     init_db()
@@ -167,7 +169,7 @@ def baseline(
 
     set_drift_baseline(model, stats)
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "drift_baseline_set", model, stats)
+    write_audit_event("cli", actor, "drift_baseline_set", model, audit_details(stats, reason))
     _output.ok(
         f"Baseline set for {model}: mean={stats['mean']:.3f}  "
         f"std={stats['std']:.3f}  n={int(stats['n'])}"
@@ -180,6 +182,7 @@ def reset(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show how many snapshots would be cleared without deleting them"
     ),
+    reason: str | None = reason_option(),
 ):
     """Clear all drift snapshots for a model (keeps baseline)."""
     init_db()
@@ -207,7 +210,7 @@ def reset(
     with get_db() as conn:
         conn.execute("DELETE FROM drift_snapshots WHERE model=?", (model,))
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "drift_reset", model, {"cleared": n})
+    write_audit_event("cli", actor, "drift_reset", model, audit_details({"cleared": n}, reason))
     _output.ok(f"Cleared {n} drift snapshot(s) for {model}")
 
 
@@ -625,6 +628,7 @@ def input_baseline(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show the input baseline that would be set without writing it"
     ),
+    reason: str | None = reason_option(),
 ):
     """Store current rolling embedding statistics as the input drift baseline."""
     init_db()
@@ -680,7 +684,9 @@ def input_baseline(
 
     set_input_baseline(model, stats)
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "input_baseline_set", model, {"n": len(snap_rows)})
+    write_audit_event(
+        "cli", actor, "input_baseline_set", model, audit_details({"n": len(snap_rows)}, reason)
+    )
     _output.ok(
         f"Input baseline set for {model}: norm_μ={norm_mean:.3f}  emb_μ={mean_mean:.4f}  "
         f"emb_σ={std_mean:.4f}  n={len(snap_rows)}"
@@ -696,6 +702,7 @@ def input_reset(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show how many snapshots would be cleared without deleting them"
     ),
+    reason: str | None = reason_option(),
 ):
     """Clear all input embedding snapshots for a model (keeps baseline)."""
     init_db()
@@ -723,7 +730,7 @@ def input_reset(
     with get_db() as conn:
         conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    write_audit_event("cli", actor, "input_reset", model, {"cleared": n})
+    write_audit_event("cli", actor, "input_reset", model, audit_details({"cleared": n}, reason))
     _output.ok(f"Cleared {n} input snapshot(s) for {model}")
 
 

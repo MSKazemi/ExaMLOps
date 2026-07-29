@@ -2,13 +2,20 @@
 
 ExaMLOps platform CLI — manage models, training, inference, and services.
 
-- `--output, -o` — Output format: table (human) | json | yaml | csv (for scripting/agents)
+- `--output, -o` — Output format: table (human) | json | yaml | csv | md | html (scripting/agents/reports)
 - `--json` — Shorthand for --output json (kept for compatibility)
 - `--context, -c` — Use a named config context for this invocation
 - `--yes, -y` — Skip all confirmation prompts
 - `--quiet, -q` — Suppress non-essential output (hints, info, progress detail)
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
+
+**Change provenance (`--reason`).** Governance-critical mutating commands accept `--reason "<why>"`,
+recorded in the audit trail (`audit_events.details.reason`) so a reviewer can see *why* a change was
+made, not just what and by whom. Currently on: `exa retrain`, `exa drift baseline|reset`,
+`exa drift input baseline|reset`, `exa serve traffic`, `exa approvals approve|reject`. Commands that
+need a credential (e.g. `exa retrain` needs `CONTROL_PLANE_TOKEN`) also print an early scope hint when
+it is missing, so the requirement surfaces before the request is rejected.
 
 ## `exa admission`
 
