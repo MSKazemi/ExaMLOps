@@ -7,6 +7,7 @@ from typing import Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 console = Console()
@@ -181,10 +182,15 @@ def info(message: str) -> None:
 
 
 def hint(message: str) -> None:
-    """Suggest a next action — skipped in JSON or quiet mode."""
+    """Suggest a next action — skipped in JSON or quiet mode.
+
+    The message is Rich-escaped so literal brackets (e.g. a TOML
+    ``[project.entry-points."examlops.cli_plugins"]`` snippet) render verbatim
+    instead of being silently eaten as an invalid markup tag.
+    """
     if json_mode or quiet_mode:
         return
-    console.print(f"[dim italic]  → {message}[/dim italic]")
+    console.print(f"[dim italic]  → {escape(message)}[/dim italic]")
 
 
 def detail(message: str) -> None:
