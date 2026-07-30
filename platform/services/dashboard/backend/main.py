@@ -50,6 +50,7 @@ from routers import (
     pipelines,
     platform_audit,
     platform_data,
+    platform_ops,
     projects,
     prompts,
     providers,
@@ -202,6 +203,7 @@ app.include_router(secrets.router, prefix="/api")
 app.include_router(feature_store.router, prefix="/api")
 app.include_router(fairness.router, prefix="/api")
 app.include_router(platform_data.router, prefix="/api")
+app.include_router(platform_ops.router, prefix="/api")
 app.include_router(rollback.router, prefix="/api")
 app.include_router(quality.router, prefix="/api")
 app.include_router(shadow.router, prefix="/api")
