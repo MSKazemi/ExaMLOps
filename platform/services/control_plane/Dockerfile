@@ -14,6 +14,11 @@ ENV PYTHONUNBUFFERED=1 \
 COPY pipelines /app/pipelines
 COPY modelzoo /app/modelzoo
 COPY platform/services/control_plane /app/platform/services/control_plane
+# ADR 0094: concrete model YAML lives in the use-case pack, not pipelines/models. The control
+# plane resolves the registry via resolve_models_dir() → <repo>/usecases/seanergy/pack.toml, so
+# the pack MUST be baked in (this container has no /repo mount). Without it the model registry
+# falls back to the removed legacy dir and shows 0 models.
+COPY usecases /app/usecases
 
 RUN pip install --upgrade pip \
     && pip install -e /app/pipelines \

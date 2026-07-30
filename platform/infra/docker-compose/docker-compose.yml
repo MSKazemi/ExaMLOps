@@ -214,6 +214,9 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       RAY_SERVE_URL: http://ray-serving:8001
       DASHBOARD_URL: http://dashboard:8099
+      # ADR 0094: point the registry resolver at the baked use-case pack (this container has no
+      # /repo mount). Explicit so resolve_models_dir() never falls back to the removed legacy dir.
+      EXAMLOPS_USECASE_DIR: ${EXAMLOPS_USECASE_DIR:-/app/usecases/seanergy}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: control-plane
