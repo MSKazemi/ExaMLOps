@@ -71,6 +71,11 @@ def test_plugins_command_empty(monkeypatch):
     result = runner.invoke(app, ["plugins"])
     assert result.exit_code == 0, result.output
     assert "No plugins installed" in result.output
+    # Regression (2026-07-30): the "add a plugin" hint embeds a literal TOML
+    # `[project.entry-points."examlops.cli_plugins"]` snippet. Rich would otherwise
+    # eat the `[...]` as an invalid markup tag and render nothing ("Add one via  in
+    # a package."). `_output.hint` now escapes the message, so the snippet appears.
+    assert '[project.entry-points."examlops.cli_plugins"]' in result.output
 
 
 def test_plugins_command_json(monkeypatch):
