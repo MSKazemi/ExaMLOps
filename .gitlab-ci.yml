@@ -407,10 +407,26 @@ deploy:lxp:
         # CLI hiccup must not fail production.
         export PATH=\"\$HOME/.local/bin:/localhome/u1002/.local/bin:\$PATH\"
         uv pip install -e . >/dev/null 2>&1 && echo \"exa CLI refreshed: \$(.venv/bin/exa --version 2>/dev/null)\" || echo \"warn: exa CLI refresh skipped (uv unavailable) — non-fatal\"
+        # Rebuild the core stack. NOTE: NO --remove-orphans — it deletes the on-demand
+        # profile services (monitoring, JupyterHub, SeanerBUS bridge) and breaks those tabs
+        # (project workbenches / Grafana embeds / SeanerBUS) on every deploy.
         docker compose \
           -f platform/infra/docker-compose/docker-compose.yml \
           -f platform/infra/docker-compose/docker-compose.lxp.yml \
-          up --build -d --remove-orphans
+          up --build -d
+        # Persist JupyterHub (project workbenches spawn as Hub named servers) + the SeanerBUS
+        # bridge across deploys. All non-fatal — a build/network hiccup must never fail production.
+        docker build --network=host -t examlops-jupyterlab \
+          -f platform/infra/docker-compose/Dockerfile.jupyterlab \
+          platform/infra/docker-compose >/dev/null 2>&1 && echo \"jupyterlab image built\" || echo \"warn: jupyterlab image build skipped\"
+        docker compose \
+          -f platform/infra/docker-compose/docker-compose.yml \
+          -f platform/infra/docker-compose/docker-compose.lxp.yml \
+          --profile jupyter up -d --build jupyterhub >/dev/null 2>&1 && echo \"jupyterhub up\" || echo \"warn: jupyterhub start skipped\"
+        docker compose \
+          -f platform/infra/docker-compose/docker-compose.yml \
+          -f platform/infra/docker-compose/docker-compose.lxp.yml \
+          --profile seanerbus up -d seanerbus-bridge >/dev/null 2>&1 && echo \"seanerbus bridge up\" || echo \"warn: seanerbus bridge start skipped\"
         echo \"Deploy complete: \$(git rev-parse HEAD)\"
       "
   artifacts:
