@@ -196,6 +196,439 @@ def _as_dict(data: Any) -> dict[str, Any]:
     return {"items": data}
 
 
+def _db_read(query: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a platform.db read, wrapping the result in an ``ok`` envelope.
+
+    ``query`` returns the payload dict (already keyed). Any failure — including
+    ``platform.db`` being unavailable — degrades to a structured error envelope rather
+    than raising, so an agent can reason about it. ``init_db()`` is idempotent (schema-once
+    sentinel) so calling it per read is cheap.
+    """
+    try:
+        from examlops.data import init_db
+
+        init_db()
+        return {"ok": True, **query()}
+    except Exception as exc:  # noqa: BLE001 - reads never raise to the agent
+        return _err(str(exc))
+
+
+_SENSITIVE_KEYS = ("secret", "token", "password", "raw_key", "plaintext")
+
+
+def _redact(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop any obviously-sensitive field before returning rows to an agent."""
+    return [
+        {k: v for k, v in row.items() if not any(s in k.lower() for s in _SENSITIVE_KEYS)}
+        for row in rows
+    ]
+
+
+# ── read-only tools: Monitoring & Drift ───────────────────────────────────────
+
+
+def drift_status(model: str) -> dict[str, Any]:
+    """Prediction-drift status for a model: stored baseline + recent drift events.
+
+    Reads ``drift_baselines`` + ``drift_events``. Compare live values against the baseline to
+    judge drift severity; this returns the *recorded* state, not a fresh computation.
+    """
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.drift import get_drift_baseline, list_drift_events
+
+        return {
+            "baseline": get_drift_baseline(model),
+            "events": list_drift_events(model=model, drift_kind="prediction", last_n=10),
+        }
+
+    return _db_read(_q)
+
+
+def input_drift_status(model: str) -> dict[str, Any]:
+    """Input-embedding drift status: stored input baseline + recent input drift events."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.drift import get_input_baseline, list_drift_events
+
+        return {
+            "baseline": get_input_baseline(model),
+            "events": list_drift_events(model=model, drift_kind="input", last_n=10),
+        }
+
+    return _db_read(_q)
+
+
+def list_drift(model: str | None = None, kind: str | None = None) -> dict[str, Any]:
+    """Recent unified drift events (newest first), optionally filtered by model and kind.
+
+    Args:
+        model: Optional model filter.
+        kind: Optional drift kind — ``prediction``, ``input`` or ``concept``.
+    """
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.drift import list_drift_events
+
+        return {"events": list_drift_events(model=model, drift_kind=kind, last_n=50)}
+
+    return _db_read(_q)
+
+
+def get_drift_autoretrain(model: str | None = None) -> dict[str, Any]:
+    """Drift-triggered auto-retrain configuration (per model, or all when model omitted)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.drift import get_drift_auto_retrain, list_drift_auto_retrain
+
+        if model:
+            return {"config": get_drift_auto_retrain(model)}
+        return {"configs": list_drift_auto_retrain()}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: Serving, Traffic & Promotion ─────────────────────────────
+
+
+def traffic_rules(model: str) -> dict[str, Any]:
+    """Current traffic-split rules (production/canary percentages) for a model."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.serving import get_traffic_rules
+
+        return {"rules": get_traffic_rules(model)}
+
+    return _db_read(_q)
+
+
+def promotion_rule(model: str) -> dict[str, Any]:
+    """The metric-gated promotion rule configured for a model (if any)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.serving import get_promotion_rule
+
+        return {"rule": get_promotion_rule(model)}
+
+    return _db_read(_q)
+
+
+def challenger_config(model: str) -> dict[str, Any]:
+    """Champion/challenger configuration for a model (shadow-eval settings)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.serving import get_challenger_config
+
+        return {"config": get_challenger_config(model)}
+
+    return _db_read(_q)
+
+
+def autoscale_config(model: str) -> dict[str, Any]:
+    """Autoscale / scale-to-zero configuration for a serving model."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.serving import get_autoscale_config
+
+        return {"config": get_autoscale_config(model)}
+
+    return _db_read(_q)
+
+
+def scale_events(model: str) -> dict[str, Any]:
+    """Recent autoscale scale-up/scale-down events for a model (newest first)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.serving import list_scale_events
+
+        return {"events": list_scale_events(model, last_n=50)}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: SLO, Fairness & Governance ───────────────────────────────
+
+
+def slo_specs(model: str | None = None) -> dict[str, Any]:
+    """Configured SLO specifications (objectives) for a model, or all models."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.governance import list_slo_specs
+
+        return {"specs": list_slo_specs(model=model)}
+
+    return _db_read(_q)
+
+
+def slo_ratio(model: str, name: str) -> dict[str, Any]:
+    """The observed good/total SLI ratio for a named SLO on a model (SLO attainment)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.governance import slo_sli_ratio
+
+        good, total = slo_sli_ratio(model, name)
+        ratio = (good / total) if total else None
+        return {"good": good, "total": total, "ratio": ratio}
+
+    return _db_read(_q)
+
+
+def fairness_status(model: str) -> dict[str, Any]:
+    """Fairness gates + fairness configuration for a model (bias/parity guardrails)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.finops import get_fairness_gates
+        from examlops.data.governance import get_fairness_config
+
+        return {
+            "gates": get_fairness_gates(model),
+            "config": get_fairness_config(model),
+        }
+
+    return _db_read(_q)
+
+
+def compliance_system(model: str) -> dict[str, Any]:
+    """The compliance/risk classification recorded for a model (e.g. EU-AI-Act system)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.governance import get_compliance_system, list_technical_files
+
+        return {
+            "system": get_compliance_system(model),
+            "technical_files": list_technical_files(model),
+        }
+
+    return _db_read(_q)
+
+
+def authz_relations(subject: str | None = None, obj: str | None = None) -> dict[str, Any]:
+    """Relationship-based access-control grants (who has which role on which object)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.governance import list_relations
+
+        return {"relations": list_relations(subject=subject, obj=obj)}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: FinOps & Green-AI ────────────────────────────────────────
+
+
+def model_costs(model: str) -> dict[str, Any]:
+    """Recorded HPC GPU-hour / USD cost history for a model."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.finops import get_model_costs
+
+        return {"costs": get_model_costs(model)}
+
+    return _db_read(_q)
+
+
+def carbon(model: str | None = None) -> dict[str, Any]:
+    """Green-AI carbon-accounting records (kgCO2e) for a model, or the whole platform."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.finops import get_carbon_records
+
+        return {"records": get_carbon_records(model)}
+
+    return _db_read(_q)
+
+
+def platform_cost_summary() -> dict[str, Any]:
+    """Aggregated per-model cost rollup across the platform (FinOps overview)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.finops import aggregate_model_costs
+
+        return {"summary": aggregate_model_costs()}
+
+    return _db_read(_q)
+
+
+def gateway_cost() -> dict[str, Any]:
+    """Total LLM-gateway spend (USD) across virtual keys."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.finops import total_gateway_cost
+
+        return {"total_usd": total_gateway_cost()}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: Gateway & LLMOps ─────────────────────────────────────────
+
+
+def gateway_config(model: str) -> dict[str, Any]:
+    """The LLM-gateway routing configuration for a model (backends, fallbacks)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.gateway import get_gateway_config
+
+        return {"config": get_gateway_config(model)}
+
+    return _db_read(_q)
+
+
+def gateway_cache_stats() -> dict[str, Any]:
+    """Semantic-cache hit-rate and savings for the LLM gateway."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.gateway import cache_stats
+
+        return {"stats": cache_stats()}
+
+    return _db_read(_q)
+
+
+def list_gateway_keys() -> dict[str, Any]:
+    """List LLM-gateway virtual keys (metadata only — secret material is never returned)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.gateway import list_virtual_keys
+
+        return {"keys": _redact(list_virtual_keys())}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: Evaluation & Data ────────────────────────────────────────
+
+
+def eval_gate(model: str) -> dict[str, Any]:
+    """The evaluation regression-gate configuration for a model (thresholds/suites)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.evaluation import get_eval_gate
+
+        return {"gate": get_eval_gate(model)}
+
+    return _db_read(_q)
+
+
+def eval_results(model: str) -> dict[str, Any]:
+    """Recorded evaluation-suite results for a model (newest first)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.evaluation import get_eval_results
+
+        return {"results": get_eval_results(model)}
+
+    return _db_read(_q)
+
+
+def gate_reports(model: str) -> dict[str, Any]:
+    """Recent regression-gate pass/fail reports for a model."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.evaluation import get_gate_reports
+
+        return {"reports": get_gate_reports(model)}
+
+    return _db_read(_q)
+
+
+def dataset_revisions(dataset: str) -> dict[str, Any]:
+    """Recorded immutable dataset revisions for a dataset (data-versioning history)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.data_assets import get_dataset_revisions
+
+        return {"revisions": get_dataset_revisions(dataset)}
+
+    return _db_read(_q)
+
+
+def data_quality(dataset: str) -> dict[str, Any]:
+    """Recent data-quality / contract validation checks for a dataset."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.data_assets import get_data_quality_checks
+
+        return {"checks": get_data_quality_checks(dataset)}
+
+    return _db_read(_q)
+
+
+def feature_view(name: str) -> dict[str, Any]:
+    """Definition + last materialization of a feature-store view."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.data_assets import get_feature_view, last_materialization
+
+        return {"view": get_feature_view(name), "last_materialization": last_materialization(name)}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: Incident & Lineage ───────────────────────────────────────
+
+
+def model_lineage(model: str) -> dict[str, Any]:
+    """Lineage graph for a model: the pipeline → dataset → model chain (OpenLineage)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.events import lineage_graph
+
+        return {"lineage": lineage_graph(model)}
+
+    return _db_read(_q)
+
+
+def lineage_impact(dataset_revision: str) -> dict[str, Any]:
+    """Downstream impact of a dataset revision: everything derived from it (blast radius)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.events import lineage_impact as _impact
+
+        return {"impacted": _impact(dataset_revision)}
+
+    return _db_read(_q)
+
+
+# ── read-only tools: Help & Discoverability ───────────────────────────────────
+
+
+def explain_command(command: str = "") -> dict[str, Any]:
+    """Explain what an ``exa`` command does, with its copy-paste examples (grounded help).
+
+    Introspects the live ``exa`` Typer/Click command tree, so the answer can never drift from
+    the actual CLI. Pass a space-separated command path (``"drift"``, ``"serve reload"``) to
+    describe that command; pass an empty string to list the top-level commands. This is the
+    agent's authoritative "how do I …?" tool — prefer it over guessing command syntax.
+    """
+    try:
+        from examlops.cli.commands.explain_command import (
+            _clean,
+            _extract_examples,
+            _resolve,
+        )
+
+        path = [p for p in command.split() if p]
+        node = _resolve(path)
+        if node is None:
+            return _err(f"unknown command: {command!r}")
+        commands = getattr(node, "commands", None)
+        label = " ".join(["exa", *path]) if path else "exa"
+        summary = _clean(
+            node.get_short_help_str() or (getattr(node, "help", "") or "").split("\n")[0]
+        )
+        out: dict[str, Any] = {"ok": True, "command": label, "summary": summary}
+        if commands:
+            out["subcommands"] = {
+                name: _clean(sub.get_short_help_str() or (sub.help or "").split("\n")[0])
+                for name, sub in sorted(commands.items())
+            }
+        out["examples"] = _extract_examples(getattr(node, "epilog", None))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+
+
 # ── mutating tools (gated behind EXAMLOPS_MCP_ALLOW_WRITES) ────────────────────
 
 
@@ -501,6 +934,23 @@ def project_add_member(project: str, subject: str, role: str = "viewer") -> dict
         return _err(str(exc))
 
 
+# Recognised lifecycle use cases a tool serves. Drives the capabilities catalogue
+# (``capabilities_catalogue``), the A2A card grouping, and the Skipper skill-router packs.
+USE_CASES: tuple[str, ...] = (
+    "management",
+    "monitoring",
+    "help",
+    "incident",
+    "finops",
+    "governance",
+)
+
+# Write-privilege tiers (ADR 0106). ``read`` = no mutation. ``A`` = low-risk, autopilot-OK.
+# ``B`` = requires human-in-the-loop confirmation. ``C`` = human-CLI-only (never bound to an
+# autonomous agent). Read tools always carry ``read``.
+TIERS: tuple[str, ...] = ("read", "A", "B", "C")
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Metadata describing one agent-callable tool."""
@@ -508,6 +958,8 @@ class ToolSpec:
     fn: Callable[..., dict[str, Any]]
     mutating: bool = False
     tags: tuple[str, ...] = field(default_factory=tuple)
+    use_cases: tuple[str, ...] = field(default_factory=tuple)
+    tier: str = "read"
 
     @property
     def name(self) -> str:
@@ -521,27 +973,148 @@ class ToolSpec:
 
 
 REGISTRY: tuple[ToolSpec, ...] = (
-    ToolSpec(platform_status, tags=("read", "status")),
-    ToolSpec(list_models, tags=("read", "registry")),
-    ToolSpec(model_detail, tags=("read", "registry")),
-    ToolSpec(list_production_models, tags=("read", "registry")),
-    ToolSpec(list_approvals, tags=("read", "governance")),
-    ToolSpec(modelzoo_status, tags=("read", "modelzoo")),
-    ToolSpec(recent_audit_events, tags=("read", "governance")),
-    ToolSpec(trigger_retrain, mutating=True, tags=("write", "training")),
-    ToolSpec(retrain_status, tags=("read", "training")),
-    ToolSpec(hpc_clusters, tags=("read", "hpc")),
-    ToolSpec(hpc_nodes, tags=("read", "hpc")),
-    ToolSpec(hpc_place, tags=("read", "hpc")),
-    ToolSpec(fleet_simulate, tags=("read", "hpc", "fleet")),
-    ToolSpec(hpc_jobs, tags=("read", "hpc")),
-    ToolSpec(hpc_approve_cluster, mutating=True, tags=("write", "hpc", "governance")),
-    ToolSpec(project_list, tags=("read", "projects")),
-    ToolSpec(project_detail, tags=("read", "projects")),
-    ToolSpec(project_cost, tags=("read", "projects", "finops")),
-    ToolSpec(project_assign_model, mutating=True, tags=("write", "projects")),
-    ToolSpec(project_add_member, mutating=True, tags=("write", "projects", "governance")),
+    # ── status / registry / management ────────────────────────────────────────
+    ToolSpec(platform_status, tags=("read", "status"), use_cases=("monitoring", "incident")),
+    ToolSpec(list_models, tags=("read", "registry"), use_cases=("management",)),
+    ToolSpec(model_detail, tags=("read", "registry"), use_cases=("management",)),
+    ToolSpec(
+        list_production_models,
+        tags=("read", "registry"),
+        use_cases=("management", "monitoring"),
+    ),
+    ToolSpec(list_approvals, tags=("read", "governance"), use_cases=("governance", "management")),
+    ToolSpec(modelzoo_status, tags=("read", "modelzoo"), use_cases=("management",)),
+    ToolSpec(
+        recent_audit_events,
+        tags=("read", "governance", "audit"),
+        use_cases=("governance", "incident"),
+    ),
+    ToolSpec(
+        trigger_retrain,
+        mutating=True,
+        tags=("write", "training"),
+        use_cases=("management",),
+        tier="B",
+    ),
+    ToolSpec(retrain_status, tags=("read", "training"), use_cases=("management",)),
+    # ── HPC / fleet ───────────────────────────────────────────────────────────
+    ToolSpec(hpc_clusters, tags=("read", "hpc"), use_cases=("management",)),
+    ToolSpec(hpc_nodes, tags=("read", "hpc", "monitoring"), use_cases=("monitoring",)),
+    ToolSpec(hpc_place, tags=("read", "hpc"), use_cases=("management",)),
+    ToolSpec(
+        fleet_simulate, tags=("read", "hpc", "fleet", "finops"), use_cases=("finops", "management")
+    ),
+    ToolSpec(hpc_jobs, tags=("read", "hpc", "monitoring"), use_cases=("monitoring",)),
+    ToolSpec(
+        hpc_approve_cluster,
+        mutating=True,
+        tags=("write", "hpc", "governance"),
+        use_cases=("governance",),
+        tier="B",
+    ),
+    # ── projects & workspaces ─────────────────────────────────────────────────
+    ToolSpec(project_list, tags=("read", "projects"), use_cases=("management",)),
+    ToolSpec(project_detail, tags=("read", "projects"), use_cases=("management",)),
+    ToolSpec(project_cost, tags=("read", "projects", "finops"), use_cases=("finops",)),
+    ToolSpec(
+        project_assign_model,
+        mutating=True,
+        tags=("write", "projects"),
+        use_cases=("management",),
+        tier="A",
+    ),
+    ToolSpec(
+        project_add_member,
+        mutating=True,
+        tags=("write", "projects", "governance"),
+        use_cases=("governance",),
+        tier="B",
+    ),
+    # ── monitoring & drift ────────────────────────────────────────────────────
+    ToolSpec(
+        drift_status, tags=("read", "drift", "monitoring"), use_cases=("monitoring", "incident")
+    ),
+    ToolSpec(input_drift_status, tags=("read", "drift", "monitoring"), use_cases=("monitoring",)),
+    ToolSpec(
+        list_drift, tags=("read", "drift", "monitoring"), use_cases=("monitoring", "incident")
+    ),
+    ToolSpec(get_drift_autoretrain, tags=("read", "drift"), use_cases=("monitoring", "management")),
+    # ── serving / traffic / promotion ─────────────────────────────────────────
+    ToolSpec(traffic_rules, tags=("read", "serving"), use_cases=("management",)),
+    ToolSpec(promotion_rule, tags=("read", "serving"), use_cases=("management",)),
+    ToolSpec(
+        challenger_config,
+        tags=("read", "serving", "monitoring"),
+        use_cases=("management", "monitoring"),
+    ),
+    ToolSpec(autoscale_config, tags=("read", "serving"), use_cases=("management",)),
+    ToolSpec(scale_events, tags=("read", "serving", "monitoring"), use_cases=("monitoring",)),
+    # ── SLO / fairness / governance ───────────────────────────────────────────
+    ToolSpec(
+        slo_specs, tags=("read", "governance", "quality"), use_cases=("monitoring", "governance")
+    ),
+    ToolSpec(
+        slo_ratio, tags=("read", "governance", "quality"), use_cases=("monitoring", "governance")
+    ),
+    ToolSpec(fairness_status, tags=("read", "governance", "quality"), use_cases=("governance",)),
+    ToolSpec(compliance_system, tags=("read", "governance"), use_cases=("governance",)),
+    ToolSpec(authz_relations, tags=("read", "governance", "audit"), use_cases=("governance",)),
+    # ── FinOps / Green-AI ─────────────────────────────────────────────────────
+    ToolSpec(model_costs, tags=("read", "finops"), use_cases=("finops",)),
+    ToolSpec(carbon, tags=("read", "finops"), use_cases=("finops",)),
+    ToolSpec(platform_cost_summary, tags=("read", "finops"), use_cases=("finops",)),
+    ToolSpec(gateway_cost, tags=("read", "finops", "gateway"), use_cases=("finops",)),
+    # ── gateway / LLMOps ──────────────────────────────────────────────────────
+    ToolSpec(gateway_config, tags=("read", "gateway", "llmops"), use_cases=("management",)),
+    ToolSpec(
+        gateway_cache_stats, tags=("read", "gateway", "finops"), use_cases=("finops", "monitoring")
+    ),
+    ToolSpec(list_gateway_keys, tags=("read", "gateway", "governance"), use_cases=("governance",)),
+    # ── evaluation / data ─────────────────────────────────────────────────────
+    ToolSpec(eval_gate, tags=("read", "eval", "quality"), use_cases=("monitoring", "governance")),
+    ToolSpec(eval_results, tags=("read", "eval", "quality"), use_cases=("monitoring",)),
+    ToolSpec(
+        gate_reports, tags=("read", "eval", "quality"), use_cases=("governance", "monitoring")
+    ),
+    ToolSpec(dataset_revisions, tags=("read", "data"), use_cases=("management",)),
+    ToolSpec(data_quality, tags=("read", "data", "quality"), use_cases=("monitoring",)),
+    ToolSpec(feature_view, tags=("read", "data"), use_cases=("management",)),
+    # ── incident / lineage ────────────────────────────────────────────────────
+    ToolSpec(
+        model_lineage, tags=("read", "lineage", "incident"), use_cases=("incident", "management")
+    ),
+    ToolSpec(lineage_impact, tags=("read", "lineage", "incident"), use_cases=("incident",)),
+    # ── help / discoverability ────────────────────────────────────────────────
+    ToolSpec(explain_command, tags=("read", "help", "docs"), use_cases=("help",)),
 )
+
+
+def capabilities_catalogue(include_writes: bool | None = None) -> dict[str, Any]:
+    """Group the tool registry by lifecycle use case — the capabilities catalogue.
+
+    Derived directly from :data:`REGISTRY`, so ``exa mcp capabilities``, the A2A Agent Card,
+    and any capabilities digest injected into the agent's system prompt all share one source
+    and can never drift. Tools with no ``use_cases`` are surfaced under ``other``.
+
+    Returns a mapping ``{use_case: [{"name", "description", "mutating", "tier", "tags"}, …]}``
+    ordered by :data:`USE_CASES`.
+    """
+    specs = list(iter_tools(include_writes=include_writes))
+    catalogue: dict[str, list[dict[str, Any]]] = {uc: [] for uc in USE_CASES}
+    catalogue["other"] = []
+    for spec in specs:
+        entry = {
+            "name": spec.name,
+            "description": spec.description,
+            "mutating": spec.mutating,
+            "tier": spec.tier,
+            "tags": list(spec.tags),
+        }
+        targets = spec.use_cases or ("other",)
+        for uc in targets:
+            catalogue.setdefault(uc, []).append(entry)
+    # Drop empty buckets for a clean catalogue.
+    return {uc: tools for uc, tools in catalogue.items() if tools}
 
 
 def iter_tools(include_writes: bool | None = None) -> Iterator[ToolSpec]:

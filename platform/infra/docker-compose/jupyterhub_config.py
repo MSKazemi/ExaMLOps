@@ -60,11 +60,36 @@ c.DockerSpawner.environment = {
 # Every workbench in a project mounts one shared Docker volume at /project, so ALL of a
 # project's workbenches share a persistent disk — distinct from the per-workbench home
 # (/home/jovyan/work) and the per-project MinIO bucket. The named-server id is "<project>-<name>".
+#
+# The reserved "platform-ops" project is the governed platform-management workbench (M3): it also
+# gets a shared config dir (so notebook config/finops/policy writes reach the platform) and — for a
+# Hub admin — rw mounts of the integration source (Tier B). That wiring lives in the testable helper
+# examlops.workbench_spawn.platform_ops_spawn (imported lazily so a missing PYTHONPATH never breaks
+# a normal spawn).
 def _pre_spawn(spawner):
     server = spawner.name or ""
     project = server.rsplit("-", 1)[0] if "-" in server else (server or "default")
     spawner.volumes[f"examlops-project-{project}-shared"] = "/project"
-    spawner.environment = {**spawner.environment, "EXAMLOPS_PROJECT": project, "PROJECT_SHARED_DIR": "/project"}
+    spawner.environment = {
+        **spawner.environment,
+        "EXAMLOPS_PROJECT": project,
+        "PROJECT_SHARED_DIR": "/project",
+        # Attribute façade audit rows to the real Hub user, not the container root.
+        "EXAMLOPS_ACTOR": getattr(spawner.user, "name", "") or "unknown",
+    }
+    try:
+        from examlops.workbench_spawn import platform_ops_spawn
+
+        extra_vols, extra_env = platform_ops_spawn(
+            project,
+            is_admin=bool(getattr(spawner.user, "admin", False)),
+            host_repo=_HOST_REPO,
+            actor=getattr(spawner.user, "name", None),
+        )
+        spawner.volumes.update(extra_vols)
+        spawner.environment = {**spawner.environment, **extra_env}
+    except Exception as exc:  # never let platform-ops wiring break a normal workbench spawn
+        spawner.log.warning("platform_ops_spawn wiring skipped: %s", exc)
 
 
 c.Spawner.pre_spawn_hook = _pre_spawn

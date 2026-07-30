@@ -4,6 +4,11 @@ The `exa` CLI is the primary operator interface for ExaMLOps. This guide documen
 command** — what it does, *when and why* you'd reach for it, and a copy-paste example —
 organized by the eleven MLOps-lifecycle areas that `exa --help` groups commands into.
 
+> **In the terminal, too.** Running a bare group — e.g. `exa serve` — prints its subcommands in
+> titled panels plus a **Common tasks** block (copy-paste examples) and a **Learn more** footer
+> (`exa <group> <command> -h`, `exa explain <group>`, and a pointer back to this guide). So the
+> same "what can I do here / show me" help this document gives is one keystroke away on the CLI.
+
 > **Conventions**
 > - Every example is grounded in the live CLI (`exa` v0.46.0). Run any command with `-h`/`--help`
 >   for its full options, or `exa explain <cmd>` for plain-language help.

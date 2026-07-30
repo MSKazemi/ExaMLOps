@@ -22,7 +22,15 @@ from typing import Any
 from .base import Provider
 from .registry import get_provider
 
-CONFIG_DIR = Path.home() / ".config" / "examlops"
+
+def _config_dir() -> Path:
+    """The examlops config dir. ``EXAMLOPS_CONFIG_DIR`` relocates it (e.g. a shared mount the
+    Platform Ops workbench and the platform services both see), else ``~/.config/examlops``."""
+    env = os.getenv("EXAMLOPS_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".config" / "examlops"
+
+
+CONFIG_DIR = _config_dir()
 FINOPS_YAML = CONFIG_DIR / "finops.yaml"
 # Platform (non-finops) domains — placement, drift, promotion, … — read here so finops.yaml keeps
 # its existing home unchanged (ADR 0077, backward-compat invariant).
