@@ -9,6 +9,10 @@ simulator) through deep links, health checks, and a reverse proxy.
 
 ## Pages
 
+> This table is a quick summary of the core pages. The live app now has ~40 consoles across six
+> lifecycle nav groups (Build · Serve · Operate · Govern · Platform) — see the
+> [Usage Guide](usage-guide.md) for the complete, current page-by-page reference.
+
 | Page | Role | Description |
 |---|---|---|
 | **Overview** | viewer | Platform health at a glance — service status badges, quick links |
@@ -22,8 +26,14 @@ simulator) through deep links, health checks, and a reverse proxy.
 | **Approvals** | admin | Pending model change approvals from CI — approve to fire Prefect training or reject with optional reason |
 | **Audit** | admin | Chronological config write history (values never recorded) |
 
+> **Looking for how to *do* something?** The [**Usage Guide**](usage-guide.md) documents every
+> page and console action — *what it does · when/why you use it · UI steps · equivalent `exa` CLI*.
+> For the command line, see the [**exa CLI Command Guide**](../reference/cli-commands-guide.md)
+> (use case + example for every command).
+
 ## Topics
 
+- [Usage Guide](usage-guide.md) — every page & action: what · use case · how-to · CLI equivalent.
 - [Architecture](architecture.md) — components, data flow, threat model.
 - [Authentication](auth.md) — viewer/admin shared passwords, JWT lifecycle, role matrix.
 - [Secrets](secrets.md) — how credentials are stored, masked, and rotated.

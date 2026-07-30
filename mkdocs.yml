@@ -114,14 +114,17 @@ nav:
       - Grafana — Monitoring: components/grafana.md
   - Dashboard:
       - Overview: dashboard/index.md
+      - Usage Guide (pages & actions): dashboard/usage-guide.md
       - Architecture: dashboard/architecture.md
       - Authentication: dashboard/auth.md
       - Secrets: dashboard/secrets.md
       - Configuration: dashboard/configuration.md
       - Operations: dashboard/operations.md
   - Reference:
-      - exa CLI: reference/cli.md
+      - exa CLI — Command Guide (use cases + examples): reference/cli-commands-guide.md
+      - exa CLI — Verified Examples: reference/cli-examples.md
+      - exa CLI (overview): reference/cli.md
       - exa CLI (full command tree): reference/cli-generated.md
-      - make Commands: reference/commands.md
+      - Command Reference: reference/commands.md
       - API Reference: reference/api.md
       - Environment Variables: reference/env-vars.md
