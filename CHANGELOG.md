@@ -35,6 +35,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **ci(deploy): on-demand services (JupyterHub · SeanerBUS bridge · monitoring) now persist across
+  deploys.** The `deploy:lxp` job ran `docker compose up --remove-orphans` with no profiles active, so
+  it deleted the profile-gated services every deploy — breaking the Jupyter/workbench, SeanerBUS, and
+  Grafana-embed tabs. Dropped `--remove-orphans` from the core up and added non-fatal startup of the
+  JupyterLab image + JupyterHub + the SeanerBUS bridge, so project workbenches (Jupyter file editing)
+  keep working after each deploy.
 - **fix(dashboard): the Audit page no longer 500s when an audit row has non-JSON `details`.**
   `/api/platform-audit` decoded each row's `details` with `json.loads` in a list comprehension that
   ran *outside* the query try/except, so a single legacy/malformed non-JSON value crashed the whole
