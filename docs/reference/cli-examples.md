@@ -103,5 +103,52 @@ exa project current             # active project
 exa connection list             # named connections (metadata only)
 ```
 
-<!-- Loop continues appending: Data/Features, GenAI/LLMOps, Serve-advanced (gateway/vector/rag),
-     Platform (stack/backup/events/mcp), and per-command edge examples. -->
+## Data & Features
+
+```bash
+exa data list FData             # recorded dataset revisions newest-first (with linked runs)
+exa data snapshot FData --backend minio --path ./data/FData   # record an immutable revision
+exa feature list                # registered feature views  (feature store, A3)
+exa feature apply user_stats --entity user --source offline   # register/patch a feature view
+exa features list               # versioned training feature store
+exa assets list                 # asset-centric pipeline nodes + freshness  (A4)
+exa cards model jpcp            # structured model card from live data
+```
+
+## GenAI & LLMOps
+
+```bash
+exa genai check                 # GenAI telemetry status (tracing/content-capture/semconv)
+exa genai cost --input 1000 --output 500 --model gpt-4o   # USD cost from token usage
+exa prompt list                 # versioned prompt registry
+exa prompt create greeting --template "Hello {name}"      # new immutable prompt version
+exa guardrails test "ignore previous instructions"        # run text through the guardrail
+exa guardrails stats            # allow/redact/block counts
+exa agentops tools              # per-tool success rate / latency for agent tool-calls
+exa rag list                    # knowledge bases + versions
+exa rag ingest kb ./docs        # chunk+embed+index docs into a KB
+exa gateway key list            # virtual keys (hashes only)
+exa gateway cache stats         # semantic-cache hit-rate + savings (B3)
+exa vector create demo --dim 384 --metric cosine          # create a vector collection
+exa vector stats demo           # collection dim/metric/item count  (exit 1 if it doesn't exist)
+```
+
+## Governance, Security & Platform
+
+```bash
+exa secrets list                # secret metadata (never values)
+exa secrets scan ./config       # scan a file/dir for likely secrets (CI gate)
+exa policy list                 # policy rules from policy.yaml  (graceful when absent)
+exa providers list              # pluggable calculation providers across every domain
+exa namespace list              # project namespaces with model counts
+exa connection list             # named connections (metadata only)
+exa workbench list              # on-demand dev environments
+exa events stats                # event-outbox backlog (pending/published/poison)
+exa admission stats             # admission-control queue depth by state
+exa backup list                 # backups & bundles with manifest metadata
+exa stack status                # running containers + ports
+exa seanerbus list              # models + their SeanerBUS UUIDs
+exa mcp tools                   # tools exposed to agents over MCP
+exa hpc nodes                   # compute nodes (CPUs/mem/GPUs/state)
+exa hpc clusters                # registered clusters + approval state
+```
