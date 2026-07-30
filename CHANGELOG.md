@@ -25,6 +25,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **fix(cli): `exa plugins` (and any hint) no longer swallows bracketed text.** The "add a plugin"
+  hint embeds a literal TOML `[project.entry-points."examlops.cli_plugins"]` snippet; Rich parsed the
+  `[...]` as an invalid markup tag and rendered nothing ("Add one via  in a package."). `_output.hint`
+  now Rich-escapes its message, so brackets render verbatim in every hint. Regression test added.
 - **ci(deploy): the `exa` operator CLI is now refreshed on every LXP deploy.** `uv sync --frozen`
   prunes the editable `examlops` member (`platform/cli`, which defines the `exa` console script),
   leaving the host `.venv` with only the workspace coordinator and no `exa`. The `deploy:lxp` CI job
