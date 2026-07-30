@@ -26,6 +26,7 @@ const KNOWN_ROUTES = new Set([
   // serve
   '/serve/llmops',
   '/serve/gateway',
+  '/serve/scaling',
   '/serve/nextgen',
   // operate
   '/operate/drift',
@@ -44,6 +45,7 @@ const KNOWN_ROUTES = new Set([
   // platform
   '/platform/projects',
   '/platform/services',
+  '/platform/providers',
   '/platform/config',
   '/platform/integrations',
   '/platform/jupyter',

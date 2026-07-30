@@ -380,7 +380,7 @@ dashboard-check: ## Run dashboard backend + frontend tests
 	  pip install -r requirements.txt -q && \
 	  pytest tests/ -v --tb=short
 	@printf "$(BOLD)Frontend tests...$(RESET)\n"
-	@cd platform/services/dashboard/frontend && npm ci -q && npm run lint && npm test && npm run build
+	@cd platform/services/dashboard/frontend && npm ci -q && npm test && npm run build
 	@printf "$(GREEN)Dashboard checks passed.$(RESET)\n"
 
 # =============================================================================

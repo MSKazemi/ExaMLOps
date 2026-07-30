@@ -31,6 +31,7 @@ PROJECT_MANAGE = "project.manage"  # ADR 0086 — create/assign/member/quota on 
 CONNECTION_MANAGE = "connection.manage"  # ADR 0087 — create/delete/test named connections
 COMPLIANCE_CLASSIFY = "compliance.classify"  # ADR 0012 — set EU-AI-Act risk tier / conformity state
 GATEWAY_MANAGE = "gateway.manage"  # B2 gateway — issue / revoke virtual keys
+PROVIDERS_MANAGE = "providers.manage"  # ADR 0074 — author/activate/delete calculation providers
 PROMPT_MANAGE = "prompt.manage"  # B1 prompt registry — create version / set label / rollback
 AUTOPILOT_MANAGE = (
     "autopilot.manage"  # ADR 0085 — enable/disable the self-driving autopilot kill-switch
@@ -39,6 +40,7 @@ SLO_MANAGE = "slo.manage"  # C6/ADR 0023 — define model-quality SLO specs
 SECRETS_MANAGE = "secrets.manage"  # D7 — set/rotate platform secrets (values never returned)
 FEATURE_MANAGE = "feature.manage"  # A3 feature store — register/patch feature views
 FAIRNESS_MANAGE = "fairness.manage"  # C8 — configure fairness slicing + disparity thresholds
+SCALING_MANAGE = "scaling.manage"  # E4/E5 — set autoscale policy + inference-routing config
 
 # Actions that additionally require step-up/MFA (F15 R6 / F16). Enforcement is deferred; the flag
 # is surfaced so the UI can prompt and the audit trail can record it.
@@ -58,12 +60,14 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
         CONNECTION_MANAGE,
         COMPLIANCE_CLASSIFY,
         GATEWAY_MANAGE,
+        PROVIDERS_MANAGE,
         PROMPT_MANAGE,
         AUTOPILOT_MANAGE,
         SLO_MANAGE,
         SECRETS_MANAGE,
         FEATURE_MANAGE,
         FAIRNESS_MANAGE,
+        SCALING_MANAGE,
     }
 )
 
