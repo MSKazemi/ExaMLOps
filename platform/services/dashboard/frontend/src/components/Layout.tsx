@@ -35,10 +35,14 @@ const COLLAPSED_KEY = 'exa.nav.collapsed'
 function readCollapsed(): Set<string> {
   try {
     const raw = localStorage.getItem(COLLAPSED_KEY)
-    return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>()
+    if (raw) return new Set<string>(JSON.parse(raw))
   } catch {
-    return new Set<string>()
+    /* storage unavailable (private mode) — fall through to the default */
   }
+  // First visit (no saved preference): collapse EVERY group so the sidebar stays compact
+  // instead of showing all ~30 items at once. The active group is force-opened in render
+  // (`open = !collapsed.has(id) || openSection === id`), so the current section is always visible.
+  return new Set<string>(NAV_SECTIONS.map((s) => s.id))
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

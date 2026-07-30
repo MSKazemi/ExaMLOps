@@ -39,10 +39,14 @@ describe('Layout — grouped shell (BL-013a)', () => {
     expect(screen.getByRole('link', { name: /Overview/i })).toBeInTheDocument()
   })
 
-  it('shows items of an expanded group and hides them after collapsing', () => {
+  it('starts every group collapsed and toggles a group open/closed on click', () => {
     renderLayout('/')
+    // Default (no saved preference, non-active group): collapsed → items hidden.
+    expect(screen.queryByRole('link', { name: /Drift/i })).not.toBeInTheDocument()
+    // Click the Operate group header → it expands and its items appear.
+    fireEvent.click(screen.getByRole('button', { name: /Operate/i }))
     expect(screen.getByRole('link', { name: /Drift/i })).toBeInTheDocument()
-    // Collapse the Operate group → its items disappear.
+    // Click again → it collapses back.
     fireEvent.click(screen.getByRole('button', { name: /Operate/i }))
     expect(screen.queryByRole('link', { name: /Drift/i })).not.toBeInTheDocument()
   })
