@@ -42,6 +42,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Split,
   Target,
   Zap,
 } from 'lucide-react'
@@ -91,6 +92,7 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: Server,
     items: [
       { path: '/serve/llmops', label: 'LLMOps', icon: Bot },
+      { path: '/serve/traffic', label: 'Traffic', icon: Split },
       { path: '/serve/gateway', label: 'Gateway', icon: KeyRound },
       { path: '/serve/scaling', label: 'Scaling', icon: Gauge },
       { path: '/serve/nextgen', label: 'Next-Gen', icon: Sparkles },
