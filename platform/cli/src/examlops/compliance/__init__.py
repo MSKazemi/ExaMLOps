@@ -111,8 +111,13 @@ def classify_system(
     actor: str,
     *,
     tenant: str = "default",
+    source: str = "cli",
 ) -> None:
-    """Record a system's risk classification + intended purpose (R1)."""
+    """Record a system's risk classification + intended purpose (R1).
+
+    ``source`` attributes the audit event to the calling surface (``"cli"`` by default; the
+    dashboard passes ``"dashboard"``) so the same shared code path serves every face of the platform.
+    """
     if risk_tier not in RISK_TIERS:
         raise ValueError(f"risk_tier must be one of {RISK_TIERS}, got {risk_tier!r}")
     platform_db.set_compliance_system(
@@ -125,7 +130,7 @@ def classify_system(
         updated_by=actor,
     )
     platform_db.write_audit_event(
-        "cli",
+        source,
         actor,
         "compliance_classified",
         model,
@@ -358,8 +363,14 @@ def check_art12_logging(model: str) -> dict[str, Any]:
     }
 
 
-def set_conformity_state(model: str, state: str, actor: str, *, tenant: str = "default") -> None:
-    """Advance the conformity state machine with transition validation (R8, GWT-5)."""
+def set_conformity_state(
+    model: str, state: str, actor: str, *, tenant: str = "default", source: str = "cli"
+) -> None:
+    """Advance the conformity state machine with transition validation (R8, GWT-5).
+
+    ``source`` attributes the audit event to the calling surface (``"cli"`` default; ``"dashboard"``
+    from the UI) — one shared, transition-validated code path across surfaces.
+    """
     if state not in CONFORMITY_STATES:
         raise ValueError(f"state must be one of {CONFORMITY_STATES}, got {state!r}")
     sys = platform_db.get_compliance_system(model)
@@ -373,7 +384,7 @@ def set_conformity_state(model: str, state: str, actor: str, *, tenant: str = "d
         model, tenant=tenant, conformity_state=state, updated_by=actor
     )
     platform_db.write_audit_event(
-        "cli", actor, "compliance_conformity", model, {"from": current, "to": state}
+        source, actor, "compliance_conformity", model, {"from": current, "to": state}
     )
 
 

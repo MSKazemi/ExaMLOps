@@ -9,6 +9,16 @@ describe('buildContext', () => {
       filters: undefined,
     })
   })
+  it('ignores a leading lifecycle-group prefix when grounding the entity', () => {
+    // ADR 0097 §1: /build/models/jpcp grounds to the same entity as the old /models/jpcp.
+    expect(buildContext('/build/models/jpcp')).toEqual({
+      page: '/build/models/jpcp',
+      entity: { type: 'models', id: 'jpcp' },
+    })
+    // A group root alone (/operate/drift) has one meaningful segment → no entity.
+    expect(buildContext('/operate/drift').entity).toBeUndefined()
+  })
+
   it('omits the entity for a single-segment path and passes filters', () => {
     const ctx = buildContext('/drift', { env: 'prod' })
     expect(ctx.entity).toBeUndefined()

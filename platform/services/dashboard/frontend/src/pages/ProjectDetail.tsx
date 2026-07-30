@@ -708,7 +708,7 @@ export function ProjectDetail() {
 
   return (
     <div className="p-6 space-y-5 max-w-4xl mx-auto">
-      <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+      <Link to="/platform/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
         <ArrowLeft className="w-3.5 h-3.5" /> Projects
       </Link>
 
@@ -895,7 +895,7 @@ export function ProjectDetail() {
                 if (!window.confirm(`Delete project "${data.name}"? This cannot be undone.`)) return
                 try {
                   await delProject.mutateAsync(data.name)
-                  navigate('/projects')
+                  navigate('/platform/projects')
                 } catch {
                   /* surfaced by the mutation error state */
                 }

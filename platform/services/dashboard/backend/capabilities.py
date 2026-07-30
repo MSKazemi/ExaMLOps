@@ -29,6 +29,8 @@ SECRET_REVEAL = "secret.reveal"
 SERVICE_CONTROL = "service.control"
 PROJECT_MANAGE = "project.manage"  # ADR 0086 — create/assign/member/quota on a Project
 CONNECTION_MANAGE = "connection.manage"  # ADR 0087 — create/delete/test named connections
+COMPLIANCE_CLASSIFY = "compliance.classify"  # ADR 0012 — set EU-AI-Act risk tier / conformity state
+GATEWAY_MANAGE = "gateway.manage"  # B2 gateway — issue / revoke virtual keys
 
 # Actions that additionally require step-up/MFA (F15 R6 / F16). Enforcement is deferred; the flag
 # is surfaced so the UI can prompt and the audit trail can record it.
@@ -46,6 +48,8 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
         SERVICE_CONTROL,
         PROJECT_MANAGE,
         CONNECTION_MANAGE,
+        COMPLIANCE_CLASSIFY,
+        GATEWAY_MANAGE,
     }
 )
 

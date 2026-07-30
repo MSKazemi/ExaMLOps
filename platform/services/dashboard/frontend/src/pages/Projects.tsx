@@ -43,7 +43,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   const navigate = useNavigate()
   return (
     <div
-      onClick={() => navigate(`/projects/${project.name}`)}
+      onClick={() => navigate(`/platform/projects/${project.name}`)}
       className="rounded-xl overflow-hidden cursor-pointer card-hover"
       style={{ background: 'var(--surface-0)', border: '1px solid oklch(0.64 0.20 265 / 25%)' }}
     >

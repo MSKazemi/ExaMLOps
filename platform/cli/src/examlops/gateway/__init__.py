@@ -105,8 +105,14 @@ def issue_virtual_key(
     models: list[str] | None,
     budget_usd: float | None,
     actor: str,
+    *,
+    source: str = "exa-gateway",
 ) -> str:
-    """Issue a virtual key scoped to a tenant/project (+ allow-list + budget). Audited (R5)."""
+    """Issue a virtual key scoped to a tenant/project (+ allow-list + budget). Audited (R5).
+
+    ``source`` attributes the audit event to the calling surface (``"exa-gateway"`` by default; the
+    dashboard passes ``"dashboard"``) so this shared issuance path serves every face of the platform.
+    """
     from examlops.data.audit import write_audit_event
     from examlops.data.gateway import create_virtual_key
 
@@ -120,7 +126,7 @@ def issue_virtual_key(
         created_by=actor,
     )
     write_audit_event(
-        "exa-gateway",
+        source,
         actor,
         "virtual_key_issued",
         f"{tenant}/{project}",

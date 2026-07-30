@@ -33,6 +33,15 @@ export const setAutoRetrain = (model: string, body: AutoRetrainBody): Promise<Au
     body: JSON.stringify(body),
   })
 
+// Input-drift edit parity (BL-014) — mirror `exa drift input baseline|reset`.
+export const setInputBaseline = (model: string): Promise<SetBaselineResult> =>
+  apiFetch<SetBaselineResult>(`/api/drift/input-baseline/${encodeURIComponent(model)}`, {
+    method: 'POST',
+  })
+
+export const resetInputDrift = (model: string): Promise<ResetResult> =>
+  apiFetch<ResetResult>(`/api/drift/input-reset/${encodeURIComponent(model)}`, { method: 'POST' })
+
 /** Invalidate every drift query so all three tabs refetch. */
 function invalidateDrift(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ['drift-status'] })
@@ -61,6 +70,22 @@ export const useSetAutoRetrain = () => {
   return useMutation({
     mutationFn: ({ model, body }: { model: string; body: AutoRetrainBody }) =>
       setAutoRetrain(model, body),
+    onSuccess: () => invalidateDrift(qc),
+  })
+}
+
+export const useSetInputBaseline = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (model: string) => setInputBaseline(model),
+    onSuccess: () => invalidateDrift(qc),
+  })
+}
+
+export const useResetInputDrift = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (model: string) => resetInputDrift(model),
     onSuccess: () => invalidateDrift(qc),
   })
 }

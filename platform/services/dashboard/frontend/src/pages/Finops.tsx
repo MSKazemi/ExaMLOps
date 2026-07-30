@@ -1,4 +1,6 @@
-import { DollarSign, Cpu, Leaf, Receipt } from 'lucide-react'
+import { useState } from 'react'
+import { DollarSign, Cpu, Leaf, Receipt, Pencil } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
@@ -7,6 +9,8 @@ import { DataGrid } from '@/components/DataGrid'
 import type { Column } from '@/lib/datagrid'
 import { formatHpcUnit } from '@/lib/i18n'
 import { useI18n } from '@/hooks/i18nContext'
+import { isAdmin } from '@/lib/auth'
+import { useUpdateProject, type UpdateProjectBody } from '@/lib/projects'
 import { useFinops, usd, budgetPct, carbonLabel, type BudgetRow, type CostRow } from '@/lib/finops'
 
 // Cost-by-model grid columns — sortable + CSV-exportable via the shared <DataGrid/> (F17).
@@ -17,24 +21,115 @@ const COST_COLUMNS: Column<CostRow>[] = [
   { key: 'costUsd', header: 'Cost', accessor: (r) => r.costUsd, render: (r) => usd(r.costUsd), sortable: true },
 ]
 
-function Budgets({ budgets }: { budgets: BudgetRow[] }) {
+/**
+ * One budget row with an in-context admin editor. The edit reuses the SAME shared write path as the
+ * Projects console + the CLI (`useUpdateProject` → `PUT /projects/{name}` → `examlops` `set_project_budget`),
+ * so the FinOps console gains edit parity without a second write endpoint or any risk of drift.
+ */
+function BudgetItem({ b, admin }: { b: BudgetRow; admin: boolean }) {
+  const qc = useQueryClient()
+  const update = useUpdateProject(b.project)
+  const [editing, setEditing] = useState(false)
+  const [gpu, setGpu] = useState(b.gpuHoursBudget != null ? String(b.gpuHoursBudget) : '')
+  const [cost, setCost] = useState(b.costBudget != null ? String(b.costBudget) : '')
+  const [err, setErr] = useState<string | null>(null)
+
+  const save = async () => {
+    setErr(null)
+    const body: UpdateProjectBody = {}
+    if (gpu.trim() !== '') body.gpuHoursBudget = Number(gpu)
+    if (cost.trim() !== '') body.costBudget = Number(cost)
+    try {
+      await update.mutateAsync(body)
+      qc.invalidateQueries({ queryKey: ['finops'] }) // refresh this console's aggregate
+      setEditing(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update budget')
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border px-4 py-2 text-sm">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{b.project}</span>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>GPU-h {budgetPct(b.gpuHoursRatio)}</span>
+          <span>Cost {budgetPct(b.costRatio)}</span>
+          <StatusPill status={b.overBudget ? 'critical' : 'ok'} label={b.overBudget ? 'Over budget' : 'Within'} />
+          {admin && !editing && (
+            <button
+              onClick={() => setEditing(true)}
+              aria-label={`Edit budget for ${b.project}`}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 hover:bg-muted"
+            >
+              <Pencil className="size-3" aria-hidden="true" /> Edit
+            </button>
+          )}
+        </div>
+      </div>
+      {admin && editing && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="text-xs text-muted-foreground">
+            GPU-h
+            <input
+              type="number"
+              value={gpu}
+              onChange={(e) => setGpu(e.target.value)}
+              aria-label={`GPU-hour budget for ${b.project}`}
+              className="ml-1 w-24 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="text-xs text-muted-foreground">
+            Cost $
+            <input
+              type="number"
+              value={cost}
+              onChange={(e) => setCost(e.target.value)}
+              aria-label={`Cost budget for ${b.project}`}
+              className="ml-1 w-24 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+            />
+          </label>
+          <button
+            onClick={save}
+            disabled={update.isPending}
+            className="rounded-md border border-primary bg-primary px-2 py-1 text-xs text-primary-foreground disabled:opacity-50"
+          >
+            Save
+          </button>
+          <button
+            onClick={() => {
+              setEditing(false)
+              setErr(null)
+            }}
+            className="rounded-md border border-border px-2 py-1 text-xs"
+          >
+            Cancel
+          </button>
+          {err && <span className="text-xs" style={{ color: 'var(--error-text)' }}>{err}</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function Budgets({ budgets }: { budgets: BudgetRow[] }) {
+  const admin = isAdmin()
   if (budgets.length === 0) {
-    return <EmptyState title="No budgets set" description="Configure with exa finops budget set <project>." />
+    return (
+      <EmptyState
+        title="No budgets set"
+        description={
+          admin
+            ? 'Create a per-project budget from its page under Platform → Projects.'
+            : 'Ask an admin to set a project budget.'
+        }
+      />
+    )
   }
   return (
     <div className="space-y-2">
       {budgets.map((b) => (
-        <div
-          key={b.project}
-          className="flex items-center justify-between rounded-lg border border-border px-4 py-2 text-sm"
-        >
-          <span className="font-medium">{b.project}</span>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span>GPU-h {budgetPct(b.gpuHoursRatio)}</span>
-            <span>Cost {budgetPct(b.costRatio)}</span>
-            <StatusPill status={b.overBudget ? 'critical' : 'ok'} label={b.overBudget ? 'Over budget' : 'Within'} />
-          </div>
-        </div>
+        <BudgetItem key={b.project} b={b} admin={admin} />
       ))}
     </div>
   )

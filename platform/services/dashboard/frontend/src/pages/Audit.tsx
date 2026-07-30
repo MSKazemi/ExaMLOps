@@ -31,23 +31,51 @@ interface PlatformAuditResponse {
   total: number
 }
 
+/** Selectable audit windows. 'all' omits the time filter so historical events still surface. */
+const WINDOWS = [
+  { value: 'all', label: 'All time' },
+  { value: '30', label: 'Last 30 days' },
+  { value: '90', label: 'Last 90 days' },
+  { value: '365', label: 'Last year' },
+] as const
+type WindowValue = (typeof WINDOWS)[number]['value']
+
 function PlatformAuditTab() {
+  const [window, setWindow] = useState<WindowValue>('all')
   const { data, isLoading, error, refetch } = useQuery<PlatformAuditResponse>({
-    queryKey: ['platform-audit'],
-    queryFn: () => apiFetch<PlatformAuditResponse>('/api/platform-audit?last_days=30'),
+    queryKey: ['platform-audit', window],
+    queryFn: () =>
+      apiFetch<PlatformAuditResponse>(
+        window === 'all' ? '/api/platform-audit' : `/api/platform-audit?last_days=${window}`,
+      ),
   })
+
+  const windowLabel = WINDOWS.find((w) => w.value === window)?.label.toLowerCase() ?? 'all time'
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Platform operations audit — last 30 days.</p>
-        <button
-          onClick={() => refetch()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-          style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
+        <p className="text-sm text-muted-foreground">Platform operations audit — {windowLabel}.</p>
+        <div className="flex items-center gap-2">
+          <select
+            aria-label="Audit time window"
+            value={window}
+            onChange={(e) => setWindow(e.target.value as WindowValue)}
+            className="px-2 py-1.5 rounded-lg text-xs"
+            style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+          >
+            {WINDOWS.map((w) => (
+              <option key={w.value} value={w.value}>{w.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => refetch()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+            style={{ background: 'var(--surface-1)', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
+        </div>
       </div>
 
       {error && (

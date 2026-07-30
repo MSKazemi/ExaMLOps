@@ -6,8 +6,8 @@ import {
   useRejectModel,
   type ApprovalEntry,
 } from '@/lib/api'
-import { EmptyState } from '@/components/ui/empty-state'
-import { Skeleton } from '@/components/ui/skeleton'
+import type { Column } from '@/lib/datagrid'
+import { ConsoleView, type RowAction } from '@/components/console'
 
 function StatusBadge({ status }: { status: ApprovalEntry['status'] }) {
   const styles: Record<ApprovalEntry['status'], { bg: string; border: string; color: string; label: string }> = {
@@ -66,220 +66,132 @@ function ChangedFiles({ files }: { files: string[] }) {
   )
 }
 
-function ApprovalRow({ entry }: { entry: ApprovalEntry }) {
-  const [rejectOpen, setRejectOpen] = useState(false)
-  const [rejectReason, setRejectReason] = useState('')
-  const approve = useApproveModel()
-  const reject = useRejectModel()
-  const isPending = entry.status === 'pending'
-  const isBusy = approve.isPending || reject.isPending
-
-  const handleApprove = () => {
-    approve.mutate(entry.model_id)
-  }
-
-  const handleRejectConfirm = () => {
-    reject.mutate(
-      { modelId: entry.model_id, reason: rejectReason },
-      {
-        onSuccess: () => {
-          setRejectOpen(false)
-          setRejectReason('')
-        },
-      },
-    )
-  }
-
-  return (
-    <tr className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
-      <td className="p-3 font-mono text-xs font-semibold">{entry.model_id}</td>
-      <td className="p-3 font-mono text-xs text-muted-foreground" title={entry.commit_sha}>
-        {entry.commit_sha.slice(0, 8)}
-      </td>
-      <td className="p-3 text-sm max-w-xs">
-        <span className="line-clamp-2" title={entry.commit_msg}>{entry.commit_msg}</span>
-      </td>
-      <td className="p-3">
-        <ChangedFiles files={entry.changed_files} />
-      </td>
-      <td className="p-3 text-xs text-muted-foreground whitespace-nowrap">
-        {new Date(entry.requested_at).toLocaleString()}
-      </td>
-      <td className="p-3">
-        <StatusBadge status={entry.status} />
-        {entry.status === 'rejected' && entry.reject_reason && (
-          <p className="mt-1 text-[11px] text-muted-foreground italic" title={entry.reject_reason}>
-            {entry.reject_reason}
-          </p>
-        )}
-      </td>
-      <td className="p-3">
-        {isPending && (
-          <div className="flex flex-col gap-1.5 min-w-[160px]">
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleApprove}
-                disabled={isBusy}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50"
-                style={{
-                  background: 'oklch(0.72 0.18 155 / 15%)',
-                  border: '1px solid oklch(0.72 0.18 155 / 35%)',
-                  color: 'var(--success-text)',
-                }}
-              >
-                <Check className="w-3 h-3" /> Approve
-              </button>
-              <button
-                onClick={() => setRejectOpen(o => !o)}
-                disabled={isBusy}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50"
-                style={{
-                  background: 'oklch(0.66 0.22 25 / 12%)',
-                  border: '1px solid oklch(0.66 0.22 25 / 28%)',
-                  color: 'var(--error-text)',
-                }}
-              >
-                <X className="w-3 h-3" /> Reject
-              </button>
-            </div>
-            {rejectOpen && (
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="text"
-                  value={rejectReason}
-                  onChange={e => setRejectReason(e.target.value)}
-                  placeholder="Reason…"
-                  className="flex-1 text-xs rounded-md px-2 py-1 bg-transparent outline-none"
-                  style={{ border: '1px solid var(--border)', color: 'var(--foreground)' }}
-                  onKeyDown={e => { if (e.key === 'Enter' && rejectReason.trim()) handleRejectConfirm() }}
-                  autoFocus
-                />
-                <button
-                  onClick={handleRejectConfirm}
-                  disabled={!rejectReason.trim() || isBusy}
-                  className="px-2 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-40"
-                  style={{
-                    background: 'oklch(0.66 0.22 25 / 20%)',
-                    border: '1px solid oklch(0.66 0.22 25 / 35%)',
-                    color: 'var(--error-text)',
-                  }}
-                >
-                  Confirm
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </td>
-    </tr>
-  )
-}
-
+/**
+ * Approvals — the reference console (ADR 0097 §2): a declarative descriptor (columns + row actions)
+ * rendered by the generic `ConsoleView`. The approve/reject mutations still flow through the same
+ * `useApproveModel`/`useRejectModel` hooks the page always used (shared code path, no parallel impl).
+ */
 export function Approvals() {
   const [showAll, setShowAll] = useState(false)
-  const statusFilter = showAll ? undefined : 'pending'
-  const { data, isLoading, error } = useApprovals(statusFilter)
+  const { data, isLoading, error } = useApprovals(showAll ? undefined : 'pending')
+  const approve = useApproveModel()
+  const reject = useRejectModel()
+
+  const columns: Column<ApprovalEntry>[] = [
+    {
+      key: 'model_id',
+      header: 'Model',
+      accessor: (r) => r.model_id,
+      sortable: true,
+      render: (r) => <span className="font-mono text-xs font-semibold">{r.model_id}</span>,
+    },
+    {
+      key: 'commit',
+      header: 'Commit',
+      accessor: (r) => r.commit_sha,
+      render: (r) => (
+        <span className="font-mono text-xs text-muted-foreground" title={r.commit_sha}>
+          {r.commit_sha.slice(0, 8)}
+        </span>
+      ),
+    },
+    {
+      key: 'commit_msg',
+      header: 'Message',
+      accessor: (r) => r.commit_msg,
+      render: (r) => (
+        <span className="line-clamp-2 max-w-xs inline-block align-top" title={r.commit_msg}>
+          {r.commit_msg}
+        </span>
+      ),
+    },
+    {
+      key: 'files',
+      header: 'Changed files',
+      accessor: (r) => r.changed_files.length,
+      render: (r) => <ChangedFiles files={r.changed_files} />,
+    },
+    {
+      key: 'requested_at',
+      header: 'Requested',
+      accessor: (r) => r.requested_at,
+      sortable: true,
+      render: (r) => (
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          {new Date(r.requested_at).toLocaleString()}
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      accessor: (r) => r.status,
+      facet: true,
+      render: (r) => (
+        <div>
+          <StatusBadge status={r.status} />
+          {r.status === 'rejected' && r.reject_reason && (
+            <p className="mt-1 text-[11px] text-muted-foreground italic" title={r.reject_reason}>
+              {r.reject_reason}
+            </p>
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  const rowActions: RowAction<ApprovalEntry>[] = [
+    {
+      id: 'approve',
+      label: 'Approve',
+      icon: Check,
+      variant: 'success',
+      visible: (r) => r.status === 'pending',
+      run: (r) => approve.mutateAsync(r.model_id),
+    },
+    {
+      id: 'reject',
+      label: 'Reject',
+      icon: X,
+      variant: 'danger',
+      visible: (r) => r.status === 'pending',
+      needsReason: true,
+      run: (r, { reason }) => reject.mutateAsync({ modelId: r.model_id, reason: reason ?? '' }),
+    },
+  ]
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div
-            className="w-9 h-9 rounded-lg flex items-center justify-center"
-            style={{
-              background: 'oklch(0.78 0.18 55 / 12%)',
-              border: '1px solid oklch(0.78 0.18 55 / 30%)',
-            }}
-          >
-            <ClipboardCheck className="w-4 h-4" style={{ color: 'var(--warning-text)' }} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold">Approvals</h1>
-            <p className="text-muted-foreground text-sm mt-1">
-              Review and approve or reject model retrain requests.
-            </p>
-          </div>
-        </div>
-
-        <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showAll}
-            onChange={e => setShowAll(e.target.checked)}
-            className="rounded"
-          />
-          Show all statuses
-        </label>
-      </div>
-
-      {error && (
-        <p
-          className="text-sm rounded-lg px-4 py-3"
-          style={{
-            background: 'oklch(0.66 0.22 25 / 12%)',
-            border: '1px solid oklch(0.66 0.22 25 / 25%)',
-            color: 'var(--error-text)',
-          }}
-        >
-          Failed to load approvals. Is the Control Plane reachable?
-        </p>
-      )}
-
-      {isLoading && (
-        <div
-          className="space-y-2 rounded-xl p-4"
-          style={{ border: '1px solid var(--border)' }}
-          aria-label="Loading approvals"
-        >
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-9 w-full" />
-          ))}
-        </div>
-      )}
-
-      {data && (
-        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-          <table className="w-full text-sm">
-            <thead style={{ background: 'var(--surface-1)' }}>
-              <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="p-3">Model</th>
-                <th className="p-3">Commit</th>
-                <th className="p-3">Message</th>
-                <th className="p-3">Changed files</th>
-                <th className="p-3">Requested</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody style={{ background: 'var(--surface-0)' }}>
-              {data.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="p-4">
-                    <EmptyState
-                      icon={ClipboardCheck}
-                      title={showAll ? 'No approval entries' : 'No pending approvals'}
-                      description={
-                        showAll
-                          ? 'No model-change approvals have been recorded yet.'
-                          : 'Nothing is waiting for review. New retrain requests will appear here.'
-                      }
-                      className="border-0"
-                    />
-                  </td>
-                </tr>
-              ) : (
-                data.map(entry => <ApprovalRow key={entry.id} entry={entry} />)
-              )}
-            </tbody>
-          </table>
-          <div
-            className="p-3 text-xs text-muted-foreground text-right"
-            style={{ background: 'var(--surface-1)' }}
-          >
-            {data.length} {showAll ? 'total' : 'pending'}
-          </div>
-        </div>
-      )}
+    <div className="p-6 max-w-6xl mx-auto">
+      <ConsoleView<ApprovalEntry>
+        title="Approvals"
+        subtitle="Review and approve or reject model retrain requests."
+        icon={ClipboardCheck}
+        columns={columns}
+        rows={data}
+        getRowId={(r) => r.id}
+        rowActions={rowActions}
+        isLoading={isLoading}
+        error={error}
+        errorMessage="Failed to load approvals. Is the Control Plane reachable?"
+        emptyTitle={showAll ? 'No approval entries' : 'No pending approvals'}
+        emptyDescription={
+          showAll
+            ? 'No model-change approvals have been recorded yet.'
+            : 'Nothing is waiting for review. New retrain requests will appear here.'
+        }
+        storageKey="approvals"
+        toolbar={
+          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showAll}
+              onChange={(e) => setShowAll(e.target.checked)}
+              className="rounded"
+            />
+            Show all statuses
+          </label>
+        }
+      />
     </div>
   )
 }

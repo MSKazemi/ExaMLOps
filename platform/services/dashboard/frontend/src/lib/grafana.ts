@@ -13,12 +13,24 @@ export interface GrafanaPanelRef {
   panelId: number
 }
 
-/** Named registry of embeddable panels. Add entries here, reference them by key in components. */
+/**
+ * Named registry of embeddable panels. Add entries here, reference them by key in components.
+ *
+ * UIDs and panel ids MUST match the dashboards provisioned under
+ * `platform/infra/docker-compose/grafana/provisioning/dashboards/*.json`. The provisioned UIDs
+ * are hyphenated (`examlops-overview`, not `examlops_overview`), and serving panels live in the
+ * `examlops-online-metrics` dashboard (there is no `examlops-serving`). Each panelId points at a
+ * real time-series in that dashboard so the embed renders instead of "Dashboard/Panel not found".
+ */
 export const GRAFANA_PANELS = {
-  'drift.trend': { uid: 'examlops_drift', panelId: 3 },
-  'overview.online': { uid: 'examlops_overview', panelId: 2 },
-  'serving.latency': { uid: 'examlops_serving', panelId: 4 },
-  'model.inferences': { uid: 'examlops_serving', panelId: 6 },
+  // examlops-drift · panel 11 = "Prediction Value Median (per model)" (drift trend time-series)
+  'drift.trend': { uid: 'examlops-drift', panelId: 11 },
+  // examlops-overview · panel 31 = "Inference Rate by Model (req/s)" (platform activity trend)
+  'overview.online': { uid: 'examlops-overview', panelId: 31 },
+  // examlops-online-metrics · panel 20 = "Latency Percentiles — All Models Combined"
+  'serving.latency': { uid: 'examlops-online-metrics', panelId: 20 },
+  // examlops-online-metrics · panel 10 = "Request Rate by Model (success vs error)"
+  'model.inferences': { uid: 'examlops-online-metrics', panelId: 10 },
 } as const satisfies Record<string, GrafanaPanelRef>
 
 export type GrafanaPanelName = keyof typeof GRAFANA_PANELS
