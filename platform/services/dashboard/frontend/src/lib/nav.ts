@@ -12,6 +12,7 @@
 import {
   Activity,
   BellRing,
+  Blocks,
   BookOpen,
   Bot,
   Box,
@@ -23,6 +24,7 @@ import {
   FileCheck,
   Flag,
   FolderKanban,
+  Gauge,
   GaugeCircle,
   GitBranch,
   KeyRound,
@@ -88,6 +90,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { path: '/serve/llmops', label: 'LLMOps', icon: Bot },
       { path: '/serve/gateway', label: 'Gateway', icon: KeyRound },
+      { path: '/serve/scaling', label: 'Scaling', icon: Gauge },
       { path: '/serve/nextgen', label: 'Next-Gen', icon: Sparkles },
     ],
   },
@@ -124,6 +127,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { path: '/platform/projects', label: 'Projects', icon: FolderKanban, flag: 'projectsConsole' },
       { path: '/platform/services', label: 'Services', icon: Server },
+      { path: '/platform/providers', label: 'Providers', icon: Blocks },
       { path: '/platform/config', label: 'Config', icon: Settings2 },
       { path: '/platform/integrations', label: 'SeanerBUS', icon: Zap },
       { path: '/platform/jupyter', label: 'Jupyter', icon: NotebookPen },

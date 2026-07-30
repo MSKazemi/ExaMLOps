@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **feat(dashboard): Scaling & Routing console (Serve → `/serve/scaling`).** Surfaces `exa serve autoscale`
+  and `exa serve routing` in the UI over pure-`platform.db` state: an Autoscale section (policy min/max
+  replicas + target + scale-to-zero, savings estimate, recent scale events) and a Routing section
+  (routing config + recorded stats). Every write reuses the CLI's own functions
+  (`examlops.autoscale.set_policy`, `examlops.data.gateway.set_gateway_config`), viewer-read-only,
+  audited `source=dashboard`. New `scaling.manage` capability (admin). Config/policy only — no live Ray.
+- **feat(dashboard): Providers console (Platform → `/platform/providers`).** Surfaces the `exa providers`
+  capability in the UI: a `ConsoleView` over the existing `providers` backend CRUD (`examlops.providers`
+  list/validate/create/activate/delete) — project selector, AST-sandboxed editor, capability-gated
+  Activate/Delete row actions, every mutation audited `source=dashboard`. New `providers.manage`
+  capability (admin). Backend router already existed; this is the additive frontend + wiring.
+
+### Fixed
+
+- **fix(dashboard): M0–M3 rebuild frontend now passes the production `tsc -b` build.** The consoles
+  compiled under vitest but failed the container build (`tsc -b && vite build`), so no image could be
+  built (type-only import, `Promise<unknown>` row actions, `FlagName` cast, single-arg `apiFetch` test
+  mocks). Fixed at the error sites; the M0–M3 dashboard is now live on LXP.
+- **fix(control-plane): bake the ADR-0094 use-case pack into the image.** The control-plane container
+  copied `pipelines`/`modelzoo`/`control_plane` but not `usecases/` and has no `/repo` mount, so the
+  model registry resolver fell back to the removed legacy dir and showed 0 models. Now `COPY usecases`
+  + `EXAMLOPS_USECASE_DIR` pin; `/api/models/registry` returns JPCP/MACK/MCBound.
+- **ci(dashboard): `make dashboard-check` now runs the production build** (`npm test && npm run build`)
+  so type errors that break the container build can no longer pass the gate (it previously ran only
+  vitest). Frontend eslint debt (11 pre-existing errors) tracked separately.
+
 ### Changed
 
 - **refactor(dashboard)!: clean-slate lifecycle-scoped URLs + one-release redirects (enterprise-rebuild M0, ADR 0097 §3).**

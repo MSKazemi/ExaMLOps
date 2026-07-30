@@ -14,7 +14,7 @@ const ACCENT = { background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid ok
 const DANGER = { background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }
 const SUCCESS = { background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 30%)', color: 'var(--success-text)' }
 
-function ProviderEditor({
+export function ProviderEditor({
   project, initial, onClose,
 }: {
   project: string

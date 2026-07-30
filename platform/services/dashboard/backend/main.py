@@ -55,6 +55,7 @@ from routers import (
     quality,
     rollback,
     scaffold,
+    scaling,
     seanerbus,
     search,
     secrets,
@@ -190,6 +191,7 @@ app.include_router(gateway.router, prefix="/api")
 app.include_router(prompts.router, prefix="/api")
 app.include_router(autopilot.router, prefix="/api")
 app.include_router(slo.router, prefix="/api")
+app.include_router(scaling.router, prefix="/api")
 app.include_router(secrets.router, prefix="/api")
 app.include_router(feature_store.router, prefix="/api")
 app.include_router(fairness.router, prefix="/api")
