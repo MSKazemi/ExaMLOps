@@ -7,7 +7,7 @@
  * through here. `Approvals` is the reference port.
  */
 import { useState } from 'react'
-import { Column } from '@/lib/datagrid'
+import type { Column } from '@/lib/datagrid'
 import { DataGrid } from '@/components/DataGrid'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -214,7 +214,7 @@ export function ConsoleView<T>(props: ConsoleViewProps<T>) {
         {toolbar}
       </div>
 
-      {error && (
+      {Boolean(error) && (
         <p
           className="text-sm rounded-lg px-4 py-3"
           style={{
