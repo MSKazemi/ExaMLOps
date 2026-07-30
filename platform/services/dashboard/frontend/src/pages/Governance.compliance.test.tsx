@@ -63,7 +63,9 @@ describe('ComplianceRegister — EU AI Act edit parity (BL-016)', () => {
       ),
     )
     const call = apiFetch.mock.calls.find((c) => c[0] === '/api/compliance/classify/JPCP')!
-    expect(JSON.parse((call[1] as { body: string }).body)).toMatchObject({ riskTier: 'limited' })
+    expect(
+      JSON.parse((call as unknown as [string, { body: string }])[1].body),
+    ).toMatchObject({ riskTier: 'limited' })
   })
 
   it('lets an admin advance the conformity state', async () => {

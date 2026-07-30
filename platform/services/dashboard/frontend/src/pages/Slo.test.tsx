@@ -22,7 +22,7 @@ const SPECS: SloSpec[] = [
   },
 ]
 
-const apiFetch = vi.fn((path: string) => {
+const apiFetch = vi.fn((path: string, _opts?: { method?: string; body?: string }) => {
   if (path === '/api/slo') return Promise.resolve(SPECS)
   return Promise.resolve({ model: 'MACK', name: 'latency', target: 0.98, gatePromotion: false })
 })
