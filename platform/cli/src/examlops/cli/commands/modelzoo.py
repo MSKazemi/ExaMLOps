@@ -19,6 +19,12 @@ _EXAMPLES_STATUS = "Examples:\n\n  exa modelzoo status\n\n  exa --json modelzoo 
 _EXAMPLES_EVENTS = "Examples:\n\n  exa modelzoo events\n\n  exa modelzoo events --limit 20"
 _EXAMPLES_SYNC = "Examples:\n\n  exa modelzoo sync"
 _EXAMPLES_CONFIG = "Examples:\n\n  exa modelzoo config"
+_EXAMPLES_ADOPT = (
+    "Examples:\n\n"
+    "  exa modelzoo adopt JPCP            # one project for the JPCP model\n\n"
+    "  exa modelzoo adopt --all           # backfill every Zoo/pack model\n\n"
+    "  exa modelzoo adopt --all --dry-run # preview without provisioning"
+)
 
 
 @app.command("status", epilog=_EXAMPLES_STATUS)
@@ -173,3 +179,45 @@ def set_config(
         return
     _output.ok(f"Updated {key}={value}")
     _output.print_record(data)
+
+
+@app.command("adopt", epilog=_EXAMPLES_ADOPT)
+def adopt(
+    model: str = typer.Argument(
+        None, help="Model to adopt (e.g. JPCP). Omit with --all to adopt every model."
+    ),
+    all_models: bool = typer.Option(False, "--all", help="Adopt every Zoo/pack model."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview what would be provisioned without writing."
+    ),
+):
+    """Provision one project per model (storage · budget · workbench · pipelines). Idempotent.
+
+    A project can still hold several models via `exa project assign` — this just makes
+    one-project-per-model the zero-effort default (ADR 0086).
+    """
+    from examlops.modelzoo_adopt import adopt_all, adopt_model, zoo_models
+
+    if not model and not all_models:
+        _output.error("Give a model name or --all. Known models: " + ", ".join(zoo_models()))
+        raise typer.Exit(1)
+
+    results = adopt_all(dry_run=dry_run) if all_models else [adopt_model(model, dry_run=dry_run)]
+
+    if _output.json_mode:
+        _output.print_json(results)
+        return
+
+    rows = []
+    for r in results:
+        summary = ", ".join(f"{k}:{v}" for k, v in r["steps"].items())
+        rows.append([r["model"], r["project"], "yes" if r["changed"] else "no", summary])
+    _output.print_table(
+        ("Would adopt (dry-run)" if dry_run else "Adopted"),
+        ["Model", "Project", "Changed", "Steps"],
+        rows,
+    )
+    if not dry_run:
+        _output.hint(
+            "Next: exa pipeline deploy --project <project>  ·  exa workbench start nb1 --project <project>"
+        )

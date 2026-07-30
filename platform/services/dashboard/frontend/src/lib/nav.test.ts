@@ -46,6 +46,7 @@ const KNOWN_ROUTES = new Set([
   '/govern/secrets',
   // platform
   '/platform/projects',
+  '/platform/ops',
   '/platform/events',
   '/platform/services',
   '/platform/providers',

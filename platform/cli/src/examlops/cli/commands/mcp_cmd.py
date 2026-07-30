@@ -62,6 +62,38 @@ def tools(
         )
 
 
+@app.command("capabilities", epilog=_EXAMPLES)
+def capabilities(
+    show_writes: bool = typer.Option(
+        False, "--all", help="Include mutating (write) tools even if writes are disabled"
+    ),
+) -> None:
+    """Show what the agent can do, grouped by lifecycle use case (management, monitoring, …)."""
+    from examlops.mcp.tools import capabilities_catalogue
+
+    catalogue = capabilities_catalogue(include_writes=True if show_writes else None)
+    if _output.json_mode:
+        _output.print_json(catalogue)
+        return
+    for use_case, tools in catalogue.items():
+        rows = [
+            [
+                t["name"],
+                t["tier"] if t["mutating"] else "read",
+                t["description"],
+            ]
+            for t in tools
+        ]
+        _output.print_table(
+            f"{use_case.title()} — {len(tools)} capabilities",
+            ["Tool", "Tier", "Description"],
+            rows,
+        )
+    _output.hint(
+        "Write tiers: A=autopilot-OK · B=confirm-required · C=human-only. --all shows writes."
+    )
+
+
 @app.command("resources", epilog=_EXAMPLES)
 def resources() -> None:
     """List the MCP resources (readable context) ExaMLOps exposes to agents."""

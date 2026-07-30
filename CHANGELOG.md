@@ -7,6 +7,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **feat(platform-ops): govern the platform from a notebook (ADR 0098).** A **Platform Ops** layer to
+  manage the platform itself — compute-node cost, connections, the ExaMLOps↔bridge wiring, service
+  config, and `platform.db` knobs — and to deploy calculation code, all through **one governed façade
+  `examlops.platform_admin`** that wraps the same `examlops.*` writers the CLI uses in a single
+  `authz.check → policy.decide → write_audit_event` envelope (closing the gap where a notebook writing
+  directly to the stores bypassed RBAC/policy/audit). Two tiers: **A** (config + AST-gated provider
+  code, hot, reversible, audited) and **B** (real integration source via git + p2p redeploy, admin,
+  staged as an audited `platform_source_change`). New `examlops.workbench_spawn` wires the reserved
+  admin-only `platform-ops` JupyterHub workbench (shared config dir + Tier-B source mounts) into
+  `jupyterhub_config`; `EXAMLOPS_CONFIG_DIR` relocates the config dir to a shared mount; starter
+  `docs/notebooks/platform-ops-starter.ipynb`; dashboard **Platform Ops** console (`routers/platform_ops.py`
+  + `pages/PlatformOps.tsx`, `platform.manage` capability) surfaces the cost card, deployed providers,
+  and the change feed and lets an admin make the same governed changes. **`exa modelzoo adopt
+  [MODEL|--all] [--dry-run]`** provisions one project per Zoo model (storage · budget · workbench ·
+  pipelines) idempotently as the default (a project can still hold several models via
+  `exa project assign`). Guide `docs/guides/platform-ops-workbench.md`; 22 façade/adopt/spawn unit tests
+  + 6 dashboard-router tests.
+- **feat(cli): friendly, self-documenting command groups.** Running a bare group (`exa serve`)
+  or its help now shows more than a subcommand list: a **Common tasks** block (2–3 curated,
+  copy-paste examples — every group and nested sub-group is covered) and a **Learn more** footer —
+  `exa <group> <command> -h` for options, `exa explain <group>` for a plain-language overview,
+  and a pointer to the full use-case guide. New `examlops/cli/_group_help.py`
+  (`attach_group_epilogs`) sets the epilog on every group and nested sub-group (`serve shadow`,
+  `drift auto-retrain`) in one central recursive pass — mirroring `_help.assign_panels`, so no
+  per-`add_typer` edits and nothing to keep in sync by hand. Curated examples live in one
+  `_COMMON_TASKS` spec; groups without an entry still get the footer. Guard
+  `tests/unit/test_cli_group_help.py`. Help-display-only — resolution, `exa docs`, and scripting
+  are unaffected.
 - **docs(reference+dashboard): use-case + example for *every* command and console action.** Two new
   comprehensive, code-grounded guides answer "what does this do, when do I use it, show me":
   `docs/reference/cli-commands-guide.md` documents all ~345 `exa` leaf commands (60 groups) grouped by

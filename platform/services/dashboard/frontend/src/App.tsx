@@ -53,6 +53,9 @@ const Projects = lazy(() => import('@/pages/Projects').then((m) => ({ default: m
 const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ default: m.ProjectDetail })))
 const NextGen = lazy(() => import('@/pages/NextGen').then((m) => ({ default: m.NextGen })))
 const Providers = lazy(() => import('@/pages/Providers').then((m) => ({ default: m.Providers })))
+const PlatformOps = lazy(() =>
+  import('@/pages/PlatformOps').then((m) => ({ default: m.PlatformOps })),
+)
 const Events = lazy(() => import('@/pages/Events').then((m) => ({ default: m.Events })))
 const Traffic = lazy(() => import('@/pages/Traffic').then((m) => ({ default: m.Traffic })))
 
@@ -158,6 +161,7 @@ export default function App() {
                       {/* Platform */}
                       <Route path="/platform/events" element={<Events />} />
                       <Route path="/platform/services" element={<Services />} />
+                      <Route path="/platform/ops" element={<PlatformOps />} />
                       <Route path="/platform/providers" element={<Providers />} />
                       <Route path="/platform/config" element={<Config />} />
                       <Route path="/platform/integrations" element={<SeanerBus />} />

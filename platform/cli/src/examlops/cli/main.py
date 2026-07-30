@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from examlops.cli import _output, _plugins
+from examlops.cli._group_help import attach_group_epilogs
 from examlops.cli._help import SuggestGroup, assign_panels, make_ordered_group
 from examlops.cli.commands import (
     ab_cmd,
@@ -410,9 +411,17 @@ for _sub_app, _sub_panels in (
 ):
     assign_panels(_sub_app, _sub_panels)
 
+# Give every command group (and nested sub-group) a friendly epilog — curated "Common
+# tasks" + a "Learn more" footer — so running a bare group (e.g. ``exa serve``) hand-holds
+# like a leaf command does. Central pass over the whole tree (see _group_help). Done before
+# plugin registration so plugin groups also get the generic footer.
+attach_group_epilogs(app)
+
 # Third-party subcommands via entry points (examlops.cli_plugins). Resilient to failures.
 # Registered after paneling: plugin commands fall into the default "Commands" panel.
 try:
     _plugins.register(app)
+    # Late-registered plugin groups also get the "Learn more" footer.
+    attach_group_epilogs(app)
 except Exception:  # pragma: no cover - never let plugin discovery break the CLI
     pass

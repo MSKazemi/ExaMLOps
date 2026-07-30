@@ -28,6 +28,7 @@ Example ``policy.yaml``::
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +38,14 @@ ALLOW = "allow"
 DENY = "deny"
 REQUIRE_APPROVAL = "require_approval"
 
-POLICY_YAML = Path.home() / ".config" / "examlops" / "policy.yaml"
+
+def _config_dir() -> Path:
+    """``EXAMLOPS_CONFIG_DIR`` (shared mount) or ``~/.config/examlops`` — matches providers.loader."""
+    env = os.getenv("EXAMLOPS_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".config" / "examlops"
+
+
+POLICY_YAML = _config_dir() / "policy.yaml"
 
 
 @dataclass(frozen=True)
