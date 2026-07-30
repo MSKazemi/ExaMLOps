@@ -1,4 +1,5 @@
 import type { Role } from './auth'
+import { HOME_ITEM, NAV_SECTIONS, UTILITY_NAV, type NavItem } from './nav'
 
 // ── command registry (F2 R1/R2) ──────────────────────────────────────────────
 
@@ -15,40 +16,41 @@ export interface Command {
   cliEquivalent?: string
 }
 
-/** All navigation + action commands. Authorization (F15) is applied by {@link visibleCommands}. */
-export const COMMANDS: Command[] = [
-  { id: 'nav-overview', label: 'Go to Overview', to: '/', group: 'Navigate' },
-  { id: 'nav-services', label: 'Go to Services', to: '/platform/services', group: 'Navigate' },
-  { id: 'nav-models', label: 'Go to Models', to: '/build/models', group: 'Navigate' },
-  { id: 'nav-projects', label: 'Go to Projects', to: '/platform/projects', group: 'Navigate' },
-  { id: 'nav-mlops', label: 'Go to MLOps Console', to: '/build/mlops', group: 'Navigate' },
-  { id: 'nav-nextgen', label: 'Go to Next-Gen 40 Console', to: '/serve/nextgen', group: 'Navigate' },
-  { id: 'nav-facility', label: 'Go to Facility Console', to: '/operate/facility', group: 'Navigate' },
-  { id: 'nav-datasets', label: 'Go to Datasets', to: '/build/datasets', group: 'Navigate' },
-  { id: 'nav-pipelines', label: 'Go to Pipelines', to: '/build/pipelines', group: 'Navigate' },
-  { id: 'nav-drift', label: 'Go to Drift', to: '/operate/drift', group: 'Navigate' },
-  { id: 'nav-approvals', label: 'Go to Approvals', to: '/govern/approvals', scopes: ['admin'], group: 'Navigate' },
-  { id: 'nav-audit', label: 'Go to Audit', to: '/govern/audit', scopes: ['admin'], group: 'Navigate' },
-  { id: 'nav-config', label: 'Go to Config', to: '/platform/config', group: 'Navigate' },
-  { id: 'nav-docs', label: 'Go to Documents', to: '/documents', group: 'Navigate' },
-  // Actions carry an `exa` equivalent for GUI↔CLI parity; the run/confirm gate lives in the page.
-  {
-    id: 'act-status', label: 'Copy: platform status command', group: 'Actions',
-    cliEquivalent: 'exa status',
-  },
-  {
-    id: 'act-drift', label: 'Copy: drift status command', group: 'Actions',
-    cliEquivalent: 'exa drift status',
-  },
-  {
-    id: 'act-projects-list', label: 'Copy: list projects command', group: 'Actions',
-    cliEquivalent: 'exa project list',
-  },
+/** Stable command id from a route (last path segment) — `/govern/audit` → `nav-audit`. */
+function navId(path: string): string {
+  return `nav-${path.split('/').filter(Boolean).pop() ?? 'overview'}`
+}
+
+/**
+ * Navigate commands are DERIVED from the sidebar nav (single source of truth: `lib/nav.ts`), so
+ * every console — including new ones — is searchable via ⌘K and the palette can never drift from the
+ * nav. Admin-only nav items become admin-scoped commands (F15).
+ */
+const NAV_COMMANDS: Command[] = [
+  HOME_ITEM,
+  ...NAV_SECTIONS.flatMap((s) => s.items),
+  ...UTILITY_NAV,
+].map((item: NavItem) => ({
+  id: navId(item.path),
+  label: `Go to ${item.label}`,
+  to: item.path,
+  group: 'Navigate' as const,
+  ...(item.adminOnly ? { scopes: ['admin'] as Role[] } : {}),
+}))
+
+// Actions carry an `exa` equivalent for GUI↔CLI parity; the run/confirm gate lives in the page.
+const ACTION_COMMANDS: Command[] = [
+  { id: 'act-status', label: 'Copy: platform status command', group: 'Actions', cliEquivalent: 'exa status' },
+  { id: 'act-drift', label: 'Copy: drift status command', group: 'Actions', cliEquivalent: 'exa drift status' },
+  { id: 'act-projects-list', label: 'Copy: list projects command', group: 'Actions', cliEquivalent: 'exa project list' },
   {
     id: 'act-project-create', label: 'Copy: create project command', scopes: ['admin'], group: 'Actions',
     cliEquivalent: 'exa project create <name>',
   },
 ]
+
+/** All navigation + action commands. Authorization (F15) is applied by {@link visibleCommands}. */
+export const COMMANDS: Command[] = [...NAV_COMMANDS, ...ACTION_COMMANDS]
 
 /** Commands visible to a role — unauthorized ones are hidden (F2 R2 / F15). */
 export function visibleCommands(role: Role | null): Command[] {

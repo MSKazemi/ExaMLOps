@@ -20,7 +20,9 @@ const KNOWN_ROUTES = new Set([
   '/build/models',
   '/build/mlops',
   '/build/datasets',
+  '/build/features',
   '/build/pipelines',
+  '/build/prompts',
   // serve
   '/serve/llmops',
   '/serve/gateway',
@@ -28,6 +30,8 @@ const KNOWN_ROUTES = new Set([
   // operate
   '/operate/drift',
   '/operate/alerts',
+  '/operate/autopilot',
+  '/operate/slos',
   '/operate/facility',
   '/operate/finops',
   '/operate/self-obs',
@@ -35,6 +39,8 @@ const KNOWN_ROUTES = new Set([
   '/govern/compliance',
   '/govern/audit',
   '/govern/approvals',
+  '/govern/fairness',
+  '/govern/secrets',
   // platform
   '/platform/projects',
   '/platform/services',

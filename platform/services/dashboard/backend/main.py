@@ -16,6 +16,7 @@ from routers import (
     approvals,
     audit,
     auth,
+    autopilot,
     batch,
     bff,
     cards,
@@ -29,6 +30,8 @@ from routers import (
     drift_data,
     explain,
     facility,
+    fairness,
+    feature_store,
     features,
     finops,
     flags,
@@ -46,6 +49,7 @@ from routers import (
     platform_audit,
     platform_data,
     projects,
+    prompts,
     providers,
     proxy,
     quality,
@@ -53,8 +57,10 @@ from routers import (
     scaffold,
     seanerbus,
     search,
+    secrets,
     selfobs,
     shadow,
+    slo,
     workbenches,
 )
 
@@ -181,6 +187,12 @@ app.include_router(platform_audit.router, prefix="/api")
 app.include_router(drift_data.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(gateway.router, prefix="/api")
+app.include_router(prompts.router, prefix="/api")
+app.include_router(autopilot.router, prefix="/api")
+app.include_router(slo.router, prefix="/api")
+app.include_router(secrets.router, prefix="/api")
+app.include_router(feature_store.router, prefix="/api")
+app.include_router(fairness.router, prefix="/api")
 app.include_router(platform_data.router, prefix="/api")
 app.include_router(rollback.router, prefix="/api")
 app.include_router(quality.router, prefix="/api")

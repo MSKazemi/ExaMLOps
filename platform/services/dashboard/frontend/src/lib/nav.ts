@@ -26,13 +26,19 @@ import {
   GaugeCircle,
   GitBranch,
   KeyRound,
+  Layers,
   LayoutDashboard,
+  Lock,
   NotebookPen,
+  Rocket,
+  Scale,
+  ScrollText,
   Server,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Target,
   Zap,
 } from 'lucide-react'
 
@@ -70,7 +76,9 @@ export const NAV_SECTIONS: NavSection[] = [
       { path: '/build/models', label: 'Models', icon: Box },
       { path: '/build/mlops', label: 'MLOps', icon: Boxes, flag: 'mlopsConsole' },
       { path: '/build/datasets', label: 'Datasets', icon: Database },
+      { path: '/build/features', label: 'Features', icon: Layers },
       { path: '/build/pipelines', label: 'Pipelines', icon: GitBranch },
+      { path: '/build/prompts', label: 'Prompts', icon: ScrollText },
     ],
   },
   {
@@ -90,6 +98,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { path: '/operate/drift', label: 'Drift', icon: Activity },
       { path: '/operate/alerts', label: 'Alerts', icon: BellRing },
+      { path: '/operate/autopilot', label: 'Autopilot', icon: Rocket },
+      { path: '/operate/slos', label: 'SLOs', icon: Target },
       { path: '/operate/facility', label: 'Facility', icon: Cpu, flag: 'facilityConsole' },
       { path: '/operate/finops', label: 'FinOps', icon: DollarSign },
       { path: '/operate/self-obs', label: 'Self-Obs', icon: GaugeCircle },
@@ -103,6 +113,8 @@ export const NAV_SECTIONS: NavSection[] = [
       { path: '/govern/compliance', label: 'Compliance', icon: FileCheck, adminOnly: true },
       { path: '/govern/audit', label: 'Audit', icon: ShieldCheck, adminOnly: true },
       { path: '/govern/approvals', label: 'Approvals', icon: ClipboardCheck, adminOnly: true, badge: 'approvals' },
+      { path: '/govern/fairness', label: 'Fairness', icon: Scale, adminOnly: true },
+      { path: '/govern/secrets', label: 'Secrets', icon: Lock, adminOnly: true },
     ],
   },
   {
