@@ -7,6 +7,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **docs(reference+dashboard): use-case + example for *every* command and console action.** Two new
+  comprehensive, code-grounded guides answer "what does this do, when do I use it, show me":
+  `docs/reference/cli-commands-guide.md` documents all ~345 `exa` leaf commands (60 groups) grouped by
+  the eleven `--help` lifecycle panels, each with **What · Use case · Example** (mutations marked, safe
+  `--dry-run`/read-only examples; every flag verified live against `exa … --help` v0.46.0);
+  `docs/dashboard/usage-guide.md` documents all ~40 dashboard consoles / ~196 actions with
+  **What · Use case · How-to (UI) · Equivalent `exa` CLI**, sourced from the live React nav + backend
+  routers (viewer/admin role gating noted per action). Both wired into `mkdocs.yml` nav and cross-linked
+  from `docs/dashboard/index.md`; the usage guide supersedes the stale ~10-page list in that index.
+
 - **feat(jupyter): project workbenches can now write/update pipeline code.** The `examlops-jupyterlab`
   workbench already reached MLflow/Prefect/Ray/MinIO and could `import examlops`, but `/repo` was fully
   read-only. Now `usecases/` (model YAML + per-model configs + dataset schemas) and `pipelines/` (the
