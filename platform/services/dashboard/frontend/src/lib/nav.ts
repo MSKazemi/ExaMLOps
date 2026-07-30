@@ -33,6 +33,7 @@ import {
   LayoutDashboard,
   Lock,
   NotebookPen,
+  Radio,
   Rocket,
   Scale,
   ScrollText,
@@ -128,6 +129,7 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: FolderKanban,
     items: [
       { path: '/platform/projects', label: 'Projects', icon: FolderKanban, flag: 'projectsConsole' },
+      { path: '/platform/events', label: 'Events', icon: Radio },
       { path: '/platform/services', label: 'Services', icon: Server },
       { path: '/platform/providers', label: 'Providers', icon: Blocks },
       { path: '/platform/config', label: 'Config', icon: Settings2 },
