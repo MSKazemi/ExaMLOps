@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from skipper import config
+from skipper import config, instrument
 from skipper.confirm import _is_affirmative
 
 router = APIRouter()
@@ -141,18 +141,27 @@ def _run_graph_collect(graph, cfg, inp, extract_text):
     text_parts: list[str] = []
     tool_names: list[str] = []
     usage: dict | None = None
-    for item in graph.stream(inp, cfg, stream_mode="messages"):
-        if not isinstance(item, tuple) or len(item) != 2:
-            continue
-        msg, _meta = item
-        if isinstance(msg, AIMessageChunk):
-            piece = extract_text(msg.content)
-            if piece:
-                text_parts.append(piece)
-            if getattr(msg, "usage_metadata", None):
-                usage = _norm_usage(msg.usage_metadata)
-        elif isinstance(msg, ToolMessage):
-            tool_names.append(msg.name or "tool")
+    session_id = cfg.get("configurable", {}).get("thread_id", "kq")
+    instr = instrument.start(session_id)
+    try:
+        for item in graph.stream(inp, cfg, stream_mode="messages"):
+            if not isinstance(item, tuple) or len(item) != 2:
+                continue
+            msg, _meta = item
+            if isinstance(msg, AIMessageChunk):
+                piece = extract_text(msg.content)
+                if piece:
+                    text_parts.append(piece)
+                if getattr(msg, "usage_metadata", None):
+                    usage = _norm_usage(msg.usage_metadata)
+            elif isinstance(msg, ToolMessage):
+                tool_names.append(msg.name or "tool")
+                ok, err = instrument.tool_status(msg)
+                if instr.observe(msg.name or "tool", ok=ok, error=err):
+                    text_parts.append(f"\n\n⚠️ {instr.abort_message}")
+                    break
+    finally:
+        instr.finish()
     return "".join(text_parts), tool_names, usage, _pending_interrupt(graph, cfg)
 
 
@@ -166,6 +175,7 @@ async def _stream_completion(session_id: str, text: str, model: str):
     cid = _completion_id()
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    instr = instrument.start(session_id)
 
     def _run() -> None:
         try:
@@ -183,9 +193,14 @@ async def _stream_completion(session_id: str, text: str, model: str):
                         )
                 elif isinstance(msg, ToolMessage):
                     loop.call_soon_threadsafe(queue.put_nowait, ("tool", msg.name or "tool"))
+                    ok, err = instrument.tool_status(msg)
+                    if instr.observe(msg.name or "tool", ok=ok, error=err):
+                        loop.call_soon_threadsafe(queue.put_nowait, ("error", instr.abort_message))
+                        break
         except Exception as exc:  # surface as an error event
             loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
         finally:
+            instr.finish()
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     fut = loop.run_in_executor(None, _run)

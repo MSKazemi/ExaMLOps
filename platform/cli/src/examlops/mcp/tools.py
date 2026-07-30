@@ -945,10 +945,118 @@ USE_CASES: tuple[str, ...] = (
     "governance",
 )
 
-# Write-privilege tiers (ADR 0106). ``read`` = no mutation. ``A`` = low-risk, autopilot-OK.
+# Write-privilege tiers (ADR 0102). ``read`` = no mutation. ``A`` = low-risk, autopilot-OK.
 # ``B`` = requires human-in-the-loop confirmation. ``C`` = human-CLI-only (never bound to an
 # autonomous agent). Read tools always carry ``read``.
 TIERS: tuple[str, ...] = ("read", "A", "B", "C")
+
+
+# ── mutating tools: configuration writes (Phase 5, ADR 0102) ──────────────────
+
+
+def _audit_write(action: str, target: str, details: dict[str, Any]) -> None:
+    """Best-effort audit of an agent-initiated config write."""
+    try:
+        from examlops.data import init_db
+        from examlops.data.audit import write_audit_event
+
+        init_db()
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        write_audit_event("mcp", actor, action, target, {**details, "via": "mcp"})
+    except Exception:  # noqa: BLE001 - auditing never fails the write
+        pass
+
+
+def set_traffic_split(model: str, production: int, canary: int = 0) -> dict[str, Any]:
+    """Set the traffic-split rule for a model (production/canary %). Mutating; tier A."""
+    gate = _agent_write_gate("set_traffic_split", {"model": model})
+    if gate is not None:
+        return gate
+    if production + canary != 100:
+        return _err("production + canary must sum to 100")
+    try:
+        from examlops.data.serving import set_traffic_rules
+
+        set_traffic_rules(
+            model, {"production": production, "canary": canary}, updated_by="mcp-agent"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+    _audit_write("traffic_split_set", model, {"production": production, "canary": canary})
+    return {"ok": True, "model": model, "production": production, "canary": canary}
+
+
+def set_drift_autoretrain(
+    model: str, dataset: str, enabled: bool = True, min_z: float = 3.0
+) -> dict[str, Any]:
+    """Configure drift-triggered auto-retrain for a model. Mutating; tier B (confirm)."""
+    gate = _agent_write_gate("set_drift_autoretrain", {"model": model})
+    if gate is not None:
+        return gate
+    try:
+        from examlops.data.drift import set_drift_auto_retrain
+
+        set_drift_auto_retrain(model, enabled, min_z_score=min_z, dataset_name=dataset)
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+    _audit_write("drift_autoretrain_set", model, {"dataset": dataset, "enabled": enabled})
+    return {"ok": True, "model": model, "enabled": enabled, "dataset": dataset}
+
+
+def set_promotion_rule(model: str, metric: str, operator: str, threshold: float) -> dict[str, Any]:
+    """Set the metric-gated promotion rule for a model (e.g. rmse < 5.0). Mutating; tier B."""
+    gate = _agent_write_gate("set_promotion_rule", {"model": model})
+    if gate is not None:
+        return gate
+    if operator not in {"<", "<=", ">", ">=", "=="}:
+        return _err("operator must be one of < <= > >= ==")
+    try:
+        from examlops.data.serving import set_promotion_rule as _set
+
+        _set(model, metric, operator, float(threshold))
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+    _audit_write(
+        "promotion_rule_set", model, {"metric": metric, "op": operator, "threshold": threshold}
+    )
+    return {"ok": True, "model": model, "rule": f"{metric} {operator} {threshold}"}
+
+
+def disable_challenger(model: str) -> dict[str, Any]:
+    """Disable the champion/challenger shadow eval for a model. Mutating; tier A."""
+    gate = _agent_write_gate("disable_challenger", {"model": model})
+    if gate is not None:
+        return gate
+    try:
+        from examlops.data.serving import disable_challenger as _disable
+
+        _disable(model, updated_by="mcp-agent")
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+    _audit_write("challenger_disabled", model, {})
+    return {"ok": True, "model": model, "challenger": "disabled"}
+
+
+def grant_access(subject: str, relation: str, obj: str) -> dict[str, Any]:
+    """Grant an access relation (owner/editor/viewer) on an object. Mutating; tier C (human-only).
+
+    Tier C means this is registered for the human `exa mcp serve` surface but is never bound to an
+    autonomous agent (the Skipper bridge filters tier C out).
+    """
+    gate = _agent_write_gate("grant_access", {"subject": subject, "object": obj})
+    if gate is not None:
+        return gate
+    if relation not in {"owner", "editor", "viewer"}:
+        return _err("relation must be one of: owner, editor, viewer")
+    try:
+        from examlops.data.governance import grant_relation
+
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+        grant_relation(subject, relation, obj, actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        return _err(str(exc))
+    _audit_write("access_granted", obj, {"subject": subject, "relation": relation})
+    return {"ok": True, "subject": subject, "relation": relation, "object": obj}
 
 
 @dataclass(frozen=True)
@@ -1086,6 +1194,42 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(lineage_impact, tags=("read", "lineage", "incident"), use_cases=("incident",)),
     # ── help / discoverability ────────────────────────────────────────────────
     ToolSpec(explain_command, tags=("read", "help", "docs"), use_cases=("help",)),
+    # ── configuration writes (Phase 5, gated + tiered) ────────────────────────
+    ToolSpec(
+        set_traffic_split,
+        mutating=True,
+        tags=("write", "serving"),
+        use_cases=("management",),
+        tier="A",
+    ),
+    ToolSpec(
+        disable_challenger,
+        mutating=True,
+        tags=("write", "serving"),
+        use_cases=("management",),
+        tier="A",
+    ),
+    ToolSpec(
+        set_drift_autoretrain,
+        mutating=True,
+        tags=("write", "drift"),
+        use_cases=("management",),
+        tier="B",
+    ),
+    ToolSpec(
+        set_promotion_rule,
+        mutating=True,
+        tags=("write", "serving"),
+        use_cases=("management",),
+        tier="B",
+    ),
+    ToolSpec(
+        grant_access,
+        mutating=True,
+        tags=("write", "governance"),
+        use_cases=("governance",),
+        tier="C",
+    ),
 )
 
 

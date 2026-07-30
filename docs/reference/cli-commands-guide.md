@@ -981,6 +981,7 @@ Exposes ExaMLOps platform capabilities as agent-callable MCP tools/resources/pro
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa mcp tools` | Lists the tools exposed to agents over MCP; `--all` includes write tools even when writes are disabled. | Discover the agent-callable API surface | `exa mcp tools --all` |
+| `exa mcp capabilities` | Shows what the agent can do, **grouped by lifecycle use case** (management, monitoring, help, incident, finops, governance) with a write-tier badge (A=autopilot-OK, B=confirm-required, C=human-only); `--all` includes write tools. Derived from the same registry as `exa mcp tools` and the A2A card, so it can never drift. | Understand agent capabilities by use case | `exa mcp capabilities` |
 | `exa mcp resources` | Lists the MCP resources (readable context, e.g. `examlops://status`). | See what context agents can read | `exa mcp resources` |
 | `exa mcp prompts` | Lists the MCP prompts (reusable agent workflows, e.g. `diagnose_drift`). | Discover packaged agent workflows | `exa mcp prompts` |
 | `exa mcp agent-card` | Prints the A2A Agent Card describing this platform's agent skills; `--url` sets the public base URL, `--all` advertises mutating tools. | Publish an A2A discovery card | `exa mcp agent-card --url https://exa.example.com` |

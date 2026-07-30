@@ -28,6 +28,23 @@ skipper/
 
 The graph is the standard ReAct cycle — the LLM reasons, emits tool calls, the tools execute against platform HTTP APIs (and `platform_db`), results are fed back, and the model synthesizes a Markdown answer. Conversation state persists across turns via a SQLite `SqliteSaver` checkpointer keyed by `thread_id`. Write tools pause mid-graph for operator confirmation using LangGraph's `interrupt()` mechanism.
 
+### Next-gen architecture (ADRs 0099–0106)
+
+Skipper was extended in eight additive, graceful-degrading phases so it is useful across **every**
+ExaMLOps use case — management, monitoring, help, incident response, FinOps/Green-AI, and governance —
+while staying **local-first** (no new paid API by default). All of it degrades: with no embeddings /
+policy / `platform.db` / hosted model, the agent still works.
+
+| Area | What | Where | ADR |
+|---|---|---|---|
+| **Supervisor topology** | A deterministic router dispatches each turn to a scoped **specialist** sub-agent (`manager`/`monitor`/`helper`/`finops`/`governor`/`general`) so a local 8B model only sees ~10–20 relevant tools. One parent `StateGraph` → streaming/HITL/memory unchanged. `AGENT_SUPERVISOR_MODE=auto\|single`. | `supervisor.py`, `skills.py`, `router.py` | 0100 |
+| **Unified capability surface** | The `examlops.mcp` registry (single source of truth for Skipper, `exa mcp serve`, and the A2A card) covers drift, serving, SLO/fairness, FinOps, gateway, eval, lineage + grounded help. `exa mcp capabilities` lists it grouped by use case. | `examlops/mcp/tools.py` | 0099/0100 |
+| **Self-instrumentation** | Each turn's tool calls record to `agent_sessions`/`agent_tool_calls` (`tool_success_rate` is real) + an in-loop circuit-breaker aborts runaway turns. | `instrument.py` | 0103 |
+| **Layered write-safety** | Gated, **tiered** MCP writes (A=autopilot-OK, B=confirm, C=human-only); every mutating tool gets exposure + HITL `interrupt()` + policy + audit; tier-C is never bound to the agent. | `mcp_bridge.py`, `memory_eval.py` | 0102 |
+| **Proactive monitoring** | `skipper-watch` — an LLM-free daemon that raises drift/cost alerts to the events outbox + audit + episodic memory. `python -m skipper.watch --once\|--daemon`. | `watch.py`, `baselines.py` | 0104 |
+| **Self-improving memory** | Consolidation promotes recurring incidents → review-gated candidate procedures; reinforcement deprecates procedures that use failing tools. `python -m skipper.consolidate`. | `consolidate.py`, `reinforce.py` | 0106 |
+| **7-tier memory** | Working · experience · **knowledge/docs-RAG** · **monitoring/baseline** · **outcome** · **consolidation** · **tenant scoping** (see [Long-Term Memory](#long-term-memory-phase-25)). | `memory.py`, `knowledge.py`, `scoping.py` | 0101/0104/0105 |
+
 ## LLM Backends
 
 `build_llm()` selects a backend at startup by which environment variables are set, in this preference order:
@@ -322,6 +339,18 @@ Beyond per-conversation history, Skipper has **cross-session long-term memory** 
 - A LangGraph `SqliteStore` (backed by `sqlite-vec`) in its own `skipper_memory.db` (separate from `platform.db` and the checkpointer), with **local embeddings** — Ollama `nomic-embed-text` by default, or `sentence-transformers` fully offline. No cloud, no external service.
 - Four memory kinds by namespace: **procedural** (`proc` — reusable ops procedures, the highest-value kind), **episodic** (`episode` — past incidents), **preference** (`pref` — per-operator), **KB** (`kb` — stable tribal knowledge).
 - Memory holds the agent's *experience* + preferences + stable facts only. Current platform state (model versions, drift, cost, approvals, audit rows) is **always queried live and pointed to, never copied** — memory can go stale; the platform DB is the source of truth. Incidents store foreign-key ids into `platform_db`, not row copies.
+
+**The 7-tier memory stack (next-gen, ADRs 0101/0104/0105/0106)** — the four kinds above are tier T1; the full stack:
+
+| Tier | What it stores | Enabled by |
+|---|---|---|
+| **T0 Working** | per-thread conversation (checkpointer) | always |
+| **T1 Experience** | proc / episode / pref / kb (above) | `AGENT_MEMORY_ENABLED` + embeddings |
+| **T2 Knowledge / docs-RAG** | chunked+embedded `docs/**` + ADRs → grounded "how do I…?" answers with citations (`search_knowledge`); reuses `examlops.vector_store`. Ingest: `make skipper-knowledge-ingest`. Degrades to ripgrep. | `AGENT_KNOWLEDGE_ENABLED` |
+| **T3 Monitoring / baseline** | recorded "what's normal" (drift/input/cost/SLO) as pointers, not copies (`recall_baseline`) + an auto-fed incident timeline from `skipper-watch` | always (best-effort) |
+| **T4 Outcome** | per-turn tool telemetry → real `tool_success_rate` (feeds T-reinforcement) | `AGENT_INSTRUMENT_ENABLED` |
+| **T5 Consolidation** | recurring incidents → review-gated candidate procedures; failing-tool procedures deprecated. `make skipper-consolidate`. | `python -m skipper.consolidate` |
+| **X Tenant scoping** | namespaces prefixed by project (`EXAMLOPS_PROJECT`) + a shared bucket, authz-gated | `AGENT_MEMORY_TENANT_SCOPED` (off) |
 
 **Tools** (present only when the store is enabled)
 
