@@ -89,3 +89,38 @@ async def test_platform_audit_surfaces_errors_not_empty(client, monkeypatch, tmp
     token = await _login(client, ADMIN_PW)
     r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_platform_audit_tolerates_non_json_details(client, monkeypatch, tmp_path):
+    """Regression (2026-07-30): a single legacy/malformed non-JSON `details` value must not
+    500 the whole audit page. The `json.loads` in the item mapping ran OUTSIDE the query
+    try/except, so any older row with non-JSON details crashed the endpoint (limit=100 → 500,
+    limit=80 → 200). Non-JSON details are now returned verbatim."""
+    db = tmp_path / "platform.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE audit_events ("
+        "id INTEGER PRIMARY KEY, ts DATETIME, source TEXT, actor TEXT, "
+        "action TEXT, target TEXT, details TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO audit_events (ts, source, actor, action, target, details) "
+        "VALUES (datetime('now','-1 days'), 'cli', 'alice', 'note', 'X', 'not-valid-json{')"
+    )
+    conn.execute(
+        "INSERT INTO audit_events (ts, source, actor, action, target, details) "
+        "VALUES (datetime('now','-2 days'), 'dashboard', 'bob', 'promote', 'MACK', "
+        '\'{"note": "ok"}\')'
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    token = await _login(client, ADMIN_PW)
+    r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2
+    by_action = {row["action"]: row["details"] for row in body["items"]}
+    assert by_action["note"] == "not-valid-json{"  # non-JSON returned verbatim, no crash
+    assert by_action["promote"] == {"note": "ok"}  # valid JSON still decoded
