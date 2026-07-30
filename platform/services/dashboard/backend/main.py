@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from routers import (
     ab_testing,
+    admission,
     alerts,
     approvals,
     audit,
@@ -192,6 +193,7 @@ app.include_router(prompts.router, prefix="/api")
 app.include_router(autopilot.router, prefix="/api")
 app.include_router(slo.router, prefix="/api")
 app.include_router(scaling.router, prefix="/api")
+app.include_router(admission.router, prefix="/api")
 app.include_router(secrets.router, prefix="/api")
 app.include_router(feature_store.router, prefix="/api")
 app.include_router(fairness.router, prefix="/api")

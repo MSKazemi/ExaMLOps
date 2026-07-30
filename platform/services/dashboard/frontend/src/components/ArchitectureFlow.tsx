@@ -202,7 +202,7 @@ export function ArchitectureFlow({ services }: { services: Record<string, { stat
     [services],
   )
 
-  const edges = useMemo(buildEdges, [])
+  const edges = useMemo(() => buildEdges(), [])
 
   return (
     <div className="space-y-2">

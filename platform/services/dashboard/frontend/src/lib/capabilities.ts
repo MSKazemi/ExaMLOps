@@ -21,6 +21,7 @@ export const CAP = {
   CONNECTION_MANAGE: 'connection.manage',
   PROVIDERS_MANAGE: 'providers.manage',
   SCALING_MANAGE: 'scaling.manage',
+  ADMISSION_MANAGE: 'admission.manage',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]

@@ -44,6 +44,7 @@ export function LogPanel({ containerName, token }: Props) {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: fetchSnapshot is an async fetch to an external system (with teardown), the canonical effect use case, not a synchronous state derivation.
     fetchSnapshot()
     return () => stopRef.current?.()
   }, [containerName])

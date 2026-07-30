@@ -33,6 +33,7 @@ const KNOWN_ROUTES = new Set([
   '/operate/alerts',
   '/operate/autopilot',
   '/operate/slos',
+  '/operate/admission',
   '/operate/facility',
   '/operate/finops',
   '/operate/self-obs',

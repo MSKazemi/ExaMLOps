@@ -49,4 +49,5 @@ function Badge({
   })
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- `badgeVariants` is a cva() CallExpression (not a primitive), which allowConstantExport can't cover; co-locating it with its component is the intentional shadcn/ui convention and a Fast-Refresh-only concern.
 export { Badge, badgeVariants }
