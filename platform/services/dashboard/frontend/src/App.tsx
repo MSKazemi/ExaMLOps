@@ -41,6 +41,7 @@ const Prompts = lazy(() => import('@/pages/Prompts').then((m) => ({ default: m.P
 const Autopilot = lazy(() => import('@/pages/Autopilot').then((m) => ({ default: m.Autopilot })))
 const Slo = lazy(() => import('@/pages/Slo').then((m) => ({ default: m.Slo })))
 const Scaling = lazy(() => import('@/pages/Scaling').then((m) => ({ default: m.Scaling })))
+const Admission = lazy(() => import('@/pages/Admission').then((m) => ({ default: m.Admission })))
 const Secrets = lazy(() => import('@/pages/Secrets').then((m) => ({ default: m.Secrets })))
 const Features = lazy(() => import('@/pages/Features').then((m) => ({ default: m.Features })))
 const Fairness = lazy(() => import('@/pages/Fairness').then((m) => ({ default: m.Fairness })))
@@ -142,6 +143,7 @@ export default function App() {
                       <Route path="/operate/alerts" element={<Alerts />} />
                       <Route path="/operate/autopilot" element={<Autopilot />} />
                       <Route path="/operate/slos" element={<Slo />} />
+                      <Route path="/operate/admission" element={<Admission />} />
                       <Route path="/operate/finops" element={<Finops />} />
                       <Route path="/operate/self-obs" element={<SelfObs />} />
                       {/* Govern */}

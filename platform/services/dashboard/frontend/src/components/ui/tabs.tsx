@@ -79,4 +79,5 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- `tabsListVariants` is a cva() CallExpression (not a primitive), which allowConstantExport can't cover; co-locating it with its component is the intentional shadcn/ui convention and a Fast-Refresh-only concern.
 export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }

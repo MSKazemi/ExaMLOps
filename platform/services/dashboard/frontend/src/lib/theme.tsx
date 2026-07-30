@@ -42,6 +42,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- Provider + its hook are intentionally co-located; Fast-Refresh-only concern, not a correctness issue.
 export function useTheme() {
   return useContext(ThemeContext)
 }

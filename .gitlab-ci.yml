@@ -400,6 +400,13 @@ deploy:lxp:
         fi
         cd \"$LXP_DEPLOY_PATH\"
         GIT_TERMINAL_PROMPT=0 git pull origin main
+        # Refresh the host operator CLI so \`exa\` stays present + matches the deployed
+        # code. \`uv sync --frozen\` prunes the editable \`examlops\` member (leaving the
+        # .venv with only the workspace coordinator and no exa script), so we install it
+        # explicitly. Non-fatal: the containerized services are the real deploy; a host
+        # CLI hiccup must not fail production.
+        export PATH=\"\$HOME/.local/bin:/localhome/u1002/.local/bin:\$PATH\"
+        uv pip install -e . >/dev/null 2>&1 && echo \"exa CLI refreshed: \$(.venv/bin/exa --version 2>/dev/null)\" || echo \"warn: exa CLI refresh skipped (uv unavailable) — non-fatal\"
         docker compose \
           -f platform/infra/docker-compose/docker-compose.yml \
           -f platform/infra/docker-compose/docker-compose.lxp.yml \

@@ -1025,7 +1025,11 @@ export function Config() {
   const [plain, setPlain] = useState<Record<string, string>>({})
   const [secrets, setSecrets] = useState<Record<string, SecretState>>({})
 
-  useEffect(() => {
+  // Sync the editable form state from server config when it (re)loads — the React-docs
+  // "adjust state during render when data changes" pattern, equivalent to the old effect.
+  const [prevSavedConfig, setPrevSavedConfig] = useState(savedConfig)
+  if (savedConfig !== prevSavedConfig) {
+    setPrevSavedConfig(savedConfig)
     if (savedConfig) {
       const next: Record<string, string> = {}
       for (const [k, v] of Object.entries(savedConfig)) {
@@ -1033,7 +1037,7 @@ export function Config() {
       }
       setPlain(next)
     }
-  }, [savedConfig])
+  }
 
   const role = me?.role
   const readOnly = role !== 'admin'

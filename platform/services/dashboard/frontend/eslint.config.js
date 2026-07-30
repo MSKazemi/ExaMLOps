@@ -25,6 +25,9 @@ export default defineConfig([
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
+      // A component file may also export a co-located variant constant (e.g. the
+      // `badgeVariants`/`buttonVariants` cva() objects) — that does not defeat Fast Refresh.
+      'react-refresh/only-export-components': ['error', { allowConstantExport: true }],
     },
   },
 ])

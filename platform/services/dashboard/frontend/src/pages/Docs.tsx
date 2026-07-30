@@ -22,9 +22,13 @@ function SidebarSection({
   const hasSelected = section.files.some(f => f.path === selectedPath)
   const [open, setOpen] = useState(defaultOpen || hasSelected)
 
-  useEffect(() => {
+  // Adjust state during render when a derived value changes (React docs pattern),
+  // equivalent to the old effect but without the extra commit/re-render.
+  const [prevHasSelected, setPrevHasSelected] = useState(hasSelected)
+  if (hasSelected !== prevHasSelected) {
+    setPrevHasSelected(hasSelected)
     if (hasSelected) setOpen(true)
-  }, [hasSelected])
+  }
 
   return (
     <div className="mb-1">
@@ -248,9 +252,12 @@ export function Docs() {
   const contentRef = useRef<HTMLDivElement>(null)
   const [showScrollTop, setShowScrollTop] = useState(false)
 
-  // Select the first file once sections load
+  // Select the first file once sections load. The set is guarded by state
+  // (`!selectedFile`) rather than the changing dep, so it re-fires whenever the
+  // selection is cleared — moving it into render would change that behavior.
   useEffect(() => {
     if (sections && sections.length > 0 && !selectedFile) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: one-shot / re-select-on-clear default, guarded by selectedFile state.
       setSelectedFile(sections[0].files[0])
     }
   }, [sections, selectedFile])
