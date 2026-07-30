@@ -66,6 +66,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Changed
 
+- **feat(dashboard): sidebar groups start collapsed by default.** The six lifecycle nav groups
+  (Build·Serve·Operate·Govern·Platform) now begin collapsed instead of all-expanded, so the sidebar
+  stays compact (~7 rows) rather than showing all ~30 items at once. The group owning the current
+  route auto-opens, and each group's open/closed state is still remembered per-user (localStorage).
 - **refactor(dashboard)!: clean-slate lifecycle-scoped URLs + one-release redirects (enterprise-rebuild M0, ADR 0097 §3).**
   Dashboard routes move to lifecycle-scoped paths matching the grouped nav; every old flat path (and
   any sub-path) redirects to its new home via a client 301 (`<Navigate replace>`) for one release,
