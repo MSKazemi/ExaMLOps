@@ -24,7 +24,7 @@ function NotConfiguredBanner() {
         </p>
         <p className="text-xs text-muted-foreground">
           Add your <strong>GitLab Project ID</strong> and <strong>GitLab Token</strong> in{' '}
-          <Link to="/config" className="underline underline-offset-2 hover:opacity-80">
+          <Link to="/platform/config" className="underline underline-offset-2 hover:opacity-80">
             Config <Settings2 className="w-3 h-3 inline" />
           </Link>{' '}
           to auto-discover datasets from the modelzoo repository.

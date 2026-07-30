@@ -17,6 +17,8 @@ export const CAP = {
   CONFIG_WRITE: 'config.write',
   SECRET_REVEAL: 'secret.reveal',
   SERVICE_CONTROL: 'service.control',
+  PROJECT_MANAGE: 'project.manage',
+  CONNECTION_MANAGE: 'connection.manage',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]

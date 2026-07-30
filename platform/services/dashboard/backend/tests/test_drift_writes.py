@@ -28,6 +28,12 @@ def platform_db(tmp_path, monkeypatch):
             min_z_score REAL NOT NULL DEFAULT 3.0, dataset_name TEXT NOT NULL DEFAULT '',
             cooldown_s INTEGER NOT NULL DEFAULT 3600
         );
+        CREATE TABLE input_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, alias TEXT,
+            emb_norm REAL NOT NULL, emb_mean REAL NOT NULL, emb_std REAL NOT NULL,
+            job_id TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE input_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
         CREATE TABLE audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
@@ -38,6 +44,11 @@ def platform_db(tmp_path, monkeypatch):
         conn.execute(
             "INSERT INTO drift_snapshots (model, alias, prediction) VALUES ('JPCP','Production',?)",
             (5.0 + (i % 3) * 0.1,),
+        )
+        conn.execute(
+            "INSERT INTO input_snapshots (model, alias, emb_norm, emb_mean, emb_std) "
+            "VALUES ('JPCP','Production',?,?,?)",
+            (10.0 + (i % 4) * 0.2, 0.1 + (i % 3) * 0.01, 0.5 + (i % 2) * 0.02),
         )
     conn.commit()
     conn.close()
@@ -152,3 +163,85 @@ async def test_auto_retrain_enable_then_disable(client, platform_db):
         == 2
     )
     conn.close()
+
+
+# ── input-drift edit parity (BL-014) ──────────────────────────────────────────
+
+
+async def test_input_baseline_requires_admin(client, platform_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/drift/input-baseline/JPCP", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 403
+
+
+async def test_input_baseline_dry_run_then_set(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    h = {"Authorization": f"Bearer {token}"}
+    dry = await client.post("/api/drift/input-baseline/JPCP?dry_run=true", headers=h)
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["dryRun"] is True
+    assert dry.json()["wouldSet"]["n"] == 20
+    conn = sqlite3.connect(platform_db)
+    assert conn.execute("SELECT COUNT(*) FROM input_baselines").fetchone()[0] == 0
+    conn.close()
+    r = await client.post("/api/drift/input-baseline/JPCP", headers=h)
+    assert r.status_code == 200, r.text
+    conn = sqlite3.connect(platform_db)
+    stats = json.loads(
+        conn.execute("SELECT stats FROM input_baselines WHERE model='JPCP'").fetchone()[0]
+    )
+    # The CLI stat shape: per-metric mean + its std, plus n.
+    assert set(stats) == {
+        "norm_mean",
+        "norm_mean_std",
+        "mean_mean",
+        "mean_mean_std",
+        "std_mean",
+        "std_mean_std",
+        "n",
+    }
+    assert stats["n"] == 20
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action='input_baseline_set'"
+        ).fetchone()[0]
+        == 1
+    )
+    conn.close()
+
+
+async def test_input_baseline_too_few_snapshots_400(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/drift/input-baseline/UNKNOWN", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 400
+
+
+async def test_input_reset(client, platform_db):
+    token = await _login(client, ADMIN_PW)
+    h = {"Authorization": f"Bearer {token}"}
+    dry = await client.post("/api/drift/input-reset/JPCP?dry_run=true", headers=h)
+    assert dry.json()["wouldClear"] == 20
+    r = await client.post("/api/drift/input-reset/JPCP", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] == 20
+    conn = sqlite3.connect(platform_db)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM input_snapshots WHERE model='JPCP'").fetchone()[0] == 0
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM audit_events WHERE action='input_reset'").fetchone()[0]
+        == 1
+    )
+    conn.close()
+
+
+async def test_input_reset_requires_admin(client, platform_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/drift/input-reset/JPCP", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 403

@@ -943,11 +943,13 @@ def _trigger_ci_pipeline(commit_sha: str) -> bool:
 
 def _load_registry() -> dict[str, list[str]]:
     import yaml  # noqa: PLC0415
+    from model_meta import resolve_models_dir  # noqa: PLC0415
 
     result: dict[str, list[str]] = {}
     try:
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        models_dir = os.path.join(repo_root, "pipelines", "models")
+        # ADR 0094: model YAML lives in the active use-case pack, not the removed
+        # pipelines/models path. Reuse the single resolver so the registry never re-empties.
+        models_dir = str(resolve_models_dir())
         if not os.path.isdir(models_dir):
             logger.warning("Models dir not found: %s", models_dir)
             return {}

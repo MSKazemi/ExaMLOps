@@ -1,9 +1,10 @@
 """Drift monitoring data — reads/writes the shared platform.db drift tables.
 
-Reads (viewer): prediction/input drift status + auto-retrain config. Writes (admin, audited):
-set a baseline, clear snapshots, and enable/disable drift-triggered auto-retrain — the same
-operations as ``exa drift baseline|reset|auto-retrain``, reusing the ``examlops.data.drift`` code
-paths so the dashboard can't drift from the CLI.
+Reads (viewer): prediction/input drift status + auto-retrain config. Writes (admin + the
+``drift.baseline`` capability, audited): set a prediction or input baseline, clear snapshots, and
+enable/disable drift-triggered auto-retrain — the same operations as
+``exa drift baseline|reset|auto-retrain|input baseline|input reset``, reusing the
+``examlops.data.drift`` code paths so the dashboard can't drift from the CLI.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import math
 import os
 
 from auth import require_role
+from capabilities import DRIFT_BASELINE, can, deny_reason
 from dbconn import connect
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -23,8 +25,23 @@ _admin = require_role("admin")
 _SNAPSHOT_WINDOW = 100
 _BASELINE_WINDOW = 100
 _MIN_BASELINE_SNAPSHOTS = 10
+# Input-drift baseline: mirror the CLI (`exa drift input baseline`) window + minimum exactly, so a
+# baseline set from the dashboard is byte-identical to one set from the CLI.
+_INPUT_BASELINE_WINDOW = 1000
+_MIN_INPUT_SNAPSHOTS = 10
 _WARN_Z = 2.0
 _CRIT_Z = 3.0
+
+
+def _require_manage(principal: dict) -> None:
+    """Enforce the ``drift.baseline`` capability (F15), matching the connections/projects routers.
+
+    The route already depends on the admin role; this adds the named-capability gate so the check
+    is the single, consistent enforcement point and future finer-grained roles work unchanged.
+    """
+    role = principal.get("role", "")
+    if not can(role, DRIFT_BASELINE):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, deny_reason(role, DRIFT_BASELINE))
 
 
 def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
@@ -199,6 +216,7 @@ async def set_baseline(
     Mirrors ``exa drift baseline``: needs ≥10 recent snapshots. ``?dry_run=true`` previews the
     baseline without writing it.
     """
+    _require_manage(principal)
     conn = connect(_db_path())
     rows = conn.execute(
         "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC LIMIT ?",
@@ -240,6 +258,7 @@ async def reset_snapshots(
 
     Mirrors ``exa drift reset``. ``?dry_run=true`` reports the count without deleting.
     """
+    _require_manage(principal)
     conn = connect(_db_path())
     n = conn.execute(
         "SELECT COUNT(*) AS c FROM drift_snapshots WHERE model=?", (model,)
@@ -267,6 +286,7 @@ async def configure_auto_retrain(
     ``exa drift auto-retrain enable|disable`` via ``examlops.data.drift.set_drift_auto_retrain``.
     A dataset is required when enabling.
     """
+    _require_manage(principal)
     enabled = bool(payload.get("enabled"))
     dataset = (payload.get("dataset") or "").strip()
     min_z = float(payload.get("minZ", 3.0))
@@ -296,3 +316,86 @@ async def configure_auto_retrain(
         "minZ": min_z,
         "cooldown": cooldown,
     }
+
+
+def _pop_mean_std(values: list[float]) -> tuple[float, float]:
+    """Population mean + std — byte-identical to the CLI ``input baseline`` computation."""
+    n = len(values)
+    mean = sum(values) / n
+    std = math.sqrt(sum((v - mean) ** 2 for v in values) / n)
+    return mean, std
+
+
+@router.post("/input-baseline/{model}")
+async def set_input_baseline_view(
+    model: str,
+    dry_run: bool = Query(False),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Store the current rolling embedding stats as the input-drift baseline (admin; audited).
+
+    Mirrors ``exa drift input baseline``: needs ≥10 recent input snapshots, uses the same 1000-row
+    window and the same stat shape, and persists via ``examlops.data.drift.set_input_baseline`` so
+    the baseline is identical to the CLI's. ``?dry_run=true`` previews without writing.
+    """
+    _require_manage(principal)
+    conn = connect(_db_path())
+    rows = conn.execute(
+        "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
+        "ORDER BY ts DESC LIMIT ?",
+        (model, _INPUT_BASELINE_WINDOW),
+    ).fetchall()
+    conn.close()
+    if len(rows) < _MIN_INPUT_SNAPSHOTS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Need at least {_MIN_INPUT_SNAPSHOTS} input snapshots, have {len(rows)}. "
+            "Run the bridge to collect embeddings first.",
+        )
+    norm_mean, norm_std = _pop_mean_std([r["emb_norm"] for r in rows])
+    mean_mean, mean_std = _pop_mean_std([r["emb_mean"] for r in rows])
+    std_mean, std_std = _pop_mean_std([r["emb_std"] for r in rows])
+    stats = {
+        "norm_mean": norm_mean,
+        "norm_mean_std": norm_std,
+        "mean_mean": mean_mean,
+        "mean_mean_std": mean_std,
+        "std_mean": std_mean,
+        "std_mean_std": std_std,
+        "n": float(len(rows)),
+    }
+    if dry_run:
+        return {"dryRun": True, "model": model, "wouldSet": {k: round(v, 4) for k, v in stats.items()}}
+    drift = _examlops_drift()
+    drift.set_input_baseline(model, stats)
+    conn = connect(_db_path())
+    _audit(conn, principal.get("sub", "?"), "input_baseline_set", model, {"n": len(rows)})
+    conn.commit()
+    conn.close()
+    return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+
+
+@router.post("/input-reset/{model}")
+async def reset_input_snapshots(
+    model: str,
+    dry_run: bool = Query(False),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Clear all input embedding snapshots for a model — keeps the baseline (admin; audited).
+
+    Mirrors ``exa drift input reset``. ``?dry_run=true`` reports the count without deleting.
+    """
+    _require_manage(principal)
+    conn = connect(_db_path())
+    n = conn.execute(
+        "SELECT COUNT(*) AS c FROM input_snapshots WHERE model=?", (model,)
+    ).fetchone()["c"]
+    if dry_run:
+        conn.close()
+        return {"dryRun": True, "model": model, "wouldClear": n}
+    if n:
+        conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
+        _audit(conn, principal.get("sub", "?"), "input_reset", model, {"cleared": n})
+        conn.commit()
+    conn.close()
+    return {"model": model, "cleared": n}

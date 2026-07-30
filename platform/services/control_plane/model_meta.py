@@ -1,12 +1,13 @@
 """Read-only adapter that surfaces model data from YAML config files.
 
-Reads pipelines/models/*.yaml directly — avoids importing pipeline_generator
-which transitively requires torch via the modelzoo configurator.
+Reads the active use-case pack's ``models/*.yaml`` directly — avoids importing pipeline_generator
+(or ``pipelines.usecase``) which transitively require torch via the modelzoo configurator.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,39 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MODELZOO = _REPO_ROOT / "modelzoo"
-_MODELS_DIR = _REPO_ROOT / "pipelines" / "models"
+_LEGACY_MODELS_DIR = _REPO_ROOT / "pipelines" / "models"
+
+
+def resolve_models_dir() -> Path:
+    """Directory of per-model YAML for the active use-case pack (ADR 0094).
+
+    Mirrors ``pipelines.usecase.models_dir()`` WITHOUT importing the pipeline engine (which
+    pulls torch). Resolution order: ``EXAMLOPS_USECASE_DIR`` → default pack ``usecases/seanergy``
+    (honouring its ``pack.toml`` ``[content] models_dir``) → legacy ``pipelines/models``.
+
+    Fixes the P0 "Model Registry — 0 models" bug: ADR 0094 moved model YAML out of
+    ``pipelines/models`` into the use-case pack, but the control plane still read the removed
+    legacy path and returned an empty registry.
+    """
+    env = os.getenv("EXAMLOPS_USECASE_DIR")
+    if env:
+        root = Path(env).expanduser().resolve()
+    elif (_REPO_ROOT / "usecases" / "seanergy" / "pack.toml").is_file():
+        root = _REPO_ROOT / "usecases" / "seanergy"
+    else:
+        return _LEGACY_MODELS_DIR
+    rel = "models"
+    toml = root / "pack.toml"
+    if toml.is_file():
+        try:
+            import tomllib  # py>=3.11, stdlib
+
+            with open(toml, "rb") as fh:
+                rel = (tomllib.load(fh).get("content", {}) or {}).get("models_dir", "models")
+        except Exception:
+            rel = "models"
+    cand = root / rel
+    return cand if cand.is_dir() else _LEGACY_MODELS_DIR
 
 
 @dataclass
@@ -39,9 +72,10 @@ class ModelMeta:
 def _scan_yamls() -> dict[str, dict[str, Any]]:
     """Return {model_name: yaml_dict} for all enabled models."""
     result: dict[str, dict[str, Any]] = {}
-    if not _MODELS_DIR.is_dir():
+    models_dir = resolve_models_dir()
+    if not models_dir.is_dir():
         return result
-    for fpath in sorted(_MODELS_DIR.glob("*.yaml")):
+    for fpath in sorted(models_dir.glob("*.yaml")):
         try:
             cfg = yaml.safe_load(fpath.read_text(encoding="utf-8"))
         except Exception:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from auth import require_role
 from dbconn import connect
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/platform-audit", tags=["platform-audit"])
 
@@ -22,20 +25,36 @@ def _db_path() -> str:
 @router.get("")
 async def get_platform_audit(
     _=Depends(_admin),
-    last_days: int = Query(30, ge=1, le=365),
+    last_days: int | None = Query(
+        None,
+        ge=1,
+        le=3650,
+        description="Restrict to the last N days. Omit for the full history (default).",
+    ),
     model: str | None = Query(None),
     action: str | None = Query(None),
     source: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
 ) -> dict:
-    """Read platform audit_events from shared platform.db."""
+    """Read platform audit_events from shared platform.db.
+
+    Defaults to the **full** audit history (no time filter) so events older than any fixed
+    window still surface — the Audit page previously hardcoded a 30-day window and appeared
+    empty whenever all events predated it, even though the governance chain counted them
+    (the P0 "audit shows 0 while governance shows N" bug). Pass ``last_days`` to narrow.
+
+    Errors are surfaced (HTTP 500), never masked as an empty result — an unreadable DB or a
+    schema problem must not look identical to "no audit activity".
+    """
     try:
         conn = connect(_db_path())
         query = (
-            "SELECT id, ts, source, actor, action, target, details "
-            "FROM audit_events WHERE ts >= datetime('now', ?) "
+            "SELECT id, ts, source, actor, action, target, details FROM audit_events WHERE 1=1"
         )
-        params: list = [f"-{last_days} days"]
+        params: list = []
+        if last_days is not None:
+            query += " AND ts >= datetime('now', ?)"
+            params.append(f"-{last_days} days")
         if model:
             query += " AND target=?"
             params.append(model)
@@ -49,18 +68,19 @@ async def get_platform_audit(
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         conn.close()
-        items = [
-            {
-                "id": r["id"],
-                "ts": r["ts"],
-                "source": r["source"],
-                "actor": r["actor"],
-                "action": r["action"],
-                "target": r["target"],
-                "details": json.loads(r["details"]) if r["details"] else None,
-            }
-            for r in rows
-        ]
-        return {"items": items, "total": len(items)}
-    except Exception:
-        return {"items": [], "total": 0}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("platform audit query failed")
+        raise HTTPException(status_code=500, detail="Failed to read platform audit log") from exc
+    items = [
+        {
+            "id": r["id"],
+            "ts": r["ts"],
+            "source": r["source"],
+            "actor": r["actor"],
+            "action": r["action"],
+            "target": r["target"],
+            "details": json.loads(r["details"]) if r["details"] else None,
+        }
+        for r in rows
+    ]
+    return {"items": items, "total": len(items)}

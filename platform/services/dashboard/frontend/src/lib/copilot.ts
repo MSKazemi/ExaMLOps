@@ -35,9 +35,16 @@ export interface CopilotTurn {
   response?: CopilotResponse
 }
 
-/** Derive grounding context from the current route (F11 R2). `/models/jpcp` → entity {type:'models', id:'jpcp'}. */
+/** Lifecycle-group URL prefixes (ADR 0097 §1) — stripped so entity grounding sees the console segment. */
+const GROUP_PREFIXES = new Set(['build', 'serve', 'operate', 'govern', 'platform'])
+
+/**
+ * Derive grounding context from the current route (F11 R2). A leading lifecycle group is ignored, so
+ * both `/models/jpcp` and `/build/models/jpcp` → entity {type:'models', id:'jpcp'}.
+ */
 export function buildContext(pathname: string, filters?: Record<string, unknown>): CopilotContext {
-  const seg = pathname.split('/').filter(Boolean)
+  let seg = pathname.split('/').filter(Boolean)
+  if (seg.length > 0 && GROUP_PREFIXES.has(seg[0])) seg = seg.slice(1)
   const entity = seg.length >= 2 ? { type: seg[0], id: seg[1] } : undefined
   return { page: pathname || '/', entity, filters }
 }

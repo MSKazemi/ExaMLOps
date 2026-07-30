@@ -27,7 +27,7 @@ describe('rankCommands (F2 R1/R2)', () => {
 
   it('ranks a matching command first', () => {
     const ranked = rankCommands('facility', 'viewer')
-    expect(ranked[0].to).toBe('/facility')
+    expect(ranked[0].to).toBe('/operate/facility')
   })
 
   it('hides admin nav from an unauthenticated (null) role', () => {

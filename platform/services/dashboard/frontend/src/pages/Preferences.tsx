@@ -8,11 +8,11 @@ import { usePrefs, useWatchlist, useOnboarding } from '@/lib/prefs'
 // Landing pages a user can pick as their default (R3).
 const LANDING_OPTIONS = [
   { value: '/', label: 'Overview' },
-  { value: '/models', label: 'Models' },
-  { value: '/pipelines', label: 'Pipelines' },
-  { value: '/drift', label: 'Drift' },
-  { value: '/finops', label: 'FinOps' },
-  { value: '/alerts', label: 'Alerts' },
+  { value: '/build/models', label: 'Models' },
+  { value: '/build/pipelines', label: 'Pipelines' },
+  { value: '/operate/drift', label: 'Drift' },
+  { value: '/operate/finops', label: 'FinOps' },
+  { value: '/operate/alerts', label: 'Alerts' },
 ]
 
 /** Preference center + watchlist (F21 / ADR 0072, R3/R4). */

@@ -186,9 +186,9 @@ export function Overview() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <StatCard label="Services"       value={services.length || '—'}        icon={Server}   />
         <StatCard label="Online"         value={isLoading ? '…' : onlineCount} icon={Activity} accent="green" />
-        <StatCard label="Models Loaded"  value={models?.length ?? '—'}         icon={Box}      accent="indigo" href="/models" />
-        <StatCard label="ModelZoo"       value={modelsCount}                   icon={Layers}   accent="amber"  href="/models" />
-        <StatCard label="Datasets"       value={datasetsCount}                 icon={Database} href="/datasets" />
+        <StatCard label="Models Loaded"  value={models?.length ?? '—'}         icon={Box}      accent="indigo" href="/build/models" />
+        <StatCard label="ModelZoo"       value={modelsCount}                   icon={Layers}   accent="amber"  href="/build/models" />
+        <StatCard label="Datasets"       value={datasetsCount}                 icon={Database} href="/build/datasets" />
       </div>
 
       {/* ── Architecture Flowchart ── */}
