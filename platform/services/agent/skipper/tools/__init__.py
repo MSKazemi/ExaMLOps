@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from skipper.tools import (
     approvals,
+    baselines,
     docs,
     inference,
+    knowledge,
     metrics,
     modelzoo,
     pipelines,
@@ -23,5 +25,7 @@ TOOLS = [
     *services.TOOLS,
     *pipelines.TOOLS,
     *docs.TOOLS,
+    *knowledge.TOOLS,
+    *baselines.TOOLS,
     *platform_ops.TOOLS,
 ]

@@ -7,6 +7,109 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **feat(agent): next-gen Skipper — Phase 8, tenant/project memory scoping (ADR 0105).** Completes the
+  next-gen roadmap. Memory namespaces are now tenant-aware (`skipper/scoping.py`): with
+  `AGENT_MEMORY_TENANT_SCOPED` on, memories are written under the active tenant (`EXAMLOPS_PROJECT` →
+  `("t:<tenant>", kind[, scope])`) and `recall`/`list_kind` search the operator's tenant (gated by
+  `examlops.authz` D6 RBAC, fail-open when multitenancy is off) **plus** a shared bucket
+  (`AGENT_MEMORY_SHARED_BUCKET`, default `global`) for cross-project knowledge. **Default off ⇒
+  single-tenant behaviour is byte-for-byte unchanged** (the entire existing memory suite passes
+  untouched). Guard `platform/services/agent/tests/test_scoping.py` (6 tests).
+- **feat(agent): next-gen Skipper — Phase 7, memory consolidation (T5) + reinforcement (T4) (ADR 0106).**
+  Skipper's procedural memory now self-heals and self-enriches, offline and local-first
+  (`python -m skipper.consolidate` / `make skipper-consolidate`). **T4** (`skipper/reinforce.py`): reads
+  real per-tool success rates (now that Phase 2 instruments the loop) and **deprecates** any procedure
+  whose steps rely on a chronically-failing tool (`recall` already filters deprecated procedures out);
+  audited. **T5** (`skipper/consolidate.py`): groups episodic incidents by model and, past
+  `AGENT_CONSOLIDATE_MIN_EPISODES`, promotes a **deterministic** candidate procedure to the existing
+  HITL **review queue** — an operator approves before it becomes live, so consolidation never bypasses
+  the write gate (ADR 0034). No LLM required; no new tables. New env `AGENT_PROC_DEPRECATE_THRESHOLD`/
+  `_MIN_CALLS`, `AGENT_CONSOLIDATE_MIN_EPISODES`. Guard
+  `platform/services/agent/tests/test_consolidate.py` (4 tests, in-memory store — no embeddings).
+- **feat(agent): next-gen Skipper — Phase 6, monitoring/baseline memory (T3) + skipper-watch (ADR 0104).**
+  Skipper gains a sense of "what's normal" and proactive alerting. **T3 baseline memory**
+  (`skipper/baselines.py::whats_normal` + `recall_baseline` tool) surfaces recorded drift/input/cost/SLO
+  baselines as **pointers into `platform.db`, never copies** — framed as recorded normals, so the agent
+  still confirms live state with the drift/cost tools. **skipper-watch** (`skipper/watch.py`,
+  `python -m skipper.watch --once|--daemon`, `make skipper-watch`) is an LLM-free monitoring loop
+  (distinct from chat) that reads drift-z + cost-vs-budget signals and, on a breach, fans the alert out
+  three ways reusing existing infra: the events **outbox** (→ dashboard/webhooks via the relay), the
+  hash-chained **audit** log (`source=skipper-watch`), and an **episodic memory** (`record_incident`,
+  best-effort) so the reactive agent recalls the alert later. `--once` exits 1 on a critical alert (CI
+  gate); `--daemon` holds a best-effort `coordination` lock. New env
+  `AGENT_WATCH_ENABLED`/`_INTERVAL_S`/`_DRIFT_Z`/`_COST_BUDGET`. Fully degrading. Guard
+  `platform/services/agent/tests/test_watch.py` (6 tests).
+- **feat(agent): next-gen Skipper — Phase 5, MCP write surface + layered safety tiers (ADR 0102).**
+  Gives the agent a small, safe *write* surface and composes the three write-gates explicitly. New
+  gated MCP write tools (thin wrappers over `examlops.data.*` writers, each policy-gated + audited):
+  `set_traffic_split`/`disable_challenger` (tier A), `set_drift_autoretrain`/`set_promotion_rule`
+  (tier B), `grant_access` (tier C). **Closes the real gap** where MCP-bridged writes skipped the HITL
+  confirmation: `skipper/tools/mcp_bridge._wrap` now interposes a LangGraph `interrupt()` before any
+  mutating tool, so a bridged write gets exposure (`EXAMLOPS_MCP_ALLOW_WRITES`) + HITL + policy
+  (`agent_write`) + audit. **Privilege tiers**: A=autopilot-OK, B=confirm-required, C=human-CLI-only —
+  tier-C tools are structurally **never bound to the autonomous agent** (bridge filters them out). The
+  red-team invariant (`memory_eval.unguarded_write_tools`) now covers the MCP write surface and is
+  asserted empty. `AGENT_USE_MCP_TOOLS` now defaults **true** (single-agent fallback; the default
+  supervisor path already mixes MCP reads + in-repo writes). Guard
+  `platform/services/agent/tests/test_write_safety.py` (6 tests).
+- **feat(agent): next-gen Skipper — Phase 4, supervisor topology + specialist skill packs (ADR 0100).**
+  Skipper is now a **supervisor** graph: a deterministic (non-LLM, zero-latency) router dispatches each
+  turn to one of six specialist ReAct sub-agents — `manager`, `monitor`, `helper`, `finops`, `governor`,
+  and a read-only `general` fallback — each bound to a **scoped tool pack** so a local 8B model sees
+  ~10–20 relevant tools per turn instead of the full ~50 (the single biggest lever on tool-selection
+  accuracy). Packs draw broad **reads from the MCP registry** (by the Phase-1 `use_cases` metadata) and
+  **gated writes from the in-repo tools** (which already carry the `@confirmed_write` HITL interrupt).
+  Built as one parent `StateGraph` (specialist sub-agents as nodes) so a single checkpointer + message
+  channel keep cross-specialist memory and HITL `interrupt()` propagation working — the
+  `stream`/`get_state` surface is unchanged, so `server.py`/`oai_compat.py`/`cli.py` need no edits.
+  `langgraph-supervisor` is deliberately not a dependency. New `skipper/skills.py`, `skipper/router.py`,
+  `skipper/supervisor.py`; `AGENT_SUPERVISOR_MODE=auto|single` (default `auto`, any build failure
+  degrades to the single ReAct agent). Guard `platform/services/agent/tests/test_supervisor.py` (12
+  tests, stub agents — no live LLM). Interrogative "how do I …?" routes to the docs-RAG helper even when
+  it names an action verb.
+- **feat(agent): next-gen Skipper — Phase 3, knowledge / docs-RAG memory tier T2 (ADR 0101).** Skipper
+  now answers "how do I …?" from the *actual documentation* with ranked, cited passages. New
+  `skipper/knowledge.py` chunks + embeds `docs/**` + `design/adr/**` into a `skipper-knowledge` vector
+  collection, **reusing the platform's `examlops.vector_store` seam** (tenant-isolated SQLite fallback
+  in `platform.db`, or pgvector) driven by **Skipper's local 768-dim embeddings** and the pure
+  `examlops.rag` helpers (`chunk_text`, prompt-injection defang) — deliberately *not* `RagPipeline`
+  (its 64-dim space would mismatch). New `search_knowledge` tool (bound in the base set) retrieves
+  semantically and **falls back to the existing ripgrep docs tool** when embeddings/vector-store are
+  unavailable or the KB isn't ingested — never worse than today. Ingest via `python -m
+  skipper.knowledge ingest` / `make skipper-knowledge-ingest` (idempotent, audited as
+  `agent-knowledge`). New env `AGENT_KNOWLEDGE_ENABLED`/`_KB`/`_ROOTS`/`_CHUNK_SIZE`/`_OVERLAP`. Guard
+  `platform/services/agent/tests/test_knowledge.py` (6 tests, deterministic fake embedder — no Ollama
+  needed).
+- **feat(agent): next-gen Skipper — Phase 2, live-loop self-instrumentation + circuit-breaker (ADR
+  0103).** The reactive chat loop now wires the already-built `examlops.agentops` telemetry into all
+  three `ToolMessage` sites (`server.py` WS stream, `oai_compat.py` blocking + SSE paths) via a new
+  fail-open `skipper/instrument.py`: each turn's tool calls are recorded to
+  `agent_sessions`/`agent_tool_calls` — so `tool_success_rate` finally reflects real chat usage (was
+  fed only by tests/autopilot) and dangerous-tool use in chat is audited — and an in-loop
+  `AgentCircuitBreaker` aborts a runaway turn (repeating-tool loop, step blow-up, all-error burst)
+  instead of only noticing post-hoc. Best-effort/fail-open: a missing `examlops.agentops` or
+  `platform.db` leaves the chat turn byte-for-byte unchanged. New switches `AGENT_INSTRUMENT_ENABLED`
+  / `AGENT_CIRCUIT_BREAKER` (both default on). Guard `platform/services/agent/tests/test_instrument.py`
+  (4 tests); 24 Skipper server/oai/graph/instrument tests green.
+- **feat(agent): next-gen Skipper architecture — Phase 1, expanded agent capability surface (ADR
+  0099/0100).** First increment of the supervisor + MCP-first + layered-memory roadmap (umbrella ADR
+  0099). The `examlops.mcp` tool registry — the single source of truth shared by Skipper, `exa mcp
+  serve`, and the A2A Agent Card — grows from ~20 to **50 tools** (all additive; the 30 new ones are
+  **read-only**, zero write risk). New reads are thin, graceful-degrading wrappers over existing
+  `examlops.data.*` helpers spanning every use case: drift/input-drift (`drift_status`,
+  `input_drift_status`, `list_drift`, `get_drift_autoretrain`), serving/traffic/promotion
+  (`traffic_rules`, `promotion_rule`, `challenger_config`, `autoscale_config`, `scale_events`),
+  SLO/fairness/governance (`slo_specs`, `slo_ratio`, `fairness_status`, `compliance_system`,
+  `authz_relations`), FinOps/Green-AI (`model_costs`, `carbon`, `platform_cost_summary`,
+  `gateway_cost`), gateway/LLMOps (`gateway_config`, `gateway_cache_stats`, `list_gateway_keys` —
+  secret-redacted), eval/data (`eval_gate`, `eval_results`, `gate_reports`, `dataset_revisions`,
+  `data_quality`, `feature_view`), incident/lineage (`model_lineage`, `lineage_impact`), and grounded
+  help (`explain_command`, introspecting the live `exa` command tree). `ToolSpec` gains `use_cases`
+  and a write-privilege `tier` (read/A/B/C); a derived **capabilities catalogue** groups the registry
+  by lifecycle use case — surfaced as `exa mcp capabilities [--all]` (human) and
+  `capabilitiesByUseCase` on the A2A card + per-skill `useCases`/`tier` (machine), one generator so
+  the two can never drift. Every read returns an `ok`/`error` envelope (never raises) and degrades
+  cleanly when `platform.db` is absent. Guard `tests/unit/test_mcp_capabilities.py` (23 tests).
 - **feat(platform-ops): govern the platform from a notebook (ADR 0098).** A **Platform Ops** layer to
   manage the platform itself — compute-node cost, connections, the ExaMLOps↔bridge wiring, service
   config, and `platform.db` knobs — and to deploy calculation code, all through **one governed façade

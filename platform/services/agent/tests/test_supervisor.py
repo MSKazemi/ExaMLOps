@@ -20,7 +20,6 @@ sys.path.insert(0, str(_CLI_SRC))
 from skipper import config, router, skills, supervisor  # noqa: E402
 from skipper.tools import TOOLS  # noqa: E402
 
-
 # ── deterministic router ──────────────────────────────────────────────────────
 
 

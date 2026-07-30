@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langgraph.prebuilt import create_react_agent
 
-from skipper import config
+from skipper import config, supervisor
 from skipper.llm import build_llm
 from skipper.memory import build_checkpointer, build_store, build_summarization_hook
 from skipper.prompts import SYSTEM_PROMPT
@@ -35,6 +35,19 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     if store is not None:
         kwargs["store"] = store
         tools += memory_tools.TOOLS  # memory tools need the injected store
+
+    # Supervisor topology (Phase 4): a router dispatches each turn to a scoped specialist
+    # sub-agent. It draws its read tools from the MCP registry and its gated writes from the
+    # in-repo tools, so it is built independently of AGENT_USE_MCP_TOOLS. Any failure returns
+    # None and we fall through to the single ReAct agent below (additive, never breaks the chat).
+    if supervisor.enabled():
+        extra = list(memory_tools.TOOLS) if store is not None else []
+        graph = supervisor.build_supervisor(
+            llm, checkpointer, store=store, inrepo_tools=list(TOOLS), extra_tools=extra
+        )
+        if graph is not None:
+            return graph
+
     if config.AGENT_SUMMARIZE_ENABLED:
         kwargs["pre_model_hook"] = build_summarization_hook()
     return create_react_agent(

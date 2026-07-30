@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from skipper import config
+from skipper import config, instrument
 from skipper.confirm import _is_affirmative
 from skipper.graph import build_graph
 from skipper.llm import check_backend
@@ -138,6 +138,7 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
     cfg = {"configurable": {"thread_id": thread_id}}
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    instr = instrument.start(thread_id)
 
     def _run() -> None:
         try:
@@ -156,9 +157,16 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
                         )
                 elif isinstance(msg, ToolMessage):
                     loop.call_soon_threadsafe(queue.put_nowait, {"type": "tool", "name": msg.name})
+                    ok, err = instrument.tool_status(msg)
+                    if instr.observe(msg.name or "tool", ok=ok, error=err):
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, {"type": "error", "message": instr.abort_message}
+                        )
+                        break
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(exc)})
         finally:
+            instr.finish()
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     fut = loop.run_in_executor(None, _run)

@@ -662,6 +662,21 @@ skipper-memory: ## Admin Skipper's long-term memory (stats|list|export|delete); 
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	cd platform/services/agent && $(PWD)/$(PYTHON) -m skipper.memory_admin $${ARGS:-stats}
 
+.PHONY: skipper-knowledge-ingest
+skipper-knowledge-ingest: ## Chunk+embed the docs into Skipper's knowledge tier (T2 docs-RAG)
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	cd platform/services/agent && $(PWD)/$(PYTHON) -m skipper.knowledge ingest $${ARGS:-}
+
+.PHONY: skipper-watch
+skipper-watch: ## Run one skipper-watch monitoring cycle (drift/cost → outbox+audit+memory); ARGS=--dry-run
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	cd platform/services/agent && $(PWD)/$(PYTHON) -m skipper.watch --once $${ARGS:-}
+
+.PHONY: skipper-consolidate
+skipper-consolidate: ## Offline memory reflection: promote recurring episodes (review-gated) + reinforce
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+	cd platform/services/agent && $(PWD)/$(PYTHON) -m skipper.consolidate $${ARGS:-}
+
 # =============================================================================
 ##@ Convenience
 # =============================================================================
