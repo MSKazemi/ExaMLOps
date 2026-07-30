@@ -114,11 +114,18 @@ def _decrypt(ciphertext: str, key_id: str | None) -> str:
     return mf.decrypt(ciphertext.encode()).decode()
 
 
-def _audit(action: str, path: str, actor: str | None, extra: dict | None = None) -> None:
+def _audit(
+    action: str,
+    path: str,
+    actor: str | None,
+    extra: dict | None = None,
+    *,
+    source: str = "exa-secrets",
+) -> None:
     try:
         from examlops.data.audit import write_audit_event
 
-        write_audit_event("exa-secrets", actor, action, path, extra or {})
+        write_audit_event(source, actor, action, path, extra or {})
     except Exception:
         pass  # audit must never block a secret operation
 
@@ -190,13 +197,30 @@ def get_secret(path: str, *, tenant: str = "default", actor: str | None = None) 
     raise SecretNotFound(f"secret '{path}' not found (tenant '{tenant}')")
 
 
-def set_secret(path: str, value: str, *, tenant: str = "default", actor: str | None = None) -> int:
-    """Store an encrypted secret in the local store (audited). Returns its version."""
+def set_secret(
+    path: str,
+    value: str,
+    *,
+    tenant: str = "default",
+    actor: str | None = None,
+    source: str = "exa-secrets",
+) -> int:
+    """Store an encrypted secret in the local store (audited). Returns its version.
+
+    ``source`` attributes the audit event to the calling surface (``"exa-secrets"`` by default; the
+    dashboard passes ``"dashboard"``) so this shared write serves every face of the platform.
+    """
     from examlops.data.secrets import put_secret_ciphertext
 
     ct, key_id = _encrypt(value)
     version = put_secret_ciphertext(path, tenant, ct, updated_by=actor, key_id=key_id)
-    _audit("secret_set", path, actor, {"tenant": tenant, "version": version, "key_id": key_id})
+    _audit(
+        "secret_set",
+        path,
+        actor,
+        {"tenant": tenant, "version": version, "key_id": key_id},
+        source=source,
+    )
     return version
 
 

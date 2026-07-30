@@ -77,7 +77,9 @@ async def test_conformity_valid_then_invalid_transition(client, platform_db):
     # Establish the system (state defaults to 'draft').
     await client.post("/api/compliance/classify/JPCP", json={"riskTier": "high"}, headers=h)
     # draft → documented is allowed.
-    ok = await client.post("/api/compliance/conformity/JPCP", json={"state": "documented"}, headers=h)
+    ok = await client.post(
+        "/api/compliance/conformity/JPCP", json={"state": "documented"}, headers=h
+    )
     assert ok.status_code == 200, ok.text
     conn = sqlite3.connect(platform_db)
     assert (
@@ -88,7 +90,9 @@ async def test_conformity_valid_then_invalid_transition(client, platform_db):
     )
     conn.close()
     # documented → declared is NOT a valid transition (must pass through assessed).
-    bad = await client.post("/api/compliance/conformity/JPCP", json={"state": "declared"}, headers=h)
+    bad = await client.post(
+        "/api/compliance/conformity/JPCP", json={"state": "declared"}, headers=h
+    )
     assert bad.status_code == 400
 
 

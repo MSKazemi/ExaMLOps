@@ -6,6 +6,7 @@ import { useHealth, useModels, useModelRegistry, useModelzooStats } from '@/lib/
 import type { ServiceStatus } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
 import { GrafanaPanel } from '@/components/GrafanaPanel'
+import { QuickActions } from '@/components/QuickActions'
 import { useTheme } from '@/lib/theme'
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -190,6 +191,9 @@ export function Overview() {
         <StatCard label="ModelZoo"       value={modelsCount}                   icon={Layers}   accent="amber"  href="/build/models" />
         <StatCard label="Datasets"       value={datasetsCount}                 icon={Database} href="/build/datasets" />
       </div>
+
+      {/* ── Quick actions (F1 command-center) ── */}
+      <QuickActions />
 
       {/* ── Architecture Flowchart ── */}
       <ArchitectureFlow services={servicesMap} />

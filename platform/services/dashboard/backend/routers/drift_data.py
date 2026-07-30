@@ -365,7 +365,11 @@ async def set_input_baseline_view(
         "n": float(len(rows)),
     }
     if dry_run:
-        return {"dryRun": True, "model": model, "wouldSet": {k: round(v, 4) for k, v in stats.items()}}
+        return {
+            "dryRun": True,
+            "model": model,
+            "wouldSet": {k: round(v, 4) for k, v in stats.items()},
+        }
     drift = _examlops_drift()
     drift.set_input_baseline(model, stats)
     conn = connect(_db_path())
