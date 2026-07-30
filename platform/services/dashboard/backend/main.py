@@ -64,6 +64,7 @@ from routers import (
     selfobs,
     shadow,
     slo,
+    traffic,
     workbenches,
 )
 
@@ -196,6 +197,7 @@ app.include_router(slo.router, prefix="/api")
 app.include_router(scaling.router, prefix="/api")
 app.include_router(admission.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
+app.include_router(traffic.router, prefix="/api")
 app.include_router(secrets.router, prefix="/api")
 app.include_router(feature_store.router, prefix="/api")
 app.include_router(fairness.router, prefix="/api")

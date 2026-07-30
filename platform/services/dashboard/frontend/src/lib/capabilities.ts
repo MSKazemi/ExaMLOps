@@ -23,6 +23,7 @@ export const CAP = {
   SCALING_MANAGE: 'scaling.manage',
   ADMISSION_MANAGE: 'admission.manage',
   EVENTS_MANAGE: 'events.manage',
+  TRAFFIC_MANAGE: 'traffic.manage',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
