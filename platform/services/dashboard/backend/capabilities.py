@@ -43,6 +43,7 @@ FAIRNESS_MANAGE = "fairness.manage"  # C8 — configure fairness slicing + dispa
 SCALING_MANAGE = "scaling.manage"  # E4/E5 — set autoscale policy + inference-routing config
 ADMISSION_MANAGE = "admission.manage"  # item 1.5 — submit work to the fair-share admission queue
 EVENTS_MANAGE = "events.manage"  # item 1.3 — publish an event to the NovaFabric outbox backbone
+TRAFFIC_MANAGE = "traffic.manage"  # serve ab/shadow — start/stop A/B tests + enable/disable shadow
 
 # Actions that additionally require step-up/MFA (F15 R6 / F16). Enforcement is deferred; the flag
 # is surfaced so the UI can prompt and the audit trail can record it.
@@ -72,6 +73,7 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
         SCALING_MANAGE,
         ADMISSION_MANAGE,
         EVENTS_MANAGE,
+        TRAFFIC_MANAGE,
     }
 )
 

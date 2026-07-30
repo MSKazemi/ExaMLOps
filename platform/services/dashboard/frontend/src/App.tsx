@@ -54,6 +54,7 @@ const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ 
 const NextGen = lazy(() => import('@/pages/NextGen').then((m) => ({ default: m.NextGen })))
 const Providers = lazy(() => import('@/pages/Providers').then((m) => ({ default: m.Providers })))
 const Events = lazy(() => import('@/pages/Events').then((m) => ({ default: m.Events })))
+const Traffic = lazy(() => import('@/pages/Traffic').then((m) => ({ default: m.Traffic })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -136,6 +137,7 @@ export default function App() {
                       <Route path="/build/features" element={<Features />} />
                       {/* Serve */}
                       <Route path="/serve/llmops" element={<Llmops />} />
+                      <Route path="/serve/traffic" element={<Traffic />} />
                       <Route path="/serve/gateway" element={<Gateway />} />
                       <Route path="/serve/scaling" element={<Scaling />} />
                       <Route path="/serve/nextgen" element={<NextGen />} />

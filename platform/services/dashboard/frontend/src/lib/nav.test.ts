@@ -25,6 +25,7 @@ const KNOWN_ROUTES = new Set([
   '/build/prompts',
   // serve
   '/serve/llmops',
+  '/serve/traffic',
   '/serve/gateway',
   '/serve/scaling',
   '/serve/nextgen',

@@ -7,6 +7,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **feat(dashboard): Traffic console — A/B testing + Shadow deployments (Serve → `/serve/traffic`).**
+  Surfaces `exa serve ab` and `exa serve shadow` over pure-`platform.db` state: an A/B section (list
+  tests, start/stop, Welch/z-test analysis) and a Shadow section (config + comparison log, enable/disable),
+  all via the CLI's own `examlops.data`/`ab_stats` code paths — no live Ray needed. Viewer read-only;
+  audited `source=dashboard`. New `traffic.manage` capability.
 - **feat(dashboard): Events console (Platform → `/platform/events`).** Surfaces the `exa events`
   NovaFabric transactional-outbox backbone: outbox backlog (pending/published/poison) via
   `examlops.data.events.outbox_stats`, and a capability-gated Publish form via `examlops.events.publish`.
