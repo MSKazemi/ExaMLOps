@@ -53,6 +53,7 @@ const Projects = lazy(() => import('@/pages/Projects').then((m) => ({ default: m
 const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ default: m.ProjectDetail })))
 const NextGen = lazy(() => import('@/pages/NextGen').then((m) => ({ default: m.NextGen })))
 const Providers = lazy(() => import('@/pages/Providers').then((m) => ({ default: m.Providers })))
+const Events = lazy(() => import('@/pages/Events').then((m) => ({ default: m.Events })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -153,6 +154,7 @@ export default function App() {
                       <Route path="/govern/secrets" element={<Secrets />} />
                       <Route path="/govern/fairness" element={<Fairness />} />
                       {/* Platform */}
+                      <Route path="/platform/events" element={<Events />} />
                       <Route path="/platform/services" element={<Services />} />
                       <Route path="/platform/providers" element={<Providers />} />
                       <Route path="/platform/config" element={<Config />} />

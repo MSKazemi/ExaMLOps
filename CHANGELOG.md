@@ -7,6 +7,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **feat(dashboard): Events console (Platform → `/platform/events`).** Surfaces the `exa events`
+  NovaFabric transactional-outbox backbone: outbox backlog (pending/published/poison) via
+  `examlops.data.events.outbox_stats`, and a capability-gated Publish form via `examlops.events.publish`.
+  Viewer read-only; audited `source=dashboard`. New `events.manage` capability. `relay` (needs a live
+  broker) is out of scope.
 - **feat(dashboard): Admission console (Operate → `/operate/admission`).** Surfaces `exa admission` in the
   UI over the pure-`platform.db` fair-share queue: queue depth by state (read) + a capability-gated Submit
   form, via the CLI's own `examlops.admission.stats`/`submit`. Viewer read-only; audited `source=dashboard`.
