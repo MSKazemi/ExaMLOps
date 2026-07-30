@@ -31,7 +31,9 @@ async def _login(client, password):
 async def test_issue_requires_admin(client, platform_db):
     token = await _login(client, VIEWER_PW)
     r = await client.post(
-        "/api/gateway/keys", json={"project": "research"}, headers={"Authorization": f"Bearer {token}"}
+        "/api/gateway/keys",
+        json={"project": "research"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 403
 
@@ -54,7 +56,10 @@ async def test_issue_returns_raw_once_and_stores_only_hash(client, platform_db):
     ).fetchone()
     assert row == ("research", 25.0, 0)
     # The raw key is NEVER stored — only its hash.
-    assert conn.execute("SELECT COUNT(*) FROM virtual_keys WHERE key_hash=?", (raw,)).fetchone()[0] == 0
+    assert (
+        conn.execute("SELECT COUNT(*) FROM virtual_keys WHERE key_hash=?", (raw,)).fetchone()[0]
+        == 0
+    )
     # Audited as source=dashboard through the shared path.
     assert (
         conn.execute(
@@ -88,9 +93,10 @@ async def test_revoke_flips_revoked_and_audits(client, platform_db):
     assert r.status_code == 200, r.text
     assert r.json()["revoked"] is True
     conn = sqlite3.connect(platform_db)
-    assert conn.execute(
-        "SELECT revoked FROM virtual_keys WHERE key_hash=?", (key_hash,)
-    ).fetchone()[0] == 1
+    assert (
+        conn.execute("SELECT revoked FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()[0]
+        == 1
+    )
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM audit_events WHERE source='dashboard' AND action='virtual_key_revoked'"

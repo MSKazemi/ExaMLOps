@@ -37,6 +37,12 @@ const SelfObs = lazy(() => import('@/pages/SelfObs').then((m) => ({ default: m.S
 const Governance = lazy(() => import('@/pages/Governance').then((m) => ({ default: m.Governance })))
 const Llmops = lazy(() => import('@/pages/Llmops').then((m) => ({ default: m.Llmops })))
 const Gateway = lazy(() => import('@/pages/Gateway').then((m) => ({ default: m.Gateway })))
+const Prompts = lazy(() => import('@/pages/Prompts').then((m) => ({ default: m.Prompts })))
+const Autopilot = lazy(() => import('@/pages/Autopilot').then((m) => ({ default: m.Autopilot })))
+const Slo = lazy(() => import('@/pages/Slo').then((m) => ({ default: m.Slo })))
+const Secrets = lazy(() => import('@/pages/Secrets').then((m) => ({ default: m.Secrets })))
+const Features = lazy(() => import('@/pages/Features').then((m) => ({ default: m.Features })))
+const Fairness = lazy(() => import('@/pages/Fairness').then((m) => ({ default: m.Fairness })))
 const Alerts = lazy(() => import('@/pages/Alerts').then((m) => ({ default: m.Alerts })))
 const Flags = lazy(() => import('@/pages/Flags').then((m) => ({ default: m.Flags })))
 const NocWall = lazy(() => import('@/pages/NocWall').then((m) => ({ default: m.NocWall })))
@@ -122,6 +128,8 @@ export default function App() {
                       <Route path="/build/models/:name" element={<ModelDetail />} />
                       <Route path="/build/datasets" element={<Datasets />} />
                       <Route path="/build/pipelines" element={<Pipelines />} />
+                      <Route path="/build/prompts" element={<Prompts />} />
+                      <Route path="/build/features" element={<Features />} />
                       {/* Serve */}
                       <Route path="/serve/llmops" element={<Llmops />} />
                       <Route path="/serve/gateway" element={<Gateway />} />
@@ -129,12 +137,16 @@ export default function App() {
                       {/* Operate */}
                       <Route path="/operate/drift" element={<Drift />} />
                       <Route path="/operate/alerts" element={<Alerts />} />
+                      <Route path="/operate/autopilot" element={<Autopilot />} />
+                      <Route path="/operate/slos" element={<Slo />} />
                       <Route path="/operate/finops" element={<Finops />} />
                       <Route path="/operate/self-obs" element={<SelfObs />} />
                       {/* Govern */}
                       <Route path="/govern/compliance" element={<Governance />} />
                       <Route path="/govern/audit" element={<Audit />} />
                       <Route path="/govern/approvals" element={<Approvals />} />
+                      <Route path="/govern/secrets" element={<Secrets />} />
+                      <Route path="/govern/fairness" element={<Fairness />} />
                       {/* Platform */}
                       <Route path="/platform/services" element={<Services />} />
                       <Route path="/platform/config" element={<Config />} />

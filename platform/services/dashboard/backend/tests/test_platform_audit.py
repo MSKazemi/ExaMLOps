@@ -32,7 +32,7 @@ def _seed_audit_db(path: str) -> None:
     conn.execute(
         "INSERT INTO audit_events (ts, source, actor, action, target, details) "
         "VALUES (datetime('now','-1 days'), 'dashboard', 'bob', 'promote', 'MACK', "
-        "'{\"note\": \"recent\"}')"
+        '\'{"note": "recent"}\')'
     )
     conn.commit()
     conn.close()

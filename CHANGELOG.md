@@ -36,8 +36,117 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `ROUTE_REDIRECTS` coverage + `copilot.test.ts` group-prefix grounding. Frontend gates green:
   **323 vitest** (+4), tsc + eslint clean on changed files.
 
+### Changed
+
+- **refactor(dashboard): command palette derives its navigation from the nav config (enterprise-rebuild F2).**
+  The ⌘K command palette's "Navigate" commands were a hand-maintained list in `lib/commands.ts` that
+  had drifted — the 8 consoles added this cycle (Gateway, Prompts, Autopilot, SLOs, Secrets, Features,
+  Fairness, plus the Compliance register) weren't reachable via ⌘K/search. The Navigate commands are
+  now **derived from the single nav source** (`lib/nav.ts`: `HOME_ITEM`/`NAV_SECTIONS`/`UTILITY_NAV`),
+  so every console — current and future — is automatically searchable and the palette can never drift
+  from the sidebar again. Command ids stay stable (derived from the last path segment, e.g.
+  `/govern/audit` → `nav-audit`), admin-only nav items become admin-scoped commands (F15), and the
+  action commands (`exa …` copy shortcuts) are unchanged. New `lib/commands.test.ts` locks the
+  invariant (a Navigate command per nav item, the new consoles present, stable ids, no duplicates,
+  admin scoping). Frontend gates green: **354** vitest, tsc/eslint clean.
+
 ### Added
 
+- **feat(dashboard): Home command-center quick-actions strip (enterprise-rebuild M6/F1).**
+  The Home/Overview page gains a **Quick actions** strip — a curated row of primary operator
+  destinations (Models · Pipelines · Drift · SLOs · Gateway · Autopilot · Approvals) in lifecycle
+  order — rendered from the shared command registry (`lib/commands.ts`) so labels and role-scoping
+  stay consistent with the ⌘K palette and sidebar (admin-only targets, e.g. Approvals, auto-drop for
+  viewers). New `components/QuickActions.tsx`; tests `QuickActions.test.tsx` (2: admin sees admin
+  targets, viewer doesn't). Frontend gates green: **356** vitest, tsc/eslint clean.
+- **feat(dashboard): Fairness console — slicing config + disparity thresholds (enterprise-rebuild M5, C8).**
+  New **Fairness** console (nav: Govern → Fairness, route `/govern/fairness`) — was CLI-only
+  (`exa fairness config`). New router `routers/fairness.py`: `GET /api/fairness` (viewer — per-model
+  configs with `slice_attrs` parsed from JSON) + `POST /api/fairness` (admin + `fairness.manage` —
+  declare slicing attributes + max disparity threshold, gate-promotion toggle). The write reuses the
+  shared `examlops.data.governance.set_fairness_config` code path (pure `platform.db`) and audits
+  `source=dashboard` (`fairness_config_set`); threshold validated to `[0,1]`, non-empty slice attrs.
+  A gated config blocks promotion when a subgroup breaches the threshold. New capability
+  **`fairness.manage`**. Frontend `lib/fairness.ts` + `Fairness.tsx` (viewer read-only configs; admin
+  configure form). Tests: backend `test_fairness_writes.py` (4: viewer-403, persist + audit,
+  model/attrs/threshold validation 400, list JSON-parse), frontend `Fairness.test.tsx` (3). Gates
+  green: dashboard-backend **401**, frontend **349** vitest, ruff/tsc/eslint clean.
+- **feat(dashboard): Feature Store console — feature views (enterprise-rebuild M5, A3).**
+  New **Features** console (nav: Build → Features, route `/build/features`) for the feature store's
+  views (one train/serve definition each) — the read surface existed (`GET /api/nextgen/features/views`)
+  but there was no write anywhere; this closes that edit-parity gap. New router
+  `routers/feature_store.py`: `GET /api/feature-store/views` (viewer — views with `features` parsed
+  from JSON) + `POST /api/feature-store/views` (admin + `feature.manage` — register/patch a view).
+  The write reuses the shared `examlops.feature_store.apply_view` → `upsert_feature_view` code path
+  (pure `platform.db`, upsert on `name`) and audits `source=dashboard` (`feature_view_apply`);
+  mirrors `exa feature apply`. New capability **`feature.manage`**. Frontend `lib/features.ts` +
+  `Features.tsx` (viewer read-only view list; admin register/patch form with comma-split features +
+  optional TTL). Tests: backend `test_feature_store_writes.py` (4: viewer-403, persist + audit,
+  name/entity/features validation 400, upsert + list JSON-parse), frontend `Features.test.tsx` (3).
+  Gates green: dashboard-backend **397**, frontend **346** vitest, ruff/tsc/eslint clean.
+- **feat(dashboard): Secrets console — write-only secret management (enterprise-rebuild M3, D7).**
+  New **Secrets** console (nav: Govern → Secrets, route `/govern/secrets`) for platform secrets —
+  previously CLI-only. New router `routers/secrets.py`: `GET /api/secrets` (viewer — **metadata only**:
+  path/tenant/version/updated_by/updated_at + `hasValue`; the plaintext is never selected or returned),
+  `POST /api/secrets` (admin + `secrets.manage` — set/update a value). Writes reuse the shared
+  `examlops.secrets.set_secret` code path, which encrypts into `platform.db` with the local Fernet
+  keyring (`DASHBOARD_SECRET_KEY`) — no Vault required offline — and audits `source=dashboard`
+  (`set_secret` gained an additive `source` param so the dashboard attributes its own hash-chained
+  audit; CLI default unchanged). New capability **`secrets.manage`**. **Security by construction:** there
+  is deliberately **no reveal/get endpoint** — the value is write-only from the dashboard (mirrors the
+  connections router's `hasSecret`-only rule); the frontend uses a `password` input and clears it after
+  a successful save. Frontend `lib/secrets.ts` + `Secrets.tsx` (viewer metadata list; admin set form).
+  Tests: backend `test_secrets_writes.py` (4: viewer-403, stored-encrypted + value-never-echoed +
+  `source=dashboard` audit, path/value 400, metadata-only list), frontend `Secrets.test.tsx` (2:
+  metadata-only + viewer-gated, password-field write-only + cleared). Gates green: dashboard-backend
+  **393**, examlops CLI secrets **29**, frontend **343** vitest, ruff/tsc/eslint clean. (Admission caps
+  are env-only + Events relay is broker-infra-gated → deferred; Policy is YAML-file-backed → deferred.)
+- **feat(dashboard): SLOs console — model-quality SLO specs + live status (enterprise-rebuild M3, C6/ADR 0023).**
+  New **SLOs** console (nav: Operate → SLOs, route `/operate/slos`) — previously SLOs were CLI-only
+  (`exa slo set`), with no dashboard surface at all. New router `routers/slo.py`: `GET /api/slo`
+  (viewer — the `slo_specs` register + best-effort live status: SLI, remaining error budget, burn
+  rate, meeting/breaching), `POST /api/slo` (admin + `slo.manage` — define/update a spec). Writes
+  reuse the shared `examlops.slo.apply_spec` → `upsert_slo_spec` code path (pure `platform.db`) and
+  audit `source=dashboard` (`slo_set`); target is validated to `(0, 1]`. New capability **`slo.manage`**.
+  Frontend `lib/slo.ts` + `Slo.tsx` (viewer read-only specs + live status; admin define form with a
+  gate-promotion toggle). Live status is best-effort — shown as "no data" when no `slo_samples` exist,
+  so the console never fails on an empty sample set. Tests: backend `test_slo_writes.py` (4:
+  viewer-403, persist + audit, target-range/missing 400, list with best-effort status), frontend
+  `Slo.test.tsx` (3). Gates green: dashboard-backend **389**, frontend **341** vitest, ruff/tsc/eslint
+  clean.
+- **feat(dashboard): Autopilot kill-switch console (enterprise-rebuild M3, ADR 0085).**
+  The self-driving autopilot's enable/disable was CLI-only. New **Autopilot** console (nav: Operate →
+  Autopilot, route `/operate/autopilot`) surfaces the persistent kill-switch + recent run history and
+  lets admins flip it. New router `routers/autopilot.py`: `GET /api/autopilot/status` (viewer —
+  persistent `enabled` + `EXAMLOPS_AUTOPILOT_ENABLED` env override + effective state + last 10
+  `autopilot_runs`), `POST /api/autopilot/enable`, `POST /api/autopilot/disable`. Writes reuse the
+  shared `examlops.data.autopilot.set_autopilot_config` code path (pure `platform.db`) and audit
+  `source=dashboard` (`autopilot_enabled` / `autopilot_disabled`), matching `exa autopilot
+  enable|disable`. New capability **`autopilot.manage`**. Frontend `lib/autopilot.ts` + `Autopilot.tsx`
+  (viewer read-only status + runs; admin Enable/Disable toggle; env-override banner). Running a cycle
+  needs retrain/promote infra → intentionally not exposed. Chosen over M2 RAG/vector/guardrails this
+  increment because those are infra-gated (embeddings / filesystem marker / in-memory-only config)
+  while this is a genuine, pure-DB, offline-verifiable, governance-critical control. Tests: backend
+  `test_autopilot_writes.py` (4: viewer-403, default-disabled status, enable→disable persist + dual
+  audit, env-override surfaced), frontend `Autopilot.test.tsx` (3). Gates green: dashboard-backend
+  **385**, frontend **338** vitest, ruff/tsc/eslint clean.
+- **feat(dashboard): Prompt Registry console (enterprise-rebuild M2 — B1 LLMOps).**
+  New **Prompts** console (nav: Build → Prompts, route `/build/prompts`) for the versioned prompt
+  registry — turns another CLI-only surface into a UI. New router `routers/prompts.py`: `GET /api/prompts`
+  (viewer — prompts with their immutable versions + moving labels), `POST /api/prompts/{name}/versions`
+  (create a version; variables auto-declared from the template's `{tokens}`; optional label), `POST
+  /api/prompts/{name}/label` (point/rollback a label; 404 if the version doesn't exist). Writes reuse
+  the shared `examlops.data.prompts.create_prompt_version` / `set_prompt_label` + `examlops.prompts.declared_variables`
+  code paths (pure `platform.db`) and audit `source=dashboard` (`prompt_create` / `prompt_label`),
+  matching `exa prompt create|label|rollback`. New capability **`prompt.manage`** (backend `_ADMIN_CAPS`
+  + frontend `CAP`). Frontend `lib/prompts.ts` + `Prompts.tsx` (viewer read-only version/label view;
+  admin new-version form + per-prompt move-label control). Tests: backend `test_prompts_writes.py`
+  (6: viewer-403, auto-declare vars + dual audit, template-required 400, version increment + label
+  rollback, label→missing-version 404, list), frontend `Prompts.test.tsx` (3). Gates green:
+  dashboard-backend **381**, examlops CLI prompt **16**, frontend **335** vitest, ruff/tsc/eslint clean.
+  Implementation note: the create-with-label handler does both shared-fn writes **before** opening the
+  dashboard audit connection — never holding an uncommitted dashboard write across a shared call
+  (avoids a WAL "database is locked" deadlock between the two connections).
 - **feat(dashboard): Gateway virtual-keys console (enterprise-rebuild M2 — first Serve/LLMOps console).**
   The LLM gateway had no dashboard surface. New **Gateway** console (nav: Serve → Gateway, route
   `/serve/gateway`) issues/revokes scoped, budgeted virtual keys. New router `routers/gateway.py`:
