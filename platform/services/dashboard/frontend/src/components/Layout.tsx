@@ -30,7 +30,9 @@ const THEMES: { value: Theme; icon: typeof Sun; label: string }[] = [
   { value: 'midnight', icon: MoonStar, label: 'Midnight' },
 ]
 
-const COLLAPSED_KEY = 'exa.nav.collapsed'
+// v2: bumped so the new "all groups collapsed by default" applies for everyone, ignoring any
+// stale all-expanded preference saved under the old key.
+const COLLAPSED_KEY = 'exa.nav.collapsed.v2'
 
 function readCollapsed(): Set<string> {
   try {
