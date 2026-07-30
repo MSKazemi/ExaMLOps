@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **feat(dashboard): Admission console (Operate → `/operate/admission`).** Surfaces `exa admission` in the
+  UI over the pure-`platform.db` fair-share queue: queue depth by state (read) + a capability-gated Submit
+  form, via the CLI's own `examlops.admission.stats`/`submit`. Viewer read-only; audited `source=dashboard`.
+  New `admission.manage` capability (admin).
 - **feat(dashboard): Scaling & Routing console (Serve → `/serve/scaling`).** Surfaces `exa serve autoscale`
   and `exa serve routing` in the UI over pure-`platform.db` state: an Autoscale section (policy min/max
   replicas + target + scale-to-zero, savings estimate, recent scale events) and a Routing section
@@ -21,6 +25,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **ci(deploy): the `exa` operator CLI is now refreshed on every LXP deploy.** `uv sync --frozen`
+  prunes the editable `examlops` member (`platform/cli`, which defines the `exa` console script),
+  leaving the host `.venv` with only the workspace coordinator and no `exa`. The `deploy:lxp` CI job
+  now runs `uv pip install -e .` after `git pull` (non-fatal), so `.venv/bin/exa` always matches the
+  deployed code instead of silently disappearing.
 - **fix(dashboard): M0–M3 rebuild frontend now passes the production `tsc -b` build.** The consoles
   compiled under vitest but failed the container build (`tsc -b && vite build`), so no image could be
   built (type-only import, `Promise<unknown>` row actions, `FlagName` cast, single-arg `apiFetch` test
@@ -29,9 +38,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   copied `pipelines`/`modelzoo`/`control_plane` but not `usecases/` and has no `/repo` mount, so the
   model registry resolver fell back to the removed legacy dir and showed 0 models. Now `COPY usecases`
   + `EXAMLOPS_USECASE_DIR` pin; `/api/models/registry` returns JPCP/MACK/MCBound.
-- **ci(dashboard): `make dashboard-check` now runs the production build** (`npm test && npm run build`)
-  so type errors that break the container build can no longer pass the gate (it previously ran only
-  vitest). Frontend eslint debt (11 pre-existing errors) tracked separately.
+- **ci(dashboard): `make dashboard-check` now runs lint + production build** (`npm run lint && npm test
+  && npm run build`) so type errors that break the container build — and lint regressions — can no
+  longer pass the gate (it previously ran only vitest). The 11 pre-existing frontend eslint errors were
+  fixed first (react-refresh `allowConstantExport` + scoped shadcn/hook disables; the `set-state-in-effect`
+  flags resolved via the React-docs "adjust state during render" refactor where behavior-equivalent, or a
+  justified per-line disable for genuine imperative/one-shot effects) — all 365 frontend tests still green.
 
 ### Changed
 

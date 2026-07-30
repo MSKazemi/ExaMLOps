@@ -328,9 +328,13 @@ export function ModelDetail() {
   const { data, isLoading, error } = useModelDetail(name ?? '')
 
   const [activeTab, setActiveTab] = useState<'overview' | 'versions'>('overview')
-  useEffect(() => {
+  // Reset the active tab when navigating to a different model — the React-docs
+  // "adjust state during render when a prop changes" pattern (equivalent to the effect).
+  const [prevName, setPrevName] = useState(name)
+  if (name !== prevName) {
+    setPrevName(name)
     setActiveTab('overview')
-  }, [name])
+  }
   const [editing, setEditing] = useState(false)
   const [draftMd, setDraftMd] = useState('')
   const updateDesc = useUpdateDescription(name ?? '')
@@ -342,6 +346,10 @@ export function ModelDetail() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [predictStage, setPredictStage] = useState('Production')
   const [predictJson, setPredictJson] = useState('{}')
+  // One-shot: pre-fill the predict payload from the model's input schema, but only
+  // while the editor is still at its untouched default (`predictJson === '{}'`), so a
+  // user's edits are never clobbered. The guard keys off editable state, not the dep,
+  // so this stays an effect rather than a render-phase derivation.
   useEffect(() => {
     if (data?.technical?.input_schema && predictJson === '{}') {
       const example: Record<string, unknown> = {}
@@ -353,6 +361,7 @@ export function ModelDetail() {
         else example[key] = ''
       }
       if (Object.keys(example).length > 0) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: seed default payload once, guarded by user-editable predictJson.
         setPredictJson(JSON.stringify(example, null, 2))
       }
     }
