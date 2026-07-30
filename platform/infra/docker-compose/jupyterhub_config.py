@@ -55,6 +55,20 @@ c.DockerSpawner.environment = {
     "PLATFORM_DB":            "/repo/platform.db",
 }
 
+
+# ── Per-project shared volume ("PV/PVC — volume per project") ──────────────────
+# Every workbench in a project mounts one shared Docker volume at /project, so ALL of a
+# project's workbenches share a persistent disk — distinct from the per-workbench home
+# (/home/jovyan/work) and the per-project MinIO bucket. The named-server id is "<project>-<name>".
+def _pre_spawn(spawner):
+    server = spawner.name or ""
+    project = server.rsplit("-", 1)[0] if "-" in server else (server or "default")
+    spawner.volumes[f"examlops-project-{project}-shared"] = "/project"
+    spawner.environment = {**spawner.environment, "EXAMLOPS_PROJECT": project, "PROJECT_SHARED_DIR": "/project"}
+
+
+c.Spawner.pre_spawn_hook = _pre_spawn
+
 # ── Named servers = project workbenches (spawned by the dashboard via the Hub API) ─────────
 # A "workbench" (ADR 0090) maps to a JupyterHub named server: the dashboard's docker-socket-proxy
 # forbids container creation, so JupyterHub (which holds real Docker access) is the spawner, and it
