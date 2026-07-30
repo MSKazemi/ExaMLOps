@@ -147,7 +147,9 @@ export function Approvals() {
       icon: Check,
       variant: 'success',
       visible: (r) => r.status === 'pending',
-      run: (r) => approve.mutateAsync(r.model_id),
+      run: async (r) => {
+        await approve.mutateAsync(r.model_id)
+      },
     },
     {
       id: 'reject',
@@ -156,7 +158,9 @@ export function Approvals() {
       variant: 'danger',
       visible: (r) => r.status === 'pending',
       needsReason: true,
-      run: (r, { reason }) => reject.mutateAsync({ modelId: r.model_id, reason: reason ?? '' }),
+      run: async (r, { reason }) => {
+        await reject.mutateAsync({ modelId: r.model_id, reason: reason ?? '' })
+      },
     },
   ]
 

@@ -53,7 +53,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   // An item is shown when the role clears any admin gate and its feature flag (if any) is on.
   const canSee = (item: NavItem) =>
-    (!item.adminOnly || role === 'admin') && (!item.flag || isEnabled(item.flag))
+    (!item.adminOnly || role === 'admin') &&
+    (!item.flag || isEnabled(item.flag as Parameters<typeof isEnabled>[0]))
 
   const toggleSection = (id: string) =>
     setCollapsed((prev) => {

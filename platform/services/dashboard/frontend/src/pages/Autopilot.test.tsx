@@ -12,7 +12,7 @@ let status: AutopilotStatus = {
   recentRuns: [],
 }
 
-const apiFetch = vi.fn((path: string) => {
+const apiFetch = vi.fn((path: string, _opts?: { method?: string; body?: string }) => {
   if (path === '/api/autopilot/status') return Promise.resolve(status)
   return Promise.resolve({ enabled: path.endsWith('/enable') })
 })
