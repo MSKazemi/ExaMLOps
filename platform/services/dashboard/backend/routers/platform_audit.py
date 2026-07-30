@@ -69,6 +69,19 @@ async def get_platform_audit(
     except Exception as exc:  # noqa: BLE001
         logger.exception("platform audit query failed")
         raise HTTPException(status_code=500, detail="Failed to read platform audit log") from exc
+
+    def _parse_details(raw: str | None):
+        # Best-effort: a single malformed/legacy `details` value (non-JSON) must not
+        # 500 the whole audit page — return it verbatim rather than raising. This runs
+        # OUTSIDE the query try/except, so an unguarded json.loads here crashed the
+        # endpoint whenever any older row had non-JSON details (the limit=100 500 bug).
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+
     items = [
         {
             "id": r["id"],
@@ -77,7 +90,7 @@ async def get_platform_audit(
             "actor": r["actor"],
             "action": r["action"],
             "target": r["target"],
-            "details": json.loads(r["details"]) if r["details"] else None,
+            "details": _parse_details(r["details"]),
         }
         for r in rows
     ]

@@ -25,6 +25,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **fix(dashboard): the Audit page no longer 500s when an audit row has non-JSON `details`.**
+  `/api/platform-audit` decoded each row's `details` with `json.loads` in a list comprehension that
+  ran *outside* the query try/except, so a single legacy/malformed non-JSON value crashed the whole
+  endpoint (surfaced as `limit=100` → 500, `limit=80` → 200, and an empty Audit page all-time).
+  Details are now parsed best-effort and returned verbatim when not JSON. Regression test added.
 - **fix(cli): `exa plugins` (and any hint) no longer swallows bracketed text.** The "add a plugin"
   hint embeds a literal TOML `[project.entry-points."examlops.cli_plugins"]` snippet; Rich parsed the
   `[...]` as an invalid markup tag and rendered nothing ("Add one via  in a package."). `_output.hint`
