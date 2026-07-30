@@ -4,7 +4,7 @@ Lets an admin view/edit/upload the Python behind a project's calculations (FinOp
 …) and pick which provider each domain uses — the GUI half of the authored-providers feature (the
 notebook API is the other half). Every mutation reuses the same ``examlops.providers`` authoring code
 path as ``exa providers`` (so the dashboard can't drift from the CLI), goes through the **AST sandbox**
-(uploaded Python that imports/execs/opens is rejected before it lands), is ``project.manage``-gated,
+(uploaded Python that imports/execs/opens is rejected before it lands), is ``providers.manage``-gated,
 and is audited. Reads are viewer-gated; source is returned so the editor can show it, but it has
 already passed the gate on the way in.
 """
@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 from auth import require_role
-from capabilities import PROJECT_MANAGE, can, deny_reason
+from capabilities import PROVIDERS_MANAGE, can, deny_reason
 from dbconn import connect
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -44,8 +44,8 @@ def _audit(actor: str, action: str, target: str, details: dict) -> None:
 
 def _require_manage(principal: dict) -> None:
     role = principal.get("role", "")
-    if not can(role, PROJECT_MANAGE):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, deny_reason(role, PROJECT_MANAGE))
+    if not can(role, PROVIDERS_MANAGE):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, deny_reason(role, PROVIDERS_MANAGE))
 
 
 def _examlops_providers():
@@ -91,7 +91,7 @@ async def read_provider_view(project: str, domain: str, name: str, _=Depends(_vi
 async def validate_provider_view(
     payload: dict = Body(...), principal: dict = Depends(_admin)
 ) -> dict:
-    """Gate-check provider source without saving (admin / project.manage). Returns ok + any error."""
+    """Gate-check provider source without saving (admin / providers.manage). Returns ok + any error."""
     _require_manage(principal)
     code = payload.get("code") or ""
     p = _examlops_providers()
@@ -104,7 +104,7 @@ async def validate_provider_view(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def save_provider_view(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
-    """Create/replace an authored provider (admin / project.manage; AST-sandboxed; audited).
+    """Create/replace an authored provider (admin / providers.manage; AST-sandboxed; audited).
 
     Body: ``{project, domain, name, code, activate?}``. The source passes the AST gate before it is
     written — unsafe or invalid code is rejected 400 and never reaches disk.
@@ -143,7 +143,7 @@ async def save_provider_view(payload: dict = Body(...), principal: dict = Depend
 async def activate_provider_view(
     project: str, domain: str, name: str, principal: dict = Depends(_admin)
 ) -> dict:
-    """Make a provider the active one for its ``(project, domain)`` (admin / project.manage; audited)."""
+    """Make a provider the active one for its ``(project, domain)`` (admin / providers.manage; audited)."""
     _require_manage(principal)
     p = _examlops_providers()
     try:
@@ -158,7 +158,7 @@ async def activate_provider_view(
 async def delete_provider_view(
     project: str, domain: str, name: str, principal: dict = Depends(_admin)
 ) -> dict:
-    """Delete an authored provider (admin / project.manage; audited)."""
+    """Delete an authored provider (admin / providers.manage; audited)."""
     _require_manage(principal)
     p = _examlops_providers()
     if not p.delete_provider(project, domain, name):

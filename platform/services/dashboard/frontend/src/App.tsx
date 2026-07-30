@@ -40,6 +40,7 @@ const Gateway = lazy(() => import('@/pages/Gateway').then((m) => ({ default: m.G
 const Prompts = lazy(() => import('@/pages/Prompts').then((m) => ({ default: m.Prompts })))
 const Autopilot = lazy(() => import('@/pages/Autopilot').then((m) => ({ default: m.Autopilot })))
 const Slo = lazy(() => import('@/pages/Slo').then((m) => ({ default: m.Slo })))
+const Scaling = lazy(() => import('@/pages/Scaling').then((m) => ({ default: m.Scaling })))
 const Secrets = lazy(() => import('@/pages/Secrets').then((m) => ({ default: m.Secrets })))
 const Features = lazy(() => import('@/pages/Features').then((m) => ({ default: m.Features })))
 const Fairness = lazy(() => import('@/pages/Fairness').then((m) => ({ default: m.Fairness })))
@@ -50,6 +51,7 @@ const Preferences = lazy(() => import('@/pages/Preferences').then((m) => ({ defa
 const Projects = lazy(() => import('@/pages/Projects').then((m) => ({ default: m.Projects })))
 const ProjectDetail = lazy(() => import('@/pages/ProjectDetail').then((m) => ({ default: m.ProjectDetail })))
 const NextGen = lazy(() => import('@/pages/NextGen').then((m) => ({ default: m.NextGen })))
+const Providers = lazy(() => import('@/pages/Providers').then((m) => ({ default: m.Providers })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -133,6 +135,7 @@ export default function App() {
                       {/* Serve */}
                       <Route path="/serve/llmops" element={<Llmops />} />
                       <Route path="/serve/gateway" element={<Gateway />} />
+                      <Route path="/serve/scaling" element={<Scaling />} />
                       <Route path="/serve/nextgen" element={<NextGen />} />
                       {/* Operate */}
                       <Route path="/operate/drift" element={<Drift />} />
@@ -149,6 +152,7 @@ export default function App() {
                       <Route path="/govern/fairness" element={<Fairness />} />
                       {/* Platform */}
                       <Route path="/platform/services" element={<Services />} />
+                      <Route path="/platform/providers" element={<Providers />} />
                       <Route path="/platform/config" element={<Config />} />
                       <Route path="/platform/integrations" element={<SeanerBus />} />
                       <Route path="/platform/jupyter" element={<Jupyter />} />

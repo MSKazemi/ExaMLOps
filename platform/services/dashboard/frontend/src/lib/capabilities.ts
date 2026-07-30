@@ -19,6 +19,8 @@ export const CAP = {
   SERVICE_CONTROL: 'service.control',
   PROJECT_MANAGE: 'project.manage',
   CONNECTION_MANAGE: 'connection.manage',
+  PROVIDERS_MANAGE: 'providers.manage',
+  SCALING_MANAGE: 'scaling.manage',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
