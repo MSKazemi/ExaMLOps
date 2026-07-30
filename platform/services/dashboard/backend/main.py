@@ -29,6 +29,7 @@ from routers import (
     copilot,
     docs,
     drift_data,
+    events,
     explain,
     facility,
     fairness,
@@ -194,6 +195,7 @@ app.include_router(autopilot.router, prefix="/api")
 app.include_router(slo.router, prefix="/api")
 app.include_router(scaling.router, prefix="/api")
 app.include_router(admission.router, prefix="/api")
+app.include_router(events.router, prefix="/api")
 app.include_router(secrets.router, prefix="/api")
 app.include_router(feature_store.router, prefix="/api")
 app.include_router(fairness.router, prefix="/api")
