@@ -5,7 +5,13 @@ import { apiFetch } from '@/lib/api'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { isAdmin } from '@/lib/auth'
-import { useSetDriftBaseline, useResetDrift, useSetAutoRetrain } from '@/lib/drift'
+import {
+  useSetDriftBaseline,
+  useResetDrift,
+  useSetAutoRetrain,
+  useSetInputBaseline,
+  useResetInputDrift,
+} from '@/lib/drift'
 
 /** Shared loading placeholder for the drift tables (F3 Skeleton convention). */
 function TableSkeleton() {
@@ -187,6 +193,30 @@ function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
     queryKey: ['drift-input-status'],
     queryFn: () => apiFetch<InputDriftStatus[]>('/api/drift/input-status'),
   })
+  const admin = isAdmin()
+  const baseline = useSetInputBaseline()
+  const reset = useResetInputDrift()
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const runBaseline = async (model: string) => {
+    setMsg(null)
+    try {
+      const r = await baseline.mutateAsync(model)
+      setMsg(`Input baseline set for ${model} (norm μ=${r.baseline.norm_mean?.toFixed(3)}, n=${r.baseline.n}).`)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to set input baseline')
+    }
+  }
+  const runReset = async (model: string) => {
+    if (!window.confirm(`Clear all input snapshots for ${model}? The baseline is kept.`)) return
+    setMsg(null)
+    try {
+      const r = await reset.mutateAsync(model)
+      setMsg(`Cleared ${r.cleared} input snapshot(s) for ${model}.`)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to reset input drift')
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -208,13 +238,24 @@ function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
         </p>
       )}
 
+      {msg && (
+        <p className="text-xs rounded-lg px-3 py-2"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+          {msg}
+        </p>
+      )}
+
       {isLoading && <TableSkeleton />}
 
       {!isLoading && !error && rows.length === 0 && (
         <EmptyState
           icon={Activity}
           title="No input drift snapshots yet"
-          description="Run `exa drift input baseline <MODEL>` to set a baseline."
+          description={
+            admin
+              ? 'Once the bridge collects embeddings, use the Baseline action to set a baseline.'
+              : 'Run `exa drift input baseline <MODEL>` to set a baseline.'
+          }
         />
       )}
 
@@ -230,10 +271,14 @@ function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
                 <th className="px-4 py-2.5">Max Z</th>
                 <th className="px-4 py-2.5">Status</th>
                 <th className="px-4 py-2.5">Snapshots</th>
+                {admin && <th className="px-4 py-2.5 text-right">Actions</th>}
               </tr>
             </thead>
             <tbody style={{ background: 'var(--surface-0)' }}>
-              {rows.map(row => (
+              {rows.map(row => {
+                const busy = (baseline.isPending && baseline.variables === row.model) ||
+                  (reset.isPending && reset.variables === row.model)
+                return (
                 <tr key={row.model} className="border-t" style={{ borderColor: 'var(--border-sm)' }}>
                   <td className="px-4 py-3 font-mono font-semibold text-xs">{row.model}</td>
                   <td className="px-4 py-3 font-mono text-xs">{row.live_norm_mean.toFixed(4)}</td>
@@ -244,8 +289,22 @@ function InputDriftTab({ onRefresh }: { onRefresh: () => void }) {
                     {row.status}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{row.n_snapshots}</td>
+                  {admin && (
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => runBaseline(row.model)} disabled={busy} title="Set current embedding stats as baseline"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium mr-1.5 disabled:opacity-50"
+                        style={{ background: 'oklch(0.64 0.20 265 / 12%)', border: '1px solid oklch(0.64 0.20 265 / 25%)', color: 'var(--accent-text)' }}>
+                        <Target className="w-3 h-3" /> Baseline
+                      </button>
+                      <button onClick={() => runReset(row.model)} disabled={busy} title="Clear input snapshots"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
+                        style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+                        <Eraser className="w-3 h-3" /> Reset
+                      </button>
+                    </td>
+                  )}
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>

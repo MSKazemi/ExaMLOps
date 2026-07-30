@@ -12,7 +12,7 @@ describe('GrafanaPanel', () => {
     render(<GrafanaPanel name="drift.trend" baseUrl="http://grafana:3000" title="Drift" />)
     const frame = screen.getByTitle('Drift') as HTMLIFrameElement
     expect(frame.tagName).toBe('IFRAME')
-    expect(frame.getAttribute('src')).toContain('/d-solo/examlops_drift')
+    expect(frame.getAttribute('src')).toContain('/d-solo/examlops-drift')
     expect(frame.getAttribute('loading')).toBe('lazy')
   })
 

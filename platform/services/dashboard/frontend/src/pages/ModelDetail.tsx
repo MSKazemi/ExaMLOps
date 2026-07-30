@@ -422,7 +422,7 @@ export function ModelDetail() {
   return (
     <div className="p-6 space-y-5 max-w-4xl mx-auto">
       {/* Back link */}
-      <Link to="/models" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+      <Link to="/build/models" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
         <ArrowLeft className="w-3.5 h-3.5" /> Models
       </Link>
 

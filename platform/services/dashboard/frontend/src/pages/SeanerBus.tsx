@@ -432,7 +432,7 @@ export default function SeanerBus() {
             Configuration
           </h2>
           <Link
-            to="/config"
+            to="/platform/config"
             className="flex items-center gap-1 text-xs font-medium transition-opacity hover:opacity-80"
             style={{ color: 'var(--accent-text)' }}
           >
@@ -468,7 +468,7 @@ export default function SeanerBus() {
               <p className="text-sm font-medium" style={{ color: 'var(--foreground)' }}>No SeanerBUS configuration</p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 Set host, port, UUIDs and mode in the{' '}
-                <Link to="/config" style={{ color: 'var(--accent-text)' }}>Config page</Link>{' '}
+                <Link to="/platform/config" style={{ color: 'var(--accent-text)' }}>Config page</Link>{' '}
                 (admin role required) to connect the bridge.
               </p>
             </div>

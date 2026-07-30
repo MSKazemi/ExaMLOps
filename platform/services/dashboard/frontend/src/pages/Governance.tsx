@@ -1,8 +1,155 @@
-import { ShieldCheck, FileCheck, ScrollText } from 'lucide-react'
+import { useState } from 'react'
+import { ShieldCheck, FileCheck, ScrollText, Scale } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
+import { isAdmin } from '@/lib/auth'
 import { useGovernance, postureToken, coverageLabel, digestShort } from '@/lib/governance'
+import {
+  useComplianceSystems,
+  useClassifySystem,
+  useSetConformity,
+  RISK_TIERS,
+  CONFORMITY_STATES,
+} from '@/lib/compliance'
+
+/**
+ * EU AI Act system register (ADR 0012) — the editable counterpart to the read-only overview above.
+ * Admins can set a system's risk tier and advance its conformity state; both writes go through the
+ * dashboard's compliance router → shared `examlops.compliance` path (validated + audited). Reads the
+ * `compliance_systems` table the CLI writes (distinct from the legacy overview table).
+ */
+export function ComplianceRegister() {
+  const admin = isAdmin()
+  const { data: systems = [], isLoading, error } = useComplianceSystems()
+  const classify = useClassifySystem()
+  const conformity = useSetConformity()
+  const [msg, setMsg] = useState<string | null>(null)
+  const [newModel, setNewModel] = useState('')
+  const [newTier, setNewTier] = useState<string>('limited')
+
+  const doClassify = async (model: string, riskTier: string) => {
+    setMsg(null)
+    try {
+      await classify.mutateAsync({ model, body: { riskTier } })
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Classification failed')
+    }
+  }
+  const doConformity = async (model: string, state: string) => {
+    setMsg(null)
+    try {
+      await conformity.mutateAsync({ model, state })
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Transition failed')
+    }
+  }
+  const addSystem = async () => {
+    if (!newModel.trim()) return
+    await doClassify(newModel.trim(), newTier)
+    setNewModel('')
+  }
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+        <Scale className="size-3.5" /> EU AI Act — System register{admin ? ' (editable)' : ''}
+      </h2>
+
+      {error && <EmptyState title="Couldn't load the system register" description="The compliance endpoint is unreachable." />}
+      {isLoading && <Skeleton className="h-12 w-full" />}
+      {msg && (
+        <p className="text-xs rounded-lg px-3 py-2" style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+          {msg}
+        </p>
+      )}
+
+      {!isLoading && systems.length === 0 && !admin && (
+        <EmptyState title="No systems classified" description="An admin can classify a model's EU-AI-Act risk tier here." />
+      )}
+
+      {(systems.length > 0 || admin) && (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground border-b border-border">
+                <th className="px-3 py-2 font-medium">Model</th>
+                <th className="px-3 py-2 font-medium">Risk tier</th>
+                <th className="px-3 py-2 font-medium">Conformity</th>
+                <th className="px-3 py-2 font-medium">Updated by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {systems.map((s) => (
+                <tr key={s.model} className="border-b border-border/50">
+                  <td className="px-3 py-2 font-medium font-mono text-xs">{s.model}</td>
+                  <td className="px-3 py-2">
+                    {admin ? (
+                      <select
+                        aria-label={`Risk tier for ${s.model}`}
+                        value={s.risk_tier ?? ''}
+                        onChange={(e) => doClassify(s.model, e.target.value)}
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      >
+                        <option value="" disabled>unset</option>
+                        {RISK_TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    ) : (
+                      <span className="text-muted-foreground">{s.risk_tier ?? '—'}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {admin ? (
+                      <select
+                        aria-label={`Conformity state for ${s.model}`}
+                        value={s.conformity_state}
+                        onChange={(e) => doConformity(s.model, e.target.value)}
+                        className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      >
+                        {CONFORMITY_STATES.map((st) => <option key={st} value={st}>{st}</option>)}
+                      </select>
+                    ) : (
+                      <StatusPill status={s.conformity_state === 'declared' ? 'ok' : 'warn'} label={s.conformity_state} />
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{s.updated_by ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {admin && (
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={newModel}
+            onChange={(e) => setNewModel(e.target.value)}
+            placeholder="Model name…"
+            aria-label="New system model name"
+            className="w-40 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          />
+          <select
+            aria-label="New system risk tier"
+            value={newTier}
+            onChange={(e) => setNewTier(e.target.value)}
+            className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          >
+            {RISK_TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <button
+            onClick={addSystem}
+            disabled={classify.isPending}
+            className="rounded-md border border-primary bg-primary px-2 py-1 text-xs text-primary-foreground disabled:opacity-50"
+          >
+            Classify
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
 
 export function Governance() {
   const { data, isLoading, error } = useGovernance()
@@ -106,9 +253,12 @@ export function Governance() {
                 </table>
               </div>
             ) : (
-              <EmptyState title="No compliance records" description="Classify models with the compliance tooling." />
+              <EmptyState title="No compliance records" description="Use the editable system register below to classify a model." />
             )}
           </section>
+
+          {/* EU AI Act — editable system register (classify + conformity) */}
+          <ComplianceRegister />
 
           {/* Cards + audit integrity */}
           <section className="grid gap-3 sm:grid-cols-2">

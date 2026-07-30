@@ -20,6 +20,7 @@ from routers import (
     bff,
     cards,
     collab,
+    compliance,
     config,
     connections,
     containers,
@@ -31,6 +32,7 @@ from routers import (
     features,
     finops,
     flags,
+    gateway,
     governance,
     health,
     hpo,
@@ -177,6 +179,8 @@ app.include_router(pipelines.router, prefix="/api")
 app.include_router(scaffold.router, prefix="/api")
 app.include_router(platform_audit.router, prefix="/api")
 app.include_router(drift_data.router, prefix="/api")
+app.include_router(compliance.router, prefix="/api")
+app.include_router(gateway.router, prefix="/api")
 app.include_router(platform_data.router, prefix="/api")
 app.include_router(rollback.router, prefix="/api")
 app.include_router(quality.router, prefix="/api")

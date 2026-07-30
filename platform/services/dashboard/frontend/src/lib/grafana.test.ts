@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildPanelUrl, GRAFANA_PANELS } from './grafana'
 
 describe('buildPanelUrl', () => {
-  const panel = { uid: 'examlops_drift', panelId: 3 }
+  const panel = { uid: 'examlops-drift', panelId: 3 }
 
   it('returns null when no base URL is configured', () => {
     expect(buildPanelUrl(null, panel)).toBeNull()
@@ -11,7 +11,7 @@ describe('buildPanelUrl', () => {
 
   it('builds a d-solo URL with panel id, kiosk and default dark theme', () => {
     const url = buildPanelUrl('http://grafana:3000', panel)!
-    expect(url).toContain('http://grafana:3000/d-solo/examlops_drift?')
+    expect(url).toContain('http://grafana:3000/d-solo/examlops-drift?')
     expect(url).toContain('panelId=3')
     expect(url).toContain('theme=dark')
     expect(url).toContain('kiosk=')
@@ -39,6 +39,16 @@ describe('buildPanelUrl', () => {
     for (const ref of Object.values(GRAFANA_PANELS)) {
       expect(ref.uid).toBeTruthy()
       expect(typeof ref.panelId).toBe('number')
+    }
+  })
+
+  it('registered UIDs use the provisioned hyphenated convention (not underscores)', () => {
+    // Regression guard for the P0 embed bug: provisioned dashboard UIDs are hyphenated
+    // (examlops-overview), and there is no examlops(-|_)serving dashboard.
+    for (const ref of Object.values(GRAFANA_PANELS)) {
+      expect(ref.uid).not.toContain('_')
+      expect(ref.uid).not.toMatch(/serving/)
+      expect(ref.uid.startsWith('examlops-')).toBe(true)
     }
   })
 })

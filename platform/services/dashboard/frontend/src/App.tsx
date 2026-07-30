@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/lib/theme'
 import { I18nProvider } from '@/hooks/I18nProvider'
@@ -11,6 +11,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Skeleton } from '@/components/ui/skeleton'
 import { shouldRetry } from '@/lib/errors'
 import { isEnabled } from '@/lib/flags'
+import { ROUTE_REDIRECTS } from '@/lib/nav'
 import { usePrefs } from '@/lib/prefs'
 import { Overview } from '@/pages/Overview'
 import { Services } from '@/pages/Services'
@@ -35,6 +36,7 @@ const Finops = lazy(() => import('@/pages/Finops').then((m) => ({ default: m.Fin
 const SelfObs = lazy(() => import('@/pages/SelfObs').then((m) => ({ default: m.SelfObs })))
 const Governance = lazy(() => import('@/pages/Governance').then((m) => ({ default: m.Governance })))
 const Llmops = lazy(() => import('@/pages/Llmops').then((m) => ({ default: m.Llmops })))
+const Gateway = lazy(() => import('@/pages/Gateway').then((m) => ({ default: m.Gateway })))
 const Alerts = lazy(() => import('@/pages/Alerts').then((m) => ({ default: m.Alerts })))
 const Flags = lazy(() => import('@/pages/Flags').then((m) => ({ default: m.Flags })))
 const NocWall = lazy(() => import('@/pages/NocWall').then((m) => ({ default: m.NocWall })))
@@ -52,6 +54,13 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+// Client "301" for the clean-slate URL migration (ADR 0097 §3): redirect an old flat path — and any
+// sub-path (e.g. /models/JPCP) — to its new lifecycle-scoped home, preserving the remainder.
+export function RedirectSplat({ to }: { to: string }) {
+  const rest = useParams()['*']
+  return <Navigate to={rest ? `${to}/${rest}` : to} replace />
+}
 
 function RouteFallback() {
   return (
@@ -77,7 +86,8 @@ function RouteAnnouncer() {
   const { pathname } = useLocation()
   const { announce } = useAnnouncer()
   useEffect(() => {
-    const seg = pathname === '/' ? 'overview' : pathname.slice(1).split('/')[0]
+    // Announce the leaf segment (the console), not the lifecycle-group prefix — `/build/models` → "Models".
+    const seg = pathname === '/' ? 'overview' : (pathname.split('/').filter(Boolean).pop() ?? 'overview')
     announce(`${seg.charAt(0).toUpperCase()}${seg.slice(1)} page`)
   }, [pathname, announce])
   return null
@@ -105,43 +115,56 @@ export default function App() {
                 <ErrorBoundary>
                   <Suspense fallback={<RouteFallback />}>
                     <Routes>
+                      {/* Canonical lifecycle-scoped routes (ADR 0097 §1/§3). */}
                       <Route path="/" element={<Home />} />
-                      <Route path="/preferences" element={<Preferences />} />
-                      <Route path="/services" element={<Services />} />
-                      <Route path="/models" element={<Models />} />
-                      <Route path="/models/:name" element={<ModelDetail />} />
-                      <Route path="/datasets" element={<Datasets />} />
-                      <Route path="/config" element={<Config />} />
-                      <Route path="/audit" element={<Audit />} />
-                      <Route path="/documents" element={<Docs />} />
-                      <Route path="/seanerbus" element={<SeanerBus />} />
-                      <Route path="/approvals" element={<Approvals />} />
-                      <Route path="/pipelines" element={<Pipelines />} />
-                      <Route path="/jupyter" element={<Jupyter />} />
-                      <Route path="/drift" element={<Drift />} />
-                      {/* New surfaces ship behind feature flags (F23 R7 / F25). */}
+                      {/* Build */}
+                      <Route path="/build/models" element={<Models />} />
+                      <Route path="/build/models/:name" element={<ModelDetail />} />
+                      <Route path="/build/datasets" element={<Datasets />} />
+                      <Route path="/build/pipelines" element={<Pipelines />} />
+                      {/* Serve */}
+                      <Route path="/serve/llmops" element={<Llmops />} />
+                      <Route path="/serve/gateway" element={<Gateway />} />
+                      <Route path="/serve/nextgen" element={<NextGen />} />
+                      {/* Operate */}
+                      <Route path="/operate/drift" element={<Drift />} />
+                      <Route path="/operate/alerts" element={<Alerts />} />
+                      <Route path="/operate/finops" element={<Finops />} />
+                      <Route path="/operate/self-obs" element={<SelfObs />} />
+                      {/* Govern */}
+                      <Route path="/govern/compliance" element={<Governance />} />
+                      <Route path="/govern/audit" element={<Audit />} />
+                      <Route path="/govern/approvals" element={<Approvals />} />
+                      {/* Platform */}
+                      <Route path="/platform/services" element={<Services />} />
+                      <Route path="/platform/config" element={<Config />} />
+                      <Route path="/platform/integrations" element={<SeanerBus />} />
+                      <Route path="/platform/jupyter" element={<Jupyter />} />
+                      <Route path="/platform/flags" element={<Flags />} />
+                      {/* Feature-flagged consoles (F23 R7 / F25). */}
                       {isEnabled('mlopsConsole') && (
-                        <Route path="/mlops" element={<MlopsConsole />} />
+                        <Route path="/build/mlops" element={<MlopsConsole />} />
                       )}
                       {isEnabled('facilityConsole') && (
-                        <Route path="/facility" element={<FacilityConsole />} />
+                        <Route path="/operate/facility" element={<FacilityConsole />} />
                       )}
                       {isEnabled('projectsConsole') && (
                         <>
-                          <Route path="/projects" element={<Projects />} />
-                          <Route path="/projects/:name" element={<ProjectDetail />} />
+                          <Route path="/platform/projects" element={<Projects />} />
+                          <Route path="/platform/projects/:name" element={<ProjectDetail />} />
                         </>
                       )}
-                      <Route path="/nextgen" element={<NextGen />} />
-                      <Route path="/finops" element={<Finops />} />
-                      <Route path="/status" element={<SelfObs />} />
-                      <Route path="/governance" element={<Governance />} />
-                      <Route path="/llmops" element={<Llmops />} />
-                      <Route path="/alerts" element={<Alerts />} />
-                      <Route path="/flags" element={<Flags />} />
+                      {/* Utility (footer) — kept at their existing paths. */}
+                      <Route path="/preferences" element={<Preferences />} />
+                      <Route path="/documents" element={<Docs />} />
                       {/* NOC/wall kiosk — fixed full-screen overlay; renders inside the authed app so it
                           never drops to a login (F20 R2). */}
                       <Route path="/noc" element={<NocWall />} />
+                      {/* Clean-slate URL migration: 301-style redirects from every old flat path (and
+                          any sub-path) to its new home, for one release (ADR 0097 §3). */}
+                      {Object.entries(ROUTE_REDIRECTS).map(([from, to]) => (
+                        <Route key={from} path={`${from}/*`} element={<RedirectSplat to={to} />} />
+                      ))}
                     </Routes>
                   </Suspense>
                 </ErrorBoundary>

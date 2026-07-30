@@ -105,7 +105,7 @@ function RegistryCard({ item, freshness }: { item: ModelRegistryItem; freshness?
   const navigate = useNavigate()
   return (
     <div
-      onClick={() => navigate(`/models/${item.name}`)}
+      onClick={() => navigate(`/build/models/${item.name}`)}
       className="rounded-xl overflow-hidden cursor-pointer card-hover"
       style={{
         background: 'var(--surface-0)',
@@ -155,7 +155,7 @@ function GitLabModelCard({ model }: { model: ModelzooModel }) {
     <div
       className="rounded-xl overflow-hidden cursor-pointer card-hover"
       style={{ background: 'var(--surface-0)', border: '1px solid var(--border)' }}
-      onClick={() => navigate(`/models/${model.name.toUpperCase()}`)}
+      onClick={() => navigate(`/build/models/${model.name.toUpperCase()}`)}
     >
       <div className="h-0.5" style={{ background: 'linear-gradient(90deg, oklch(0.78 0.18 80), oklch(0.64 0.20 265))' }} />
       <div className="p-4 space-y-2">
@@ -325,7 +325,7 @@ export function Models() {
             {!zoo?.configured && (
               <p className="text-xs mt-1" style={{ color: 'var(--warning-text)' }}>
                 GitLab not configured —{' '}
-                <Link to="/config" className="underline underline-offset-2 hover:opacity-80">
+                <Link to="/platform/config" className="underline underline-offset-2 hover:opacity-80">
                   add project ID and token in Config <Settings2 className="w-3 h-3 inline" />
                 </Link>
               </p>

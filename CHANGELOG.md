@@ -5,6 +5,173 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **refactor(dashboard)!: clean-slate lifecycle-scoped URLs + one-release redirects (enterprise-rebuild M0, ADR 0097 §3).**
+  Dashboard routes move to lifecycle-scoped paths matching the grouped nav; every old flat path (and
+  any sub-path) redirects to its new home via a client 301 (`<Navigate replace>`) for one release,
+  then the redirects will be dropped. This **completes M0** (P0 bugs + grouped shell + console
+  framework + URL migration). Moved routes:
+
+  | Old | New | Old | New |
+  |---|---|---|---|
+  | `/models` | `/build/models` | `/status` | `/operate/self-obs` |
+  | `/models/:name` | `/build/models/:name` | `/governance` | `/govern/compliance` |
+  | `/mlops` | `/build/mlops` | `/audit` | `/govern/audit` |
+  | `/datasets` | `/build/datasets` | `/approvals` | `/govern/approvals` |
+  | `/pipelines` | `/build/pipelines` | `/projects` | `/platform/projects` |
+  | `/llmops` | `/serve/llmops` | `/services` | `/platform/services` |
+  | `/nextgen`, `/next-gen` | `/serve/nextgen` | `/config` | `/platform/config` |
+  | `/drift` | `/operate/drift` | `/seanerbus` | `/platform/integrations` |
+  | `/alerts` | `/operate/alerts` | `/jupyter` | `/platform/jupyter` |
+  | `/facility` | `/operate/facility` | `/flags` | `/platform/flags` |
+  | `/finops` | `/operate/finops` | `/`, `/documents`, `/preferences`, `/noc` | unchanged |
+
+  One source of truth: `ROUTE_REDIRECTS` in `lib/nav.ts` drives both the nav paths and the router's
+  redirect routes. Internal links, the command palette (`commands.ts`), the Preferences landing
+  picker, and the copilot's entity grounding (`buildContext` now strips a leading lifecycle group so
+  `/build/models/jpcp` still grounds to `{models, jpcp}`) all migrated in one pass; persisted
+  `defaultLanding` prefs keep working via the redirects. New tests: `App.test.tsx` redirect
+  integration (leaf, detail sub-path, renamed console, hyphen normalization) + `nav.test.ts`
+  `ROUTE_REDIRECTS` coverage + `copilot.test.ts` group-prefix grounding. Frontend gates green:
+  **323 vitest** (+4), tsc + eslint clean on changed files.
+
+### Added
+
+- **feat(dashboard): Gateway virtual-keys console (enterprise-rebuild M2 — first Serve/LLMOps console).**
+  The LLM gateway had no dashboard surface. New **Gateway** console (nav: Serve → Gateway, route
+  `/serve/gateway`) issues/revokes scoped, budgeted virtual keys. New router `routers/gateway.py`:
+  `GET /api/gateway/keys` (viewer — stored fields only: key **hash**, scope, budget, spend, revoked),
+  `POST /api/gateway/keys` (issue — returns the raw key **once**, never stored/re-fetchable),
+  `POST /api/gateway/keys/{hash}/revoke`. Writes reuse the shared `examlops.gateway.issue_virtual_key`
+  / `examlops.data.governance.revoke_virtual_key` code paths (pure `platform.db` — no live gateway/LLM
+  runtime needed). `issue_virtual_key` gained an additive `source="exa-gateway"` param so the dashboard
+  attributes its audit as `source=dashboard` (CLI unchanged). New capability **`gateway.manage`**
+  (backend `_ADMIN_CAPS` + frontend `CAP`). Frontend `lib/gateway.ts` + `Gateway.tsx` (viewer
+  read-only; admin issue form → raw key shown once with copy, per-row revoke). Security: the raw key
+  is surfaced only in the create response and the list exposes the hash only — matching the CLI's
+  "printed once, only hash stored" contract. Tests: backend `test_gateway_writes.py` (5: viewer-403,
+  issue returns raw + stores only hash + `source=dashboard` audit, list shows hash-not-raw, revoke
+  flips + audits), frontend `Gateway.test.tsx` (3). Gates green: dashboard-backend **375**, examlops
+  CLI gateway **31**, frontend **332** vitest, ruff/tsc/eslint clean. (M2 serve reload/rollback/batch/
+  ab-shadow record need a live Ray runtime → deferred; traffic-split was already shipped.)
+- **feat(dashboard): Compliance (EU AI Act) console edit-parity — classify + conformity (enterprise-rebuild M1).**
+  The Governance page was 100% read-only, forcing operators to `exa compliance classify|declare`. It
+  now has an editable **EU AI Act system register**: admins set a system's **risk tier**
+  (`prohibited|high|limited|minimal`) and advance its **conformity state**
+  (`draft→documented→assessed→declared`, transition-validated). New router `routers/compliance.py`:
+  `GET /api/compliance/systems` (reads the `compliance_systems` table the CLI writes — the legacy
+  overview reads a different `compliance_records` table, so this surfaces dashboard-set
+  classifications), `POST /api/compliance/classify/{model}`, `POST /api/compliance/conformity/{model}`.
+  Writes reuse the shared `examlops.compliance.classify_system` / `set_conformity_state` — which
+  validate the risk-tier vocabulary + the conformity state-machine and **hash-chain** the audit — so
+  the dashboard can't drift from the CLI. To attribute correctly, those two shared functions gained an
+  optional **`source="cli"`** parameter (additive; the dashboard passes `source="dashboard"`, CLI
+  behavior unchanged). New capability **`compliance.classify`** (backend `_ADMIN_CAPS` + frontend
+  `CAP`). Frontend: `lib/compliance.ts` hooks + a `ComplianceRegister` section on the Governance page
+  (viewer read-only; admin inline tier/state selects + add-system form). Tests: backend
+  `test_compliance_writes.py` (5: viewer-403, classify persists + `source=dashboard` audit, invalid
+  tier 400, valid/invalid conformity transitions, list), frontend `Governance.compliance.test.tsx`
+  (3). Gates green: dashboard-backend **370**, examlops CLI compliance **10**, frontend **329** vitest,
+  ruff/tsc/eslint clean. (Config promotion/SLO thresholds are code/YAML-owned or green-field → deferred;
+  Datasets A1 snapshot needs local parquet/lakeFS the dashboard container lacks → deferred.)
+- **feat(dashboard): FinOps console in-context budget editor (enterprise-rebuild M1).**
+  The FinOps console showed budgets read-only with a "Configure with `exa finops budget set`" hint,
+  forcing operators to the CLI. It now has an admin **Edit** affordance per budget row that reuses
+  the **same shared write path** as the Projects console and the CLI (`useUpdateProject` →
+  `PUT /api/v1/projects/{name}` → `examlops` `set_project_budget`) — so there is one budget-write
+  code path surfaced in two places, with **no new endpoint, table, or capability** and zero risk of
+  drift. Saving refreshes the FinOps aggregate; the empty state now points admins to the Projects
+  console instead of the CLI. Also fixed the frontend capability mirror (`lib/capabilities.ts`),
+  which lagged the backend — added `project.manage` and `connection.manage` to the `CAP` map.
+  Dedup note: the per-project budget **write itself was already shipped** (Projects console, ADR
+  0086/0089); this only adds the in-context affordance on FinOps. Carbon-provider *selection* is
+  deferred — it is config-file/filesystem-based (`EXAMLOPS_CARBON_PROVIDER` / provider marker files),
+  not a clean dashboard write. Tests: `pages/Finops.test.tsx` (viewer hidden, admin edit → PUT with
+  values, admin empty-state has no CLI hint). Frontend gates green: **326** vitest, tsc + eslint
+  clean.
+- **feat(dashboard): Drift console edit-parity — input-drift writes + capability gate (enterprise-rebuild M1).**
+  Completes the Drift console's edit parity (M1 kickoff). The Input Drift tab was read-only, forcing
+  operators to the CLI for `exa drift input baseline|reset`; it now has admin **Baseline** and
+  **Reset** actions. New audited endpoints `POST /api/drift/input-baseline/{model}` and
+  `POST /api/drift/input-reset/{model}` reuse the shared `examlops.data.drift.set_input_baseline`
+  code path and compute the baseline with the **exact same 1000-row window and stat shape as the
+  CLI**, so a dashboard-set input baseline is byte-identical to a CLI-set one (both support
+  `?dry_run=true`). All five drift write endpoints (baseline/reset/auto-retrain + the two new input
+  ones) now enforce the named **`drift.baseline`** capability via a `_require_manage` gate — aligning
+  the router with the Phase-42 connections/projects pattern (previously it gated on the admin role
+  only; behavior for current roles is unchanged since admins hold the capability). Every mutation is
+  audited with `source=dashboard`. Frontend: `lib/drift.ts` gains `useSetInputBaseline`/
+  `useResetInputDrift`; the Input Drift tab renders the admin actions + a result line, mirroring the
+  prediction tab. Tests: `test_drift_writes.py` +6 (input baseline dry-run/set/audit/too-few-400/
+  viewer-403, input reset + viewer-403). Gates green: dashboard-backend **365**, frontend **323**
+  vitest, ruff/tsc/eslint clean. The `exa drift trigger` write (posts to the control plane) is
+  deferred to a follow-up.
+- **feat(dashboard): console meta-framework + Approvals reference port (enterprise-rebuild M0, ADR 0097 §2).**
+  Most of the dashboard's ~55 target domains are the same list→actions shape, so instead of ~55
+  bespoke pages a console is now described declaratively and rendered by one generic component.
+  New `frontend/src/components/console/`: `ConsoleView` + the `ConsoleDescriptor`/`RowAction` types.
+  A descriptor supplies columns (on the shared dependency-free `DataGrid` — sort/facet/paginate/CSV)
+  and capability-gated **row actions**; `ConsoleView` standardizes the header/loading/error/empty
+  layout and appends an actions column. Every action inherits uniform safety rails: a capability
+  gate (F15 — shown **disabled with the deny reason**, never hidden), an optional inline confirm,
+  and an optional inline reason — and the mutation runs through the page's existing `examlops.*`-
+  backed hooks, never a parallel implementation (Phase-42 shared-code-path rule). **Approvals is
+  ported as the reference console** (approve/reject now flow through the descriptor while reusing
+  `useApproveModel`/`useRejectModel` unchanged), gaining grid sort/facet/CSV for free. Built on the
+  existing `DataGrid`/TanStack/capabilities substrate — the heavier **Refine** adoption is deferred
+  (ADR 0097 status note) as the descriptor renderer already covers the needed shape. The clean-slate
+  URL migration is decoupled to BL-013c (the Approvals port kept its `/approvals` URL). Tests:
+  `components/console/ConsoleView.test.tsx` (render/loading/error/empty, action run, reason-required
+  flow, capability-gated disable, visible predicate). Frontend gates green: **315 vitest** (62→63
+  files), tsc + eslint clean on changed files.
+
+- **feat(dashboard): grouped lifecycle navigation shell (enterprise-rebuild M0, ADR 0097).**
+  Replaces the 23-flat-tab sidebar with a command-center **Home** plus five collapsible lifecycle
+  groups — **Build · Serve · Operate · Govern · Platform** — and a Docs/Preferences footer, so the
+  dashboard reads as an enterprise control plane instead of a flat list. The nav is now a single
+  declarative source (`frontend/src/lib/nav.ts`: `NAV_SECTIONS`/`HOME_ITEM`/`UTILITY_NAV`) from
+  which `Layout` and its tests derive everything — adding or moving a console is a one-file edit
+  (mirrors the CLI's centralized grouped help). Groups collapse/expand with the state persisted to
+  `localStorage`, and the group owning the active route always stays open. Nav items are hidden by
+  role (admin-only Govern) and by feature flag (`mlopsConsole`/`facilityConsole`/`projectsConsole`),
+  fixing a latent show-but-404 gap where flagged-off routes still appeared. URLs are unchanged in
+  this slice; the only route normalization is `/next-gen → /nextgen`. The full clean-slate URL
+  migration (`/build/models` &c. + client 301 redirects) and the console meta-framework are deferred
+  to BL-013b so links/tests/persisted prefs migrate once and verify together (see ADR 0097 §3). New
+  tests: `lib/nav.test.ts` (config integrity + `isNavItemActive`/`activeSectionId`) and
+  `components/Layout.test.tsx` (grouped render, collapse, active-group-open, admin gating). Frontend
+  gates green: **307 vitest** (61→62 files), tsc + eslint clean on changed files. ADR 0097 records
+  the information architecture + console-meta-framework decisions; the console↔CLI↔router mapping
+  lives in `.claude/plans/dashboard-enterprise-rebuild/01-information-architecture.md`.
+
+### Fixed
+
+- **fix(dashboard): three P0 data-path bugs (dashboard-enterprise-rebuild M0).** Fixes the three
+  live P0 bugs found in the dashboard audit before the enterprise rebuild — each was a data-path
+  defect, not a design gap, so they are fixed independently of the rebuild.
+  - **Grafana embeds broken** ("Dashboard not found" / "Panel N not found"): `frontend/src/lib/grafana.ts`
+    hardcoded underscore dashboard UIDs (`examlops_overview`) and a non-existent `examlops_serving`
+    dashboard, but the provisioned dashboards use hyphenated UIDs (`examlops-overview`) and serving
+    panels live in `examlops-online-metrics`. Repointed all four registry panels to real
+    UIDs + valid time-series panel ids; the Overview embed now shows a metrics trend
+    (`examlops-overview` panel 31) instead of erroring. Regression guard added (UIDs must be
+    hyphenated, never contain `_` or `serving`).
+  - **Audit page showed 0 while Governance reported N events:** `backend/routers/platform_audit.py`
+    hardcoded a 30-day `ts` window (hiding every older event) and swallowed any error into an empty
+    `{items: [], total: 0}` — indistinguishable from "no audit activity". It now defaults to the
+    **full** history (optional `last_days` to narrow, up to 3650) and surfaces read errors as HTTP 500.
+    The Audit page (`frontend/src/pages/Audit.tsx`) gained a time-window selector (All time / 30d /
+    90d / 1y), defaulting to all-time so historical events display.
+  - **Model Registry showed 0 models while Ray Serve had live deployments:** the control plane
+    (`services/control_plane/model_meta.py`, `app.py`) still read the removed `pipelines/models/`
+    path after ADR 0094 moved model YAML into the use-case pack. Both now resolve the active pack
+    via a shared `resolve_models_dir()` (`EXAMLOPS_USECASE_DIR` → `usecases/seanergy` `pack.toml`
+    `models_dir` → legacy fallback), without importing the torch-heavy pipeline engine. Registry now
+    returns `JPCP`/`MACK`/`MCBound`.
+  - Tests: `dashboard/backend/tests/test_platform_audit.py` (4 new), `frontend` grafana guards
+    (2 new); full gates green — dashboard-backend 360, control-plane 82, frontend 293 (tsc/eslint clean).
+
 ### Added
 
 - **feat(serving): Enterprise LLM Serving — Track A / A1 engine binding (ADR 0096, spec §4.1).**
