@@ -34,6 +34,10 @@ DANGEROUS_TOOLS = (
     "promote_model",
     "trigger_auto_retrain",
     "record_procedure",  # durable memory write is itself gated
+    # MCP-bridged config writes (Phase 5, ADR 0102) — HITL-wrapped in mcp_bridge._wrap
+    "set_drift_autoretrain",
+    "set_promotion_rule",
+    "disable_challenger",
 )
 
 

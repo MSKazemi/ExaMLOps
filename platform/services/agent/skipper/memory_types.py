@@ -37,12 +37,22 @@ KIND_KB = "kb"
 KINDS = (KIND_PROC, KIND_EPISODE, KIND_PREF, KIND_KB)
 
 
-def namespace(kind: str, scope: str | None = None) -> tuple[str, ...]:
-    """Namespace for a memory kind. With ``scope`` → a specific bucket
-    (e.g. task-class / model / operator); without → the kind's prefix (search-all)."""
+def _base_ns(kind: str, scope: str | None) -> tuple[str, ...]:
     if kind not in KINDS:
         raise ValueError(f"unknown memory kind {kind!r}; expected one of {KINDS}")
     return (kind,) if scope is None else (kind, scope)
+
+
+def namespace(kind: str, scope: str | None = None) -> tuple[str, ...]:
+    """Namespace a memory kind is WRITTEN under. With ``scope`` → a specific bucket
+    (e.g. task-class / model / operator); without → the kind's prefix (search-all).
+
+    When tenant scoping is enabled (Phase 8, ADR 0105) the active tenant is prefixed
+    (``("t:<tenant>", kind[, scope])``); when off — the default — this is byte-for-byte the
+    original ``(kind[, scope])``."""
+    from skipper import scoping
+
+    return (*scoping.write_prefix(), *_base_ns(kind, scope))
 
 
 # --- Schemas ------------------------------------------------------------------
@@ -219,18 +229,40 @@ def record_kb_fact(
     return _put(store, KIND_KB, None, fact, kb)
 
 
-def recall(store: Any, kind: str, query: str, k: int = 5, scope: str | None = None) -> list[Any]:
+def recall(
+    store: Any,
+    kind: str,
+    query: str,
+    k: int = 5,
+    scope: str | None = None,
+    *,
+    operator: str | None = None,
+) -> list[Any]:
     """Semantic search within a memory kind (prefix ``(kind,)`` searches all scopes).
-    Deprecated procedures are filtered out."""
-    hits = store.search(namespace(kind, scope), query=query, limit=k)
+
+    Deprecated procedures are filtered out. When tenant scoping is on (ADR 0105) this searches the
+    operator's authorized tenant + the shared bucket and merges the results (capped at ``k``); with
+    scoping off it is a single unprefixed search — unchanged."""
+    from skipper import scoping
+
+    base = _base_ns(kind, scope)
+    hits: list[Any] = []
+    for prefix in scoping.read_prefixes(operator):
+        hits.extend(store.search((*prefix, *base), query=query, limit=k))
     if kind == KIND_PROC:
         hits = [h for h in hits if not h.value.get("data", {}).get("deprecated")]
-    return hits
+    return hits[:k]
 
 
 def list_kind(store: Any, kind: str, scope: str | None = None, limit: int = 50) -> list[Any]:
-    """List stored memories of a kind (no semantic query)."""
-    return store.search(namespace(kind, scope), limit=limit)
+    """List stored memories of a kind (no semantic query) across the readable tenant(s)."""
+    from skipper import scoping
+
+    base = _base_ns(kind, scope)
+    out: list[Any] = []
+    for prefix in scoping.read_prefixes():
+        out.extend(store.search((*prefix, *base), limit=limit))
+    return out
 
 
 # --- Lifecycle: enumerate / export / erase (SM3, ADR 0034) --------------------

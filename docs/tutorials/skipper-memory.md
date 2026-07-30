@@ -111,3 +111,19 @@ Memory is evaluated on **task success**, not conversational recall: run a fixed
 ops-scenario suite with memory on vs off and compare success rate, tool-call count,
 clarifying questions, tokens, and latency (`skipper/memory_eval.py` holds the scenario
 suite + the safety invariant; the full memory-on/off run needs a live LLM).
+
+## 8. Beyond the four kinds — the full 7-tier stack
+
+The procedural / episodic / preference / KB kinds above are tier **T1**. The next-gen memory
+architecture (ADRs 0101/0104/0105/0106) adds:
+
+- **T2 Knowledge / docs-RAG** — semantic search over the documentation (`search_knowledge`);
+  build the index with `make skipper-knowledge-ingest`.
+- **T3 Monitoring / baseline** — recall "what's normal" for a model (`recall_baseline`), auto-fed
+  by the `skipper-watch` daemon (`make skipper-watch`).
+- **T4 Outcome** — the reactive loop records tool telemetry so `tool_success_rate` is real.
+- **T5 Consolidation** — `make skipper-consolidate` promotes recurring incidents into review-gated
+  candidate procedures and deprecates procedures that rely on failing tools.
+- **X Tenant scoping** — `AGENT_MEMORY_TENANT_SCOPED=true` isolates memory per project (opt-in).
+
+See `docs/guides/agent.md` → *Next-gen architecture* for the full table.

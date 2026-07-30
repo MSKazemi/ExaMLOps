@@ -16,7 +16,7 @@ from typing import Any
 
 from examlops.mcp.prompts import iter_prompts
 from examlops.mcp.resources import iter_resources
-from examlops.mcp.tools import iter_tools
+from examlops.mcp.tools import capabilities_catalogue, iter_tools
 
 
 def _version() -> str:
@@ -44,6 +44,8 @@ def build_agent_card(
             "description": spec.description,
             "tags": list(spec.tags),
             "mutating": spec.mutating,
+            "useCases": list(spec.use_cases),
+            "tier": spec.tier,
         }
         for spec in iter_tools(include_writes=include_writes)
     ]
@@ -66,6 +68,7 @@ def build_agent_card(
         "defaultInputModes": ["application/json", "text/plain"],
         "defaultOutputModes": ["application/json"],
         "skills": skills,
+        "capabilitiesByUseCase": capabilities_catalogue(include_writes=include_writes),
         "resources": [
             {
                 "uri": r.uri,

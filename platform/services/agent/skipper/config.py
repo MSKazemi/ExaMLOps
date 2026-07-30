@@ -57,6 +57,26 @@ AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
 CLAUDE_MD = os.getenv("AGENT_CLAUDE_MD", str(_REPO_ROOT / "CLAUDE.md"))
 
+# Knowledge / Docs-RAG memory tier (T2, Phase 3, ADR 0101). Chunk+embed the docs so the agent
+# answers "how do I …?" from the actual documentation with citations, reusing the platform's
+# examlops.vector_store seam driven by Skipper's local embeddings. Degrades to the ripgrep docs
+# tool when embeddings/vector-store are unavailable — never worse than today.
+AGENT_KNOWLEDGE_ENABLED = os.getenv("AGENT_KNOWLEDGE_ENABLED", "true").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+AGENT_KNOWLEDGE_KB = os.getenv("AGENT_KNOWLEDGE_KB", "skipper-knowledge")
+# Semicolon-separated roots to ingest (docs, ADRs, CLI reference, CLAUDE.md). Absolute or
+# repo-relative. Only Markdown files are indexed.
+AGENT_KNOWLEDGE_ROOTS = os.getenv(
+    "AGENT_KNOWLEDGE_ROOTS",
+    ";".join([str(_REPO_ROOT / "docs"), str(_REPO_ROOT / "design" / "adr")]),
+)
+AGENT_KNOWLEDGE_CHUNK_SIZE = int(os.getenv("AGENT_KNOWLEDGE_CHUNK_SIZE", "60"))
+AGENT_KNOWLEDGE_OVERLAP = int(os.getenv("AGENT_KNOWLEDGE_OVERLAP", "15"))
+
 
 def _env_bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
@@ -99,7 +119,48 @@ AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", "./skipper_review.d
 # BL-007: source the agent's platform-capability tools from the shared examlops.mcp registry
 # (single source of truth) instead of the in-repo duplicates. Off by default. Mutating MCP tools
 # remain gated by EXAMLOPS_MCP_ALLOW_WRITES.
-AGENT_USE_MCP_TOOLS = _env_bool("AGENT_USE_MCP_TOOLS", False)
+# Phase 5 (ADR 0102): now that the MCP registry has full read coverage + gated/tiered writes and
+# the bridge HITL-wraps mutating tools, the single-agent fallback path sources tools from MCP by
+# default. (The supervisor path — the default topology — already draws reads from MCP + writes
+# from the in-repo set regardless of this flag.)
+AGENT_USE_MCP_TOOLS = _env_bool("AGENT_USE_MCP_TOOLS", True)
+
+# Reasoning topology (Phase 4, ADR 0100). `auto` builds the supervisor graph — a deterministic
+# router dispatches each turn to one of the specialist ReAct sub-agents (manager/monitor/helper/
+# finops/governor/general), each bound to a scoped tool pack so a local 8B model only sees the
+# ~10-20 relevant tools. `single` forces the legacy single ReAct agent. Any build failure in
+# `auto` degrades to `single` (additive, never breaks the chat).
+AGENT_SUPERVISOR_MODE = os.getenv("AGENT_SUPERVISOR_MODE", "auto").strip().lower()
+
+# Self-instrumentation (Phase 2, ADR 0103): record each turn's tool calls into the shared
+# examlops.agentops tables (agent_sessions/agent_tool_calls) so tool_success_rate becomes real,
+# and abort a runaway turn in-loop with the AgentCircuitBreaker. Both fail open (a missing
+# examlops.agentops or platform.db never breaks a chat turn).
+AGENT_INSTRUMENT_ENABLED = _env_bool("AGENT_INSTRUMENT_ENABLED", True)
+AGENT_CIRCUIT_BREAKER = _env_bool("AGENT_CIRCUIT_BREAKER", True)
+
+# Proactive monitoring daemon (Phase 6, ADR 0104): `python -m skipper.watch` reads drift/cost
+# signals on an interval and, on a threshold breach, fans out an alert three ways (events outbox +
+# audit + episodic memory). LLM-free base loop — local and free. Kill-switch + thresholds:
+AGENT_WATCH_ENABLED = _env_bool("AGENT_WATCH_ENABLED", True)
+AGENT_WATCH_INTERVAL_S = float(os.getenv("AGENT_WATCH_INTERVAL_S", "300"))
+AGENT_WATCH_DRIFT_Z = float(os.getenv("AGENT_WATCH_DRIFT_Z", "3.0"))
+# Platform-wide cost ceiling (USD) for the FinOps signal; 0 disables the cost check.
+AGENT_WATCH_COST_BUDGET = float(os.getenv("AGENT_WATCH_COST_BUDGET", "0"))
+
+# Consolidation / reinforcement (Phase 7, ADR 0106): `python -m skipper.consolidate` runs offline.
+# A procedure is deprecated when a tool its steps use drops below the success threshold over at
+# least this many calls; episodes recurring for one model beyond the episode threshold are promoted
+# to a candidate procedure via the HITL review queue.
+AGENT_PROC_DEPRECATE_THRESHOLD = float(os.getenv("AGENT_PROC_DEPRECATE_THRESHOLD", "0.5"))
+AGENT_PROC_DEPRECATE_MIN_CALLS = int(os.getenv("AGENT_PROC_DEPRECATE_MIN_CALLS", "3"))
+AGENT_CONSOLIDATE_MIN_EPISODES = int(os.getenv("AGENT_CONSOLIDATE_MIN_EPISODES", "3"))
+
+# Tenant/project memory scoping (Phase 8, ADR 0105). When enabled, memory namespaces are prefixed
+# with the active tenant (EXAMLOPS_PROJECT) so operators only recall memory for their project, plus
+# a shared bucket everyone can read. Default OFF ⇒ single-tenant behaviour byte-for-byte unchanged.
+AGENT_MEMORY_TENANT_SCOPED = _env_bool("AGENT_MEMORY_TENANT_SCOPED", False)
+AGENT_MEMORY_SHARED_BUCKET = os.getenv("AGENT_MEMORY_SHARED_BUCKET", "global")
 
 HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 

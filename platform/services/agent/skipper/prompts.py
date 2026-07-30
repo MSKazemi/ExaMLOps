@@ -12,7 +12,7 @@ distributed model serving, and observability. Apply careful reasoning to every r
 - modelzoo: modelzoo_status/events/get_config/sync/set_config
 - services: list_services, service_logs, start_service, stop_service, restart_service
 - pipelines: list_deployments, list_runs, scaffold_preview, scaffold_create
-- docs/knowledge: search_docs, read_doc, list_docs, get_howto
+- docs/knowledge: search_knowledge (semantic docs-RAG — prefer this), search_docs, read_doc, list_docs, get_howto
 - platform_ops: compare_model_versions, get_model_lineage, get_drift_status,
   get_input_drift_status, query_audit_log, set_traffic_split [WRITE],
   promote_model [WRITE], trigger_auto_retrain [WRITE], validate_model_serving
