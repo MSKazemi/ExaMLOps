@@ -197,3 +197,70 @@ async def test_update_project_unknown_404(client, platform_db):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 404
+
+
+# ── Model-zoo onboarding routes (shared examlops.modelzoo_adopt code path) ────────────────────────
+@pytest.fixture
+def _pack(tmp_path, monkeypatch):
+    """A one-model use-case pack so the onboarding routes have something to enumerate."""
+    import examlops.usecase as usecase
+
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "jpcp.yaml").write_text("name: JPCP\nenabled: true\n")
+    monkeypatch.setattr(usecase, "models_dir", lambda default=None: models)
+    return models
+
+
+async def test_zoo_models_listing(client, platform_db, _pack):
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/projects/zoo-models", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    models = r.json()["models"]
+    assert {m["model"] for m in models} == {"JPCP"}
+    assert models[0]["project"] == "jpcp"
+
+
+async def test_onboard_requires_admin(client, platform_db, _pack):
+    viewer = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/v1/projects/onboard/JPCP", json={}, headers={"Authorization": f"Bearer {viewer}"}
+    )
+    assert r.status_code == 403
+
+
+async def test_onboard_model_provisions_and_audits(client, platform_db, _pack):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/v1/projects/onboard/JPCP", json={}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["project"] == "jpcp" and body["changed"] is True
+    # project shows up in the list
+    lr = await client.get("/api/v1/projects", headers={"Authorization": f"Bearer {token}"})
+    assert any(p["name"] == "jpcp" for p in lr.json())
+    # audited as a dashboard event
+    conn = sqlite3.connect(platform_db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE action='project_onboarded' AND target='jpcp'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 1
+
+
+async def test_onboard_model_is_idempotent(client, platform_db, _pack):
+    token = await _login(client, ADMIN_PW)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/api/v1/projects/onboard/JPCP", json={}, headers=h)
+    r2 = await client.post("/api/v1/projects/onboard/JPCP", json={}, headers=h)
+    assert r2.status_code == 200 and r2.json()["changed"] is False
+
+
+async def test_onboard_all(client, platform_db, _pack):
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/v1/projects/onboard-all", json={}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["onboarded"] == 1

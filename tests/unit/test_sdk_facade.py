@@ -77,3 +77,44 @@ def test_list_providers_reexport():
     infos = sdk.list_providers("placement")
     names = {i.name for i in infos}
     assert "least-loaded" in names
+
+
+# ── model-zoo onboarding surface (shared by CLI/Dashboard/Jupyter) ────────────────────────────────
+def test_onboarding_functions_are_exported():
+    for name in ("list_zoo_models", "onboard_model", "onboard_all_models"):
+        assert name in sdk.__all__ and hasattr(sdk, name)
+
+
+def test_onboard_model_delegates_and_reports_steps(tmp_path, monkeypatch):
+    import examlops.usecase as usecase
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "jpcp.yaml").write_text("name: JPCP\nenabled: true\n")
+    monkeypatch.setattr(usecase, "models_dir", lambda default=None: models)
+
+    assert sdk.list_zoo_models() == ["JPCP"]
+    # dry-run: reports steps, persists nothing
+    out = sdk.onboard_model("JPCP", dry_run=True)
+    assert out["project"] == "jpcp" and out["steps"]["project"] == "would-create"
+    from examlops.data.projects import get_project
+
+    assert get_project("jpcp") is None
+    # real onboarding creates the project + records a per-model result
+    out2 = sdk.onboard_model("JPCP")
+    assert out2["changed"] is True and get_project("jpcp") is not None
+
+
+def test_onboard_all_models_covers_pack(tmp_path, monkeypatch):
+    import examlops.usecase as usecase
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "jpcp.yaml").write_text("name: JPCP\nenabled: true\n")
+    (models / "mack.yaml").write_text("name: MACK\nenabled: true\n")
+    monkeypatch.setattr(usecase, "models_dir", lambda default=None: models)
+
+    results = sdk.onboard_all_models()
+    assert {r["project"] for r in results} == {"jpcp", "mack"}
