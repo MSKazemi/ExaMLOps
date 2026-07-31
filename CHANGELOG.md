@@ -5,8 +5,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [v0.47.0] — 2026-07-31
+
 ### Added
 
+- **feat(pipelines): dedicated dataset object store, separable from the MLflow artifact store.** The
+  `minio` dataset backend now honours `EXAMLOPS_DATA_S3_ENDPOINT` / `EXAMLOPS_DATA_S3_ACCESS_KEY` /
+  `EXAMLOPS_DATA_S3_SECRET_KEY` (+ existing `EXAMLOPS_DATA_BUCKET`), so large-scale training datasets
+  (e.g. the SEANERGYS Day-0 store on JSC S3) can live on a **different** S3/MinIO instance than the
+  platform MinIO holding MLflow artifacts/models. Unset ⇒ legacy shared-instance resolution,
+  byte-identical (`MLFLOW_S3_ENDPOINT_URL` + `AWS_*`). Modelzoo untouched — routing happens at the
+  `pipeline_generator` call site. Verified live against a stand-in bucket on the deployed MinIO with
+  the artifact endpoint deliberately sabotaged. Guard: `tests/unit/test_dataset_store_split.py` (5).
+- **feat(cli): `exa config export [-o file]` — one-file YAML snapshot of ALL platform configuration.**
+  Aggregates, live from the real sources: CLI settings **with provenance** (env/context/file/default),
+  contexts, the HPC cluster registry (definitions + governance state), the artifact-vs-dataset
+  object-store split, every per-model YAML, environment overlays, FinOps providers, and all platform
+  env vars — secret values redacted by key pattern. Deliberately a **generated read-only view**, not a
+  new source of truth, so it can never drift; use it to inspect a deployment or `diff` two
+  environments. Guard: `tests/unit/test_config_export.py` (4).
+
+- **feat(projects): automatic per-model project onboarding, with a bound MinIO connection, on every
+  surface (CLI · Dashboard · Jupyter/SDK).** `exa modelzoo adopt` now also provisions each project its
+  own per-project **S3/MinIO connection** (name `minio` by default) bound to the project's storage —
+  endpoint/keys resolved from the platform S3 env (`MLFLOW_S3_ENDPOINT_URL`/`AWS_*`), the secret stored
+  via the D7 secrets store (never printed), and it **degrades gracefully** (records the step as
+  `skipped` when no S3 endpoint is configured, or a config-only connection when the secrets store is
+  keyless) so it never aborts the core provisioning. New flags `--connection-name` / `--no-connection`.
+  The same one code path (`examlops.modelzoo_adopt`) is now exposed identically on all three surfaces:
+  **SDK/Jupyter** — `examlops.sdk.onboard_model` / `onboard_all_models` / `list_zoo_models`;
+  **Dashboard** — `GET /api/v1/projects/zoo-models`, `POST /api/v1/projects/onboard/{model}`,
+  `POST /api/v1/projects/onboard-all` (`project.manage`-gated, audited) + a "Sync Model Zoo" action on
+  the Projects console. Idempotent + re-runnable end to end. +21 tests (8 core, 3 SDK, 5 dashboard-API,
+  1 frontend-lib + existing suites green). Guides: `docs/guides/projects-workspaces.md` §14,
+  `docs/reference/cli-commands-guide.md`.
+- **fix(pipelines): decouple the pipeline engine from `modelzoo/ci`.** `pipeline_generator` imported
+  `retrieve_instances_from_file` from `ci.utils` (in `modelzoo/ci`), which broke any runtime that ships
+  only `pipelines` and crossed the ADR-0094 platform⟂use-case boundary. Relocated the generic helper to
+  `pipelines/discovery_utils.py`; `pipeline_generator` imports it from there. Boundary check + all
+  discovery tests green.
 - **feat(agent): next-gen Skipper — Phase 8, tenant/project memory scoping (ADR 0105).** Completes the
   next-gen roadmap. Memory namespaces are now tenant-aware (`skipper/scoping.py`): with
   `AGENT_MEMORY_TENANT_SCOPED` on, memories are written under the active tenant (`EXAMLOPS_PROJECT` →

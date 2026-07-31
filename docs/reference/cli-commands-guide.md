@@ -88,6 +88,7 @@ Manages the CLI's own settings and named environment contexts in `~/.config/exam
 | `exa config set <key> <value>` | Sets a single config key in the TOML file; `--context` targets a named context. **Mutation** (writes config). | Point the CLI at a control plane, MLflow, or token, or populate a per-environment context. | `exa config set control_plane http://23.109.46.77:18002`<br>`exa config set control_plane http://23.109.46.77:18002 --context lxp` |
 | `exa config contexts` | Lists configured contexts (environments) and marks the active one. | To see which environments are defined and which one commands will hit right now. | `exa config contexts` |
 | `exa config use <name>` | Switches the active context (environment). **Mutation** (writes `active_context`). | Flip between, e.g., a local dev context and the `lxp` remote server without re-typing endpoints. | `exa config use lxp` |
+| `exa config export` | One-file YAML snapshot of **all** platform configuration, generated live: CLI settings with provenance, contexts, HPC cluster registry, artifact-vs-dataset object-store split, per-model YAMLs, env overlays, FinOps providers, and every platform env var (secrets redacted). Read-only view — edit the underlying sources, not the snapshot. | Inspect a whole deployment at a glance, attach config to a bug report, or `diff` two environments (run it on the laptop and on lxp, then diff the files). | `exa config export`<br>`exa config export -o examlops-config.yaml`<br>`exa --json config export` |
 
 ### `exa plugins` — installed plugin inventory
 
@@ -297,6 +298,7 @@ Tracks whether registered models are up to date with the upstream ModelZoo libra
 | `exa modelzoo sync` | Manually triggers one ModelZoo poll cycle. | Force an immediate freshness refresh instead of waiting for the poller. | `exa modelzoo sync` |
 | `exa modelzoo config` | Shows the ModelZoo integration configuration. | Inspect current auto-retrain / poll settings. | `exa modelzoo config` |
 | `exa modelzoo config-set <key> <value>` | **Mutation.** Updates ModelZoo integration config on the Control Plane. Keys: `auto_retrain`, `poll_interval_seconds`. | Enable auto-retrain or change the poll cadence. | `exa modelzoo config-set poll_interval_seconds 120` |
+| `exa modelzoo adopt [<model>] [--all] [--connection-name <n>] [--no-connection] [--dry-run]` | **Mutation.** Provisions one project per model — project · storage · **bound MinIO connection** · budget · workbench · pipeline surfaces. Idempotent. `--all` backfills every Zoo/pack model; `--no-connection` skips the MinIO wiring; `--connection-name` renames the per-project connection (default `minio`). | Make "a project per model" the zero-effort default, with each project's own MinIO storage. | `exa modelzoo adopt JPCP` · `exa modelzoo adopt --all --dry-run` |
 
 ### `exa embedding` — Embedding lifecycle (encoders + blue-green reindex, B6)
 

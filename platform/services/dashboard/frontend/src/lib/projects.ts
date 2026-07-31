@@ -351,3 +351,46 @@ export const useUpdateProject = (name: string) => {
     },
   })
 }
+
+// ── model-zoo onboarding (one project per model — shares examlops.modelzoo_adopt) ──────────────
+export interface ZooModel {
+  model: string
+  project: string
+}
+
+export interface OnboardResult {
+  model: string
+  project: string
+  dry_run: boolean
+  changed: boolean
+  steps: Record<string, string>
+}
+
+export const listZooModels = (): Promise<{ models: ZooModel[] }> =>
+  apiFetch<{ models: ZooModel[] }>('/api/v1/projects/zoo-models')
+
+export const onboardModel = (
+  model: string,
+  body: Record<string, unknown> = {},
+): Promise<OnboardResult> =>
+  apiFetch<OnboardResult>(`/api/v1/projects/onboard/${encodeURIComponent(model)}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+export const onboardAllModels = (
+  body: Record<string, unknown> = {},
+): Promise<{ results: OnboardResult[]; onboarded: number }> =>
+  apiFetch<{ results: OnboardResult[]; onboarded: number }>('/api/v1/projects/onboard-all', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+/** Onboard every Zoo/pack model (one project each); invalidates the projects list on success. */
+export const useOnboardAllModels = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Record<string, unknown> = {}) => onboardAllModels(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  })
+}

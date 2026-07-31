@@ -230,6 +230,44 @@ budget vs. consumption — with no secret exposure. The write tools `project_ass
 `EXAMLOPS_MCP_ALLOW_WRITES=1`), pass the same least-privilege `agent_write` policy gate as every
 other mutating tool, and are audited. See `docs/reference/commands.md` → *Agent surface*.
 
+## 14. Automatic onboarding — one project per model (CLI · Dashboard · Jupyter)
+
+Instead of wiring each project by hand, **onboard a model** to get its whole workspace in one idempotent
+step: the project envelope + quota, per-project storage, a **bound per-project MinIO/S3 connection**,
+a FinOps budget, the model assignment, a Jupyter workbench, and the train/serve pipeline surfaces. All
+three surfaces call the *same* code path (`examlops.modelzoo_adopt`), so they can never drift.
+
+The MinIO connection resolves its endpoint/keys from the platform S3 env (`MLFLOW_S3_ENDPOINT_URL` +
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`); the secret is stored in the secrets store and never
+printed. If no S3 endpoint is configured the connection step is recorded as `skipped` (the rest still
+provisions); pass `--no-connection` to skip it deliberately.
+
+**CLI**
+```bash
+exa modelzoo adopt JPCP                 # one project for JPCP, with a bound "minio" connection
+exa modelzoo adopt --all                # backfill every Zoo/pack model (idempotent)
+exa modelzoo adopt --all --dry-run      # preview what each model would provision
+exa modelzoo adopt JPCP --no-connection # project only, skip the MinIO wiring
+exa modelzoo adopt JPCP --connection-name minio-prod   # rename the per-project connection
+```
+
+**Jupyter / SDK** — the stable programmatic surface (`examlops.sdk`):
+```python
+from examlops.sdk import list_zoo_models, onboard_model, onboard_all_models
+
+list_zoo_models()                       # ['JPCP', 'MACK', 'MCBound']
+onboard_model("JPCP")                   # {'project':'jpcp','changed':True,'steps':{...}}
+onboard_all_models(dry_run=True)        # preview every model, writes nothing
+```
+
+**Dashboard** — the Projects console has a **Sync Model Zoo** action (admin / `project.manage`), which
+provisions a project for every Zoo model and reports how many were newly created. Backing routes:
+`GET /api/v1/projects/zoo-models`, `POST /api/v1/projects/onboard/{model}`,
+`POST /api/v1/projects/onboard-all` (viewer → 403; every real change audited as a `dashboard` event).
+
+Each result reports every step as `created` / `exists` / `skipped` (or the `would-*` forms under
+dry-run), so a re-run is safe and shows exactly what (if anything) changed.
+
 ## Environment variables
 
 | Variable | Default | Purpose |

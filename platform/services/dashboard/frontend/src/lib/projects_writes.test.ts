@@ -66,3 +66,28 @@ describe('updateProject', () => {
     })
   })
 })
+
+describe('model-zoo onboarding', () => {
+  beforeEach(() => mockFetch.mockReset())
+
+  it('lists zoo models (GET)', async () => {
+    mockFetch.mockResolvedValue({ models: [{ model: 'JPCP', project: 'jpcp' }] })
+    const { onboardModel, onboardAllModels, listZooModels } = await import('./projects')
+    await listZooModels()
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/projects/zoo-models')
+
+    mockFetch.mockResolvedValue({ model: 'JPCP', project: 'jpcp', changed: true, steps: {} })
+    await onboardModel('JPCP', { dryRun: true })
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/projects/onboard/JPCP', {
+      method: 'POST',
+      body: JSON.stringify({ dryRun: true }),
+    })
+
+    mockFetch.mockResolvedValue({ results: [], onboarded: 0 })
+    await onboardAllModels({})
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/projects/onboard-all', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  })
+})

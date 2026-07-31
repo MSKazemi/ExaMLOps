@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  FolderKanban, ChevronRight, Box, Layers, Users, Cpu, PlusCircle, X,
+  FolderKanban, ChevronRight, Box, Layers, Users, Cpu, PlusCircle, X, Wand2,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { isAdmin } from '@/lib/auth'
 import {
-  useProjects, useCreateProject, statusToken, quotaSummary,
+  useProjects, useCreateProject, useOnboardAllModels, statusToken, quotaSummary,
   type ProjectSummary, type CreateProjectBody,
 } from '@/lib/projects'
 
@@ -174,6 +174,7 @@ export function Projects() {
   const { data: projects, isLoading, error } = useProjects()
   const [showCreate, setShowCreate] = useState(false)
   const admin = isAdmin()
+  const onboard = useOnboardAllModels()
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -185,16 +186,41 @@ export function Projects() {
           </p>
         </div>
         {admin && (
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium"
-            style={{ background: 'oklch(0.72 0.18 155 / 15%)', color: 'oklch(0.72 0.18 155)', border: '1px solid oklch(0.72 0.18 155 / 30%)' }}
-          >
-            <PlusCircle size={14} />
-            New Project
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onboard.mutate({})}
+              disabled={onboard.isPending}
+              title="Provision one project per Model-Zoo model (storage · MinIO connection · budget · workbench). Idempotent."
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-60"
+              style={{ background: 'oklch(0.62 0.16 265 / 15%)', color: 'oklch(0.62 0.16 265)', border: '1px solid oklch(0.62 0.16 265 / 30%)' }}
+            >
+              <Wand2 size={14} />
+              {onboard.isPending ? 'Syncing…' : 'Sync Model Zoo'}
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium"
+              style={{ background: 'oklch(0.72 0.18 155 / 15%)', color: 'oklch(0.72 0.18 155)', border: '1px solid oklch(0.72 0.18 155 / 30%)' }}
+            >
+              <PlusCircle size={14} />
+              New Project
+            </button>
+          </div>
         )}
       </div>
+
+      {onboard.isSuccess && (
+        <p className="text-sm rounded-lg px-4 py-3"
+          style={{ background: 'oklch(0.72 0.18 155 / 12%)', border: '1px solid oklch(0.72 0.18 155 / 25%)', color: 'var(--success-text)' }}>
+          Model Zoo synced — {onboard.data.onboarded} project(s) newly provisioned.
+        </p>
+      )}
+      {onboard.isError && (
+        <p className="text-sm rounded-lg px-4 py-3"
+          style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
+          Model Zoo sync failed.
+        </p>
+      )}
 
       {showCreate && <CreateProjectModal onClose={() => setShowCreate(false)} />}
 

@@ -21,9 +21,10 @@ _EXAMPLES_SYNC = "Examples:\n\n  exa modelzoo sync"
 _EXAMPLES_CONFIG = "Examples:\n\n  exa modelzoo config"
 _EXAMPLES_ADOPT = (
     "Examples:\n\n"
-    "  exa modelzoo adopt JPCP            # one project for the JPCP model\n\n"
+    "  exa modelzoo adopt JPCP            # one project for JPCP (+ bound MinIO connection)\n\n"
     "  exa modelzoo adopt --all           # backfill every Zoo/pack model\n\n"
-    "  exa modelzoo adopt --all --dry-run # preview without provisioning"
+    "  exa modelzoo adopt --all --dry-run # preview without provisioning\n\n"
+    "  exa modelzoo adopt JPCP --no-connection  # project only, skip the MinIO wiring"
 )
 
 
@@ -187,14 +188,23 @@ def adopt(
         None, help="Model to adopt (e.g. JPCP). Omit with --all to adopt every model."
     ),
     all_models: bool = typer.Option(False, "--all", help="Adopt every Zoo/pack model."),
+    connection_name: str = typer.Option(
+        "minio", "--connection-name", help="Name of the per-project S3/MinIO connection to provision."
+    ),
+    no_connection: bool = typer.Option(
+        False, "--no-connection", help="Skip provisioning the per-project MinIO connection."
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview what would be provisioned without writing."
     ),
 ):
-    """Provision one project per model (storage · budget · workbench · pipelines). Idempotent.
+    """Provision one project per model (storage · MinIO connection · budget · workbench · pipelines).
+    Idempotent.
 
-    A project can still hold several models via `exa project assign` — this just makes
-    one-project-per-model the zero-effort default (ADR 0086).
+    Wires each model its own project with a bound per-project MinIO/S3 connection (endpoint/keys from
+    the platform S3 env; secret via the secrets store, never printed). A project can still hold
+    several models via `exa project assign` — this just makes one-project-per-model the zero-effort
+    default (ADR 0086).
     """
     from examlops.modelzoo_adopt import adopt_all, adopt_model, zoo_models
 
@@ -202,7 +212,12 @@ def adopt(
         _output.error("Give a model name or --all. Known models: " + ", ".join(zoo_models()))
         raise typer.Exit(1)
 
-    results = adopt_all(dry_run=dry_run) if all_models else [adopt_model(model, dry_run=dry_run)]
+    kw = {"connection_name": connection_name, "provision_connection": not no_connection}
+    results = (
+        adopt_all(dry_run=dry_run, **kw)
+        if all_models
+        else [adopt_model(model, dry_run=dry_run, **kw)]
+    )
 
     if _output.json_mode:
         _output.print_json(results)
