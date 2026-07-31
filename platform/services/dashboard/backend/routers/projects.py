@@ -162,6 +162,18 @@ async def list_projects_view(_=Depends(_viewer)) -> list[dict]:
         return []
 
 
+@router.get("/zoo-models")
+async def zoo_models_view(_=Depends(_viewer)) -> dict:
+    """List the Model-Zoo/pack models that can be onboarded (candidates for a per-model project).
+
+    Registered before ``/{name}`` so the literal path is not captured by the anatomy route.
+    """
+    adopt = _examlops_adopt()
+    return {
+        "models": [{"model": m, "project": adopt.project_name_for(m)} for m in adopt.zoo_models()]
+    }
+
+
 @router.get("/{name}")
 async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
     """Full anatomy: quota, resources by kind, members, budget, consumption (viewer)."""
@@ -316,6 +328,23 @@ def _examlops_projects():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "project edits require the examlops package (not available in this deployment)",
+        ) from exc
+
+
+def _examlops_adopt():
+    """Lazy, guarded import of the model-zoo onboarding code path (503 if unavailable).
+
+    This is the SAME code path as ``exa modelzoo adopt`` / ``examlops.sdk.onboard_model`` — the
+    dashboard never re-implements provisioning, so the three surfaces can never drift (Phase 42).
+    """
+    try:
+        from examlops import modelzoo_adopt as _adopt  # type: ignore
+
+        return _adopt
+    except ImportError as exc:  # pragma: no cover - only when examlops is not installed
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "model onboarding requires the examlops package (not available in this deployment)",
         ) from exc
 
 
@@ -587,3 +616,71 @@ async def delete_project_view(name: str, principal: dict = Depends(_admin)) -> d
     conn.commit()
     conn.close()
     return {"name": name, "deleted": True}
+
+
+# ── Model-zoo onboarding (one project per model, CLI/SDK/Dashboard share examlops.modelzoo_adopt) ──
+@router.post("/onboard/{model}")
+async def onboard_model_view(
+    model: str,
+    payload: dict = Body(default={}),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Provision one project for a Zoo model — project · storage · MinIO connection · budget · model ·
+    workbench · pipeline surfaces (admin / project.manage; audited). Idempotent.
+
+    Body (optional): ``{dryRun: bool, connectionName: str, provisionConnection: bool}``. Runs the
+    SAME ``examlops.modelzoo_adopt.adopt_model`` code path as the CLI/SDK; the MinIO secret is read
+    server-side from the platform env and never crosses the wire.
+    """
+    _require_manage(principal)
+    adopt = _examlops_adopt()
+    actor = principal.get("sub", "?")
+    result = adopt.adopt_model(
+        model,
+        dry_run=bool(payload.get("dryRun", False)),
+        connection_name=payload.get("connectionName", "minio"),
+        provision_connection=bool(payload.get("provisionConnection", True)),
+        actor=actor,
+    )
+    if not result.get("dry_run") and result.get("changed"):
+        conn = _connect()
+        _ensure_tables(conn)
+        _audit(
+            conn, actor, "project_onboarded", result["project"],
+            {"via": "dashboard", "model": model, "steps": result["steps"]},
+        )
+        conn.commit()
+        conn.close()
+    return result
+
+
+@router.post("/onboard-all")
+async def onboard_all_view(
+    payload: dict = Body(default={}),
+    principal: dict = Depends(_admin),
+) -> dict:
+    """Onboard every Zoo/pack model (one project each; admin / project.manage; audited). Idempotent —
+    already-provisioned models report ``changed=false``. Body (optional): ``{dryRun, connectionName,
+    provisionConnection}``."""
+    _require_manage(principal)
+    adopt = _examlops_adopt()
+    actor = principal.get("sub", "?")
+    dry_run = bool(payload.get("dryRun", False))
+    results = adopt.adopt_all(
+        dry_run=dry_run,
+        connection_name=payload.get("connectionName", "minio"),
+        provision_connection=bool(payload.get("provisionConnection", True)),
+        actor=actor,
+    )
+    changed = [r for r in results if not dry_run and r.get("changed")]
+    if changed:
+        conn = _connect()
+        _ensure_tables(conn)
+        _audit(
+            conn, actor, "project_onboarded_bulk", "*",
+            {"via": "dashboard", "count": len(changed),
+             "models": [r["model"] for r in changed]},
+        )
+        conn.commit()
+        conn.close()
+    return {"results": results, "onboarded": len(changed)}

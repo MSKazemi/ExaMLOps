@@ -25,6 +25,9 @@ __all__ = [
     "place",
     "list_providers",
     "resolve_provider",
+    "list_zoo_models",
+    "onboard_model",
+    "onboard_all_models",
 ]
 
 
@@ -139,3 +142,33 @@ def resolve_provider(domain: str, *, override: str | None = None, group: str | N
     from examlops.providers.loader import resolve_provider as _resolve
 
     return _resolve(domain, override=override, group=group or "finops")
+
+
+# ── model-zoo onboarding (one project per model — CLI/Dashboard/Jupyter share this path) ─────────
+def list_zoo_models() -> list[str]:
+    """Every model the active use-case pack declares — the candidates for :func:`onboard_model`."""
+    from examlops.modelzoo_adopt import zoo_models
+
+    return zoo_models()
+
+
+def onboard_model(model: str, *, dry_run: bool = False, **opts: Any) -> dict[str, Any]:
+    """Provision (or complete) a project for one Zoo model — project · storage · **MinIO connection** ·
+    budget · model · workbench · pipeline surfaces. Idempotent; safe to re-run from a notebook.
+
+    Keyword options pass through to :func:`examlops.modelzoo_adopt.adopt_model` (``connection_name``,
+    ``provision_connection``, ``s3_endpoint``/``s3_access_key``/``s3_secret``/``s3_bucket``,
+    ``cpu_limit``, ``memory_gb``, ``storage_gb``, ``gpu_hours_budget``, ``cost_budget``, ``actor``).
+    Returns ``{model, project, dry_run, changed, steps}``.
+    """
+    from examlops.modelzoo_adopt import adopt_model
+
+    return adopt_model(model, dry_run=dry_run, **opts)
+
+
+def onboard_all_models(*, dry_run: bool = False, **opts: Any) -> list[dict[str, Any]]:
+    """Onboard every Zoo/pack model (one project each). Idempotent — already-provisioned models
+    report ``changed=False``. Returns one result dict per model."""
+    from examlops.modelzoo_adopt import adopt_all
+
+    return adopt_all(dry_run=dry_run, **opts)

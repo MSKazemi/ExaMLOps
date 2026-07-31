@@ -10,20 +10,6 @@ ExaMLOps platform CLI — manage models, training, inference, and services.
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
 
-**Grouped help.** `exa --help` groups its commands into titled panels by MLOps concern —
-Getting Started · Training & Pipelines · Data & Features · Models & Registry · Serving &
-Inference · GenAI & LLMOps · Monitoring & Quality · HPC, Fleet & FinOps · Governance &
-Security · Projects & Workspaces · Platform & Integrations — so you can jump straight to the
-area you need. The largest sub-groups (`exa serve`, `exa models`, `exa pipeline`, `exa hpc`,
-`exa drift`, `exa project`) show panels in their own `--help` too.
-
-**Change provenance (`--reason`).** Governance-critical mutating commands accept `--reason "<why>"`,
-recorded in the audit trail (`audit_events.details.reason`) so a reviewer can see *why* a change was
-made, not just what and by whom. Currently on: `exa retrain`, `exa drift baseline|reset`,
-`exa drift input baseline|reset`, `exa serve traffic`, `exa approvals approve|reject`. Commands that
-need a credential (e.g. `exa retrain` needs `CONTROL_PLANE_TOKEN`) also print an early scope hint when
-it is missing, so the requirement surfaces before the request is rejected.
-
 ## `exa admission`
 
 Admission-control queue (per-tenant fair-share)
@@ -78,6 +64,7 @@ Sysadmin approval gate
 Approve a pending model change — fires Prefect training immediately.
 
 - `--dry-run` — Show what would be approved without firing training
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa approvals delete`
 
@@ -349,6 +336,17 @@ CLI configuration
 
 List configured contexts (environments) and show the active one.
 
+### `exa config export`
+
+One-file YAML snapshot of ALL ExaMLOps configuration (generated, secrets redacted).
+
+Aggregates the CLI config (with provenance), contexts, the HPC cluster registry,
+object-store split (artifact vs dataset MinIO), per-model YAMLs, environment
+overlays, FinOps providers, and every platform env var — always derived live
+from the real sources, so it can never drift from reality.
+
+- `--out, -o` — Write the snapshot to a file instead of stdout
+
 ### `exa config init`
 
 Interactive wizard — write ~/.config/examlops/config.toml.
@@ -445,41 +443,37 @@ Resolve the current dataset state to a revision and record it (spec R8).
 
 ### `exa data synth`
 
-Synthetic data generation + fidelity/privacy gate (Next-Gen 40 · A7, ADR 0042). SDV is an
-optional `examlops[synth]` extra; without it a pure-python Gaussian-copula fallback keeps every
-subcommand — including the release gate — working offline. See `docs/guides/synthetic-data.md`.
+Synthetic data generation + fidelity/privacy gate (A7)
+
+#### `exa data synth evaluate`
+
+Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3).
+
+- `--real` — Local parquet file/dir of the real data
+- `--synthetic` — Local parquet file/dir of the synthetic data
+- `--min-fidelity` — Fidelity release floor
+- `--min-privacy` — Privacy release floor
 
 #### `exa data synth fit`
 
 Fit a generator to real data and report what it learned (spec R1 smoke-check).
 
-- `--path, -p` — Local parquet file/dir of real data (required)
-- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--path, -p` — Local parquet file/dir of real data
+- `--method, -m` — gaussian_copula | ctgan | tvae
 - `--seed` — Deterministic seed
 
 #### `exa data synth generate`
 
-Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4). Exits non-zero when
-the fidelity/privacy gate blocks the dataset.
+Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4).
 
-- `--path, -p` — Local parquet file/dir of real data (required)
-- `--rows, -n` — Number of synthetic rows to generate (required)
-- `--method, -m` — `gaussian_copula` | `ctgan` | `tvae` (default `gaussian_copula`)
+- `--path, -p` — Local parquet file/dir of real data
+- `--rows, -n` — Number of synthetic rows to generate
+- `--method, -m` — gaussian_copula | ctgan | tvae
 - `--seed` — Deterministic seed
-- `--min-fidelity` — Fidelity release floor (default 0.6)
-- `--min-privacy` — Privacy release floor (default 0.5)
+- `--min-fidelity` — Fidelity release floor
+- `--min-privacy` — Privacy release floor
 - `--out, -o` — Directory to write the released synthetic parquet
-- `--force` — Record even if the gate blocks (still flagged synthetic, never as real)
-
-#### `exa data synth evaluate`
-
-Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3). Exits
-non-zero when the gate fails.
-
-- `--real` — Local parquet file/dir of the real data (required)
-- `--synthetic` — Local parquet file/dir of the synthetic data (required)
-- `--min-fidelity` — Fidelity release floor (default 0.6)
-- `--min-privacy` — Privacy release floor (default 0.5)
+- `--force` — Record even if the gate blocks (still flagged, never as real)
 
 ### `exa data validate`
 
@@ -525,6 +519,7 @@ Show auto-retrain config for all models.
 Store current rolling stats as the drift baseline for a model.
 
 - `--dry-run` — Show the baseline that would be set without writing it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa drift concept`
 
@@ -566,12 +561,14 @@ retrain BEFORE the degradation window instead of after. Exit 1 if a breach is im
 Store current rolling embedding statistics as the input drift baseline.
 
 - `--dry-run` — Show the input baseline that would be set without writing it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 #### `exa drift input reset`
 
 Clear all input embedding snapshots for a model (keeps baseline).
 
 - `--dry-run` — Show how many snapshots would be cleared without deleting them
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 #### `exa drift input status`
 
@@ -589,6 +586,7 @@ Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).
 Clear all drift snapshots for a model (keeps baseline).
 
 - `--dry-run` — Show how many snapshots would be cleared without deleting them
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa drift snapshots`
 
@@ -1346,6 +1344,12 @@ Print the A2A Agent Card describing this platform's agent skills.
 - `--url` — Public base URL where this agent is reachable
 - `--all` — Advertise mutating tools in the card
 
+### `exa mcp capabilities`
+
+Show what the agent can do, grouped by lifecycle use case (management, monitoring, …).
+
+- `--all` — Include mutating (write) tools even if writes are disabled
+
 ### `exa mcp prompts`
 
 List the MCP prompts (reusable agent workflows) ExaMLOps ships.
@@ -1479,6 +1483,21 @@ Verify a model's signature against current artifact bytes (verify-before-load ga
 ## `exa modelzoo`
 
 ModelZoo repository freshness and events
+
+### `exa modelzoo adopt`
+
+Provision one project per model (storage · MinIO connection · budget · workbench · pipelines).
+Idempotent.
+
+Wires each model its own project with a bound per-project MinIO/S3 connection (endpoint/keys from
+the platform S3 env; secret via the secrets store, never printed). A project can still hold
+several models via `exa project assign` — this just makes one-project-per-model the zero-effort
+default (ADR 0086).
+
+- `--all` — Adopt every Zoo/pack model.
+- `--connection-name` — Name of the per-project S3/MinIO connection to provision.
+- `--no-connection` — Skip provisioning the per-project MinIO connection.
+- `--dry-run` — Preview what would be provisioned without writing.
 
 ### `exa modelzoo config`
 
@@ -2048,6 +2067,7 @@ Trigger a Prefect training run via the Control Plane.
 - `--dummy` — Use dummy data (dev-safe, no downloads)
 - `--backend` — Storage backend
 - `--dry-run` — Show what would be scheduled without triggering it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ## `exa scaffold`
 
@@ -2404,6 +2424,7 @@ Show or set traffic split across model aliases (must sum to 100).
 - `--canary` — % traffic to Canary alias
 - `--staging` — % traffic to Staging alias
 - `--dry-run` — Show the split that would be applied without changing routing
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa serve traffic-list`
 

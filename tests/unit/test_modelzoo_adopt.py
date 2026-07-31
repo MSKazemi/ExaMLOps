@@ -86,3 +86,77 @@ def test_adopt_all_covers_every_model():
     results = mz.adopt_all()
     assert {r["project"] for r in results} == {"jpcp", "mack"}
     assert all(r["changed"] for r in results)
+
+
+# ── per-project MinIO/S3 connection step (the "connect minio" default) ────────────────────────────
+from cryptography.fernet import Fernet  # noqa: E402
+
+from examlops.connections import get_connection  # noqa: E402
+
+
+@pytest.fixture
+def _s3_env(monkeypatch):
+    """Platform S3 env + a secrets KEK so the connection step can store its secret (as in prod)."""
+    monkeypatch.setenv("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    monkeypatch.setenv("EXAMLOPS_SECRETS_KEY", Fernet.generate_key().decode())
+
+
+def test_adopt_provisions_and_binds_minio_connection(_s3_env):
+    out = mz.adopt_model("JPCP")
+    assert out["steps"]["connection"] == "created"
+    conn = get_connection("minio", project="jpcp")
+    assert conn is not None and conn["kind"] == "s3" and conn["has_secret"] is True
+    assert conn["config"]["endpoint"] == "http://minio:9000"
+    assert conn["config"]["bucket"]  # projects bucket resolved
+    # storage is bound to the connection
+    assert get_project_storage("jpcp")["connection_ref"] == "minio"
+
+
+def test_connection_step_idempotent(_s3_env):
+    mz.adopt_model("JPCP")
+    out2 = mz.adopt_model("JPCP")
+    assert out2["steps"]["connection"] == "exists"
+    assert out2["changed"] is False
+
+
+def test_connection_skipped_without_s3_env():
+    # no MLFLOW_S3_ENDPOINT_URL set → connection provisioning is a no-op, rest still provisioned
+    out = mz.adopt_model("JPCP")
+    assert out["steps"]["connection"] == "skipped"
+    assert out["steps"]["project"] == "created"
+    assert get_connection("minio", project="jpcp") is None
+    assert get_project_storage("jpcp")["connection_ref"] is None
+
+
+def test_connection_degrades_without_secret_store(monkeypatch):
+    # S3 endpoint present but NO secrets KEK → connection is still registered (config-only, no secret)
+    monkeypatch.setenv("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    monkeypatch.delenv("EXAMLOPS_SECRETS_KEY", raising=False)
+    monkeypatch.delenv("EXAMLOPS_SECRETS_KEYS", raising=False)
+    monkeypatch.delenv("DASHBOARD_SECRET_KEY", raising=False)
+    out = mz.adopt_model("JPCP")
+    assert out["steps"]["connection"] == "created"
+    conn = get_connection("minio", project="jpcp")
+    assert conn is not None and conn["has_secret"] is False  # degraded: no stored secret
+    assert get_project_storage("jpcp")["connection_ref"] == "minio"
+
+
+def test_no_connection_flag_skips(_s3_env):
+    out = mz.adopt_model("JPCP", provision_connection=False)
+    assert out["steps"]["connection"] == "skipped"
+    assert get_connection("minio", project="jpcp") is None
+
+
+def test_dry_run_connection_would_skip_without_env():
+    out = mz.adopt_model("JPCP", dry_run=True)
+    assert out["steps"]["connection"] == "would-skip"  # no S3 env → would be skipped
+
+
+def test_dry_run_connection_would_create_with_env(_s3_env):
+    out = mz.adopt_model("JPCP", dry_run=True)
+    assert out["steps"]["connection"] == "would-create"
+    assert get_connection("minio", project="jpcp") is None  # nothing persisted

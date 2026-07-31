@@ -70,9 +70,8 @@ for _p in (str(_REPO_ROOT), str(_PLATFORM), str(_MODELZOO), str(_SLURM_ADAPTER_D
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ci.utils import retrieve_instances_from_file
-
 from pipelines import usecase as _usecase  # noqa: E402
+from pipelines.discovery_utils import retrieve_instances_from_file
 from pipelines.model_loader import ModelYAMLConfig, scan_model_yamls  # noqa: E402
 
 # registry_loader has no imports from this module — no circular import risk.
@@ -92,6 +91,27 @@ _DataloaderParams = _FRAMEWORK["dataloader_params"]
 _get_backend = _FRAMEWORK["get_backend"]
 _adapter_for = _FRAMEWORK["framework_adapter"]
 SeanergysModelTask = _FRAMEWORK["model_task"]
+
+
+def _dataset_store_kwargs(backend_name: str) -> dict[str, str]:
+    """Credentials for the *dataset* object store, kept separate from the MLflow artifact store.
+
+    Large-scale datasets can live on a different S3/MinIO instance (e.g. the JSC
+    juphoria Day-0 store) than the platform MinIO that holds MLflow artifacts and
+    models. When the ``EXAMLOPS_DATA_S3_*`` variables are unset the backend keeps
+    its legacy resolution (``MLFLOW_S3_ENDPOINT_URL`` + ``AWS_*``), so a single
+    shared instance keeps working unchanged.
+    """
+    if backend_name != "minio":
+        return {}
+    kwargs: dict[str, str] = {}
+    if endpoint := os.getenv("EXAMLOPS_DATA_S3_ENDPOINT"):
+        kwargs["endpoint_url"] = endpoint
+    if access := os.getenv("EXAMLOPS_DATA_S3_ACCESS_KEY"):
+        kwargs["access_key"] = access
+    if secret := os.getenv("EXAMLOPS_DATA_S3_SECRET_KEY"):
+        kwargs["secret_key"] = secret
+    return kwargs
 
 # ── Model Registry ─────────────────────────────────────────────────────────────
 #
@@ -387,7 +407,7 @@ def _build_train_components(
     # Backend: YAML default overridden by runtime arg
     effective_backend = backend_name or ds_entry.backend
     if effective_backend and effective_backend != "zenodo":
-        ds_kwargs["backend"] = _get_backend(effective_backend)
+        ds_kwargs["backend"] = _get_backend(effective_backend, **_dataset_store_kwargs(effective_backend))
     else:
         ds_kwargs["use_zenodo_url"] = True
 

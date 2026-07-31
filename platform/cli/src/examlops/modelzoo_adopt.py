@@ -23,6 +23,37 @@ DEFAULT_STORAGE_GB = 50.0
 DEFAULT_GPU_HOURS_BUDGET = 100.0
 DEFAULT_COST_BUDGET = 250.0
 WORKBENCH_NAME = "nb1"
+DEFAULT_CONNECTION_NAME = "minio"
+
+
+def _resolve_s3_config(
+    endpoint: str | None = None,
+    access_key: str | None = None,
+    secret: str | None = None,
+    bucket: str | None = None,
+) -> dict[str, str | None] | None:
+    """Resolve the per-project S3/MinIO connection config from explicit args or the platform env.
+
+    Returns ``{endpoint, access_key, secret, bucket}`` or ``None`` when no S3 endpoint can be found
+    (so the caller skips connection provisioning rather than creating a useless connection). The
+    secret is read from the environment only — never hardcoded — and passed straight to the D7
+    secrets store by :func:`examlops.connections.create_connection`.
+    """
+    import os
+
+    from examlops.data.projects import projects_bucket
+
+    endpoint = (
+        endpoint or os.getenv("MLFLOW_S3_ENDPOINT_URL") or os.getenv("EXAMLOPS_DATA_S3_ENDPOINT")
+    )
+    if not endpoint:
+        return None
+    return {
+        "endpoint": endpoint,
+        "access_key": access_key or os.getenv("AWS_ACCESS_KEY_ID") or "minioadmin",
+        "secret": secret if secret is not None else os.getenv("AWS_SECRET_ACCESS_KEY"),
+        "bucket": bucket or projects_bucket(),
+    }
 
 
 def zoo_models() -> list[str]:
@@ -51,8 +82,11 @@ def project_name_for(model: str) -> str:
     return model.strip().lower()
 
 
-def _pending_steps(project: str, model: str) -> dict[str, bool]:
+def _pending_steps(
+    project: str, model: str, connection_name: str = DEFAULT_CONNECTION_NAME
+) -> dict[str, bool]:
     """Which provisioning steps are still needed for ``(project, model)`` (for --dry-run + idempotency)."""
+    from examlops.connections import get_connection
     from examlops.data import get_db, init_db
     from examlops.data.projects import (
         get_project,
@@ -76,6 +110,7 @@ def _pending_steps(project: str, model: str) -> dict[str, bool]:
     return {
         "project": get_project(project) is None,
         "storage": get_project_storage(project) is None,
+        "connection": get_connection(connection_name, project=project) is None,
         "budget": get_project_budget(project) is None,
         "model": model not in list_project_models(project),
         "workbench": get_workbench(WORKBENCH_NAME, project) is None,
@@ -91,24 +126,42 @@ def adopt_model(
     storage_gb: float = DEFAULT_STORAGE_GB,
     gpu_hours_budget: float | None = DEFAULT_GPU_HOURS_BUDGET,
     cost_budget: float | None = DEFAULT_COST_BUDGET,
+    connection_name: str = DEFAULT_CONNECTION_NAME,
+    provision_connection: bool = True,
+    s3_endpoint: str | None = None,
+    s3_access_key: str | None = None,
+    s3_secret: str | None = None,
+    s3_bucket: str | None = None,
     actor: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Provision (or complete) the project for one model. Idempotent; safe to re-run.
 
+    Composes the project primitives — project envelope → storage → **per-project MinIO/S3 connection
+    (bound to that storage)** → budget → model membership → workbench → pipeline surfaces. The
+    connection step resolves its endpoint/keys from explicit args or the platform S3 env
+    (``MLFLOW_S3_ENDPOINT_URL``/``AWS_*``); when no endpoint is configured it is recorded as
+    ``"skipped"`` rather than failing. Set ``provision_connection=False`` to skip it entirely.
+
     Returns ``{model, project, dry_run, changed, steps}`` where ``steps`` maps each provisioning
-    step to ``"created"`` / ``"exists"`` / ``"would-create"``.
+    step to ``"created"`` / ``"exists"`` / ``"skipped"`` (or the ``"would-*"`` forms under dry-run).
     """
     from examlops.platform_db import _actor
 
     actor = actor or _actor()
     project = project_name_for(model)
-    pending = _pending_steps(project, model)
+    pending = _pending_steps(project, model, connection_name)
     steps: dict[str, str] = {}
 
     if dry_run:
         for name, needed in pending.items():
             steps[name] = "would-create" if needed else "exists"
+        # The connection step is a no-op when disabled or when no S3 endpoint is resolvable.
+        if steps.get("connection") == "would-create" and (
+            not provision_connection
+            or _resolve_s3_config(s3_endpoint, s3_access_key, s3_secret, s3_bucket) is None
+        ):
+            steps["connection"] = "would-skip"
         return {
             "model": model,
             "project": project,
@@ -119,6 +172,7 @@ def adopt_model(
 
     from examlops.data.projects import (
         assign_model_to_project,
+        bind_project_connection,
         create_project,
         ensure_project_storage,
         set_project_budget,
@@ -143,6 +197,42 @@ def adopt_model(
     # 2. Storage (bucket prefix + /project quota).
     ensure_project_storage(project)
     steps["storage"] = "created" if pending["storage"] else "exists"
+
+    # 2b. Per-project MinIO/S3 connection, bound to the project's storage (the "connect minio" step).
+    #     Idempotent: reuse an existing connection (just ensure it stays bound); create one only when
+    #     an S3 endpoint is resolvable, else record "skipped" so offline/dev provisioning still works.
+    if provision_connection:
+        from examlops.connections import create_connection, get_connection
+
+        if get_connection(connection_name, project=project) is not None:
+            bind_project_connection(project, connection_name, actor=actor)
+            steps["connection"] = "exists"
+        elif (s3 := _resolve_s3_config(s3_endpoint, s3_access_key, s3_secret, s3_bucket)) is not None:
+            cfg = {
+                "endpoint": s3["endpoint"],
+                "bucket": s3["bucket"],
+                "access_key": s3["access_key"],
+            }
+            try:
+                create_connection(
+                    connection_name, "s3", project=project, config=cfg,
+                    secret_value=s3["secret"], created_by=actor,
+                )
+            except Exception:
+                # Secrets store unavailable (no KEK configured): still register the connection
+                # metadata without a stored secret so the per-project connection + binding exist
+                # (S3 access then uses the ambient AWS_* env). The secret write happens before the
+                # row insert, so no partial connection is left behind to retry over.
+                create_connection(
+                    connection_name, "s3", project=project, config=cfg,
+                    secret_value=None, created_by=actor,
+                )
+            bind_project_connection(project, connection_name, actor=actor)
+            steps["connection"] = "created"
+        else:
+            steps["connection"] = "skipped"
+    else:
+        steps["connection"] = "skipped"
 
     # 3. Budget (FinOps guardrail).
     if pending["budget"] and (gpu_hours_budget is not None or cost_budget is not None):
