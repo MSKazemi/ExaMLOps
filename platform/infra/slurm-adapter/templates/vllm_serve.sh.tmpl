@@ -1,0 +1,83 @@
+#!/bin/bash
+# ExaMLOps — vLLM OpenAI-compatible server as an HPC job (Track V / ADR 0107, R-A6).
+#
+# Rendered by examlops.llm_endpoints.HpcLauncher. Placeholders are @@NAME@@ rather than
+# ${NAME} or {name} so they can never collide with shell expansion or a brace in the argv.
+#
+# Follows the documented European-HPC pattern (LuxProvide MeluXina, Bristol Isambard):
+# Apptainer for the container runtime, a Ray cluster across the allocation, tensor-parallel
+# *within* a node and pipeline-parallel *across* nodes. Single-node allocations skip Ray
+# entirely — vLLM handles in-node tensor parallelism by itself, and an unnecessary Ray
+# cluster is just another thing that can fail to come up.
+#
+# The resolved endpoint is written to @@ENDPOINT_FILE@@ as soon as it is known, so the
+# launcher learns the address from the job itself instead of scraping squeue.
+
+set -euo pipefail
+
+MODEL="@@MODEL@@"
+IMAGE="@@IMAGE@@"
+SIF="@@SIF_PATH@@"
+PORT="@@PORT@@"
+NODES="@@NODES@@"
+ENDPOINT_FILE="@@ENDPOINT_FILE@@"
+RAY_PORT="@@RAY_PORT@@"
+
+@@MODULE_LOADS@@
+
+echo "[vllm-serve] model=${MODEL} nodes=${NODES} port=${PORT}"
+
+# ── container image ───────────────────────────────────────────────────────────
+# Pull once into a shared path; concurrent jobs reuse the same SIF rather than each
+# re-pulling several GB from the registry.
+if [ ! -f "${SIF}" ]; then
+  echo "[vllm-serve] pulling ${IMAGE} -> ${SIF}"
+  apptainer pull "${SIF}" "${IMAGE}"
+fi
+
+# ── address discovery ─────────────────────────────────────────────────────────
+if [ -n "${SLURM_JOB_NODELIST:-}" ]; then
+  HEAD_NODE=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n1)
+else
+  HEAD_NODE=$(hostname -s)
+fi
+HEAD_IP=$(getent hosts "${HEAD_NODE}" | awk '{print $1}' | head -n1)
+HEAD_IP=${HEAD_IP:-$(hostname -I | awk '{print $1}')}
+
+mkdir -p "$(dirname "${ENDPOINT_FILE}")"
+echo "http://${HEAD_IP}:${PORT}" > "${ENDPOINT_FILE}"
+echo "[vllm-serve] endpoint http://${HEAD_IP}:${PORT} (head=${HEAD_NODE})"
+
+# ── Ray cluster (multi-node only) ─────────────────────────────────────────────
+if [ "${NODES}" -gt 1 ]; then
+  echo "[vllm-serve] starting Ray head on ${HEAD_NODE}"
+  srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+    apptainer exec --nv "${SIF}" \
+    ray start --head --port="${RAY_PORT}" --block &
+  sleep 15
+
+  for node in $(scontrol show hostnames "${SLURM_JOB_NODELIST}" | tail -n +2); do
+    echo "[vllm-serve] starting Ray worker on ${node}"
+    srun --nodes=1 --ntasks=1 -w "${node}" \
+      apptainer exec --nv "${SIF}" \
+      ray start --address="${HEAD_IP}:${RAY_PORT}" --block &
+    sleep 5
+  done
+  # Workers must be registered before vLLM asks Ray for placement, or it will size the
+  # pipeline to whatever happens to be up and then fail to schedule the rest.
+  sleep 20
+fi
+
+# ── serve ─────────────────────────────────────────────────────────────────────
+# Apptainer forwards any APPTAINERENV_*-prefixed host variable into the container with the
+# prefix stripped, and srun propagates the batch environment by default. Going through the
+# environment this way keeps the API key off every command line — `apptainer exec --env
+# VLLM_API_KEY=...` would expand the value into argv, where any user on the node could read
+# it out of `ps`.
+if [ -n "${VLLM_API_KEY:-}" ]; then
+  export APPTAINERENV_VLLM_API_KEY="${VLLM_API_KEY}"
+fi
+
+srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  apptainer exec --nv "${SIF}" \
+  vllm serve "${MODEL}" @@VLLM_ARGS@@ --host 0.0.0.0 --port "${PORT}"

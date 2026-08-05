@@ -100,6 +100,7 @@ nav:
       - Serving & training:
           - Kubernetes serving: guides/kubernetes-serving.md
           - LLM serving engines: guides/llm-serving-engines.md
+          - LLM & VLM serving (vLLM): guides/vlm-serving.md
           - GPU sharing: guides/gpu-sharing.md
           - Inference gateway: guides/inference-gateway.md
           - Autoscaling: guides/autoscaling.md

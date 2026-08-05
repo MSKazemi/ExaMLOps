@@ -219,6 +219,61 @@ class RetrievalLiteQualityProvider(Provider):
         }
 
 
+# ── gateway façade (ADR 0107 / R-A10) ─────────────────────────────────────────
+
+
+def estimate_llm_cost_via_provider(
+    *,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    reasoning_tokens: int = 0,
+    provider: str | None = None,
+) -> float | None:
+    """Cost for one generation via the ``llm_cost`` provider — or ``None`` if none is selected.
+
+    Returning ``None`` when nothing is configured is deliberate. The default ``token-rate``
+    provider carries *generic* price defaults, whereas C1's rate table knows that a locally
+    served model (llama3.1, nomic-embed-text) costs **zero** per token — the common case on
+    an HPC-sovereign platform. Silently routing every call through the generic default would
+    invent a dollar cost for self-hosted inference.
+
+    So the provider is consulted only when an operator has actually chosen one (a
+    ``--provider`` override, ``EXAMLOPS_LLM_COST_PROVIDER``, or a ``provider:`` key in the
+    ``[llm_cost]`` config block); otherwise the caller keeps its existing estimate. This is
+    the same "default is byte-identical to the legacy path" rule the carbon and cost
+    providers follow (ADR 0074/0083).
+    """
+    import os as _os
+
+    from .providers import get_provider
+    from .providers.loader import load_domain_config
+
+    try:
+        block = load_domain_config(_DOMAIN_COST)
+    except Exception:
+        block = {}
+    name = provider or _os.getenv("EXAMLOPS_LLM_COST_PROVIDER") or block.get("provider")
+    if not name:
+        return None  # no explicit selection — caller keeps its own estimate
+    try:
+        prov = get_provider(_DOMAIN_COST, name=name, config=block)
+        out = prov.compute(
+            {
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                **{k: v for k, v in block.items() if k != "provider"},
+            }
+        )
+        cost = out.get("cost_usd")
+        return float(cost) if cost is not None else None
+    except Exception:
+        # A bad plugin/config must never break a generation — degrade to the caller's path.
+        return None
+
+
 # ── registration ──────────────────────────────────────────────────────────────
 
 

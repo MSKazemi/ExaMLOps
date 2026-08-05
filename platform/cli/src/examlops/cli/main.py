@@ -56,6 +56,7 @@ from examlops.cli.commands import (
     hardware_cmd,
     hpc_cmd,
     hpo_cmd,
+    llm_serve_cmd,
     mcp_cmd,
     models,
     modelzoo,
@@ -266,6 +267,9 @@ app.add_typer(
     workbench_cmd.app,
     name="workbench",
     help="Project Workbenches — on-demand dev environments (P5)",
+)
+serve.app.add_typer(
+    llm_serve_cmd.app, name="llm", help="LLM/VLM endpoints — vLLM lifecycle (Track V)"
 )
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
 serve.app.add_typer(

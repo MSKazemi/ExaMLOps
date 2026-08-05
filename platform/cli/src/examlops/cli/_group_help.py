@@ -87,6 +87,16 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Traffic split across aliases", "exa serve traffic-list"),
         ("Smoke-test serving", "exa serve check"),
     ],
+    "serve llm": [
+        ("What LLM/VLM endpoints exist?", "exa serve llm list"),
+        (
+            "Register a running vLLM server",
+            "exa serve llm start qwen-vl --base-url http://gpu01:8000",
+        ),
+        ("Launch one on HPC (2 nodes x 4 GPUs)", "exa serve llm start qwen-vl -l slurm --nodes 2 --gpus 4"),
+        ("Ask a vision model about an image", "exa serve llm chat qwen-vl -m 'What is this?' --image plot.png"),
+        ("Is it up? (exit 1 if not)", "exa serve llm health qwen-vl"),
+    ],
     "serve shadow": [
         ("Is shadowing active?", "exa serve shadow status JPCP"),
         ("Compare shadow vs production", "exa serve shadow log JPCP"),

@@ -108,11 +108,24 @@ def test_gwta8_build_engine_falls_back_to_echo_without_vllm(monkeypatch):
 
 def test_gwta8_build_engine_strict_no_fallback(monkeypatch):
     monkeypatch.setattr(engines, "_dep_available", lambda name: False)
-    # allow_fallback=False keeps the real (unusable) engine — no silent downgrade.
+    # allow_fallback=False never silently downgrades. Since ADR 0107 `vllm` means
+    # *server* mode, so with no endpoint configured there is no real engine to hand
+    # back — it raises with an actionable message rather than returning something that
+    # would fail confusingly on first use.
+    with pytest.raises(RuntimeError, match="no endpoint is configured"):
+        engines.build_engine(
+            engines.EngineConfig(engine="vllm"), model_path="m", allow_fallback=False
+        )
+
+
+def test_gwta8_strict_inproc_keeps_real_engine(monkeypatch):
+    # The in-process engine is still requestable explicitly, and strict mode hands back
+    # the real (dep-less, therefore unusable) engine rather than an echo stand-in.
+    monkeypatch.setattr(engines, "_dep_available", lambda name: False)
     eng = engines.build_engine(
-        engines.EngineConfig(engine="vllm"), model_path="m", allow_fallback=False
+        engines.EngineConfig(engine="vllm-inproc"), model_path="m", allow_fallback=False
     )
-    assert eng.name == "vllm"
+    assert eng.name == "vllm-inproc"
 
 
 def test_gwta8_gateway_serves_via_echo_when_vllm_absent(monkeypatch):

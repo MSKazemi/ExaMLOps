@@ -54,13 +54,58 @@ def node_targets(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [groups[k] for k in sorted(groups)]
 
 
-def generate(cluster: str | None = None) -> list[dict[str, Any]]:
-    """Read the registry's node snapshot and build the target groups (live wrapper)."""
+def llm_endpoint_targets(endpoints: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build ``file_sd`` groups for running vLLM endpoints (Track V / ADR 0107).
+
+    A vLLM server exposes ``vllm:*`` metrics (TTFT, inter-token latency, queue depth,
+    ``kv_cache_usage_perc``) on its own ``/metrics``. On HPC the server lands on whichever
+    node the scheduler allocated, so a static ``prometheus.yml`` entry cannot name it —
+    the same problem file_sd already solves for node/DCGM exporters here.
+
+    Only endpoints that are actually up are emitted: scraping a PENDING or STOPPED
+    endpoint just manufactures a permanently-down target and a false alert.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    tenant = _tenant()
+    for ep in endpoints:
+        if str(ep.get("state", "")).upper() not in ("READY", "STARTING"):
+            continue
+        base = str(ep.get("base_url") or "")
+        target = base.split("://", 1)[-1].rstrip("/")
+        if not target:
+            continue
+        cluster = ep.get("cluster") or "local"
+        grp = groups.setdefault(
+            cluster,
+            {
+                "targets": [],
+                "labels": {"cluster": cluster, "tenant": tenant, "job": "vllm"},
+            },
+        )
+        grp["targets"].append(target)
+    return [groups[k] for k in sorted(groups)]
+
+
+def generate(cluster: str | None = None, *, include_llm: bool = True) -> list[dict[str, Any]]:
+    """Read the registry and build the target groups (live wrapper).
+
+    Covers node/DCGM exporters plus, by default, any running vLLM endpoint — so one
+    generated file gives Prometheus the whole fleet's telemetry surface.
+    """
     from examlops.data import init_db
     from examlops.data.hpc import get_node_snapshot
 
     init_db()
-    return node_targets(get_node_snapshot(cluster))
+    groups = node_targets(get_node_snapshot(cluster))
+    if include_llm:
+        try:
+            from examlops.data.serving import list_llm_endpoints
+
+            groups = groups + llm_endpoint_targets(list_llm_endpoints())
+        except Exception:
+            # Endpoint discovery is additive — never break node SD generation.
+            pass
+    return groups
 
 
 def write_file_sd(path: str, cluster: str | None = None) -> int:

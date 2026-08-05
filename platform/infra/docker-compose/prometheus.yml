@@ -47,3 +47,23 @@ scrape_configs:
     static_configs:
       - targets: ['seanerbus-bridge:8003']
     metrics_path: /metrics
+
+  # vLLM (Track V / ADR 0107) — TTFT, inter-token latency, queue depth, KV-cache usage.
+  # The Compose service is a fixed target; endpoints launched on HPC land on whichever
+  # node the scheduler allocated, so those are discovered from the endpoint registry via
+  # `exa hpc prometheus-sd --out /etc/prometheus/targets/fleet.json` (file_sd below).
+  - job_name: vllm
+    static_configs:
+      - targets: ['vllm:8000']
+    metrics_path: /metrics
+    # The Compose service sits behind the `vllm` GPU profile and is absent on a CPU host;
+    # a down target there is expected, not an incident.
+    honor_labels: true
+
+  # Fleet service discovery: node_exporter + DCGM + running vLLM endpoints, regenerated
+  # by `exa hpc prometheus-sd`. Prometheus re-reads the file automatically — no reload.
+  - job_name: fleet
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/*.json']
+        refresh_interval: 30s
+    metrics_path: /metrics
