@@ -19,6 +19,7 @@ from examlops.data.serving import get_traffic_rules, set_traffic_rules
 # sub-typers (shadow/challenger/autoscale/routing/batch/ab/adapter) are attached there.
 _PANELS: list[tuple[str, list[str]]] = [
     ("Health & Deploy", ["reload", "check", "infer-check", "benchmark", "manifest", "backend"]),
+    ("LLM & VLM Serving", ["llm"]),
     ("Traffic & Routing", ["traffic", "traffic-list", "routing", "shadow", "ab"]),
     ("Scaling & Batch", ["autoscale", "batch"]),
     ("Models & Adapters", ["models", "adapter", "challenger", "explain"]),

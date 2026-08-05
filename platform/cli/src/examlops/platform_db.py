@@ -1605,6 +1605,30 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "source_revision": "TEXT",
         "generator": "TEXT",
     },
+    # Track V / ADR 0107: a *running* vLLM endpoint, not just its declared shape. The
+    # pre-existing columns describe what to serve; these describe where it is, who started
+    # it and on what substrate, so the table can back `exa serve llm` and the F10 console.
+    "llm_endpoints": {
+        "base_url": "TEXT",
+        "state": "TEXT NOT NULL DEFAULT 'PENDING'",  # PENDING|STARTING|READY|FAILED|STOPPED
+        "launcher": "TEXT NOT NULL DEFAULT 'external'",
+        "job_id": "TEXT",  # scheduler job id when launcher is slurm/flux
+        "cluster": "TEXT",
+        "project": "TEXT",
+        "modality": "TEXT NOT NULL DEFAULT 'text'",
+        "served_model_name": "TEXT",
+        "engine_config": "TEXT",  # JSON snapshot of the resolved engine block
+        "gpus": "INTEGER",
+        "nodes": "INTEGER",
+        "last_health": "TEXT",
+        "created_at": "TEXT",
+    },
+    # Track V: distinguish a long-running *serving* job from a training job. The poller
+    # (hpc_poll.poll_until_complete) assumes termination, so a serve job must never enter it.
+    "hpc_jobs": {
+        "kind": "TEXT NOT NULL DEFAULT 'train'",  # train | serve
+        "endpoint_url": "TEXT",
+    },
 }
 
 
@@ -1653,7 +1677,7 @@ def _audit_hash(prev_hash: str, canonical: str) -> str:
 
 # Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
 # relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
-from examlops.data.serving import (disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, get_device_pools, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_promotion_rule, set_traffic_rules)  # noqa: E402, E501, F401, I001
+from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, get_device_pools, get_llm_endpoint, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
 
 
 

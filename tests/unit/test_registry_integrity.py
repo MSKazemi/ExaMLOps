@@ -153,6 +153,26 @@ def test_yaml_has_required_top_level_fields(yaml_path):
 
 
 @pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
+def test_yaml_engine_block_is_valid(yaml_path):
+    """A malformed ``engine:`` block must fail CI (GWT-2, ADR 0016/0107).
+
+    ``validate_engine_block`` always claimed to back "the registry-integrity CI guard" but
+    nothing here called it, so a bad block — including a vision model with no per-prompt
+    media limit — could reach a serving host unchallenged. This is that guard.
+    """
+    import yaml as _yaml
+
+    from examlops.engines import validate_engine_block
+
+    doc = _yaml.safe_load(yaml_path.read_text()) or {}
+    block = doc.get("engine")
+    if block is None:
+        return  # no engine block ⇒ defaults apply, nothing to validate
+    errors = validate_engine_block(block)
+    assert errors == [], f"{yaml_path.name}: invalid engine block: {errors}"
+
+
+@pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
 def test_yaml_lifecycle_stages_have_valid_directions(yaml_path):
     from pipelines.model_loader import load_model_yaml
 

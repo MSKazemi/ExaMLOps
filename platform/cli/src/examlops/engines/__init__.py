@@ -1,122 +1,109 @@
-"""E2 — Optimized inference engines (ADR 0016).
+"""E2 — Optimized inference engines (ADR 0016, refined by ADR 0107).
 
 A thin ``InferenceEngine`` layer so serving backends (Ray/Compose, KServe E1) and the
-gateway (B2) are decoupled from *which* runtime executes generation. The production
-engines are **vLLM** (PagedAttention, continuous batching — default) and **SGLang**
-(RadixAttention, structured output); both lazily import their heavy, GPU-bound deps and
-raise a clear error if unavailable. The **fallback** is a pure-python ``EchoEngine`` so
-the contract is exercisable on CPU with no deps (GWT-1).
+gateway (B2) are decoupled from *which* runtime executes generation.
 
-Also here: the per-model ``engine`` block schema + validation (GWT-2), a ``quantize``
-transformation that registers a new signed + BOM'd version (GWT-3, via D3), and
+**The production engine is** :class:`~examlops.engines.vllm_server.VLLMServerEngine` — a
+client of a running ``vllm serve`` process (ADR 0107). The older in-process engine, which
+drives vLLM's offline-batch ``LLM`` API, is retained as ``vllm-inproc`` for corpus scoring;
+it cannot batch across concurrent clients and exposes no ``/metrics``, so it is not the
+serving path. **SGLang** (RadixAttention, structured output) remains a stub pending a GPU
+host. The **fallback** is a pure-python :class:`EchoEngine` so the contract is exercisable
+on CPU with no deps (GWT-1/GWT-A8).
+
+Also here: the per-model ``engine`` block schema + validation (GWT-2, in :mod:`.config`), a
+``quantize`` transformation that registers a new signed + BOM'd version (GWT-3, via D3), and
 speculative-decoding telemetry hooks (GWT-5, via C1).
+
+Layout: :mod:`.config` (contract, ``EngineConfig``, ``to_vllm_args``), :mod:`.media` (R-V5
+media validation), :mod:`.vllm_server` (the server client). All public names are re-exported
+here, so ``from examlops.engines import X`` keeps working for every pre-existing X.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import warnings
-from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
-# ── Engine interface ──────────────────────────────────────────────────────────
+from examlops.engines.config import (  # noqa: F401 - re-exported for back-compat
+    _MM_KINDS as _MM_KINDS,
+)
+from examlops.engines.config import (
+    _SAMPLING_KEYS as _SAMPLING_KEYS,
+)
+from examlops.engines.config import (
+    _VALID_DTYPES as _VALID_DTYPES,
+)
+from examlops.engines.config import (
+    _VALID_ENGINES as _VALID_ENGINES,
+)
+from examlops.engines.config import (
+    _VALID_MODALITIES as _VALID_MODALITIES,
+)
+from examlops.engines.config import (
+    _VALID_MODES as _VALID_MODES,
+)
+from examlops.engines.config import (
+    ChatEngine,
+    Completion,
+    EngineConfig,
+    InferenceEngine,
+    MultimodalConfig,
+    _sampling_kwargs,
+    supports_chat,
+    to_vllm_args,
+    validate_engine_block,
+)
+from examlops.engines.media import (
+    MediaRejected,
+    MediaStats,
+    flatten_messages,
+    normalize_content,
+)
+from examlops.engines.vllm_server import (
+    EngineUnreachable,
+    VLLMServerEngine,
+    chat_via_generate,
+    parse_prometheus_text,
+)
 
-
-@dataclass
-class Completion:
-    text: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    finish_reason: str = "stop"
-    # Speculative-decoding stats (GWT-5); populated only when spec-decode is on.
-    accepted_tokens: int = 0
-    proposed_tokens: int = 0
-
-
-@runtime_checkable
-class InferenceEngine(Protocol):
-    name: str
-
-    def generate(self, prompt: str, **kw: Any) -> Completion: ...
-    def stream(self, prompt: str, **kw: Any): ...
-    def health(self) -> bool: ...
-
-
-# ── Engine config (per-model YAML `engine:` block) ────────────────────────────
-
-_VALID_ENGINES = ("vllm", "sglang", "echo")
-_VALID_DTYPES = ("auto", "float16", "bfloat16", "float32", "int8", "int4", "fp8")
-
-
-@dataclass
-class EngineConfig:
-    engine: str = "vllm"
-    dtype: str = "auto"
-    quantization: str | None = None  # awq | gptq | fp8 | None
-    max_model_len: int | None = None
-    tensor_parallel_size: int = 1
-    prefix_cache: bool = True
-    speculative_decoding: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> EngineConfig:
-        return cls(
-            engine=str(d.get("engine", "vllm")).lower(),
-            dtype=str(d.get("dtype", "auto")).lower(),
-            quantization=d.get("quantization"),
-            max_model_len=d.get("max_model_len"),
-            tensor_parallel_size=int(d.get("tensor_parallel_size", 1)),
-            prefix_cache=bool(d.get("prefix_cache", True)),
-            speculative_decoding=dict(d.get("speculative_decoding", {}) or {}),
-        )
-
-
-def validate_engine_block(block: dict[str, Any]) -> list[str]:
-    """Validate a per-model ``engine`` block; return a list of error strings (empty = ok).
-
-    Used by the registry-integrity CI guard (GWT-2) — a bad block fails CI.
-    """
-    errors: list[str] = []
-    if not isinstance(block, dict):
-        return ["engine block must be a mapping"]
-    engine = str(block.get("engine", "vllm")).lower()
-    if engine not in _VALID_ENGINES:
-        errors.append(f"engine '{engine}' not in {_VALID_ENGINES}")
-    dtype = str(block.get("dtype", "auto")).lower()
-    if dtype not in _VALID_DTYPES:
-        errors.append(f"dtype '{dtype}' not in {_VALID_DTYPES}")
-    tp = block.get("tensor_parallel_size", 1)
-    if not isinstance(tp, int) or tp < 1:
-        errors.append("tensor_parallel_size must be an int >= 1")
-    mml = block.get("max_model_len")
-    if mml is not None and (not isinstance(mml, int) or mml < 1):
-        errors.append("max_model_len must be a positive int")
-    spec = block.get("speculative_decoding")
-    if spec is not None and not isinstance(spec, dict):
-        errors.append("speculative_decoding must be a mapping")
-    if isinstance(spec, dict) and spec.get("enabled") and not spec.get("draft_model"):
-        errors.append("speculative_decoding.enabled requires a draft_model")
-    return errors
-
-
-# ── Sampling params (R-A2) ────────────────────────────────────────────────────
-
-# Generic sampling knobs the gateway/CLI may pass through **kw; mapped 1:1 onto
-# vLLM's ``SamplingParams``. Kept as a covered pure-python helper so the passthrough
-# logic is testable without a GPU (the vLLM call itself stays GPU-only / pragma).
-_SAMPLING_KEYS = ("temperature", "max_tokens", "top_p", "stop", "seed")
-
-
-def _sampling_kwargs(kw: dict[str, Any]) -> dict[str, Any]:
-    """Extract the sampling params from ``kw`` (drops ``None`` and unknown keys)."""
-    return {k: kw[k] for k in _SAMPLING_KEYS if kw.get(k) is not None}
-
+__all__ = [
+    "ChatEngine",
+    "Completion",
+    "EchoEngine",
+    "EngineConfig",
+    "EngineUnreachable",
+    "InferenceEngine",
+    "MediaRejected",
+    "MediaStats",
+    "MultimodalConfig",
+    "SGLangEngine",
+    "VLLMEngine",
+    "VLLMServerEngine",
+    "build_engine",
+    "chat_via_generate",
+    "flatten_messages",
+    "normalize_content",
+    "parse_prometheus_text",
+    "quantize_model",
+    "record_spec_decode_telemetry",
+    "supports_chat",
+    "to_vllm_args",
+    "validate_engine_block",
+]
 
 # ── Engines ───────────────────────────────────────────────────────────────────
 
 
 class EchoEngine:
-    """CPU, dependency-free fallback engine — deterministic, for tests/dev (GWT-1)."""
+    """CPU, dependency-free fallback engine — deterministic, for tests/dev (GWT-1).
+
+    Intentionally has **no** ``chat`` surface: the gateway routes messages through
+    :func:`chat_via_generate`, which flattens and warns about dropped media (R-V4). Giving
+    this engine a silent ``chat`` would make media loss invisible.
+    """
 
     name = "echo"
 
@@ -148,13 +135,19 @@ class EchoEngine:
 
 
 class VLLMEngine:
-    """vLLM-backed engine (default). Lazily imports vllm; degrades if unavailable."""
+    """In-process vLLM engine (``vllm-inproc``) — vLLM's **offline batch** API.
 
-    name = "vllm"
+    Correct for scoring a fixed corpus in one process. **Not** the serving path: it cannot
+    batch across concurrent clients, exposes no ``/metrics``, and reloads the weights per
+    process (ADR 0107). Use :class:`VLLMServerEngine` to serve. Lazily imports vllm; degrades
+    if unavailable.
+    """
+
+    name = "vllm-inproc"
 
     def __init__(self, model_path: str, config: EngineConfig | None = None) -> None:
         self.model_path = model_path
-        self.config = config or EngineConfig(engine="vllm")
+        self.config = config or EngineConfig(engine="vllm-inproc")
         self._llm: Any = None
 
     def _ensure(self) -> None:
@@ -191,10 +184,9 @@ class VLLMEngine:
         )
 
     def stream(self, prompt: str, **kw: Any):  # pragma: no cover - GPU
-        # R-A2: yield real incremental chunks rather than the whole completion at
-        # once. Token-true streaming uses vLLM's AsyncLLMEngine on the serving host
-        # (delivered in A2); here we stream the completion in word deltas so a caller
-        # still receives ≥2 incremental chunks for a multi-token output.
+        # Chunk-level only. Token-true streaming is a property of the *server* path
+        # (VLLMServerEngine parses SSE frames); an in-process engine would need
+        # AsyncLLMEngine and an event loop the CLI does not have — see ADR 0107.
         comp = self.generate(prompt, **kw)
         for tok in comp.text.split():
             yield tok + " "
@@ -236,10 +228,17 @@ class SGLangEngine:
         return self._rt is not None
 
 
-_ENGINES: dict[str, Any] = {"echo": EchoEngine, "vllm": VLLMEngine, "sglang": SGLangEngine}
+_ENGINES: dict[str, Any] = {
+    "echo": EchoEngine,
+    "vllm": VLLMServerEngine,  # `vllm` resolves to the server path by default (ADR 0107)
+    "vllm-server": VLLMServerEngine,
+    "vllm-inproc": VLLMEngine,
+    "sglang": SGLangEngine,
+}
 
-# Optional heavy dependency backing each GPU engine; ``echo`` needs none.
-_ENGINE_DEP: dict[str, str] = {"vllm": "vllm", "sglang": "sglang"}
+# Optional heavy dependency backing each **in-process** engine. The server engine needs
+# none — it speaks HTTP to a process that owns the GPU — so it is deliberately absent here.
+_ENGINE_DEP: dict[str, str] = {"vllm-inproc": "vllm", "sglang": "sglang"}
 
 
 def _dep_available(engine: str) -> bool:
@@ -269,35 +268,98 @@ def _gpu_available() -> bool:
         return False
 
 
+def resolve_base_url(config: EngineConfig) -> str | None:
+    """The endpoint a server-mode engine should talk to, or ``None`` if there is none.
+
+    Precedence: the per-model ``engine.base_url`` beats the process-wide
+    ``EXAMLOPS_VLLM_BASE_URL``, so a single env var can point a whole dev box at one server
+    while an individual model still pins its own.
+    """
+    return config.base_url or os.getenv("EXAMLOPS_VLLM_BASE_URL") or None
+
+
 def build_engine(
     config: EngineConfig, model_path: str | None = None, *, allow_fallback: bool = True
 ) -> InferenceEngine:
     """Instantiate the engine named by ``config``.
 
-    R-A8: when a GPU engine (``vllm``/``sglang``) is requested but its runtime
-    dependency is not installed (CPU/CI host), degrade to :class:`EchoEngine` with a
-    ``RuntimeWarning`` so the full gateway→engine path stays exercisable with no GPU.
-    Pass ``allow_fallback=False`` to require the real engine (raises on use if absent).
+    Resolution for the vLLM family (ADR 0107):
+
+    1. ``vllm`` / ``vllm-server`` with a reachable endpoint (``engine.base_url`` or
+       ``EXAMLOPS_VLLM_BASE_URL``) ⇒ :class:`VLLMServerEngine`. Needs **no** local ``vllm``
+       install — the GPU lives in the server process.
+    2. Otherwise ⇒ the in-process ``vllm-inproc`` engine, which does need the dep.
+
+    R-A8: when an engine's runtime dependency is missing, or a server engine has no endpoint
+    to talk to, degrade to :class:`EchoEngine` with a ``RuntimeWarning`` so the full
+    gateway→engine path stays exercisable with no GPU. Pass ``allow_fallback=False`` to
+    require the real engine (raises rather than silently downgrading).
     """
     engine = config.engine
     if engine == "echo":
         return EchoEngine(config)
+
+    if engine in ("vllm", "vllm-server", "vllm-inproc"):
+        return _build_vllm(engine, config, model_path, allow_fallback)
+
     if allow_fallback and not _dep_available(engine):
         warnings.warn(
             f"engine '{engine}' unavailable (runtime dependency not installed); "
-            "falling back to EchoEngine (CPU/CI). Install examlops[serving-vllm] "
+            "falling back to EchoEngine (CPU/CI). Install examlops[serving-sglang] "
             "on a GPU host to use it.",
             RuntimeWarning,
             stacklevel=2,
         )
-        # Carry spec-decode config so telemetry stays exercisable on the fallback.
-        return EchoEngine(
-            EngineConfig(engine="echo", speculative_decoding=config.speculative_decoding)
-        )
-    cls = _ENGINES.get(engine, VLLMEngine)
-    if cls is EchoEngine:
-        return EchoEngine(config)
+        return _echo_fallback(config)
+    cls = _ENGINES.get(engine, VLLMServerEngine)
     return cls(model_path or "", config)  # type: ignore[call-arg]
+
+
+def _build_vllm(
+    engine: str, config: EngineConfig, model_path: str | None, allow_fallback: bool
+) -> InferenceEngine:
+    wants_server = engine != "vllm-inproc" and config.mode != "inproc"
+    base_url = resolve_base_url(config) if wants_server else None
+
+    if wants_server and base_url:
+        return VLLMServerEngine(base_url, model_path or config.hf_model_id or "", config)
+
+    if wants_server and not base_url:
+        # Explicit server intent with nowhere to send the request. Do not silently start
+        # loading weights in-process — that would turn a config mistake into a multi-minute
+        # GPU allocation. Fall back loudly, or raise under allow_fallback=False.
+        if not allow_fallback:
+            raise RuntimeError(
+                f"engine '{engine}' is server-mode but no endpoint is configured; set "
+                "engine.base_url, EXAMLOPS_VLLM_BASE_URL, or start one with "
+                "`exa serve llm start`"
+            )
+        warnings.warn(
+            f"engine '{engine}' is server-mode but no endpoint is configured "
+            "(engine.base_url / EXAMLOPS_VLLM_BASE_URL unset); falling back to EchoEngine. "
+            "Start one with `exa serve llm start`.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return _echo_fallback(config)
+
+    if allow_fallback and not _dep_available("vllm-inproc"):
+        warnings.warn(
+            "engine 'vllm-inproc' unavailable (runtime dependency not installed); "
+            "falling back to EchoEngine (CPU/CI). Install examlops[serving-vllm] "
+            "on a GPU host to use it.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return _echo_fallback(config)
+    return VLLMEngine(model_path or "", config)
+
+
+def _echo_fallback(config: EngineConfig) -> EchoEngine:
+    # Carry spec-decode config so telemetry stays exercisable on the fallback.
+    return EchoEngine(
+        EngineConfig(engine="echo", speculative_decoding=config.speculative_decoding)
+    )
 
 
 # ── Quantization (GWT-3) — registers a new signed + BOM'd version ─────────────

@@ -14,6 +14,11 @@ from typing import Any
 from examlops.platform_db import get_db, init_db, install_write_retry
 
 __all__ = [
+    "delete_llm_endpoint",
+    "get_llm_endpoint",
+    "list_llm_endpoints",
+    "set_llm_endpoint_state",
+    "upsert_llm_endpoint",
     "set_traffic_rules",
     "get_traffic_rules",
     "set_promotion_rule",
@@ -306,6 +311,149 @@ def set_challenger_config(
                 updated_by,
             ),
         )
+
+
+# ── LLM/VLM serving endpoints (Track V, ADR 0107) ─────────────────────────────
+#
+# The `llm_endpoints` table pre-dated any writer: it was created for the F10 LLMOps
+# console, which read it and always found it empty. These helpers are that missing writer,
+# so `exa serve llm` and the dashboard now share one registry of what is actually running.
+
+
+def upsert_llm_endpoint(
+    model: str,
+    *,
+    hf_model_id: str,
+    engine: str = "vllm",
+    base_url: str | None = None,
+    state: str = "PENDING",
+    launcher: str = "external",
+    job_id: str | None = None,
+    cluster: str | None = None,
+    project: str | None = None,
+    modality: str = "text",
+    served_model_name: str | None = None,
+    engine_config: dict[str, Any] | None = None,
+    max_model_len: int | None = None,
+    tensor_parallel_size: int = 1,
+    dtype: str = "auto",
+    gpus: int | None = None,
+    nodes: int | None = None,
+    enabled: bool = True,
+    updated_by: str | None = None,
+) -> None:
+    """Record (or replace) an endpoint. ``model`` is the primary key — one endpoint per model."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO llm_endpoints
+                   (model, engine, hf_model_id, max_model_len, tensor_parallel_size, dtype,
+                    enabled, updated_at, updated_by, base_url, state, launcher, job_id,
+                    cluster, project, modality, served_model_name, engine_config, gpus,
+                    nodes, created_at)
+               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP, ?,?,?,?,?,?,?,?,?,?,?,?,
+                       COALESCE((SELECT created_at FROM llm_endpoints WHERE model = ?),
+                                CURRENT_TIMESTAMP))
+               ON CONFLICT(model) DO UPDATE SET
+                    engine=excluded.engine, hf_model_id=excluded.hf_model_id,
+                    max_model_len=excluded.max_model_len,
+                    tensor_parallel_size=excluded.tensor_parallel_size,
+                    dtype=excluded.dtype, enabled=excluded.enabled,
+                    updated_at=CURRENT_TIMESTAMP, updated_by=excluded.updated_by,
+                    base_url=excluded.base_url, state=excluded.state,
+                    launcher=excluded.launcher, job_id=excluded.job_id,
+                    cluster=excluded.cluster, project=excluded.project,
+                    modality=excluded.modality,
+                    served_model_name=excluded.served_model_name,
+                    engine_config=excluded.engine_config, gpus=excluded.gpus,
+                    nodes=excluded.nodes""",
+            (
+                model,
+                engine,
+                hf_model_id,
+                max_model_len,
+                tensor_parallel_size,
+                dtype,
+                1 if enabled else 0,
+                updated_by,
+                base_url,
+                state,
+                launcher,
+                job_id,
+                cluster,
+                project,
+                modality,
+                served_model_name,
+                json.dumps(engine_config) if engine_config is not None else None,
+                gpus,
+                nodes,
+                model,
+            ),
+        )
+
+
+def set_llm_endpoint_state(
+    model: str, state: str, *, base_url: str | None = None, last_health: str | None = None
+) -> None:
+    """Move an endpoint's lifecycle state; optionally record the resolved URL / health note."""
+    init_db()
+    sets = ["state = ?", "updated_at = CURRENT_TIMESTAMP"]
+    params: list[Any] = [state]
+    if base_url is not None:
+        sets.append("base_url = ?")
+        params.append(base_url)
+    if last_health is not None:
+        sets.append("last_health = ?")
+        params.append(last_health)
+    params.append(model)
+    with get_db() as conn:
+        conn.execute(f"UPDATE llm_endpoints SET {', '.join(sets)} WHERE model = ?", params)
+
+
+def get_llm_endpoint(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM llm_endpoints WHERE model = ?", (model,)).fetchone()
+    return _endpoint_row(row) if row else None
+
+
+def list_llm_endpoints(
+    *, project: str | None = None, state: str | None = None
+) -> list[dict[str, Any]]:
+    init_db()
+    sql = "SELECT * FROM llm_endpoints"
+    where, params = [], []
+    if project:
+        where.append("project = ?")
+        params.append(project)
+    if state:
+        where.append("state = ?")
+        params.append(state)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY model"
+    with get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_endpoint_row(r) for r in rows]
+
+
+def delete_llm_endpoint(model: str) -> bool:
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM llm_endpoints WHERE model = ?", (model,))
+        return cur.rowcount > 0
+
+
+def _endpoint_row(row: Any) -> dict[str, Any]:
+    rec = dict(row)
+    raw = rec.get("engine_config")
+    if raw:
+        try:
+            rec["engine_config"] = json.loads(raw)
+        except (TypeError, ValueError):
+            rec["engine_config"] = None
+    rec["enabled"] = bool(rec.get("enabled", 1))
+    return rec
 
 
 install_write_retry(__name__)

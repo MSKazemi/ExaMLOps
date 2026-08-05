@@ -40,6 +40,14 @@ class AllBackendsFailed(GatewayError):
     """Every routed backend errored and no fallback succeeded (R3)."""
 
 
+class MediaNotAllowed(GatewayError):
+    """A multimodal content part failed validation before dispatch (R-V5).
+
+    Wraps ``engines.media.MediaRejected`` so callers can catch one gateway error family.
+    Raised *before* any backend call — a rejected image never reaches an engine.
+    """
+
+
 @dataclass
 class Completion:
     text: str
@@ -83,6 +91,23 @@ class Router:
 
 
 def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Cost for one generation, through the swappable ``llm_cost`` provider (ADR 0083).
+
+    Order: the operator-selected ``llm_cost`` provider, then C1's built-in rate table, then
+    a flat fallback. Going through the provider first is what lets a site override the rate
+    model (per-token contract pricing, on-prem amortisation) without touching core code —
+    previously this path called C1 directly and the provider seam was dead on the live path.
+    """
+    try:
+        from examlops.llmops_providers import estimate_llm_cost_via_provider
+
+        cost = estimate_llm_cost_via_provider(
+            model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+        )
+        if cost is not None:
+            return float(cost)
+    except Exception:
+        pass
     try:
         from examlops.telemetry.genai import estimate_cost
 
@@ -167,7 +192,7 @@ class GatewayClient:
     cache_lookup: Callable[[str, list], Any] | None = None  # B3 hook
     cache_store: Callable[[str, list, Completion], None] | None = None
 
-    def chat(self, model: str, messages: list[dict[str, str]], **kw: Any) -> Completion:
+    def chat(self, model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
         from examlops.data.finops import add_key_spend
         from examlops.data.gateway import record_gateway_call
 
@@ -191,6 +216,11 @@ class GatewayClient:
             try:
                 raw = backend(model, messages, **kw)
                 comp = _coerce(raw, model, name)
+            except MediaNotAllowed:
+                # R-V5: a policy denial on the *request* is not a backend failure —
+                # retrying elsewhere would deny identically and surface the useless
+                # "all backends failed". Fail fast with the real reason.
+                raise
             except Exception as exc:  # failover to the next backend (R3)
                 errors.append(f"{name}: {exc}")
                 continue
@@ -286,9 +316,17 @@ def build_default_router() -> Router:
 _SAMPLING_KEYS = ("temperature", "max_tokens", "top_p", "stop", "seed")
 
 
-def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
-    """Flatten OpenAI-style chat messages into a single prompt string for an engine."""
-    return "\n".join(str(m.get("content", "")) for m in messages).strip()
+def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
+    """Flatten OpenAI-style chat messages into a single prompt string for an engine.
+
+    R-V4: delegates to ``engines.media.flatten_messages`` so a structured ``content`` list
+    is walked part-by-part. The previous ``str(m.get("content"))`` stringified the list —
+    a multimodal request arrived at the engine as a Python ``repr``.
+    """
+    from examlops.engines.media import flatten_messages
+
+    prompt, _ = flatten_messages(messages)
+    return prompt
 
 
 def engine_backend(model_name: str, config: Any = None) -> Backend:
@@ -300,17 +338,27 @@ def engine_backend(model_name: str, config: Any = None) -> Backend:
     exercisable with no GPU. The returned callable carries ``.health`` (reachable via
     :meth:`GatewayClient.health`) and ``.engine`` for introspection.
     """
-    from examlops.engines import EngineConfig, build_engine
+    from examlops.engines import EngineConfig, build_engine, chat_via_generate, supports_chat
+    from examlops.engines.media import MediaRejected
 
     cfg = config if isinstance(config, EngineConfig) else EngineConfig()
     if isinstance(config, dict):
         cfg = EngineConfig.from_dict(config)
     engine = build_engine(cfg, model_path=model_name)
 
-    def _backend(model: str, messages: list[dict[str, str]], **kw: Any) -> Completion:
-        prompt = _messages_to_prompt(messages)
+    def _backend(model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
         sampling = {k: v for k, v in kw.items() if k in _SAMPLING_KEYS}
-        ec = engine.generate(prompt, **sampling)
+        try:
+            if supports_chat(engine):
+                # R-V4: a chat-capable engine receives the messages untouched, so
+                # multimodal content parts reach vLLM intact. Media validation (R-V5)
+                # happens inside the engine's own `chat`, before the HTTP call.
+                ec = engine.chat(messages, **sampling)
+            else:
+                # Text-only engine: flatten, and warn loudly about anything dropped.
+                ec = chat_via_generate(engine, messages, **sampling)
+        except MediaRejected as exc:
+            raise MediaNotAllowed(str(exc)) from exc
         return Completion(
             text=ec.text,
             model=model,

@@ -336,6 +336,21 @@ Manage the multi-model Ray Serve deployment: what is hot-loaded, how traffic is 
 | `exa serve backend` | Shows the active serving backend (`ray-compose` default or `kserve-k8s`). | Confirm which serving substrate is in effect (E1 seam). | `exa serve backend` |
 | `exa serve manifest MODEL` | Generates a schema-valid KServe `InferenceService` manifest from the registry (E1). | Deploy a model to Kubernetes/KServe instead of Ray. | `exa serve manifest JPCP --alias Production --canary 10 --out jpcp.yaml` |
 
+#### LLM & VLM endpoints (`exa serve llm`)
+
+Lifecycle for vLLM-served large language and **vision-language** models, over four substrates — `external` (default; register a server someone else runs), `compose` (GPU service), `slurm`/`flux` (HPC allocation), `kserve` (Kubernetes). See the [VLM serving guide](../guides/vlm-serving.md) and ADR 0107.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa serve llm start MODEL` | Starts (or registers) a vLLM endpoint and records it in the endpoint registry; `--dry-run` previews, confirms, audited. | Bring a VLM online on HPC, or point the platform at an existing endpoint. **mutation** | `exa serve llm start qwen-vl --launcher slurm --nodes 2 --gpus 4 --tp 4 --modality vision --max-images 2` |
+| `exa serve llm list` | Lists registered endpoints (`--project`, `--state`). | See what LLM/VLM capacity is live and who owns it. | `exa serve llm list --project research` |
+| `exa serve llm status MODEL` | Registry record + substrate status + live `vllm:*` metrics (queue depth, KV-cache usage). | Diagnose a slow or saturated endpoint. | `exa serve llm status qwen-vl` |
+| `exa serve llm health MODEL` | Probes `/health` and reconciles the recorded state; **exits 1** when not ready. | Deploy/CI gate before routing traffic to a new endpoint. | `exa serve llm health qwen-vl` |
+| `exa serve llm args MODEL` | Prints the exact `vllm serve` argv the model's `engine:` block renders. | Verify HPC and Kubernetes will run identical flags (seam parity). | `exa serve llm args qwen-vl` |
+| `exa serve llm chat MODEL` | Sends a chat request; `--image` (repeatable) attaches pictures, `--stream` shows token deltas. | The VLM smoke test — ask a model about a chart or scan. | `exa serve llm chat qwen-vl -m "What does this chart show?" --image ./gpu-util.png` |
+| `exa serve llm bench MODEL` | Sequential requests reporting TTFT p50 and output tokens/s. | Quick latency/throughput baseline for an endpoint. | `exa serve llm bench qwen-vl -n 20` |
+| `exa serve llm stop MODEL` | Stops the endpoint and marks it `STOPPED`; `--dry-run` previews, confirms, audited. | Release a GPU allocation when a model is no longer needed. **mutation** | `exa serve llm stop qwen-vl` |
+
 #### Traffic & progressive delivery
 
 | Command | What it does | Use case | Example |
