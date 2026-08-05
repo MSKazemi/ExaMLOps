@@ -256,6 +256,9 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      # Generated fleet targets (node_exporter/DCGM + running vLLM endpoints), written by
+      # `exa hpc prometheus-sd`. Re-read every 30s — no Prometheus reload needed.
+      - ./targets:/etc/prometheus/targets:ro
       - prometheus_data:/prometheus
     ports:
       - "19090:9090"
@@ -619,9 +622,57 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── vLLM OpenAI-compatible server (Track V / ADR 0107) ──────────────────────
+  # Behind the `vllm` profile: it is the only GPU service in the stack, so a plain
+  # `docker compose up` on a CPU box must not try to start it. Bring it up with
+  # `exa serve llm start <model> --launcher compose`, or:
+  #   docker compose --profile vllm up -d vllm
+  #
+  # EXAMLOPS_VLLM_ARGS is rendered by engines.to_vllm_args() — the same renderer the
+  # Slurm template and the KServe manifest use, so the engine block means one thing
+  # everywhere. Do not hand-edit flags here.
+  vllm:
+    profiles: ["vllm"]
+    image: ${EXAMLOPS_VLLM_IMAGE_TAG:-vllm/vllm-openai:latest}
+    container_name: examlops-vllm
+    command: >
+      --model ${EXAMLOPS_VLLM_MODEL:?set EXAMLOPS_VLLM_MODEL to the weights to serve}
+      --host 0.0.0.0
+      --port ${EXAMLOPS_VLLM_PORT:-8000}
+      ${EXAMLOPS_VLLM_ARGS:-}
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      VLLM_API_KEY: ${EXAMLOPS_VLLM_API_KEY:-}
+    ports:
+      - "${EXAMLOPS_VLLM_HOST_PORT:-18011}:${EXAMLOPS_VLLM_PORT:-8000}"
+    volumes:
+      # Cache the weights on the host: a cold pull is tens of GB per restart otherwise.
+      - vllm_cache:/root/.cache/huggingface
+    # PagedAttention needs far more shared memory than Docker's 64 MB default; too little
+    # shows up as an opaque NCCL/worker crash rather than an out-of-shm error.
+    shm_size: '8gb'
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${EXAMLOPS_VLLM_GPUS:-1}
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:${EXAMLOPS_VLLM_PORT:-8000}/health')\""]
+      interval: 30s
+      timeout: 10s
+      # Loading a large model takes minutes; a short start_period would mark the
+      # container unhealthy and restart it forever before it ever finished loading.
+      start_period: 600s
+      retries: 5
+
 volumes:
   postgres_data:
   minio_data:
+  vllm_cache:
   prometheus_data:
   grafana_data:
   loki_data:

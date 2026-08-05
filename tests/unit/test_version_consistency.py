@@ -43,13 +43,19 @@ def _pyproject_version(path: Path) -> str:
 
 
 def _changelog_latest_release() -> str:
-    """First ``## [X.Y.Z]`` heading in CHANGELOG.md, skipping ``## [Unreleased]``."""
+    """First ``## [X.Y.Z]`` heading in CHANGELOG.md, skipping ``## [Unreleased]``.
+
+    A leading ``v`` is stripped: every heading in this changelog is written ``## [vX.Y.Z]``
+    (matching the git tag), while pyproject carries the bare semver. Comparing the two
+    forms literally made this guard fail on *every* release regardless of actual drift —
+    the same normalisation ``_semver_tuple`` already applies to git tags.
+    """
     text = (_ROOT / "CHANGELOG.md").read_text()
     for m in re.finditer(r"^##\s*\[([^\]]+)\]", text, re.MULTILINE):
         label = m.group(1).strip()
         if label.lower() == "unreleased":
             continue
-        return label
+        return label.lstrip("vV")
     raise AssertionError("no released version section found in CHANGELOG.md")
 
 

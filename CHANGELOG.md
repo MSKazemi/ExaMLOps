@@ -5,6 +5,81 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [v0.48.0] — 2026-08-05
+
+### Added
+
+- **feat(serving): server-mode vLLM engine + vision-language (VLM) serving via `exa serve llm`
+  (ADR 0107, spec Track V).** The production vLLM engine is now `VLLMServerEngine` — an
+  OpenAI-compatible client of a running `vllm serve` process. The previous engine drove vLLM's
+  *offline batch* `LLM` API in-process, which cannot batch across concurrent clients, exposes no
+  `/metrics`, and reloads the weights per process; it is retained as `vllm-inproc` for corpus
+  scoring. This also closes two items deferred from A1/A2: **token-true streaming** now falls out
+  of parsing the server's SSE frames (no `AsyncLLMEngine`), and `health()` is a real `GET /health`
+  probe instead of an attribute check.
+- **feat(serving): multimodal request path.** `InferenceEngine` gained an optional chat-native
+  surface (`chat`/`chat_stream`); `VLLMServerEngine` forwards OpenAI content parts verbatim so
+  images survive. Fixes a latent defect: `gateway._messages_to_prompt` stringified a structured
+  `content` list, so a multimodal request reached the engine as a Python `repr`. Text-only engines
+  now flatten *and* emit a `RuntimeWarning` naming dropped media — silent media loss is designed out.
+- **feat(serving): media guard (`examlops.engines.media`).** Enforces an `allowed_media_domains`
+  **SSRF** allow-list (empty = deny all remote media), an `allowed_local_media_path` root for
+  `file://`, `max_image_bytes`, and `limit_mm_per_prompt` — *before* dispatch, raising a typed
+  `MediaRejected`/`MediaNotAllowed` that is never retried on another backend. The same constraints
+  are rendered onto the server's own flags, so both ends enforce them. The platform validates but
+  never fetches remote media (vLLM does), keeping an SSRF-capable client out of the control plane.
+- **feat(serving): `EndpointLauncher` seam + `exa serve llm`.** Four substrates — `external`
+  (default, starts nothing, works on CPU), `compose` (new GPU service behind a `vllm` profile —
+  the first GPU block in the stack), `slurm`/`flux` (Apptainer + Ray head/workers, TP in-node and
+  PP across nodes; **closes ADR 0096 R-A6 / increment A3**), and `kserve`. Commands:
+  `start · list · status · health · args · chat · bench · stop`, with `--dry-run`, confirmation and
+  an audit event on every mutation.
+- **feat(serving): `engines.to_vllm_args()` is the single renderer of the `vllm serve` argv**,
+  consumed by the Compose command, the Slurm template, the KServe manifest `args` and
+  `exa serve llm args`. `serving_backends._llm_args` previously hand-transcribed four flags and
+  ignored the rest, so an `engine:` block could mean different things on HPC and Kubernetes.
+- **feat(serving): the `llm_endpoints` table finally has a writer.** It existed only for the F10
+  LLMOps console, which read it and always found it empty. Additive columns (`base_url`, `state`,
+  `launcher`, `job_id`, `cluster`, `project`, `modality`, …) via `_COLUMN_MIGRATIONS`; the console
+  now shows live data with no frontend change. HPC serving jobs are tagged `hpc_jobs.kind='serve'`
+  so the terminal-state training poller cannot adopt and reap a healthy server.
+- **feat(observability): vLLM metrics.** `vllm` scrape job + a `fleet` `file_sd` job (HPC endpoints
+  land on scheduler-chosen nodes, discovered via `exa hpc prometheus-sd`, which now also emits
+  running endpoints), plus four alerts — `VLLMEndpointDown`, `VLLMKVCacheNearFull`,
+  `VLLMQueueBacklog`, `VLLMHighTTFT`. Validated with `promtool` (30 rules).
+
+### Fixed
+
+- **`validate_engine_block` is now actually wired into the registry-integrity CI guard.** Its
+  docstring claimed this for two releases; only the CLI and unit tests called it, so a malformed
+  `engine:` block — including a vision model with no per-prompt media limit — could reach a serving
+  host unchallenged.
+- **`pipelines/model_loader.py` silently dropped the `engine:` key**, so the block could never reach
+  the Ray Serve loader. Added to `ModelYAMLConfig`.
+- **The `serving-vllm` / `serving-sglang` extras did not exist** despite being named by
+  `engines`' own error message and by `docs/guides/llm-serving-engines.md`. Defined in
+  `platform/cli/pyproject.toml`.
+- **The `llm_cost` provider seam was dead on the live path** — the gateway called C1's rate table
+  directly. It now consults the provider *when one is explicitly configured*, deliberately keeping
+  the default byte-identical: the generic provider default would otherwise invent a dollar cost for
+  self-hosted inference that C1 correctly prices at zero.
+- Stale `pipelines/models/` paths corrected to `usecases/<pack>/models/` in the engine guide
+  (ADR 0094 moved them; other guides still carry the old path).
+
+### Changed
+
+- **Breaking (config semantics):** `engine: vllm` now resolves to **server mode**. With no endpoint
+  configured it degrades to `EchoEngine` with a `RuntimeWarning`; under `allow_fallback=False` it
+  raises rather than silently loading weights in-process. Use `engine: vllm-inproc` (or
+  `mode: inproc`) for the previous behaviour.
+
+### Unverified
+
+- No GPU is reachable from this repository (`lxp-cpu01` is CPU-only). The full path is tested on CPU
+  against a stub HTTP server — real sockets, real SSE framing, real `/health` and `/metrics` parsing
+  — but **real VLM grounding, multi-node TP/PP launch, throughput/TTFT targets and KServe live apply
+  remain unverified** until a GPU allocation and a cluster exist. Tagged `[unverified]` in the spec.
+
 ## [v0.47.0] — 2026-07-31
 
 ### Added

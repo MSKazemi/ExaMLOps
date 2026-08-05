@@ -48,6 +48,11 @@ class ModelYAMLConfig:
     inference: dict[str, Any] = field(default_factory=dict)
     seanerbus_uuid: str | None = None
     project: str | None = None  # owning Project (ADR 0088), optional default membership
+    # Inference-engine block (ADR 0016/0107). Kept as a raw mapping: it is validated by
+    # examlops.engines.validate_engine_block (registry-integrity CI guard) and consumed by
+    # to_vllm_args / the KServe manifest generator. Previously this key was silently
+    # dropped here, so the engine block could never reach the Ray Serve loader.
+    engine: dict[str, Any] = field(default_factory=dict)
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -108,6 +113,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         inference=raw.get("inference", {}),
         seanerbus_uuid=raw.get("seanerbus_uuid") or None,
         project=raw.get("project") or None,
+        engine=raw.get("engine") or {},
     )
 
 

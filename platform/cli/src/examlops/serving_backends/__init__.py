@@ -79,16 +79,16 @@ def registry_to_kserve(
 
 
 def _llm_args(engine: dict[str, Any]) -> list[str]:
-    args: list[str] = []
-    if engine.get("dtype") and engine["dtype"] != "auto":
-        args += ["--dtype", str(engine["dtype"])]
-    if engine.get("quantization"):
-        args += ["--quantization", str(engine["quantization"])]
-    if engine.get("max_model_len"):
-        args += ["--max-model-len", str(engine["max_model_len"])]
-    if engine.get("tensor_parallel_size", 1) > 1:
-        args += ["--tensor-parallel-size", str(engine["tensor_parallel_size"])]
-    return args
+    """Render the vLLM argv for a KServe manifest — via the one shared renderer (R-V6).
+
+    Delegating to ``engines.to_vllm_args`` is what keeps Kubernetes and HPC honest: the
+    same ``engine:`` block produces the same flags on both, including the multimodal media
+    limits, so a VLM cannot end up with its SSRF/DoS guards on one substrate and not the
+    other. This used to emit four hand-transcribed flags and silently ignored the rest.
+    """
+    from examlops.engines.config import EngineConfig, to_vllm_args
+
+    return to_vllm_args(EngineConfig.from_dict(engine))
 
 
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
