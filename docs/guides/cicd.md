@@ -201,6 +201,7 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 | `LXP_HOST` | | | `<REMOTE_HOST>` |
 | `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `$EXAMLOPS_DEPLOY_PATH` |
 | `LXP_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
+| `LXP_MODELZOO_REPO` | | ✅ | Clone URL of the **upstream** `software/modelzoo` repo. `seanergys_modelzoo` is not vendored in this repo (ADR 0094) — the deploy job fetches it into `$LXP_DEPLOY_PATH/modelzoo`, which is where `EXAMLOPS_MODELZOO_DIR` resolves by default. Unset ⇒ not fetched, and training/serving fail until it is present. |
 | `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
 | `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
 

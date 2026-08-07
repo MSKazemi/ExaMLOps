@@ -20,13 +20,14 @@ Slurm stdout/stderr are captured to the job log files.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 # ── sys.path setup (repo root + modelzoo must be importable on compute node) ──
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
-_MODELZOO = _REPO_ROOT / "modelzoo"
+_MODELZOO = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
 for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)

@@ -7,6 +7,7 @@ a live model instance and cannot be expressed in YAML.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -14,7 +15,7 @@ from typing import ClassVar
 import numpy as np
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_MODELZOO = _REPO_ROOT / "modelzoo"
+_MODELZOO = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
 for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)

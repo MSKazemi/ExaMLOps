@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Removed
+
+- **`modelzoo/` is no longer vendored in this repository.** `seanergys_modelzoo` is an
+  *upstream* library with its own repo and its own CI — it is not part of ExaMLOps, and
+  ADR 0094's platform ⟂ use-case boundary already proved it: the platform core never
+  imports it, it only resolves dotted-path *strings* through the `pipelines.usecase`
+  loader seam. Only the use-case pack imports it. 75 files of third-party code leave the
+  published tree.
+  - **Nothing depended on the vendored copy for testing.** GitLab CI's `test:modelzoo`
+    job already cloned the upstream repo fresh (deliberately, so it never tested a stale
+    copy); the GitHub Actions modelzoo job had always been commented out.
+  - **New `EXAMLOPS_MODELZOO_DIR`** points every runtime path-resolution site (pipeline
+    engine, Ray Serve, control plane, use-case pack, `exa data`/`exa synth`) at a
+    checkout. It defaults to `<repo>/modelzoo`, which is where the deploy job now clones
+    it — so a standard deployment needs no configuration.
+  - **Tests skip instead of failing when it is absent.** Verified both ways: with the
+    library present 2015 pass; without it 1898 pass, 9 skip, **0 fail**.
+  - **New CI variable `LXP_MODELZOO_REPO`** — clone URL of the upstream repo, used by
+    `deploy:lxp`. Unset ⇒ not fetched, and training/serving fail until it is present.
+
+### Added
+
+- **A working GitHub Actions CI.** `.github/workflows/ci.yml` had been *entirely*
+  commented out, so the public repo ran no checks at all. It is now a slim
+  lint + unit-test workflow (ruff check, ruff format, `pytest tests/unit`) that gives a
+  contributor's PR a real signal. Deployment stays in `.gitlab-ci.yml`; the modelzoo
+  suite stays in the upstream repo.
+
 ### Changed
 
 - **chore(repo): the private→public split is now dual-git, replacing the p2p rsync mirror.** One

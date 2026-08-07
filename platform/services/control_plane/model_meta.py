@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_MODELZOO = _REPO_ROOT / "modelzoo"
+_MODELZOO = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
 _LEGACY_MODELS_DIR = _REPO_ROOT / "pipelines" / "models"
 
 

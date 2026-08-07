@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_MODELZOO = _REPO_ROOT / "modelzoo"
+_MODELZOO = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
 for _p in (str(_REPO_ROOT), str(_MODELZOO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)

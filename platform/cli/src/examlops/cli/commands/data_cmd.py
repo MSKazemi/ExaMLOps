@@ -57,7 +57,8 @@ def _load_versioning() -> Any:
     be importable in-process; ensure the repo root (and modelzoo) are on the path.
     """
     repo_root = Path(__file__).resolve().parents[6]
-    for p in (str(repo_root), str(repo_root / "modelzoo")):
+    _mz = os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(repo_root / "modelzoo")
+    for p in (str(repo_root), _mz):
         if p not in sys.path:
             sys.path.insert(0, p)
     from pipelines.datasets import versioning  # noqa: PLC0415 - lazy, path-bootstrapped
@@ -246,7 +247,8 @@ def validate(
     """Validate a dataset against its data contract; exit non-zero on error violations (spec R11)."""
     init_db()
     repo_root = Path(__file__).resolve().parents[6]
-    for p in (str(repo_root), str(repo_root / "modelzoo")):
+    _mz = os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(repo_root / "modelzoo")
+    for p in (str(repo_root), _mz):
         if p not in sys.path:
             sys.path.insert(0, p)
     from pipelines.contracts import load_contract  # noqa: PLC0415

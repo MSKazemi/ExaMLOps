@@ -63,7 +63,7 @@ _FETCH_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_FETCH_TIMEOUT_S", "300"))
 _SUBMIT_TIMEOUT_S = int(os.getenv("EXAMLOPS_TASK_SUBMIT_TIMEOUT_S", "300"))
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_MODELZOO = _REPO_ROOT / "modelzoo"
+_MODELZOO = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
 _PLATFORM = _REPO_ROOT / "platform"
 _SLURM_ADAPTER_DIR = _PLATFORM / "infra" / "slurm-adapter"
 for _p in (str(_REPO_ROOT), str(_PLATFORM), str(_MODELZOO), str(_SLURM_ADAPTER_DIR)):

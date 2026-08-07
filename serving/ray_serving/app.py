@@ -38,6 +38,7 @@ Env vars:
 # param to a query param (HTTP 422) or failing to build its TypeAdapter (500).
 # Keeping annotations as real objects lets FastAPI introspect request bodies.
 
+import os as _os
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -46,7 +47,7 @@ try:
     for _p in (
         str(_REPO_ROOT_RS),
         str(_REPO_ROOT_RS / "pipelines"),
-        str(_REPO_ROOT_RS / "modelzoo"),
+        _os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(_REPO_ROOT_RS / "modelzoo"),
     ):
         if _p not in _sys.path:
             _sys.path.insert(0, _p)

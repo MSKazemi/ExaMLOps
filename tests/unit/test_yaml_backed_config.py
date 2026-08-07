@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+# ── upstream-library guard ───────────────────────────────────────────────────
+# `seanergys_modelzoo` is an UPSTREAM library, not part of ExaMLOps (ADR 0094):
+# the platform core never imports it — only the use-case pack does, through the
+# loader seam. It is therefore not vendored in the public tree; CI and the
+# deploy node fetch it from its own repo. Skip rather than fail when absent.
+_MZ = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or (REPO_ROOT / "modelzoo"))
+if not (_MZ / "seanergys_modelzoo").is_dir():
+    pytest.skip(
+        "seanergys_modelzoo not present — upstream library fetched at deploy/CI "
+        "time. Set EXAMLOPS_MODELZOO_DIR to a checkout to run these tests.",
+        allow_module_level=True,
+    )
+if str(_MZ) not in sys.path:
+    sys.path.insert(0, str(_MZ))
+
 
 from pipelines.usecase import models_dir  # noqa: E402
 

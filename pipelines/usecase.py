@@ -79,7 +79,9 @@ def _bootstrap_syspath(root: Path, cfg: dict[str, Any]) -> None:
     entries = [str(root), str(_REPO_ROOT)]
     for rel in cfg.get("pack", {}).get("pythonpath", []) or []:
         entries.append(str((root / rel).resolve()))
-    mz = _REPO_ROOT / "modelzoo"  # upstream library, always available in-repo
+    # Upstream library (ADR 0094). Not vendored in the public tree — CI and the deploy
+    # node fetch it; EXAMLOPS_MODELZOO_DIR points at that checkout when it is elsewhere.
+    mz = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or _REPO_ROOT / "modelzoo")
     if mz.is_dir():
         entries.append(str(mz))
     for p in entries:

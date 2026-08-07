@@ -371,6 +371,24 @@ PUBLIC_GRAFANA_URL=http://<REMOTE_HOST>:13000
 
 ---
 
+## Upstream model library
+
+`seanergys_modelzoo` is an **upstream** library with its own repository and its own CI —
+it is not part of ExaMLOps. Per ADR 0094 the platform core never imports it; only the
+use-case pack does, through the `pipelines.usecase` loader seam. It is therefore not
+vendored in this repository.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_MODELZOO_DIR` | `<repo>/modelzoo` | Where to find the `seanergys_modelzoo` checkout. Every runtime path-resolution site (pipeline engine, Ray Serve, control plane, use-case pack, `exa data`/`exa synth`) honours it. |
+
+The deploy pipeline clones it into `$EXAMLOPS_DEPLOY_PATH/modelzoo` — the default location —
+so nothing needs setting in a standard deployment. Point the variable elsewhere if you keep
+the checkout outside the repo. Tests that need the library **skip** when it is absent rather
+than failing, so a clone without it still gets a green suite.
+
+---
+
 ## Remote deploy node (site-specific)
 
 The committed tree carries deliberately generic defaults so that no particular

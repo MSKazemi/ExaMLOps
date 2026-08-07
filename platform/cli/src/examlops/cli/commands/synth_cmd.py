@@ -9,6 +9,7 @@ offline.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,8 @@ def _actor() -> str:
 def _versioning() -> Any:
     """Import ``pipelines.datasets.versioning`` with a repo-root sys.path bootstrap."""
     repo_root = Path(__file__).resolve().parents[6]
-    for p in (str(repo_root), str(repo_root / "modelzoo")):
+    _mz = os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(repo_root / "modelzoo")
+    for p in (str(repo_root), _mz):
         if p not in sys.path:
             sys.path.insert(0, p)
     from pipelines.datasets import versioning  # noqa: PLC0415
