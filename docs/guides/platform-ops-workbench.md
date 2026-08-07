@@ -26,7 +26,7 @@ from examlops import platform_admin as pa
 | Tier | What you change | How it ships |
 |---|---|---|
 | **A** (default) | config: compute cost, connections, bridge UUID, `config.toml`, `platform.db` knobs — **plus** sandboxed calc code (providers) | hot, no restart, reversible, audited |
-| **B** (admin) | real integration **source** (the bridge, `platform/clients`, pipeline engine) | staged → p2p commit → service redeploy |
+| **B** (admin) | real integration **source** (the bridge, `platform/clients`, pipeline engine) | staged → `dualgit ship` → service redeploy |
 
 ## Tier A — change the compute-node cost
 
@@ -75,11 +75,11 @@ workbench, `platform/clients/` is mounted read-write; edit the file, then record
 
 ```python
 out = pa.propose_source_change(["platform/clients/seanerbus_bridge.py"], "tune bridge retry/backoff")
-print(out["result"]["next_steps"])   # exact ship + redeploy steps (commit via p2p → redeploy the service)
+print(out["result"]["next_steps"])   # exact ship + redeploy steps (commit via `dualgit ship` → redeploy the service)
 ```
 
 `propose_source_change` records a governed, audited intent and returns the steps — it does **not**
-commit, push, or restart anything. Ship it via the p2p pipeline, then redeploy the affected service.
+commit, push, or restart anything. Ship it with `dualgit doctor` → `dualgit ship`, then redeploy the affected service.
 
 ## See the results — the change feed
 
@@ -96,7 +96,7 @@ for row in pa.recent_changes(limit=15):
 | | Tier A | Tier B |
 |---|---|---|
 | Who | `platform.<domain>` capability (authz) | admin (`owner` on `platform:core`) |
-| Code safety | AST trust-tier gate before activation | git review + p2p + preflight |
+| Code safety | AST trust-tier gate before activation | git review + `dualgit doctor` + preflight |
 | Policy | `policy.decide` can `require_approval` (re-call with `approve=True`) | staged, not auto-shipped |
 | Audit | hash-chained `audit_events`, attributed to you | commit + `platform_source_change` row |
 | Reversible | provider deactivate / config revert (hot) | git revert + redeploy |

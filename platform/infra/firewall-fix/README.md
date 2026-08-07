@@ -70,4 +70,4 @@ request, with commands and verification, is drafted at
 until that unit is installed; once it is, `make firewall-fix-down` and remove it.
 
 > ⚠️ Privileged + host-network container. Review before deploying. If you do not
-> want this in the public mirror, exclude it with `p2p exclude platform/infra/firewall-fix`.
+> want this in the public mirror, exclude it by adding `firewall-fix/` to `.dualgit/private.deny`.

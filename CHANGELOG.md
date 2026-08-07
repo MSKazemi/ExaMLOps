@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **chore(repo): the private→public split is now dual-git, replacing the p2p rsync mirror.** One
+  working tree carries two independent gits: `.git` holds the curated public subset, `.git-private`
+  the full superset. The old `1private/` + `2public/` + `rsync` arrangement is retired, and with it
+  the copy step that let the two trees drift. Classification lives in `.dualgit/`
+  (`public.allow` / `private.deny` / `public.carveout` / `secrets.allow`), and a default-deny
+  firewall in `.git/info/exclude` is generated from it. Both full histories and both tag sets were
+  preserved — nothing was re-imported.
+- **chore(public-surface): site-specific values moved out of the tree and into the environment.**
+  The committed tree now carries generic defaults so no particular deployment's addressing or
+  filesystem layout is published; real values live in `.env`. The deploy path was already driven by
+  `EXAMLOPS_DEPLOY_PATH` / `EXAMLOPS_HOST_REPO` — only their *defaults* named a site, and those are
+  now `/opt/examlops`. New `EXAMLOPS_DEPLOY_HOST` and `EXAMLOPS_GITLAB_HOST_ENTRY` (an
+  `extra_hosts` DNS pin for deploy nodes that cannot resolve an internal GitLab). Documented under
+  "Remote deploy node" in `docs/reference/env-vars.md`.
+
+  > **Upgrading an existing deployment:** set `EXAMLOPS_HOST_REPO` and `EXAMLOPS_DEPLOY_PATH`
+  > explicitly in the deploy node's `.env` **before** pulling, or the bind mounts and the JupyterHub
+  > spawner will follow the new generic default instead of your real checkout.
+
+- **`make lxp-rebuild` → `make remote-rebuild`**, parameterised by `EXAMLOPS_DEPLOY_HOST` /
+  `EXAMLOPS_DEPLOY_PATH`. The old target remains as a deprecated alias.
+- **`exa backup --with-content` now captures `.dualgit/` instead of `.p2p.toml`.** This matters
+  beyond a rename: `.dualgit/exclude.public.txt` is the *only* backup of the public leak firewall,
+  since `.git/info/exclude` is repo-local and exists on no remote. Restore with
+  `dualgit firewall restore`.
+- **docs:** the platform-ops workbench guide, its starter notebook, the backup/restore guide, the
+  command reference and the firewall-fix README now describe the `dualgit doctor` → `dualgit ship`
+  flow rather than the retired p2p pipeline.
+
 ## [v0.48.0] — 2026-08-05
 
 ### Added

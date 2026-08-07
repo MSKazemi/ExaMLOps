@@ -195,7 +195,7 @@ Snapshot the platform. Bare = single ``platform.db`` file; any tier flag = a tie
 - `--bundle` — Control-plane bundle (all SQLite DBs + config) instead of one .db
 - `--with-postgres` — Include the Postgres tier
 - `--with-objects` — Include the MinIO/object-store tier
-- `--with-content` — Include use-case packs / envs / .p2p.toml
+- `--with-content` — Include use-case packs / envs / .dualgit classification
 - `--push` — Replicate the finished bundle off-site (S3)
 - `--strict` — Fail (don't skip) any requested tier that can't run
 

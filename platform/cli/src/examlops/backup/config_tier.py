@@ -2,7 +2,7 @@
 
 Captures the operator's on-disk configuration (``~/.config/examlops/`` — config.toml, clusters.yaml,
 policy.yaml, finops.yaml, providers/) as a tarball, and — opt-in — the use-case content
-(``usecases/`` packs, ``pipelines/envs/*.yaml``, ``.p2p.toml``) which normally lives in git.
+(``usecases/`` packs, ``pipelines/envs/*.yaml``, the ``.dualgit/`` classification) which normally lives in git.
 
 **Secrets caveat (deliberate).** The secrets *ciphertext* lives in ``platform.db`` (sqlite tier),
 but it is useless without the KEK, which is held in the ``EXAMLOPS_SECRETS_KEYS`` env — never on
@@ -130,16 +130,22 @@ def backup_config_tier(dest_dir: Path, *, with_content: bool = False) -> TierRes
                         "status": OK,
                     }
                 )
-            p2p = root / ".p2p.toml"
-            if p2p.exists():
-                dest = config_out / "p2p.toml"
-                dest.write_bytes(p2p.read_bytes())
+            # The dual-git classification. Worth capturing because
+            # `.dualgit/exclude.public.txt` is the ONLY backup of the public leak
+            # firewall: `.git/info/exclude` is repo-local and on no remote, so if it
+            # is lost the next public `git add -A` would stage the entire private
+            # tree. Restore with `dualgit firewall restore`.
+            dualgit_dir = root / ".dualgit"
+            if dualgit_dir.is_dir():
+                dest = config_out / "dualgit.tar.gz"
+                size = _tar_dir(dualgit_dir, dest, arcname="dualgit")
                 items.append(
                     {
-                        "name": ".p2p.toml",
-                        "file": "config/p2p.toml",
+                        "name": ".dualgit",
+                        "file": "config/dualgit.tar.gz",
+                        "source": str(dualgit_dir),
                         "sha256": sha256_file(dest),
-                        "size_bytes": dest.stat().st_size,
+                        "size_bytes": size,
                         "status": OK,
                     }
                 )

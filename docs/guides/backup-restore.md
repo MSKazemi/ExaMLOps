@@ -20,7 +20,7 @@ has **zero external dependencies** and always works.
 | **config** | `~/.config/examlops/` (config.toml, clusters.yaml, policy.yaml, finops.yaml, providers/); secrets **key-ids only** | tar (built-in) | ✅ always |
 | **postgres** | MLflow + Prefect metadata DBs | `pg_dump -Fc` (needs `postgresql-client`) | `--with-postgres` / `--all` |
 | **objects** | MinIO buckets `mlflow-artifacts` + `examlops-projects` | boto3 S3 mirror (`examlops[backup]`) | `--with-objects` / `--all` |
-| **content** | use-case packs, `pipelines/envs/*.yaml`, `.p2p.toml` | tar (built-in) | `--with-content` / `--all` |
+| **content** | use-case packs, `pipelines/envs/*.yaml`, the `.dualgit/` classification | tar (built-in) | `--with-content` / `--all` |
 
 > **Secrets / KEK caveat.** The secrets *ciphertext* lives in `platform.db` (captured by the sqlite
 > tier), but it is useless without the KEK, which is held in the `EXAMLOPS_SECRETS_KEYS` env — never

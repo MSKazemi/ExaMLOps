@@ -54,7 +54,7 @@ def create(
         False, "--with-objects", help="Include the MinIO/object-store tier"
     ),
     with_content: bool = typer.Option(
-        False, "--with-content", help="Include use-case packs / envs / .p2p.toml"
+        False, "--with-content", help="Include use-case packs / envs / .dualgit classification"
     ),
     push: bool = typer.Option(False, "--push", help="Replicate the finished bundle off-site (S3)"),
     strict: bool = typer.Option(

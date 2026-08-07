@@ -31,7 +31,7 @@ c.DockerSpawner.volumes = {
     # Read-WRITE so a notebook can author/update pipeline code and have the platform pick it up:
     #   usecases/  → model YAML + per-model configs + dataset schemas (the pipeline definitions, ADR 0094)
     #   pipelines/ → the Prefect pipeline engine / generator
-    # Edits land on the deploy node's repo (git-tracked); commit + push via the p2p pipeline to ship.
+    # Edits land on the deploy node's repo (git-tracked); commit + push with `dualgit ship` to ship.
     # Everything else under /repo stays read-only (import-safe, can't accidentally break platform code).
     f"{_HOST_REPO}/usecases": {"bind": "/repo/usecases", "mode": "rw"},
     f"{_HOST_REPO}/pipelines": {"bind": "/repo/pipelines", "mode": "rw"},

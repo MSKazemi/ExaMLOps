@@ -465,8 +465,8 @@ def propose_source_change(
     """Record intent to change platform **source** (Tier B) — the review/redeploy path, not a hot patch.
 
     Editing real integration code (e.g. the ExaMLOps↔bridge connection) is deliberately *not*
-    hot-applied: the edited files live on the deploy node's git tree and ship through the p2p
-    pipeline + a service redeploy. This records a governed, audited ``platform_source_change`` intent
+    hot-applied: the edited files live on the deploy node's git tree and ship through
+    ``dualgit ship`` + a service redeploy. This records a governed, audited ``platform_source_change`` intent
     (needs ``owner`` on ``platform:core``) and returns the exact commands to ship + redeploy. It does
     **not** itself commit, push or restart anything.
     """
