@@ -168,7 +168,7 @@ def test_policy_require_approval_then_approve(_env, tmp_path):
 
 def test_propose_source_change_records_intent_only(_env):
     out = pa.propose_source_change(["platform/clients/seanerbus_bridge.py"], "tune retry")
-    assert out["result"]["next_steps"] and "p2p" in " ".join(out["result"]["next_steps"])
+    assert out["result"]["next_steps"] and "dualgit" in " ".join(out["result"]["next_steps"])
     assert len(_audit_rows("platform_admin:platform_source_change")) == 1
 
 

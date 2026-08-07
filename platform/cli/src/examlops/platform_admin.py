@@ -479,7 +479,7 @@ def propose_source_change(
             "message": message,
             "next_steps": [
                 "review the diff on the deploy node: git -C <repo> diff -- " + " ".join(paths),
-                "ship via p2p: commit in 1private → p2p sync → push 2public",
+                'ship via dualgit: dualgit doctor → dualgit ship "<message>"',
                 "redeploy the affected service (e.g. make seanerbus-up / dashboard-up / control-plane-up)",
             ],
         }

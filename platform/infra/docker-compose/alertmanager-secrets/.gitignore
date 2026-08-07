@@ -1,0 +1,5 @@
+# Real delivery secrets — never commit. Only *.example templates + README are tracked.
+*
+!.gitignore
+!README.md
+!*.example

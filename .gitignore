@@ -1,4 +1,14 @@
-# ── Secrets ──────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Shared by BOTH gits (dualgit layer 2): .git (public) and .git-private.
+#
+# This file carries NO public/private split — that is the firewall's job
+# (.git/info/exclude, generated from .dualgit/). Here we list only universal
+# junk: secrets, build output, caches, editor and OS noise.
+#
+# NOTE: an ignore rule never untracks an already-tracked file.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Secrets ────────────────────────────────────────────────────────────────
 .env
 .env.*
 *.local
@@ -8,15 +18,12 @@ credentials.json
 secrets.yaml
 secrets.yml
 
-# ── Claude Code artifacts ────────────────────────────────────────────────────
-.claude/
-docs/superpowers/
-
-# ── Python ───────────────────────────────────────────────────────────────────
+# ── Python ─────────────────────────────────────────────────────────────────
 .venv/
 venv/
 env/
 __pycache__/
+pycache/
 *.pyc
 *.pyo
 *.pyd
@@ -35,7 +42,11 @@ build/
 htmlcov/
 *.cover
 
-# ── Node / JS / TS ───────────────────────────────────────────────────────────
+# uv workspace lockfile — deps not yet consolidated into the workspace.
+# (Already tracked in the public git; this only stops NEW ones appearing.)
+uv.lock
+
+# ── Node / JS / TS ─────────────────────────────────────────────────────────
 node_modules/
 .next/
 .nuxt/
@@ -47,56 +58,85 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ── Go ───────────────────────────────────────────────────────────────────────
+# ── Go ─────────────────────────────────────────────────────────────────────
 *.exe
 *.test
 *.out
 vendor/
 
-# ── Rust ─────────────────────────────────────────────────────────────────────
+# ── Rust ───────────────────────────────────────────────────────────────────
 target/
 Cargo.lock.bak
 
-# ── Editors / IDEs ───────────────────────────────────────────────────────────
+# ── Editors / IDEs ─────────────────────────────────────────────────────────
 .vscode/
 .idea/
+.run/
 *.swp
 *.swo
 *~
 
-# ── OS ───────────────────────────────────────────────────────────────────────
+# ── OS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ── ExaMLOps runtime data ────────────────────────────────────────────────────
+# ── ExaMLOps runtime data ──────────────────────────────────────────────────
 platform.db
 agent_memory.db
+skipper_memory.db
+approvals.db
+mlflow.db
 *.db
 .data_cache/
 slurm_jobs/
+flux_jobs/
+# Authored calculation providers — runtime data (ADR 0074)
+.providers/
 
-# ── Logs / temp ──────────────────────────────────────────────────────────────
+# ── Logs / temp / test artefacts ───────────────────────────────────────────
 *.log
 *.tmp
 .cache/
+temp/
+.playwright/
 .playwright-mcp/
+/playwright-report/
+/screenshots/
 /*.png
 /*.jpg
 /*.jpeg
 
-# ── Docs build output ────────────────────────────────────────────────────────
+# ── Ephemeral design-session output (never belongs in git) ─────────────────
+# docs/ is the public user-doc tier; design/ is the private dev-doc tier.
+# Brainstorming/plan scratch output must live in neither.
+docs/superpowers/
+design/superpowers/
+
+# ── APEX reference library — third-party PDFs, reconstructable from
+#    design/vision/library/papers/manifest-*.tsv
+design/vision/library/papers/*.pdf
+design/vision/library/papers/FAILED.tsv
+
+# ── Legacy p2p / reposync local state (superseded by dual-git) ─────────────
+.p2p.toml
+.p2p-manifest.json
+.p2p-history.jsonl
+.p2p-baseline.json
+.p2p-undo/
+
+# ── Docs build output ──────────────────────────────────────────────────────
 site/
 _site/
 .docusaurus/
 
-# ── Terraform / IaC ──────────────────────────────────────────────────────────
+# ── Terraform / IaC ────────────────────────────────────────────────────────
 *.tfstate
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
 
-# ── Kubernetes / Helm ────────────────────────────────────────────────────────
+# ── Kubernetes / Helm ──────────────────────────────────────────────────────
 values-prod.yaml
 values-production.yaml
 values-vm.yaml
