@@ -646,7 +646,10 @@ async def onboard_model_view(
         conn = _connect()
         _ensure_tables(conn)
         _audit(
-            conn, actor, "project_onboarded", result["project"],
+            conn,
+            actor,
+            "project_onboarded",
+            result["project"],
             {"via": "dashboard", "model": model, "steps": result["steps"]},
         )
         conn.commit()
@@ -677,9 +680,11 @@ async def onboard_all_view(
         conn = _connect()
         _ensure_tables(conn)
         _audit(
-            conn, actor, "project_onboarded_bulk", "*",
-            {"via": "dashboard", "count": len(changed),
-             "models": [r["model"] for r in changed]},
+            conn,
+            actor,
+            "project_onboarded_bulk",
+            "*",
+            {"via": "dashboard", "count": len(changed), "models": [r["model"] for r in changed]},
         )
         conn.commit()
         conn.close()

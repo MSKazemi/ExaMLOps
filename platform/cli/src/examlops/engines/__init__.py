@@ -357,9 +357,7 @@ def _build_vllm(
 
 def _echo_fallback(config: EngineConfig) -> EchoEngine:
     # Carry spec-decode config so telemetry stays exercisable on the fallback.
-    return EchoEngine(
-        EngineConfig(engine="echo", speculative_decoding=config.speculative_decoding)
-    )
+    return EchoEngine(EngineConfig(engine="echo", speculative_decoding=config.speculative_decoding))
 
 
 # ── Quantization (GWT-3) — registers a new signed + BOM'd version ─────────────

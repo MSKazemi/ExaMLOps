@@ -173,12 +173,20 @@ def test_gwtv9_start_registers_and_audits():
         app,
         [
             "--yes",
-            "serve", "llm", "start", "qwen-vl",
-            "--base-url", "http://gpu01:8000",
-            "--hf-model", "Qwen/Qwen3-VL-8B-Instruct",
-            "--modality", "vision",
-            "--max-images", "2",
-            "--media-domains", "example.com",
+            "serve",
+            "llm",
+            "start",
+            "qwen-vl",
+            "--base-url",
+            "http://gpu01:8000",
+            "--hf-model",
+            "Qwen/Qwen3-VL-8B-Instruct",
+            "--modality",
+            "vision",
+            "--max-images",
+            "2",
+            "--media-domains",
+            "example.com",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -194,7 +202,14 @@ def test_gwtv9_vision_without_an_image_limit_is_refused():
         app,
         [
             "--yes",
-            "serve", "llm", "start", "v", "--base-url", "http://x:8000", "--modality", "vision",
+            "serve",
+            "llm",
+            "start",
+            "v",
+            "--base-url",
+            "http://x:8000",
+            "--modality",
+            "vision",
         ],
     )
     assert result.exit_code == 1

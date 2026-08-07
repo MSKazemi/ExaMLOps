@@ -125,9 +125,7 @@ def _engine_for(rec: dict[str, Any]) -> Any:
 @app.command("start", epilog=_EXAMPLES_START)
 def start(
     model: str = typer.Argument(..., help="Endpoint name (the model clients ask for)"),
-    hf_model: str = typer.Option(
-        None, "--hf-model", help="Weights to serve (HF id or local path)"
-    ),
+    hf_model: str = typer.Option(None, "--hf-model", help="Weights to serve (HF id or local path)"),
     launcher: str = typer.Option(
         None, "--launcher", "-l", help="external | compose | slurm | flux | kserve"
     ),
@@ -393,7 +391,9 @@ def health(model: str = typer.Argument(..., help="Endpoint name")) -> None:
     if _output.json_mode:
         _output.print_json({"model": model, "ready": ready, "served_models": served})
     elif ready:
-        _output.ok(f"{model} is ready at {rec.get('base_url')} (serving: {', '.join(served) or '?'})")
+        _output.ok(
+            f"{model} is ready at {rec.get('base_url')} (serving: {', '.join(served) or '?'})"
+        )
     else:
         _output.error(f"{model} is not reachable at {rec.get('base_url')}")
     if not ready:
@@ -555,9 +555,7 @@ def bench(
     for _ in range(requests):
         try:
             chunks = list(
-                engine.chat_stream(
-                    [{"role": "user", "content": prompt}], max_tokens=max_tokens
-                )
+                engine.chat_stream([{"role": "user", "content": prompt}], max_tokens=max_tokens)
             )
         except Exception as exc:
             _output.error(f"Request failed: {exc}")

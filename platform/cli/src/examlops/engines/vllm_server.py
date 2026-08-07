@@ -254,9 +254,7 @@ def _delta_text(event: dict[str, Any]) -> str:
     return text if isinstance(text, str) else ""
 
 
-def _completion_from_response(
-    data: dict[str, Any], image_count: int, elapsed: float
-) -> Completion:
+def _completion_from_response(data: dict[str, Any], image_count: int, elapsed: float) -> Completion:
     choices = data.get("choices") or [{}]
     message = choices[0].get("message") or {}
     text = message.get("content") or choices[0].get("text") or ""

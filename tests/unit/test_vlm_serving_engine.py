@@ -231,7 +231,9 @@ def test_gwtv6_argv_renders_parallelism_and_media_flags():
         }
     )
     args = engines.to_vllm_args(cfg)
-    assert "--tensor-parallel-size" in args and args[args.index("--tensor-parallel-size") + 1] == "4"
+    assert (
+        "--tensor-parallel-size" in args and args[args.index("--tensor-parallel-size") + 1] == "4"
+    )
     assert "--pipeline-parallel-size" in args
     assert "--limit-mm-per-prompt.image" in args
     assert "--allowed-media-domains" in args and "example.com" in args
@@ -311,9 +313,7 @@ def test_speculative_decoding_renders_as_json_config():
 
 
 def test_validate_rejects_a_vision_model_without_an_item_limit():
-    errors = engines.validate_engine_block(
-        {"engine": "vllm", "multimodal": {"modality": "vision"}}
-    )
+    errors = engines.validate_engine_block({"engine": "vllm", "multimodal": {"modality": "vision"}})
     assert any("limit_mm_per_prompt" in e for e in errors)
 
 
@@ -343,7 +343,10 @@ def test_validate_accepts_a_complete_vision_block():
         ({"kv_cache_dtype": "int3"}, "kv_cache_dtype"),
         ({"pipeline_parallel_size": 0}, "pipeline_parallel_size"),
         ({"multimodal": {"modality": "smell", "limit_mm_per_prompt": {"image": 1}}}, "modality"),
-        ({"multimodal": {"modality": "vision", "limit_mm_per_prompt": {"hologram": 1}}}, "hologram"),
+        (
+            {"multimodal": {"modality": "vision", "limit_mm_per_prompt": {"hologram": 1}}},
+            "hologram",
+        ),
     ],
 )
 def test_validate_catches_bad_track_v_fields(block, needle):

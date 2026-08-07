@@ -5,7 +5,15 @@ from examlops.cli.commands.config_cmd import _redact, build_export_snapshot
 
 def test_snapshot_has_all_sections(monkeypatch):
     snap = build_export_snapshot()
-    for section in ("_meta", "cli", "hpc", "object_stores", "models", "env_overlays", "environment"):
+    for section in (
+        "_meta",
+        "cli",
+        "hpc",
+        "object_stores",
+        "models",
+        "env_overlays",
+        "environment",
+    ):
         assert section in snap
     assert snap["cli"]["settings"]  # effective config resolved
     assert "artifact_store" in snap["object_stores"]

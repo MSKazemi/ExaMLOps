@@ -113,6 +113,7 @@ def _dataset_store_kwargs(backend_name: str) -> dict[str, str]:
         kwargs["secret_key"] = secret
     return kwargs
 
+
 # ── Model Registry ─────────────────────────────────────────────────────────────
 #
 # model_name → (model_cls, config_cls, tasks_dict)
@@ -407,7 +408,9 @@ def _build_train_components(
     # Backend: YAML default overridden by runtime arg
     effective_backend = backend_name or ds_entry.backend
     if effective_backend and effective_backend != "zenodo":
-        ds_kwargs["backend"] = _get_backend(effective_backend, **_dataset_store_kwargs(effective_backend))
+        ds_kwargs["backend"] = _get_backend(
+            effective_backend, **_dataset_store_kwargs(effective_backend)
+        )
     else:
         ds_kwargs["use_zenodo_url"] = True
 

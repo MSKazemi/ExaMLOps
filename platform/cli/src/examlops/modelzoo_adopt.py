@@ -207,7 +207,9 @@ def adopt_model(
         if get_connection(connection_name, project=project) is not None:
             bind_project_connection(project, connection_name, actor=actor)
             steps["connection"] = "exists"
-        elif (s3 := _resolve_s3_config(s3_endpoint, s3_access_key, s3_secret, s3_bucket)) is not None:
+        elif (
+            s3 := _resolve_s3_config(s3_endpoint, s3_access_key, s3_secret, s3_bucket)
+        ) is not None:
             cfg = {
                 "endpoint": s3["endpoint"],
                 "bucket": s3["bucket"],
@@ -215,8 +217,12 @@ def adopt_model(
             }
             try:
                 create_connection(
-                    connection_name, "s3", project=project, config=cfg,
-                    secret_value=s3["secret"], created_by=actor,
+                    connection_name,
+                    "s3",
+                    project=project,
+                    config=cfg,
+                    secret_value=s3["secret"],
+                    created_by=actor,
                 )
             except Exception:
                 # Secrets store unavailable (no KEK configured): still register the connection
@@ -224,8 +230,12 @@ def adopt_model(
                 # (S3 access then uses the ambient AWS_* env). The secret write happens before the
                 # row insert, so no partial connection is left behind to retry over.
                 create_connection(
-                    connection_name, "s3", project=project, config=cfg,
-                    secret_value=None, created_by=actor,
+                    connection_name,
+                    "s3",
+                    project=project,
+                    config=cfg,
+                    secret_value=None,
+                    created_by=actor,
                 )
             bind_project_connection(project, connection_name, actor=actor)
             steps["connection"] = "created"

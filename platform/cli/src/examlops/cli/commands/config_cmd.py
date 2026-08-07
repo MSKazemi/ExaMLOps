@@ -252,9 +252,7 @@ def build_export_snapshot() -> dict:
 
     # 6) Every platform-relevant environment variable currently set (secrets redacted).
     snapshot["environment"] = {
-        k: _redact(k, v)
-        for k, v in sorted(os.environ.items())
-        if k.startswith(_ENV_PREFIXES)
+        k: _redact(k, v) for k, v in sorted(os.environ.items()) if k.startswith(_ENV_PREFIXES)
     }
     return snapshot
 

@@ -172,9 +172,7 @@ def _check_remote(url: str, mm: Any) -> None:
             "empty. Add the hosts you trust, or send the image as a data: URL."
         )
     if not any(host == d or host.endswith("." + d) for d in allowed):
-        raise MediaRejected(
-            f"media host '{host}' is not in allowed_media_domains {allowed}"
-        )
+        raise MediaRejected(f"media host '{host}' is not in allowed_media_domains {allowed}")
 
 
 def _check_data_url(url: str, mm: Any) -> int:
@@ -189,9 +187,7 @@ def _check_data_url(url: str, mm: Any) -> int:
         padding = len(payload) - len(payload.rstrip("="))
         size = (len(payload) * 3) // 4 - padding
         if size > max_bytes:
-            raise MediaRejected(
-                f"inline media is {size} bytes, over max_image_bytes={max_bytes}"
-            )
+            raise MediaRejected(f"inline media is {size} bytes, over max_image_bytes={max_bytes}")
         try:  # validate the encoding itself, but only once the size is known to be sane
             base64.b64decode(payload, validate=True)
         except (binascii.Error, ValueError) as exc:
@@ -199,9 +195,7 @@ def _check_data_url(url: str, mm: Any) -> int:
     else:
         size = len(unquote(payload).encode("utf-8", "ignore"))
         if size > max_bytes:
-            raise MediaRejected(
-                f"inline media is {size} bytes, over max_image_bytes={max_bytes}"
-            )
+            raise MediaRejected(f"inline media is {size} bytes, over max_image_bytes={max_bytes}")
     return size
 
 

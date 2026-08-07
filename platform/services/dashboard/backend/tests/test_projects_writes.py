@@ -214,7 +214,9 @@ def _pack(tmp_path, monkeypatch):
 
 async def test_zoo_models_listing(client, platform_db, _pack):
     token = await _login(client, VIEWER_PW)
-    r = await client.get("/api/v1/projects/zoo-models", headers={"Authorization": f"Bearer {token}"})
+    r = await client.get(
+        "/api/v1/projects/zoo-models", headers={"Authorization": f"Bearer {token}"}
+    )
     assert r.status_code == 200, r.text
     models = r.json()["models"]
     assert {m["model"] for m in models} == {"JPCP"}

@@ -189,7 +189,9 @@ def adopt(
     ),
     all_models: bool = typer.Option(False, "--all", help="Adopt every Zoo/pack model."),
     connection_name: str = typer.Option(
-        "minio", "--connection-name", help="Name of the per-project S3/MinIO connection to provision."
+        "minio",
+        "--connection-name",
+        help="Name of the per-project S3/MinIO connection to provision.",
     ),
     no_connection: bool = typer.Option(
         False, "--no-connection", help="Skip provisioning the per-project MinIO connection."
