@@ -100,7 +100,7 @@ _EXAMPLES_USE = (
     "  [dim]# Point config at a named environment[/dim]\n"
     "  exa config use lxp\n\n"
     "  [dim]# Create + populate a context, then switch to it[/dim]\n"
-    "  exa config set control_plane http://23.109.46.77:18002 --context lxp\n"
+    "  exa config set control_plane http://<REMOTE_HOST>:18002 --context remote\n"
     "  exa config use lxp"
 )
 
@@ -228,7 +228,7 @@ def build_export_snapshot() -> dict:
             or "(unset — falls back to artifact_store)",
             "bucket": os.getenv("EXAMLOPS_DATA_BUCKET", "examlops-data"),
             "credentials_set": bool(os.getenv("EXAMLOPS_DATA_S3_ACCESS_KEY")),
-            "purpose": "training datasets (e.g. JSC juphoria Day-0 store)",
+            "purpose": "training datasets (e.g. dedicated dataset object store)",
         },
     }
 

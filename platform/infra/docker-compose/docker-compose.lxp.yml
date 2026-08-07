@@ -1,14 +1,19 @@
-# LXP-CPU01 overrides — apply with:
+# Deploy-node overrides — apply with:
 #   docker compose -f docker-compose.yml -f docker-compose.lxp.yml up -d
 #
-# Adjusts bridge build ARGs to match lxp directory layout:
-#   /nfs/share01/examlops/           (the ai-productions repo)
-#   /nfs/share01/examlops-seanerbus/seanerbus/  (the seanerbus repo)
+# Adjusts bridge build ARGs to match the deploy-node directory layout:
+#   $EXAMLOPS_DEPLOY_PATH/            (this repo)
+#   $EXAMLOPS_DEPLOY_PATH-seanerbus/seanerbus/   (the seanerbus repo)
+#
+# Site-specific values live in .env (gitignored), never here:
+#   EXAMLOPS_GITLAB_HOST_ENTRY="<gitlab-host>:<ip>"   internal DNS pin for the
+#       control plane, needed where the deploy node cannot resolve the internal
+#       GitLab. Harmless default below; override in .env.
 
 services:
   control-plane:
     extra_hosts:
-      - "gitlab.seanergys.fz-juelich.de:134.94.199.214"
+      - "${EXAMLOPS_GITLAB_HOST_ENTRY:-gitlab.example.com:127.0.0.1}"
 
   seanerbus-bridge:
     build:

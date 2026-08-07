@@ -196,10 +196,10 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 | Variable | Mask | Protect | Value |
 |---|---|---|---|
 | `LXP_SSH_KEY` | ✅ | ✅ | ED25519 private key for lxp-cpu01 (see setup below) |
-| `LXP_HOST_KEY` | ✅ | | One line from `ssh-keyscan 23.109.46.77` |
+| `LXP_HOST_KEY` | ✅ | | One line from `ssh-keyscan <REMOTE_HOST>` |
 | `LXP_USER` | | | SSH username on lxp-cpu01 (e.g. `u1002`) |
-| `LXP_HOST` | | | `23.109.46.77` |
-| `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `/nfs/share01/examlops` |
+| `LXP_HOST` | | | `<REMOTE_HOST>` |
+| `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `$EXAMLOPS_DEPLOY_PATH` |
 | `LXP_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
 | `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
 | `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
@@ -219,7 +219,7 @@ The deploy job SSHes into lxp-cpu01 and the server must be able to pull from the
 ssh-keygen -t ed25519 -C "gitlab-ci-deploy" -f ~/.ssh/examlops_deploy
 
 # Add the PUBLIC key to lxp-cpu01
-ssh-copy-id -i ~/.ssh/examlops_deploy.pub u1002@23.109.46.77
+ssh-copy-id -i ~/.ssh/examlops_deploy.pub u1002@<REMOTE_HOST>
 
 # Store the PRIVATE key in GitLab CI variable LXP_SSH_KEY
 cat ~/.ssh/examlops_deploy
@@ -227,7 +227,7 @@ cat ~/.ssh/examlops_deploy
 
 Grab the host key for `LXP_HOST_KEY`:
 ```bash
-ssh-keyscan 23.109.46.77
+ssh-keyscan <REMOTE_HOST>
 # Copy one ed25519 or ecdsa line → store as LXP_HOST_KEY
 ```
 
@@ -247,13 +247,13 @@ Register this public key in **GitLab → Project → Settings → Repository →
 
 ```bash
 # ~/.ssh/config
-Host gitlab.seanergys.fz-juelich.de
-  HostName gitlab.seanergys.fz-juelich.de
+Host gitlab.example.com
+  HostName gitlab.example.com
   User git
   IdentityFile ~/.ssh/gitlab_deploy
 ```
 
-Test with: `ssh -T git@gitlab.seanergys.fz-juelich.de`
+Test with: `ssh -T git@gitlab.example.com`
 
 ---
 
@@ -340,7 +340,7 @@ The runner is not running in privileged mode. Edit the runner's `config.toml`:
 The runner has fewer than 4 CPUs or < 4 GB RAM. Either increase runner resources or leave `allow_failure: true` in place.
 
 **`deploy:lxp` fails with "Host key verification failed"**
-The `LXP_HOST_KEY` variable is empty or contains the wrong host key. Re-run `ssh-keyscan 23.109.46.77` and update the variable.
+The `LXP_HOST_KEY` variable is empty or contains the wrong host key. Re-run `ssh-keyscan <REMOTE_HOST>` and update the variable.
 
 **`post-deploy:lxp:retrain-push-models` fails with connection refused**
 The Control Plane container on lxp-cpu01 did not start. Check `docker compose logs control-plane` on lxp-cpu01. The deploy job starts the stack with `up --build -d` but does not wait for health checks; a brief startup delay can cause this. Re-running the job manually after a minute usually succeeds.

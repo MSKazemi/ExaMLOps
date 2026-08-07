@@ -8,7 +8,7 @@
 #   journalctl -t examlops-selfheal -f
 set -euo pipefail
 
-DEPLOY_PATH="${1:-/nfs/share01/examlops}"
+DEPLOY_PATH="${1:-/opt/examlops}"
 UNIT_DIR="/etc/systemd/system"
 HEAL_SCRIPT="$DEPLOY_PATH/platform/ci/self_heal.sh"
 

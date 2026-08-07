@@ -360,14 +360,41 @@ Override the URLs sent to the browser when the dashboard is accessed from a remo
 | `PUBLIC_PROMETHEUS_URL` | `http://localhost:19090` | Clickable Prometheus URL returned to the browser |
 | `PUBLIC_GRAFANA_URL` | `http://localhost:13000` | Clickable Grafana URL returned to the browser |
 
-Example for remote server access (lxp-cpu01 at 23.109.46.77):
+Example for remote server access (`<REMOTE_HOST>` = the deploy node's address):
 ```bash
-PUBLIC_MLFLOW_URL=http://23.109.46.77:15000
-PUBLIC_PREFECT_URL=http://23.109.46.77:14200
-PUBLIC_RAY_DASHBOARD_URL=http://23.109.46.77:18265
-PUBLIC_PROMETHEUS_URL=http://23.109.46.77:19090
-PUBLIC_GRAFANA_URL=http://23.109.46.77:13000
+PUBLIC_MLFLOW_URL=http://<REMOTE_HOST>:15000
+PUBLIC_PREFECT_URL=http://<REMOTE_HOST>:14200
+PUBLIC_RAY_DASHBOARD_URL=http://<REMOTE_HOST>:18265
+PUBLIC_PROMETHEUS_URL=http://<REMOTE_HOST>:19090
+PUBLIC_GRAFANA_URL=http://<REMOTE_HOST>:13000
 ```
+
+---
+
+## Remote deploy node (site-specific)
+
+The committed tree carries deliberately generic defaults so that no particular
+site's addressing or filesystem layout is published. Set the real values in
+`.env` on the deploy node (and locally if you use `make remote-rebuild`).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_DEPLOY_HOST` | `examlops-deploy` | ssh host or alias of the deploy node; used by `make remote-rebuild` |
+| `EXAMLOPS_DEPLOY_PATH` | `/opt/examlops` | Checkout path on the deploy node; used by `make remote-rebuild` and the `platform/ci/*.sh` helper scripts |
+| `EXAMLOPS_HOST_REPO` | `/opt/examlops` | The same path as seen by the Docker host — bind-mounted into spawned JupyterHub notebooks and used by the compose stack |
+| `EXAMLOPS_GITLAB_HOST_ENTRY` | `gitlab.example.com:127.0.0.1` | `"<host>:<ip>"` DNS pin injected into the control plane via `docker-compose.lxp.yml` `extra_hosts`, for deploy nodes that cannot resolve an internal GitLab |
+
+```bash
+EXAMLOPS_DEPLOY_HOST=my-deploy-node
+EXAMLOPS_DEPLOY_PATH=/srv/examlops
+EXAMLOPS_HOST_REPO=/srv/examlops
+EXAMLOPS_GITLAB_HOST_ENTRY=gitlab.internal.example.com:10.0.0.5
+```
+
+> If you are upgrading an existing deployment that relied on the previous
+> hardcoded defaults, set `EXAMLOPS_HOST_REPO` and `EXAMLOPS_DEPLOY_PATH`
+> explicitly **before** pulling — otherwise the bind mounts and the JupyterHub
+> spawner will point at the new generic default instead of your real checkout.
 
 ---
 

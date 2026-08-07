@@ -7,7 +7,7 @@
 # Check logs:                 journalctl -t examlops-selfheal -f
 set -uo pipefail
 
-DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/nfs/share01/examlops}"
+DEPLOY_PATH="${EXAMLOPS_DEPLOY_PATH:-/opt/examlops}"
 COMPOSE_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.yml"
 COMPOSE_LXP_FILE="$DEPLOY_PATH/platform/infra/docker-compose/docker-compose.lxp.yml"
 LOG_TAG="examlops-selfheal"

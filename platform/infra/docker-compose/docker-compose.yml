@@ -510,7 +510,7 @@ services:
       # Host path of the platform repo — bind-mounted into each spawned notebook (read-only) so a
       # notebook can `import examlops` for plugin/provider management (ADR 0074); the .providers
       # subdir is mounted read-write so authored plugins are shared with the CLI/dashboard.
-      EXAMLOPS_HOST_REPO: ${EXAMLOPS_HOST_REPO:-/nfs/share01/examlops}
+      EXAMLOPS_HOST_REPO: ${EXAMLOPS_HOST_REPO:-/opt/examlops}
       # Shared token the dashboard uses to start/stop project workbenches (named servers) via the
       # Hub API. Set in the deploy env (never committed); when empty, the dashboard workbench
       # Open/Start simply degrades (no spawn).

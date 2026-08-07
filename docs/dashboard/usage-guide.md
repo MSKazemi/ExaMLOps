@@ -8,7 +8,7 @@ reverse proxy. Almost every write on the dashboard calls the **same `examlops.*`
 `platform_db` code paths as the `exa` CLI**, so the UI never drifts from the CLI and there
 is a natural CLI equivalent for most actions.
 
-- **URL:** http://localhost:18099 (remote `lxp-cpu01`: `23.109.46.77:18099`, or via `ssh lxp` port-forward)
+- **URL:** http://localhost:18099 (remote `lxp-cpu01`: `<REMOTE_HOST>:18099`, or via `ssh lxp` port-forward)
 - **API docs (Swagger):** http://localhost:18099/api/docs (or `/docs`)
 
 ## Login & roles

@@ -97,7 +97,7 @@ def _dataset_store_kwargs(backend_name: str) -> dict[str, str]:
     """Credentials for the *dataset* object store, kept separate from the MLflow artifact store.
 
     Large-scale datasets can live on a different S3/MinIO instance (e.g. the JSC
-    juphoria Day-0 store) than the platform MinIO that holds MLflow artifacts and
+    dedicated dataset object store) than the platform MinIO that holds MLflow artifacts and
     models. When the ``EXAMLOPS_DATA_S3_*`` variables are unset the backend keeps
     its legacy resolution (``MLFLOW_S3_ENDPOINT_URL`` + ``AWS_*``), so a single
     shared instance keeps working unchanged.

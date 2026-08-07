@@ -21,7 +21,7 @@
 #   LXP_HOST_KEY        masked            — known_hosts entry for lxp-cpu01
 #   LXP_USER                              — SSH username on lxp-cpu01
 #   LXP_HOST                              — hostname or IP of lxp-cpu01
-#   LXP_DEPLOY_PATH                       — /nfs/share01/examlops
+#   LXP_DEPLOY_PATH                       — /opt/examlops
 #   LXP_DEPLOY_REPO                       — GitLab SSH URL of this repo
 #   LXP_CONTROL_PLANE_URL                 — http://lxp-cpu01:18002
 #   LXP_CONTROL_PLANE_TOKEN masked        — bearer token for /retrain + /api/changes

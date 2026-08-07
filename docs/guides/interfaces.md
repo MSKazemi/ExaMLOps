@@ -353,6 +353,6 @@ See [Command Reference](../reference/commands.md) for the complete command tree 
 
 ## Remote server
 
-All interfaces are available on the `lxp-cpu01` server at `23.109.46.77` on
+All interfaces are available on the `lxp-cpu01` server at `<REMOTE_HOST>` on
 the same ports. Replace `localhost` with the server IP, or use `ssh lxp` to
 forward all ports to localhost automatically.

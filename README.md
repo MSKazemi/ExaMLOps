@@ -137,9 +137,9 @@ exa status                  # show services, approvals, and production state
 | Prometheus | http://localhost:19090 |
 | Grafana | http://localhost:13000 |
 
-### Remote Server lxp-cpu01 (23.109.46.77)
+### Remote Server lxp-cpu01 (<REMOTE_HOST>)
 
-Same ports as local — e.g. http://23.109.46.77:18099 for the Dashboard. Accessible via `ssh lxp` with all ports forwarded to localhost.
+Same ports as local — e.g. http://<REMOTE_HOST>:18099 for the Dashboard. Accessible via `ssh lxp` with all ports forwarded to localhost.
 
 ## Adding a New Model
 

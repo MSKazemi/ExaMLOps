@@ -122,14 +122,14 @@ These are the flags that flip ExaMLOps from single-tenant dev to multi-tenant HA
 The active production deploy today. On merge to `main`, GitLab CI (`.gitlab-ci.yml`) runs
 `sanity → test → deploy:lxp → smoke:lxp`:
 1. `deploy:lxp` SSHes to `lxp-cpu01` (keys from CI vars), records the previous SHA, `git pull`s
-   `/nfs/share01/examlops`, refreshes the host `exa` install, and runs
+   `$EXAMLOPS_DEPLOY_PATH`, refreshes the host `exa` install, and runs
    `docker compose -f docker-compose.yml -f docker-compose.lxp.yml build && up -d`.
 2. `smoke:lxp` probes the services and **auto-rolls back to the previous SHA** on failure.
 
 Manual fast-path (when CI is slow/queued) — pull + rebuild the changed service on the node:
 ```bash
 ssh -o RemoteCommand=none -o ClearAllForwardings=yes lxp \
-  "cd /nfs/share01/examlops && git pull --ff-only && make dashboard-up"   # or stack-up / control-plane-up
+  "cd $EXAMLOPS_DEPLOY_PATH && git pull --ff-only && make dashboard-up"   # or stack-up / control-plane-up
 ```
 > The `lxp` alias forces a port-forward RemoteCommand; run remote commands with
 > `-o RemoteCommand=none -o ClearAllForwardings=yes` (or use the `lxp-cpu01` alias).

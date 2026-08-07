@@ -85,9 +85,9 @@ export EXAMLOPS_HPC_TRANSPORT=ssh
 export EXAMLOPS_HPC_SSH_HOST=lxp-cpu01          # the login node that runs the scheduler
 export EXAMLOPS_HPC_SSH_USER=u1002
 export EXAMLOPS_HPC_SSH_KEY=~/.ssh/id_ed25519   # optional; SSH agent / default keys also work
-export EXAMLOPS_HPC_REMOTE_REPO=/nfs/share01/examlops                 # repo on the cluster
-export EXAMLOPS_HPC_REMOTE_PYTHON=/nfs/share01/examlops/.venv/bin/python
-export EXAMLOPS_HPC_REMOTE_WORKDIR=/nfs/share01/examlops/flux_jobs    # where job dirs live
+export EXAMLOPS_HPC_REMOTE_REPO=$EXAMLOPS_DEPLOY_PATH                 # repo on the cluster
+export EXAMLOPS_HPC_REMOTE_PYTHON=$EXAMLOPS_DEPLOY_PATH/.venv/bin/python
+export EXAMLOPS_HPC_REMOTE_WORKDIR=$EXAMLOPS_DEPLOY_PATH/flux_jobs    # where job dirs live
 ```
 
 > **Host-key verification is on by default.** The SSH transport uses paramiko's
@@ -136,7 +136,7 @@ Watch for these lines — they confirm the real-HPC path (not mock):
 
 ```
 [scheduler] backend=flux (real HPC)
-[slurm_submit] flux job_id=ƒCw8cWS4fw5  remote_dir=/nfs/share01/examlops/flux_jobs/42434e6c3c24
+[slurm_submit] flux job_id=ƒCw8cWS4fw5  remote_dir=$EXAMLOPS_DEPLOY_PATH/flux_jobs/42434e6c3c24
 [scheduler] job ƒCw8cWS4fw5 → RUNNING
 ...
 [scheduler] job ƒCw8cWS4fw5 → COMPLETED
@@ -190,7 +190,7 @@ Running the Prefect worker directly on the login node (`local` transport):
 
 ```bash
 ssh lxp-cpu01
-cd /nfs/share01/examlops
+cd $EXAMLOPS_DEPLOY_PATH
 
 export EXAMLOPS_HPC_SCHEDULER=flux
 export EXAMLOPS_HPC_TRANSPORT=local

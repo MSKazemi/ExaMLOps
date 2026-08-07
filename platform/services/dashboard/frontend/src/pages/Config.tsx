@@ -568,7 +568,7 @@ function GitLabSection({
               style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}
             />
             <p className="text-[10px] text-muted-foreground/60">
-              Self-hosted? Use your instance URL, e.g. <code className="px-1 rounded" style={{ background: 'var(--surface-2)' }}>https://gitlab.seanergys.fz-juelich.de</code>
+              Self-hosted? Use your instance URL, e.g. <code className="px-1 rounded" style={{ background: 'var(--surface-2)' }}>https://gitlab.example.com</code>
             </p>
           </div>
 

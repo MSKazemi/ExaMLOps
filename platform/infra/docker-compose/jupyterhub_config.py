@@ -21,7 +21,7 @@ c.DockerSpawner.remove = True
 # management (ADR 0074); the authored-providers dir is mounted read-write so notebook-authored
 # providers are shared with the CLI/dashboard/serving. DockerSpawner spawns *sibling* containers
 # via the Docker socket, so these are HOST paths (EXAMLOPS_HOST_REPO on the deploy node).
-_HOST_REPO = os.environ.get("EXAMLOPS_HOST_REPO", "/nfs/share01/examlops")
+_HOST_REPO = os.environ.get("EXAMLOPS_HOST_REPO", "/opt/examlops")
 c.DockerSpawner.volumes = {
     # {servername} is empty for the default lab and the workbench name for a named server, so each
     # project workbench gets its own persistent home volume.

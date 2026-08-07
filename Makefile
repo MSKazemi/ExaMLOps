@@ -16,10 +16,16 @@ ROOT_DIR        := $(CURDIR)
 COMPOSE_DIR     := platform/infra/docker-compose
 RAY_SERVING_DIR := serving/ray_serving
 MODELZOO_DIR    := modelzoo
-# lxp layout: /nfs/share01/examlops-seanerbus/seanerbus
-# laptop layout: ../../seanerbus  (two levels up from repo root)
+# deploy-node layout: $(DEPLOY_PATH)-seanerbus/seanerbus
+# laptop layout:      ../../seanerbus  (two levels up from repo root)
 SEANERBUS_DIR   ?= $(or $(wildcard $(ROOT_DIR)/../examlops-seanerbus/seanerbus),$(ROOT_DIR)/../../seanerbus)
 PID_DIR         := .run
+
+# ── Remote deploy node ────────────────────────────────────────────────────────
+# Site-specific. Set the real values in .env (gitignored) or the environment:
+#   EXAMLOPS_DEPLOY_HOST=<ssh-host>   EXAMLOPS_DEPLOY_PATH=/path/to/checkout
+DEPLOY_HOST     ?= $(or $(EXAMLOPS_DEPLOY_HOST),examlops-deploy)
+DEPLOY_PATH     ?= $(or $(EXAMLOPS_DEPLOY_PATH),/opt/examlops)
 
 # ── Docker Compose  ───────────────────────────────────────────────────────────
 # .env lives at the repo root; compose runs from COMPOSE_DIR so we must pass
@@ -239,27 +245,29 @@ rebuild-all: ## Force-rebuild ALL images including JupyterHub + restart EVERYTHI
 	  "JupyterHub"    "http://localhost:18888"
 	@printf "\n"
 
-lxp-rebuild: ## Pull latest code + force-rebuild + restart all containers on lxp-cpu01
-	@printf "$(BOLD)Rebuilding on lxp-cpu01...$(RESET)\n"
-	@ssh lxp-cpu01 "set -e; \
-	  cd /nfs/share01/examlops; \
+remote-rebuild: ## Pull latest code + force-rebuild + restart all containers on the deploy node
+	@printf "$(BOLD)Rebuilding on $(DEPLOY_HOST)...$(RESET)\n"
+	@ssh $(DEPLOY_HOST) "set -e; \
+	  cd $(DEPLOY_PATH); \
 	  echo '=== git pull ==='; \
 	  git pull; \
 	  cd platform/infra/docker-compose; \
 	  echo '=== stopping all containers ==='; \
-	  docker compose --env-file /nfs/share01/examlops/.env \
+	  docker compose --env-file $(DEPLOY_PATH)/.env \
 	    --profile monitoring --profile jupyter --profile seanerbus \
 	    down --remove-orphans 2>/dev/null || true; \
 	  echo '=== rebuilding all images (no cache) ==='; \
-	  docker compose --env-file /nfs/share01/examlops/.env \
+	  docker compose --env-file $(DEPLOY_PATH)/.env \
 	    --profile monitoring build --no-cache; \
 	  echo '=== starting core stack ==='; \
-	  docker compose --env-file /nfs/share01/examlops/.env up -d; \
+	  docker compose --env-file $(DEPLOY_PATH)/.env up -d; \
 	  echo '=== starting monitoring stack ==='; \
-	  docker compose --env-file /nfs/share01/examlops/.env \
+	  docker compose --env-file $(DEPLOY_PATH)/.env \
 	    --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo; \
 	  echo '=== done ==='; \
-	  docker compose --env-file /nfs/share01/examlops/.env ps"
+	  docker compose --env-file $(DEPLOY_PATH)/.env ps"
+
+lxp-rebuild: remote-rebuild ## Deprecated alias for remote-rebuild
 	@printf "\n$(GREEN)$(BOLD)lxp-cpu01 rebuild complete.$(RESET)\n"
 	@printf "$(DIM)Connect:  ssh lxp  then open http://localhost:18099$(RESET)\n\n"
 

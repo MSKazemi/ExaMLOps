@@ -71,7 +71,7 @@ develop model in ModelZoo → push + merge request → merge to ModelZoo main
       → AI-production detects the new commit → retrains locally → serves
 ```
 
-**A. ModelZoo repo** — `git@gitlab.seanergys.fz-juelich.de:software/modelzoo.git`:
+**A. ModelZoo repo** — `git@gitlab.example.com:software/modelzoo.git`:
 
 | What | Path (inside the ModelZoo repo) |
 |---|---|
