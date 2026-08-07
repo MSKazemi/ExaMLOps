@@ -101,7 +101,7 @@ Set a single config key without the interactive wizard.
 | `control_plane_token` | Bearer token for `POST /retrain` |
 
 ```bash
-exa config set control_plane http://137.204.56.169:18002
+exa config set control_plane http://<REMOTE_HOST>:18002
 exa config set control_plane_token mysecrettoken
 ```
 

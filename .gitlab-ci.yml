@@ -19,7 +19,7 @@
 # Required CI/CD variables (Settings → CI/CD → Variables):
 #   LXP_SSH_KEY         masked, protected — ED25519 private key for lxp-cpu01
 #   LXP_HOST_KEY        masked            — known_hosts entry for lxp-cpu01
-#   LXP_USER                              — SSH username on lxp-cpu01
+#   LXP_USER                              — SSH username on the deploy node
 #   LXP_HOST                              — hostname or IP of lxp-cpu01
 #   LXP_DEPLOY_PATH                       — /opt/examlops
 #   LXP_DEPLOY_REPO                       — GitLab SSH URL of this repo
@@ -405,7 +405,7 @@ deploy:lxp:
         # .venv with only the workspace coordinator and no exa script), so we install it
         # explicitly. Non-fatal: the containerized services are the real deploy; a host
         # CLI hiccup must not fail production.
-        export PATH=\"\$HOME/.local/bin:/localhome/u1002/.local/bin:\$PATH\"
+        export PATH=\"\$HOME/.local/bin:/localhome/\$LXP_USER/.local/bin:\$PATH\"
         uv pip install -e . >/dev/null 2>&1 && echo \"exa CLI refreshed: \$(.venv/bin/exa --version 2>/dev/null)\" || echo \"warn: exa CLI refresh skipped (uv unavailable) — non-fatal\"
         # Grant the JupyterHub workbench notebook user (uid 1000 / jovyan) write access to the
         # pipeline-code dirs so notebooks can edit model YAML / configs / the engine. NFS ACL +

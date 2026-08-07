@@ -197,7 +197,7 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 |---|---|---|---|
 | `LXP_SSH_KEY` | ✅ | ✅ | ED25519 private key for lxp-cpu01 (see setup below) |
 | `LXP_HOST_KEY` | ✅ | | One line from `ssh-keyscan <REMOTE_HOST>` |
-| `LXP_USER` | | | SSH username on lxp-cpu01 (e.g. `u1002`) |
+| `LXP_USER` | | | SSH username on the deploy node |
 | `LXP_HOST` | | | `<REMOTE_HOST>` |
 | `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `$EXAMLOPS_DEPLOY_PATH` |
 | `LXP_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
@@ -219,7 +219,7 @@ The deploy job SSHes into lxp-cpu01 and the server must be able to pull from the
 ssh-keygen -t ed25519 -C "gitlab-ci-deploy" -f ~/.ssh/examlops_deploy
 
 # Add the PUBLIC key to lxp-cpu01
-ssh-copy-id -i ~/.ssh/examlops_deploy.pub u1002@<REMOTE_HOST>
+ssh-copy-id -i ~/.ssh/examlops_deploy.pub <DEPLOY_USER>@<REMOTE_HOST>
 
 # Store the PRIVATE key in GitLab CI variable LXP_SSH_KEY
 cat ~/.ssh/examlops_deploy

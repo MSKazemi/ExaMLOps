@@ -337,5 +337,5 @@ Files outside `~/work/` are lost on container restart. In future, save everythin
 | MLflow | http://localhost:15000 | http://<REMOTE_HOST>:15000 |
 | MinIO Console | http://localhost:19001 | http://<REMOTE_HOST>:19001 |
 | Prefect UI | http://localhost:14200 | http://<REMOTE_HOST>:14200 |
-| Ray Dashboard | http://localhost:18265 | http://137.204.56.169:18265 |
-| Grafana | http://localhost:13000 | http://137.204.56.169:13000 |
+| Ray Dashboard | http://localhost:18265 | http://<REMOTE_HOST>:18265 |
+| Grafana | http://localhost:13000 | http://<REMOTE_HOST>:13000 |

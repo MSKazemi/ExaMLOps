@@ -83,7 +83,7 @@ filesystem**. Uses paramiko + SFTP with a reused connection.
 export EXAMLOPS_HPC_SCHEDULER=flux
 export EXAMLOPS_HPC_TRANSPORT=ssh
 export EXAMLOPS_HPC_SSH_HOST=lxp-cpu01          # the login node that runs the scheduler
-export EXAMLOPS_HPC_SSH_USER=u1002
+export EXAMLOPS_HPC_SSH_USER=<DEPLOY_USER>
 export EXAMLOPS_HPC_SSH_KEY=~/.ssh/id_ed25519   # optional; SSH agent / default keys also work
 export EXAMLOPS_HPC_REMOTE_REPO=$EXAMLOPS_DEPLOY_PATH                 # repo on the cluster
 export EXAMLOPS_HPC_REMOTE_PYTHON=$EXAMLOPS_DEPLOY_PATH/.venv/bin/python
@@ -168,7 +168,7 @@ name. `--cluster` refuses any cluster that a sysadmin has not **approved** (`ACT
 resolves the same env for you. See **[hpc-fleet.md](hpc-fleet.md)** for the full flow.
 
 ```bash
-exa hpc connect lxp-cpu01 --name lxp --user u1002    # → clusters.yaml + PENDING row
+exa hpc connect <REMOTE_HOST> --name hpc --user <DEPLOY_USER>    # → clusters.yaml + PENDING row
 exa hpc approve lxp                                   # sysadmin gate → ACTIVE
 exa hpc preflight lxp                                 # exits 1 if the cluster can't take the job
 exa pipeline run --model JPCP --dataset PM100Dataset --cluster lxp

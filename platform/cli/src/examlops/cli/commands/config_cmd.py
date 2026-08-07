@@ -28,9 +28,9 @@ _EXAMPLES_SHOW = "Examples:\n\n  exa config show"
 _EXAMPLES_INIT = "Examples:\n\n  exa config init"
 _EXAMPLES_SET = (
     "Examples:\n\n"
-    "  exa config set control_plane http://137.204.56.169:18002\n\n"
+    "  exa config set control_plane http://<REMOTE_HOST>:18002\n\n"
     "  exa config set control_plane_token mysecrettoken\n\n"
-    "  exa config set mlflow http://137.204.56.169:15000"
+    "  exa config set mlflow http://<REMOTE_HOST>:15000"
 )
 
 
