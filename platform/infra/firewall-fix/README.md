@@ -47,8 +47,11 @@ docker compose down
 Verify egress is restored:
 
 ```bash
+# GITLAB_IP: your internal GitLab's address — the host part of
+# EXAMLOPS_GITLAB_HOST_ENTRY in .env (see docs/reference/env-vars.md).
+GITLAB_IP="${EXAMLOPS_GITLAB_HOST_ENTRY##*:}"
 docker exec examlops-control-plane python3 -c \
-  "import socket; socket.create_connection(('134.94.199.214',443),timeout=6); print('GitLab REACHABLE')"
+  "import socket; socket.create_connection(('$GITLAB_IP',443),timeout=6); print('GitLab REACHABLE')"
 exa modelzoo sync          # should report the latest commit, not an error
 ```
 
