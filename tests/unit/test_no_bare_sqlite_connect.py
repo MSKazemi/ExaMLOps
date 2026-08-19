@@ -12,7 +12,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_CORE = Path(__file__).resolve().parents[2] / "platform" / "cli" / "src" / "examlops"
+_REPO = Path(__file__).resolve().parents[2]
+_CORE = _REPO / "platform" / "cli" / "src" / "examlops"
+_TESTS = _REPO / "tests"
 # The one file allowed to call sqlite3.connect directly — it *is* the hardening adapter.
 _ALLOWED = {_CORE / "resilience" / "db.py"}
 _PATTERN = re.compile(r"\bsqlite3\.connect\s*\(")
@@ -29,4 +31,25 @@ def test_core_package_has_no_bare_sqlite_connect():
     assert not offenders, (
         "Bare sqlite3.connect() found — route through examlops.resilience.db.connect "
         "(hardened WAL + busy_timeout) instead:\n" + "\n".join(offenders)
+    )
+
+
+def test_tests_reach_the_platform_db_through_the_seam():
+    """A test that opens the SQLite file directly only ever proves the SQLite engine.
+
+    Four of them did, and each one failed the moment the suite ran with
+    ``EXAMLOPS_DB_BACKEND=postgres`` — not because the platform was broken, but because the test
+    was asserting against a file the platform had stopped writing to. Going through
+    ``platform_db.get_db()`` makes the same assertion hold on whichever engine is configured.
+    """
+    offenders: list[str] = []
+    for py in _TESTS.rglob("*.py"):
+        if py == Path(__file__).resolve() or "__pycache__" in py.parts:
+            continue
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), start=1):
+            if _PATTERN.search(line):
+                offenders.append(f"{py.relative_to(_REPO)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "Tests must reach platform state through platform_db.get_db(), not sqlite3.connect():\n"
+        + "\n".join(offenders)
     )

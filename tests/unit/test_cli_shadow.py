@@ -80,26 +80,25 @@ def test_shadow_log_empty():
 
 def test_shadow_log_with_rows(isolated_db):
     """shadow log shows rows inserted into shadow_results."""
-    import sqlite3
+    from examlops import platform_db
 
-    conn = sqlite3.connect(isolated_db)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS shadow_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            model TEXT NOT NULL,
-            production_pred REAL,
-            shadow_pred REAL,
-            diff_pct REAL,
-            job_id TEXT
-        )"""
-    )
-    conn.execute(
-        "INSERT INTO shadow_results (model, production_pred, shadow_pred, diff_pct) VALUES (?,?,?,?)",
-        ("JPCP", 42.5, 43.1, 1.41),
-    )
-    conn.commit()
-    conn.close()
+    with platform_db.get_db() as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS shadow_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model TEXT NOT NULL,
+                production_pred REAL,
+                shadow_pred REAL,
+                diff_pct REAL,
+                job_id TEXT
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO shadow_results (model, production_pred, shadow_pred, diff_pct) "
+            "VALUES (?,?,?,?)",
+            ("JPCP", 42.5, 43.1, 1.41),
+        )
 
     result = runner.invoke(app, ["serve", "shadow", "log", "JPCP"])
     assert result.exit_code == 0, result.output

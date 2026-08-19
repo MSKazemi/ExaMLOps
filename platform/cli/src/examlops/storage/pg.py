@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 
 #: SQLite's ``CURRENT_TIMESTAMP`` renders ``'YYYY-MM-DD HH:MM:SS'`` in UTC. This is the
 #: byte-identical Postgres expression, used for defaults *and* comparisons.
+_SQLITE_MASTER = (
+    "(SELECT tablename AS name, 'table' AS type, tablename AS tbl_name, NULL::text AS sql "
+    "   FROM pg_tables  WHERE schemaname = current_schema() "
+    " UNION ALL "
+    " SELECT indexname AS name, 'index' AS type, tablename AS tbl_name, indexdef AS sql "
+    "   FROM pg_indexes WHERE schemaname = current_schema()) AS sqlite_master"
+)
+"""SQLite's schema catalogue as a subquery.
+
+Both the platform and the dashboard ask ``SELECT 1 FROM sqlite_master WHERE type='table' AND
+name=?`` to decide whether an optional table exists yet — a pattern worth keeping rather than
+rewriting in ~20 places, so the catalogue is supplied instead.
+"""
+
 _NOW_TEXT = "to_char((now() AT TIME ZONE 'UTC'),'YYYY-MM-DD HH24:MI:SS')"
 
 #: Schema identifiers that Postgres reserves but SQLite does not, so they must be quoted. Derived
@@ -130,7 +144,9 @@ def _pragma_table_info(sql: str) -> str | None:
         "CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull, "
         "column_default AS dflt_value, 0 AS pk "
         f"FROM information_schema.columns WHERE table_name = '{m.group(1)}' "
-        "ORDER BY ordinal_position"
+        # Scoped to the active schema: without this, two platform instances sharing a Postgres
+        # database see each other's columns and the additive column migrations silently skip.
+        "AND table_schema = current_schema() ORDER BY ordinal_position"
     )
 
 
@@ -163,12 +179,19 @@ def _append_only_trigger(sql: str) -> str | None:
     )
 
 
-def translate(sql: str, *, pk_lookup: Callable[[str], Sequence[str]] | None = None) -> str:
+def translate(
+    sql: str,
+    *,
+    pk_lookup: Callable[[str], Sequence[str]] | None = None,
+    trigger_table: Callable[[str], str | None] | None = None,
+    has_id: Callable[[str], bool] | None = None,
+) -> str:
     """Rewrite one SQLite statement into its Postgres equivalent.
 
     ``pk_lookup(table)`` supplies the conflict target for ``INSERT OR REPLACE``; without it (or
     when the table has no key) the statement degrades to a plain ``INSERT`` and logs, rather than
-    guessing a target and silently corrupting upsert semantics.
+    guessing a target and silently corrupting upsert semantics. ``has_id(table)`` says whether the
+    queried table carries the surrogate ``id`` column that stands in for SQLite's ``rowid``.
     """
     stripped = sql.strip()
 
@@ -189,8 +212,20 @@ def translate(sql: str, *, pk_lookup: Callable[[str], Sequence[str]] | None = No
     if trigger is not None:
         return trigger
 
+    # SQLite triggers are global; Postgres attaches them to a table, so the DROP needs it.
+    m_drop = re.match(
+        r"\s*DROP\s+TRIGGER\s+(IF\s+EXISTS\s+)?(\w+)\s*;?\s*$", stripped, re.IGNORECASE
+    )
+    if m_drop:
+        table = trigger_table(m_drop.group(2)) if trigger_table else None
+        if table:
+            return f"DROP TRIGGER {m_drop.group(1) or ''}{m_drop.group(2)} ON {table}"
+        # No such trigger. With IF EXISTS that is a no-op; without it, let Postgres object.
+        return "SELECT 1" if m_drop.group(1) else stripped
+
     is_ddl = bool(re.match(r"\s*CREATE\s+TABLE\b", code_only.strip(), re.IGNORECASE))
     conflict = ""
+    rowid_column = _rowid_column(code_only, has_id)
 
     def code(seg: str) -> str:
         seg = seg.replace("?", "%s")
@@ -205,8 +240,25 @@ def translate(sql: str, *, pk_lookup: Callable[[str], Sequence[str]] | None = No
                 seg = re.sub(pat, repl, seg, flags=re.IGNORECASE)
         # julianday() first: rewriting CURRENT_TIMESTAMP into a to_char(...) call would put
         # parentheses inside its arguments and hide the pattern.
+        # SQLite's implicit rowid is used as an insertion-order tie-break in ORDER BY. Most
+        # platform tables have a BIGSERIAL `id` carrying exactly that meaning; the few with a
+        # natural TEXT primary key have no such column, and there the tie-break is dropped
+        # rather than invented. (`\b` keeps this from touching `lastrowid`.)
+        if rowid_column:
+            seg = re.sub(r"\browid\b", rowid_column, seg, flags=re.IGNORECASE)
+        else:
+            seg = re.sub(r"\s*,\s*rowid\s+(ASC|DESC)\b", "", seg, flags=re.IGNORECASE)
+            seg = re.sub(r"\browid\b", "1", seg, flags=re.IGNORECASE)
         seg = _julianday(seg)
         seg = re.sub(r"\bCURRENT_TIMESTAMP\b", _NOW_TEXT, seg, flags=re.IGNORECASE)
+        seg = re.sub(
+            r"\bFROM\s+sqlite_master\b", f"FROM {_SQLITE_MASTER}", seg, flags=re.IGNORECASE
+        )
+        # A bare placeholder in a boolean position. `_adapt` sends Python bools as the 0/1
+        # SQLite stores in its INTEGER columns, which is right everywhere except here, where
+        # Postgres wants a real boolean and will not coerce one. `<> 0` says what SQLite means
+        # by a truthy value without depending on a smallint→boolean cast that does not exist.
+        seg = re.sub(r"\bWHEN\s+%s\s+THEN\b", "WHEN %s <> 0 THEN", seg, flags=re.IGNORECASE)
         for word in _RESERVED_IDENTIFIERS:
             seg = re.sub(rf'(?<!")\b{word}\b(?!")', f'"{word}"', seg, flags=re.IGNORECASE)
         return seg
@@ -238,15 +290,77 @@ def translate(sql: str, *, pk_lookup: Callable[[str], Sequence[str]] | None = No
                     table,
                 )
 
-    out = _map_code(code, sql)
-    # datetime('now', ?) — the only SQLite date-modifier form the helpers use (retention prune).
-    out = re.sub(
-        r"datetime\(\s*'now'\s*,\s*%s\s*\)",
-        "to_char(((now() AT TIME ZONE 'UTC') + CAST(%s AS interval)),'YYYY-MM-DD HH24:MI:SS')",
-        out,
-        flags=re.IGNORECASE,
-    )
+    out = _datetime_fn(_map_code(code, sql))
     return out.rstrip().rstrip(";") + conflict if conflict else out
+
+
+def _rowid_column(code_only: str, has_id: Callable[[str], bool] | None) -> str | None:
+    """What ``rowid`` should become in this statement — ``id``, or nothing at all.
+
+    Without a catalogue lookup we assume ``id`` (true for all but a handful of tables), which
+    is also what the pure-function tests exercise.
+    """
+    if "rowid" not in code_only.lower():
+        return "id"
+    if has_id is None:
+        return "id"
+    m = re.search(r"\bFROM\s+([A-Za-z0-9_]+)", code_only, re.IGNORECASE)
+    if not m:
+        return "id"
+    return "id" if has_id(m.group(1)) else None
+
+
+def _split_args(inner: str) -> list[str]:
+    """Split a call's arguments on top-level commas (arguments may themselves contain calls)."""
+    args: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in inner:
+        if ch == "," and depth == 0:
+            args.append("".join(buf))
+            buf = []
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        buf.append(ch)
+    args.append("".join(buf))
+    return [a.strip() for a in args]
+
+
+def _datetime_fn(sql: str) -> str:
+    """SQLite ``datetime(base, modifier…)`` → a Postgres timestamp rendered back to SQLite's text.
+
+    Handles the whole family the helpers use — ``datetime('now', ?)`` and
+    ``datetime(CURRENT_TIMESTAMP, ?)`` (leases, cooldowns, rate-limit windows, retention prune) —
+    including the case where ``CURRENT_TIMESTAMP`` has already become a ``to_char(…)`` call, which
+    is why the arguments are split with a paren-aware scanner rather than a regex.
+    """
+    out, i = [], 0
+    for m in re.finditer(r"\bdatetime\s*\(", sql, re.IGNORECASE):
+        if m.start() < i:
+            continue  # inside an argument already consumed
+        depth, j = 1, m.end()
+        while j < len(sql) and depth:
+            depth += (sql[j] == "(") - (sql[j] == ")")
+            j += 1
+        if depth:
+            break  # unbalanced — leave the statement alone
+        args = _split_args(sql[m.end() : j - 1])
+        base = args[0]
+        expr = (
+            "(now() AT TIME ZONE 'UTC')"
+            if base.strip().strip("'").lower() == "now"
+            else f"({_datetime_fn(base)})::timestamp"
+        )
+        for modifier in args[1:]:
+            expr = f"({expr} + CAST({modifier} AS interval))"
+        out.append(sql[i : m.start()])
+        out.append(f"to_char({expr},'YYYY-MM-DD HH24:MI:SS')")
+        i = j
+    out.append(sql[i:])
+    return "".join(out)
 
 
 def _insert_columns(sql: str) -> list[str]:
@@ -365,6 +479,7 @@ class PgConnection:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
         self._pk_cache: dict[str, list[str]] = {}
+        self._has_id_cache: dict[str, bool] = {}
         self.row_factory: Any = (
             None  # accepted and ignored: rows are already name+index addressable
         )
@@ -375,13 +490,22 @@ class PgConnection:
         # Transaction control is driven through psycopg's own API: executing a bare COMMIT would
         # desynchronise its transaction state. `_immediate_write` issues these explicitly.
         verb = sql.strip().split(None, 1)[0].upper() if sql.strip() else ""
-        if verb in ("COMMIT", "ROLLBACK", "BEGIN", "END"):
+        # `BEGIN IMMEDIATE` is NOT plain transaction control — it is the platform's cross-process
+        # write mutex, and swallowing it here silently removes the lock that admission control and
+        # the audit chain depend on. It goes through translation instead.
+        locking = re.match(r"\s*BEGIN\s+(IMMEDIATE|EXCLUSIVE)\b", sql, re.IGNORECASE)
+        if verb in ("COMMIT", "ROLLBACK", "BEGIN", "END") and not locking:
             if verb == "COMMIT":
                 self.commit()
             elif verb == "ROLLBACK":
                 self.rollback()
             return self._noop()
-        translated = translate(sql, pk_lookup=self._primary_key)
+        translated = translate(
+            sql,
+            pk_lookup=self._primary_key,
+            trigger_table=self._trigger_table,
+            has_id=self._has_id,
+        )
         returning = False
         if re.match(r"\s*INSERT\b", translated, re.IGNORECASE) and not re.search(
             r"\bRETURNING\b", translated, re.IGNORECASE
@@ -395,7 +519,10 @@ class PgConnection:
 
     def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> PgCursor:
         cur = self._conn.cursor(row_factory=_row_factory)
-        cur.executemany(translate(sql, pk_lookup=self._primary_key), [_adapt(p) for p in seq])
+        cur.executemany(
+            translate(sql, pk_lookup=self._primary_key, has_id=self._has_id),
+            [_adapt(p) for p in seq],
+        )
         return PgCursor(cur)
 
     def executescript(self, script: str) -> PgCursor:
@@ -418,6 +545,34 @@ class PgConnection:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.commit() if exc_type is None else self.rollback()
+
+    def _trigger_table(self, name: str) -> str | None:
+        """The table a trigger is attached to (Postgres needs it; SQLite does not have it)."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+            "WHERE t.tgname = %s AND NOT t.tgisinternal",
+            (name,),
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+
+    def _has_id(self, table: str) -> bool:
+        """Does this table carry the surrogate ``id`` that stands in for SQLite's ``rowid``?
+
+        A handful of tables key on a natural TEXT id (``judge_calibrations``) and have none.
+        """
+        if table in self._has_id_cache:
+            return self._has_id_cache[table]
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = 'id' AND table_schema = current_schema()",
+            (table,),
+        )
+        found = cur.fetchone() is not None
+        self._has_id_cache[table] = found
+        return found
 
     def _noop(self) -> PgCursor:
         cur = self._conn.cursor(row_factory=_row_factory)
@@ -446,8 +601,23 @@ class PgConnection:
         return keys
 
 
-def connect(dsn: str) -> PgConnection:
-    """Open a translating Postgres connection (the SQLite-shaped API above)."""
+_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
+    """Open a translating Postgres connection (the SQLite-shaped API above).
+
+    ``schema`` scopes the whole platform to one Postgres schema, created on demand — the
+    equivalent of pointing ``PLATFORM_DB`` at a different file. Used for test isolation and for
+    keeping several instances on one server.
+    """
     import psycopg  # noqa: PLC0415 - optional enterprise dependency, imported on use
 
-    return PgConnection(psycopg.connect(dsn))
+    conn = psycopg.connect(dsn)
+    if schema:
+        if not _SCHEMA_RE.match(schema):
+            raise ValueError(f"invalid schema name {schema!r}")  # never interpolate raw input
+        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+        conn.execute(f"SET search_path TO {schema}")
+        conn.commit()
+    return PgConnection(conn)

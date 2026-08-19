@@ -148,6 +148,18 @@ def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
 _INITIALIZED_PATHS: set[str] = set()
 
 
+def _init_key() -> str:
+    """What "the database" means for the schema-once cache.
+
+    On SQLite that is the file path. On Postgres the file path is meaningless — the DSN plus the
+    schema is the database — so tests that point ``PLATFORM_DB`` at a fresh tmp file must not each
+    re-run the 127-table DDL against the same Postgres schema.
+    """
+    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() != "postgres":
+        return _db_path()
+    return f"pg:{os.getenv('EXAMLOPS_POSTGRES_DSN', '')}:{os.getenv('EXAMLOPS_POSTGRES_SCHEMA', 'public')}"
+
+
 def init_db(*, force: bool = False) -> None:
     """Create the platform schema. Idempotent, and near-free after the first call per DB path.
 
@@ -156,7 +168,7 @@ def init_db(*, force: bool = False) -> None:
     ``force=True`` to re-run regardless — e.g. after intentionally dropping tables in a test.
     In-memory DBs are never cached, since each new connection is a distinct database.
     """
-    path = _db_path()
+    path = _init_key()
     cacheable = path not in (":memory:", "") and not path.startswith("file::memory:")
     if not force and cacheable and path in _INITIALIZED_PATHS:
         return

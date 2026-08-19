@@ -45,13 +45,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   - **Timestamps stay text** in SQLite's format: 146 columns are `DATETIME DEFAULT CURRENT_TIMESTAMP`
     and the helpers compare and return them as strings, so `CURRENT_TIMESTAMP` renders through
     `to_char(now() …)`. Native timestamps are a later, separately-verified step.
+  - **The whole unit suite runs on Postgres**: `make test-postgres` starts a throwaway Postgres 16
+    and executes `tests/unit/` against it — **2056 passed, 16 skipped, 0 failed** — while the
+    SQLite suite is unchanged at **2071 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
+    both how the suite isolates itself and how two deployments share one server.
+  - Running it is what found the dialect gaps: a placeholder in a `CASE WHEN` boolean position; the
+    two tables that key on a natural TEXT id and so have no `rowid` stand-in; `sqlite_master`, now
+    supplied as a subquery over `pg_tables`/`pg_indexes` (~20 call sites ask it whether an optional
+    table exists); and **one real portability bug** — `list_repro_bundles` selected bare columns
+    alongside `MAX()`, a SQLite-only extension, now a correlated subquery that means the same thing
+    on both engines.
   - Verified live against **Postgres 16**: all **127** tables create from the unmodified DDL, the
     hash chain verifies, upserts replace, `lastrowid` survives via `RETURNING`
     (`tests/integration/test_postgres_backend_live.py`, 10 tests, opt-in via
-    `EXAMLOPS_POSTGRES_TEST_DSN`) plus 16 dialect-translation unit tests that need no server.
+    `EXAMLOPS_POSTGRES_TEST_DSN`) plus 25 dialect-translation unit tests that need no server.
+  - **Skipped, not quietly passed:** the SQLite backup tier and the schema-once bootstrap are keyed
+    to a `platform.db` *file* and skip on this backend with a reason. New CI guard: a test may not
+    reach platform state with a bare `sqlite3.connect` — four did, and each one was asserting
+    against a file the platform had stopped writing to.
   - New optional extra `examlops[postgres]` (psycopg) and guide `docs/guides/postgres-backend.md`.
-    **Still open:** connection pooling, the full unit suite on Postgres (needs per-test schema
-    isolation), a `pg_dump` backup tier.
+    **Still open:** connection pooling, the dashboard (it still connects by SQLite *path*, so it
+    would read empty state), a `pg_dump` backup tier.
 
 - **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
   production; if nobody has measured that judge, the promotion gate is a confident guess

@@ -8,12 +8,23 @@ runs with **no live stack** — Postgres/MinIO tiers degrade naturally.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
+
+
+# The SQLite backup tier snapshots ``platform.db`` through sqlite3's online-backup API, so these
+# assertions only mean anything on the SQLite engine. Under ``EXAMLOPS_DB_BACKEND=postgres`` the
+# rows live in Postgres and there is no file to snapshot — the pg_dump tier that will cover it is
+# tracked in the Postgres migration plan, not silently assumed here.
+sqlite_tier_only = pytest.mark.skipif(
+    os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres",
+    reason="SQLite backup tier: no platform.db file exists under the Postgres backend",
+)
 
 
 @pytest.fixture
@@ -38,6 +49,7 @@ def platform_db(tmp_path, monkeypatch):
     return pdb
 
 
+@sqlite_tier_only
 def test_control_plane_bundle_creates_and_verifies(platform_db, tmp_path):
     from examlops import backup
 
@@ -90,6 +102,7 @@ def test_bundle_roundtrip_restores_sqlite(platform_db, tmp_path):
     assert pdb.get_traffic_rules("JPCP") == {"Production": 80, "Canary": 20}
 
 
+@sqlite_tier_only
 def test_verify_rejects_tampered_snapshot(platform_db, tmp_path):
     from examlops import backup
 

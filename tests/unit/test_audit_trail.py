@@ -5,7 +5,6 @@ GWT acceptance criteria from ``design/vision/specs/D4-immutable-audit-trail.md``
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -53,14 +52,13 @@ def test_gwt2_tamper_breaks_chain():
     for i in range(5):
         platform_db.write_audit_event("cli", "a", f"act{i}", "JPCP")
 
-    # Tamper by writing directly to the raw file DB, bypassing triggers is not possible;
-    # temporarily drop the trigger to simulate an attacker with DB access.
-    path = platform_db._db_path()
-    raw = sqlite3.connect(path)
-    raw.execute("DROP TRIGGER IF EXISTS audit_events_no_update")
-    raw.execute("UPDATE audit_events SET action='HACKED' WHERE id=3")
-    raw.commit()
-    raw.close()
+    # Simulate an attacker who has database access: drop the guard trigger, then edit a row.
+    # Done through the platform connection rather than a raw sqlite3 file handle, so the property
+    # is proven on whichever engine is configured (SQLite by default, Postgres under
+    # EXAMLOPS_DB_BACKEND=postgres).
+    with platform_db.get_db() as conn:
+        conn.execute("DROP TRIGGER IF EXISTS audit_events_no_update")
+        conn.execute("UPDATE audit_events SET action='HACKED' WHERE id=3")
 
     result = platform_db.verify_audit_chain()
     assert result["ok"] is False
@@ -73,7 +71,9 @@ def test_gwt3_append_only_delete_blocked():
 
     platform_db.write_audit_event("cli", "a", "act", "JPCP")
     with platform_db.get_db() as conn:  # noqa: SIM117
-        with pytest.raises(sqlite3.IntegrityError):
+        # Engine-agnostic on purpose: what R3 asserts is that the *database* refuses, not which
+        # driver's exception class carries the refusal (sqlite3.IntegrityError / psycopg.errors).
+        with pytest.raises(Exception, match="append-only"):
             conn.execute("DELETE FROM audit_events")
 
 
@@ -82,7 +82,7 @@ def test_gwt3_append_only_update_blocked():
 
     platform_db.write_audit_event("cli", "a", "act", "JPCP")
     with platform_db.get_db() as conn:  # noqa: SIM117
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(Exception, match="append-only"):
             conn.execute("UPDATE audit_events SET action='x'")
 
 

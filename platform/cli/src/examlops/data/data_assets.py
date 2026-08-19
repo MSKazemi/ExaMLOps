@@ -348,24 +348,26 @@ def list_reindex_jobs(collection: str | None = None) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+# The newest bundle per (model, version). Selecting bare columns alongside MAX() is a SQLite
+# extension — every other engine rejects it — so the latest row is picked by a correlated
+# subquery, which means the same thing everywhere.
+_LATEST_BUNDLES = """
+    SELECT model, version, bundle_version, manifest_hash, signature, created_at
+      FROM repro_bundles r
+     WHERE bundle_version = (SELECT MAX(bundle_version) FROM repro_bundles x
+                              WHERE x.model = r.model AND x.version = r.version)
+"""
+
+
 def list_repro_bundles(model: str | None = None) -> list[dict[str, Any]]:
     init_db()
     with get_db() as conn:
         if model:
             rows = conn.execute(
-                """SELECT model, version, MAX(bundle_version) AS bundle_version,
-                          manifest_hash, signature, created_at
-                   FROM repro_bundles WHERE model=?
-                   GROUP BY model, version ORDER BY created_at DESC""",
-                (model,),
+                _LATEST_BUNDLES + " AND r.model=? ORDER BY created_at DESC", (model,)
             ).fetchall()
         else:
-            rows = conn.execute(
-                """SELECT model, version, MAX(bundle_version) AS bundle_version,
-                          manifest_hash, signature, created_at
-                   FROM repro_bundles
-                   GROUP BY model, version ORDER BY created_at DESC"""
-            ).fetchall()
+            rows = conn.execute(_LATEST_BUNDLES + " ORDER BY created_at DESC").fetchall()
     return [dict(r) for r in rows]
 
 

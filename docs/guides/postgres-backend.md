@@ -28,6 +28,17 @@ export EXAMLOPS_POSTGRES_DSN='postgresql://examlops:…@db.example.org:5432/exam
 exa status                                 # creates the schema on first use
 ```
 
+### Several instances on one server
+
+`EXAMLOPS_POSTGRES_SCHEMA` scopes the whole platform to one Postgres schema, created on demand —
+the equivalent of pointing `PLATFORM_DB` at a different file. Unset, everything lands in `public`.
+
+```bash
+EXAMLOPS_POSTGRES_SCHEMA=staging exa status     # staging's own tables, same database
+```
+
+The test suite uses this to keep one Postgres server for every test run.
+
 Every process that touches platform state — CLI, control plane, dashboard, SeanerBUS bridge, agent —
 must carry both variables. A process that carries only one of them silently keeps using
 `platform.db`, which is the failure mode to watch for: split state, not an error message.
@@ -41,7 +52,9 @@ Every one of the platform's ~252 datastore helpers opens its connection through 
 `platform_db.get_db()`. The Postgres backend returns a connection that speaks the same
 `sqlite3`-shaped API and **translates the SQL on the way through**
 (`examlops/storage/pg.py`) — placeholders, `AUTOINCREMENT`, `DATETIME` defaults,
-`INSERT OR REPLACE`, `PRAGMA table_info`, `BEGIN IMMEDIATE`, and SQLite's date functions.
+`INSERT OR REPLACE`, `PRAGMA table_info`, `BEGIN IMMEDIATE`, SQLite's date functions, and
+`sqlite_master` (supplied as a subquery over `pg_tables`/`pg_indexes`, because ~20 call sites ask
+it whether an optional table exists yet).
 
 Two consequences worth knowing:
 
@@ -65,28 +78,48 @@ the cut-over and keep the SQLite file as the archival record of everything befor
 
 Honest status, so you can decide whether this fits your deployment:
 
-- Verified: full schema creation, the audit hash chain, append-only enforcement, upserts,
-  timestamps, `lastrowid`, project and drift helpers — `tests/integration/test_postgres_backend_live.py`
-  (10 tests) against Postgres 16.
-- **Not yet verified: the full unit suite on Postgres.** It needs per-test schema isolation first.
+- Verified: **the whole unit suite runs on Postgres 16** — 2056 passed, 16 skipped, 0 failed
+  (`make test-postgres`), alongside the dedicated live-backend suite
+  (`tests/integration/test_postgres_backend_live.py`, 10 tests) covering schema creation, the audit
+  hash chain, append-only enforcement, upserts, timestamps and `lastrowid`.
+- The 16 skips are honest, not hidden: 10 SQLite-backup-tier tests, 4 schema-once-bootstrap tests
+  (both keyed to a `platform.db` **file**), one dashboard-reader test (below), and one unrelated
+  pre-existing skip. Each names its reason.
 - **No connection pooling yet** — one connection per `get_db()` call. Fine for CLI use, not for a
   high-QPS service.
 - The **backup tier is SQLite-only** (`exa backup`). A Postgres deployment needs `pg_dump` in its
-  own backup path until that lands.
+  own backup path until that lands; its tests skip (they do not silently pass) on this backend.
+- **The dashboard still connects by SQLite path**, not through the storage seam. Point the platform
+  at Postgres today and the dashboard reads an empty `platform.db` — split state, no error message.
+  Its table-existence probes are ready (`sqlite_master` is translated), but the connection layer is
+  not, and porting it is a tracked step.
 - `exa data retention-prune --vacuum` and `exa doctor`'s DB checks are SQLite-specific.
 
 Progress and the remaining work are tracked in `.claude/plans/enterprise-readiness/05-POSTGRES-MIGRATION.md`.
 
-## Run the live tests yourself
+## Run the tests yourself
+
+```bash
+make test-postgres        # starts a throwaway Postgres, runs the unit suite on it, cleans up
+```
+
+That is the parity check: the same unit suite the SQLite path runs, executed against Postgres.
+It also runs the dedicated live-backend suite. To drive it by hand:
 
 ```bash
 docker run -d --name examlops-pgtest \
   -e POSTGRES_PASSWORD=examlops -e POSTGRES_USER=examlops -e POSTGRES_DB=examlops \
   -p 15433:5432 postgres:16-alpine
 
+EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_SCHEMA=exa_test \
+EXAMLOPS_POSTGRES_DSN='postgresql://examlops:examlops@localhost:15433/examlops' \
+  .venv/bin/pytest tests/unit/ -q
+
 EXAMLOPS_POSTGRES_TEST_DSN='postgresql://examlops:examlops@localhost:15433/examlops' \
   .venv/bin/pytest tests/integration/test_postgres_backend_live.py -v
 ```
 
-That suite **drops and recreates the `public` schema**, which is why it reads a dedicated
-`EXAMLOPS_POSTGRES_TEST_DSN` and never the DSN your platform runs on.
+The live-backend suite **drops and recreates the `public` schema**, which is why it reads a
+dedicated `EXAMLOPS_POSTGRES_TEST_DSN` and never the DSN your platform runs on. Under
+`EXAMLOPS_DB_BACKEND=postgres` the unit suite truncates between tests (`tests/conftest.py`), so
+point it at a throwaway database too.

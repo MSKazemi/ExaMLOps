@@ -76,14 +76,12 @@ def test_input_status_critical_after_drift():
     # baseline on one distribution
     _write_snapshots("JPCP", 50, norm=10.0, mean=0.0, std=1.0)
     runner.invoke(app, ["drift", "input", "baseline", "JPCP"])
-    # clear old and write very different snapshots
-    import sqlite3
+    # clear old and write very different snapshots — through the seam, so this runs on
+    # whichever engine `EXAMLOPS_DB_BACKEND` selects rather than only on the SQLite file.
+    from examlops import platform_db
 
-    db_path = os.environ["PLATFORM_DB"]
-    conn = sqlite3.connect(db_path)
-    conn.execute("DELETE FROM input_snapshots WHERE model='JPCP'")
-    conn.commit()
-    conn.close()
+    with platform_db.get_db() as conn:
+        conn.execute("DELETE FROM input_snapshots WHERE model='JPCP'")
     # new distribution: norm=100 (z >> 3 since baseline std is near 0)
     _write_snapshots("JPCP", 20, norm=1000.0, mean=5.0, std=10.0)
     result = runner.invoke(app, ["drift", "input", "status"])

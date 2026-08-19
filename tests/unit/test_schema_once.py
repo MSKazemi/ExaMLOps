@@ -7,7 +7,18 @@ call per `PLATFORM_DB` path, while `force=True` still re-runs and a *different* 
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# The sentinel is keyed by `PLATFORM_DB` path and these assertions read `sqlite_master`, so the
+# whole module is about the SQLite path. Under `EXAMLOPS_DB_BACKEND=postgres` the key is the
+# DSN+schema instead, and `test_force_recreates_after_drop` would drop `audit_events` out from
+# under every later test in the shared schema.
+pytestmark = pytest.mark.skipif(
+    os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres",
+    reason="schema-once bootstrap is keyed by the SQLite DB path and asserts on sqlite_master",
+)
 
 
 @pytest.fixture

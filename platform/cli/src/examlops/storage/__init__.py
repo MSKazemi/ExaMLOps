@@ -93,8 +93,12 @@ class PostgresBackend:
     dialect = "postgres"
     paramstyle = "format"
 
-    def __init__(self, dsn: str | None = None) -> None:
+    def __init__(self, dsn: str | None = None, schema: str | None = None) -> None:
         self._dsn = dsn or os.getenv("EXAMLOPS_POSTGRES_DSN", "")
+        # One Postgres database can hold several independent platform instances, one per schema.
+        # That is what gives the test suite isolation without a database per test, and what a
+        # multi-tenant deployment uses to keep tenants apart on one server.
+        self._schema = schema or os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "") or None
 
     def connect(self) -> Any:
         if not self._dsn:
@@ -107,7 +111,7 @@ class PostgresBackend:
         except ImportError as exc:  # pragma: no cover - defensive
             raise RuntimeError("examlops.storage.pg is unavailable") from exc
         try:
-            return pg.connect(self._dsn)
+            return pg.connect(self._dsn, schema=self._schema)
         except ImportError as exc:
             raise RuntimeError(
                 "PostgresBackend needs the 'psycopg' driver: pip install 'examlops[postgres]'."

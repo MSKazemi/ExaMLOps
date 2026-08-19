@@ -9,12 +9,21 @@ legacy 4 commands all behave.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
+
+
+# See the note in ``test_backup_restore.py``: the SQLite tier has no file to snapshot under the
+# Postgres backend.
+sqlite_tier_only = pytest.mark.skipif(
+    os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres",
+    reason="SQLite backup tier: no platform.db file exists under the Postgres backend",
+)
 
 
 def _make_bundle(dir_path: Path, bundle_id: str, created: str, status: str = "ok") -> Path:
@@ -216,6 +225,7 @@ def cli_env(tmp_path, monkeypatch):
     return tmp_path
 
 
+@sqlite_tier_only
 def test_cli_legacy_four_still_work(cli_env):
     from typer.testing import CliRunner
 
@@ -230,6 +240,7 @@ def test_cli_legacy_four_still_work(cli_env):
     assert runner.invoke(app, ["backup", "list", "--dir", out]).exit_code == 0
 
 
+@sqlite_tier_only
 def test_cli_bundle_create_verify_restore_status(cli_env):
     from typer.testing import CliRunner
 

@@ -8,12 +8,23 @@ audit chain valid. This is the tested restore runbook the roadmap requires.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
+
+
+# The SQLite backup tier snapshots ``platform.db`` through sqlite3's online-backup API, so these
+# assertions only mean anything on the SQLite engine. Under ``EXAMLOPS_DB_BACKEND=postgres`` the
+# rows live in Postgres and there is no file to snapshot — the pg_dump tier that will cover it is
+# tracked in the Postgres migration plan, not silently assumed here.
+sqlite_tier_only = pytest.mark.skipif(
+    os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres",
+    reason="SQLite backup tier: no platform.db file exists under the Postgres backend",
+)
 
 
 @pytest.fixture
@@ -35,6 +46,7 @@ def _seed(pdb) -> None:
     pdb.set_traffic_rules("JPCP", {"Production": 90, "Canary": 10})
 
 
+@sqlite_tier_only
 def test_create_writes_backup_and_manifest(db, tmp_path):
     from examlops import backup
 
@@ -48,6 +60,7 @@ def test_create_writes_backup_and_manifest(db, tmp_path):
     assert len(manifest["sha256"]) == 64
 
 
+@sqlite_tier_only
 def test_verify_passes_for_good_backup_and_fails_for_corrupted(db, tmp_path):
     from examlops import backup
 
@@ -65,6 +78,7 @@ def test_verify_passes_for_good_backup_and_fails_for_corrupted(db, tmp_path):
     assert bad["ok"] is False
 
 
+@sqlite_tier_only
 def test_dr_drill_create_wipe_restore_roundtrip(db, tmp_path, monkeypatch):
     """The core DR drill: snapshot, destroy the live DB, restore, assert full recovery."""
     from examlops import backup
@@ -94,6 +108,7 @@ def test_dr_drill_create_wipe_restore_roundtrip(db, tmp_path, monkeypatch):
     assert pdb.get_traffic_rules("JPCP") == {"Production": 90, "Canary": 10}
 
 
+@sqlite_tier_only
 def test_restore_refuses_to_clobber_nonempty_without_force(db, tmp_path):
     from examlops import backup
 
@@ -105,6 +120,7 @@ def test_restore_refuses_to_clobber_nonempty_without_force(db, tmp_path):
         backup.restore_backup(bfile, force=False)
 
 
+@sqlite_tier_only
 def test_list_backups_newest_first(db, tmp_path):
     from examlops import backup
 
@@ -115,6 +131,7 @@ def test_list_backups_newest_first(db, tmp_path):
     assert rows[0]["has_manifest"] is True
 
 
+@sqlite_tier_only
 def test_cli_backup_create_verify_restore(db, tmp_path):
     from typer.testing import CliRunner
 

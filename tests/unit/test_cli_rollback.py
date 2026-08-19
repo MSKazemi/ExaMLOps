@@ -114,13 +114,10 @@ def test_rollback_version_stores_record():
     assert "rolled back" in result.output.lower() or "5" in result.output
 
     # Verify DB record
-    import sqlite3
+    from examlops import platform_db
 
-    db_path = os.environ["PLATFORM_DB"]
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM model_rollbacks WHERE model='JPCP'").fetchall()
-    conn.close()
+    with platform_db.get_db() as conn:
+        rows = conn.execute("SELECT * FROM model_rollbacks WHERE model='JPCP'").fetchall()
     assert len(rows) == 1
     assert rows[0]["to_version"] == 5
     assert rows[0]["from_version"] == 7
@@ -178,17 +175,15 @@ def test_rollback_dry_run_no_db_write():
     assert result.exit_code == 0, result.output
     assert "dry" in result.output.lower()
 
-    import sqlite3
+    from examlops import platform_db
 
-    db_path = os.environ["PLATFORM_DB"]
-    conn = sqlite3.connect(db_path)
-    tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='model_rollbacks'"
-    ).fetchall()
-    if tables:
-        rows = conn.execute("SELECT * FROM model_rollbacks").fetchall()
-        assert len(rows) == 0
-    conn.close()
+    # The table may not exist yet — a dry run must not create it. Either way, no rows.
+    with platform_db.get_db() as conn:
+        try:
+            rows = conn.execute("SELECT * FROM model_rollbacks").fetchall()
+        except Exception:  # noqa: BLE001 — "no such table" differs per engine
+            rows = []
+    assert len(rows) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +209,9 @@ def test_rollback_reason_stored():
         )
     assert result.exit_code == 0, result.output
 
-    import sqlite3
+    from examlops import platform_db
 
-    db_path = os.environ["PLATFORM_DB"]
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT reason FROM model_rollbacks WHERE model='JPCP'").fetchone()
-    conn.close()
+    with platform_db.get_db() as conn:
+        row = conn.execute("SELECT reason FROM model_rollbacks WHERE model='JPCP'").fetchone()
     assert row is not None
     assert row["reason"] == "bad metrics"

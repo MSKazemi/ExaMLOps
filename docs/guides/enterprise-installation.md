@@ -156,10 +156,11 @@ are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant clus
    `NetworkPolicy`, `ServiceMonitor`/`PrometheusRule`, agent HPA/PDB, and either bundle the stateful
    services as subcharts (Postgres/Redis/NATS operators) or ship an **umbrella chart** so the data
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
-3. **Re-platform state for real.** Route the ~221 `platform_db` helpers through the
-   `EXAMLOPS_DB_BACKEND=postgres` backend at scale (pooling + full-suite parity) — until then multi-replica HA
-   is not real (the single SQLite `platform.db` is still the data + event + security hub). Same for the
-   Redis coordinator and NATS/Kafka event backbone (currently loud-failing skeletons).
+3. **Re-platform state for real.** `EXAMLOPS_DB_BACKEND=postgres` now carries every `platform_db`
+   helper and the whole unit suite passes on Postgres 16 — what is left before multi-replica HA is
+   real: connection pooling, the **dashboard** (it still connects by SQLite *path*, so it would read
+   empty state), and a `pg_dump` backup tier. Same for the Redis coordinator and NATS/Kafka event
+   backbone (currently loud-failing skeletons). See `docs/guides/postgres-backend.md`.
 4. **Identity on by default.** Wire the OIDC dependency across control-plane/dashboard/agent routes and
    ship multi-tenancy as the enterprise default, replacing the two-shared-passwords model.
 5. **A cluster bootstrapper.** A Terraform module / operator (or the umbrella chart above) that stands

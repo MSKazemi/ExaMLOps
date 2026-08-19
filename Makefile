@@ -77,6 +77,7 @@ endif
         control-plane-up control-plane-down control-plane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
         agent \
+        test-postgres \
         venv install install-dev install-hooks clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \
         alerts-check dr-drill helm-validate \
@@ -520,6 +521,23 @@ test-unit: install-dev ## Run unit tests only
 
 test-integration: install-dev ## Run integration tests only
 	@$(VENV)/bin/pytest tests/integration/ -v --tb=short
+
+PGTEST_CONTAINER ?= examlops-pgtest
+PGTEST_PORT      ?= 15433
+PGTEST_DSN       ?= postgresql://examlops:examlops@localhost:$(PGTEST_PORT)/examlops
+
+test-postgres: install-dev ## Run the unit suite against a throwaway Postgres (item 0.1 parity)
+	@printf "$(BOLD)Starting $(PGTEST_CONTAINER) on port $(PGTEST_PORT)...$(RESET)\n"
+	@docker rm -f $(PGTEST_CONTAINER) >/dev/null 2>&1 || true
+	@docker run -d --name $(PGTEST_CONTAINER) \
+	  -e POSTGRES_PASSWORD=examlops -e POSTGRES_USER=examlops -e POSTGRES_DB=examlops \
+	  -p $(PGTEST_PORT):5432 postgres:16-alpine >/dev/null
+	@until docker exec $(PGTEST_CONTAINER) pg_isready -U examlops >/dev/null 2>&1; do sleep 1; done
+	@EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
+	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ -q; \
+	 status=$$?; \
+	 EXAMLOPS_POSTGRES_TEST_DSN='$(PGTEST_DSN)' $(VENV)/bin/pytest tests/integration/test_postgres_backend_live.py -q; \
+	 live=$$?; docker rm -f $(PGTEST_CONTAINER) >/dev/null; exit $$((status + live))
 
 test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.html
 	@$(VENV)/bin/pytest tests/ \

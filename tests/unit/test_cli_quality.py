@@ -50,15 +50,13 @@ def test_quality_check_no_dir(isolated_db):
     assert "WARN" in result.output or "warn" in result.output.lower()
 
     # Verify it was recorded in DB
-    import sqlite3
+    from examlops import platform_db
 
-    conn = sqlite3.connect(os.environ["PLATFORM_DB"])
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM data_quality_checks WHERE model=? AND dataset=?",
-        ("JPCP", "PM100Dataset"),
-    ).fetchall()
-    conn.close()
+    with platform_db.get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM data_quality_checks WHERE model=? AND dataset=?",
+            ("JPCP", "PM100Dataset"),
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0]["status"] == "warn"
 
@@ -80,15 +78,13 @@ def test_quality_check_with_files(isolated_db):
     assert result.exit_code == 0, result.output
     assert "PASS" in result.output or "pass" in result.output.lower()
 
-    import sqlite3
+    from examlops import platform_db
 
-    conn = sqlite3.connect(os.environ["PLATFORM_DB"])
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM data_quality_checks WHERE model=? AND dataset=?",
-        ("JPCP", "PM100Dataset"),
-    ).fetchone()
-    conn.close()
+    with platform_db.get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM data_quality_checks WHERE model=? AND dataset=?",
+            ("JPCP", "PM100Dataset"),
+        ).fetchone()
     assert row is not None
     assert row["status"] == "pass"
     assert row["passed"] == 3  # all three checks pass
