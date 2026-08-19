@@ -46,7 +46,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     and the helpers compare and return them as strings, so `CURRENT_TIMESTAMP` renders through
     `to_char(now() …)`. Native timestamps are a later, separately-verified step.
   - **The whole unit suite runs on Postgres**: `make test-postgres` starts a throwaway Postgres 16
-    and executes `tests/unit/` against it — **2056 passed, 16 skipped, 0 failed** — while the
+    and executes `tests/unit/` against it — **2057 passed, 15 skipped, 0 failed** — while the
     SQLite suite is unchanged at **2071 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
     both how the suite isolates itself and how two deployments share one server.
   - Running it is what found the dialect gaps: a placeholder in a `CASE WHEN` boolean position; the
@@ -63,9 +63,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     to a `platform.db` *file* and skip on this backend with a reason. New CI guard: a test may not
     reach platform state with a bare `sqlite3.connect` — four did, and each one was asserting
     against a file the platform had stopped writing to.
+  - **The dashboard reads the same store as the CLI.** Its 44 datastore call sites share one
+    chokepoint too, `dbconn.connect()`, which took a `platform.db` *path* — so pointing the
+    platform at Postgres left the consoles reading an empty SQLite file with no error anywhere.
+    It now opens the configured engine and ignores the path. If `examlops.storage` is not
+    importable it keeps serving on SQLite and logs, once, that it is **not** reading platform
+    state, rather than refusing to start.
+  - Running the dashboard suite on Postgres found **two more real portability bugs**, both the
+    bare-column-beside-`MAX()` shape: the MLOps console's latest-drift-snapshot query and the EU
+    AI Act compliance query. Both are correlated subqueries now and mean the same thing on both
+    engines. The dashboard's own suite stays a SQLite-tier gate (450 pass) — 34 of its modules
+    seed a temporary `platform.db` with raw `sqlite3`, so on Postgres they assert against a store
+    the routers no longer read; every remaining failure there is that shape, with zero engine
+    errors.
+  - **The Postgres suite's isolation is no longer order-dependent.** Its per-test truncation
+    probe was built once from the table list, but `examlops.connections` and
+    `examlops.workbenches` own their DDL and create it on first use — so those two tables were
+    never truncated, and a different random ordering leaked rows into five tests. The probe now
+    rebuilds whenever the table count moves.
   - New optional extra `examlops[postgres]` (psycopg) and guide `docs/guides/postgres-backend.md`.
-    **Still open:** connection pooling, the dashboard (it still connects by SQLite *path*, so it
-    would read empty state), a `pg_dump` backup tier.
+    **Still open:** connection pooling, porting the dashboard's SQLite-shaped test fixtures, a
+    `pg_dump` backup tier.
 
 - **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
   production; if nobody has measured that judge, the promotion gate is a confident guess

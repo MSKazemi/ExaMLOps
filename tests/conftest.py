@@ -43,12 +43,13 @@ def _isolate_postgres_state():
 
 def _reset(pdb) -> bool:
     """Empty the schema; return whether the DDL needs re-running before the test starts."""
-    global _NONEMPTY_SQL
+    global _NONEMPTY_SQL, _TABLE_COUNT
     with pdb.get_db() as conn:
         try:
             dirty = [r[0] for r in conn.execute(_nonempty_tables_sql(conn)).fetchall()]
         except Exception:  # noqa: BLE001 — a test dropped a table; rebuild rather than fail here
             _NONEMPTY_SQL = None
+            _TABLE_COUNT = -1
             return True
         if dirty:
             conn.execute(
@@ -80,6 +81,7 @@ def _expected_triggers(conn) -> int:
 
 
 _NONEMPTY_SQL: str | None = None
+_TABLE_COUNT: int = -1
 
 
 def _nonempty_tables_sql(conn) -> str:
@@ -88,15 +90,22 @@ def _nonempty_tables_sql(conn) -> str:
     Truncating all 127 tables costs ~2s per test (each TRUNCATE writes a new file node) — 70
     minutes across the suite. A test typically dirties one or two tables, and an ``EXISTS`` probe
     on an empty table is free, so this turns the per-test cost into noise.
+
+    The probe is rebuilt whenever the table count moves. Not every table comes from
+    ``platform_db.init_db()`` — ``examlops.connections`` and ``examlops.workbenches`` own their
+    DDL and create it on first use — so a table can appear mid-run. Caching the probe once left
+    exactly those tables untruncated, and the suite's result then depended on the order pytest
+    happened to pick.
     """
-    global _NONEMPTY_SQL
-    if _NONEMPTY_SQL is None:
-        tables = [
-            r[0]
-            for r in conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
-            ).fetchall()
-        ]
+    global _NONEMPTY_SQL, _TABLE_COUNT
+    tables = [
+        r[0]
+        for r in conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+        ).fetchall()
+    ]
+    if _NONEMPTY_SQL is None or len(tables) != _TABLE_COUNT:
+        _TABLE_COUNT = len(tables)
         _NONEMPTY_SQL = " UNION ALL ".join(
             f"SELECT '{t}' AS t WHERE EXISTS (SELECT 1 FROM \"{t}\")" for t in tables
         )

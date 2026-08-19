@@ -78,21 +78,27 @@ the cut-over and keep the SQLite file as the archival record of everything befor
 
 Honest status, so you can decide whether this fits your deployment:
 
-- Verified: **the whole unit suite runs on Postgres 16** — 2056 passed, 16 skipped, 0 failed
+- Verified: **the whole unit suite runs on Postgres 16** — 2057 passed, 15 skipped, 0 failed
   (`make test-postgres`), alongside the dedicated live-backend suite
   (`tests/integration/test_postgres_backend_live.py`, 10 tests) covering schema creation, the audit
   hash chain, append-only enforcement, upserts, timestamps and `lastrowid`.
-- The 16 skips are honest, not hidden: 10 SQLite-backup-tier tests, 4 schema-once-bootstrap tests
-  (both keyed to a `platform.db` **file**), one dashboard-reader test (below), and one unrelated
-  pre-existing skip. Each names its reason.
+- The 15 skips are honest, not hidden: 10 SQLite-backup-tier tests, 4 schema-once-bootstrap tests
+  (both keyed to a `platform.db` **file**), and one unrelated pre-existing skip. Each names its
+  reason. (The dashboard-reader test that used to skip here now runs on both engines — it is the
+  guard on the connection change below.)
 - **No connection pooling yet** — one connection per `get_db()` call. Fine for CLI use, not for a
   high-QPS service.
 - The **backup tier is SQLite-only** (`exa backup`). A Postgres deployment needs `pg_dump` in its
   own backup path until that lands; its tests skip (they do not silently pass) on this backend.
-- **The dashboard still connects by SQLite path**, not through the storage seam. Point the platform
-  at Postgres today and the dashboard reads an empty `platform.db` — split state, no error message.
-  Its table-existence probes are ready (`sqlite_master` is translated), but the connection layer is
-  not, and porting it is a tracked step.
+- **The dashboard reads the configured engine** — `dbconn.connect()` ignores the SQLite path it is
+  handed and opens Postgres when `EXAMLOPS_DB_BACKEND=postgres`, so the consoles and the CLI can no
+  longer end up on different stores. It needs `platform/cli/src` on `PYTHONPATH` (the container sets
+  this); if the import fails it keeps serving on SQLite and logs an error saying it is not reading
+  platform state, rather than failing to start.
+- The dashboard's **own** test suite is still SQLite-shaped and remains a SQLite-tier gate: 34 of its
+  modules seed a temporary `platform.db` file with raw `sqlite3`, so on Postgres they assert against
+  a store the routers no longer read (450 pass on SQLite; 338/450 on Postgres, all remaining failures
+  fixture-shaped, no engine errors). Porting those fixtures to the seam is a tracked step.
 - `exa data retention-prune --vacuum` and `exa doctor`'s DB checks are SQLite-specific.
 
 Progress and the remaining work are tracked in `.claude/plans/enterprise-readiness/05-POSTGRES-MIGRATION.md`.

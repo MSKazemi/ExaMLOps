@@ -55,8 +55,14 @@ def compliance_status(db_path: str) -> dict[str, Any]:
             return {"rows": [], "count": 0}
         rows = []
         for r in conn.execute(
-            "SELECT model, MAX(version) AS version, risk_class, annex_iv_path, provenance_hash "
-            "FROM compliance_records GROUP BY model ORDER BY model"
+            # The newest record per model. Selecting bare columns next to MAX() is a SQLite
+            # extension — every other engine rejects it — so the latest row is picked by a
+            # correlated subquery, which means the same thing on both backends.
+            "SELECT model, version, risk_class, annex_iv_path, provenance_hash "
+            "FROM compliance_records c "
+            "WHERE version = (SELECT MAX(version) FROM compliance_records x "
+            "                  WHERE x.model = c.model) "
+            "ORDER BY model"
         ):
             rows.append(
                 {

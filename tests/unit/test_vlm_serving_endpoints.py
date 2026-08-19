@@ -7,7 +7,6 @@ confirm and audit on every mutation.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -141,16 +140,14 @@ def test_gwtv8_filters():
     assert [r["model"] for r in list_llm_endpoints(state="STOPPED")] == ["b"]
 
 
-@pytest.mark.skipif(
-    os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres",
-    reason="dashboard routers still connect by SQLite path, not through the storage seam",
-)
 def test_gwtv8_dashboard_reader_sees_what_the_cli_writes(tmp_path, monkeypatch):
     """The F10 LLMOps console read this table for a writer that never existed.
 
-    Under `EXAMLOPS_DB_BACKEND=postgres` this test fails for a reason worth writing down: the
-    dashboard reader takes a **file path**, so it reads an empty SQLite file while the CLI writes
-    to Postgres — split state, no error. Porting the dashboard is a tracked step of the migration.
+    It also guards the dashboard's half of the datastore seam. The reader is handed a SQLite
+    *path* that does not exist; under `EXAMLOPS_DB_BACKEND=postgres` it must still return what
+    the CLI just wrote, because `dbconn.connect()` ignores the path and opens the configured
+    engine. Before that, the two halves silently used different stores — the console showed
+    empty state and nothing anywhere raised.
     """
     sys.path.insert(
         0, str(Path(__file__).parents[2] / "platform" / "services" / "dashboard" / "backend")

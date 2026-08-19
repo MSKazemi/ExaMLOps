@@ -82,7 +82,10 @@ def registry_rows(db_path: str) -> list[dict[str, Any]]:
 
         if _table_exists(conn, "drift_snapshots"):
             for r in conn.execute(
-                "SELECT model, alias, MAX(ts) AS ts FROM drift_snapshots GROUP BY model"
+                # The newest snapshot per model. `MAX(ts)` beside a bare `alias` is a SQLite
+                # extension that other engines reject, so the latest row is selected directly.
+                "SELECT model, alias, ts FROM drift_snapshots d "
+                "WHERE ts = (SELECT MAX(ts) FROM drift_snapshots x WHERE x.model = d.model)"
             ):
                 m = r["model"]
                 names.add(m)
