@@ -35,8 +35,11 @@ nothing above the seam. Moving to native timestamps is a later, separately-verif
 
 from __future__ import annotations
 
+import atexit
 import logging
+import os
 import re
+import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -476,8 +479,12 @@ class PgCursor:
 class PgConnection:
     """A :mod:`sqlite3`-shaped connection over ``psycopg``, translating SQL on the way through."""
 
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, pool: Any = None) -> None:
         self._conn = conn
+        # When this connection came from a pool, `close()` must hand it back rather than drop it —
+        # see `_get_pool`. `None` means the unpooled path, where closing really does close.
+        self._pool = pool
+        self._closed = False
         self._pk_cache: dict[str, list[str]] = {}
         self._has_id_cache: dict[str, bool] = {}
         self.row_factory: Any = (
@@ -538,7 +545,26 @@ class PgConnection:
         self._conn.rollback()
 
     def close(self) -> None:
-        self._conn.close()
+        """Close, or return to the pool — and only once.
+
+        Idempotent because `get_db()` closes in a `finally` while some callers also close
+        explicitly. Handing the same connection back to the pool twice would let two callers hold
+        it at once, which is a data race that would only show up under load.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._pool is not None:
+            # Roll back first. A read leaves the connection INTRANS, and the pool would undo it
+            # anyway — but at WARNING level, once per request. Discarding uncommitted work on
+            # close is also exactly what `sqlite3` does, so nothing above the seam changes.
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001 - a dead connection is the pool's problem, not ours
+                pass
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
 
     def __enter__(self) -> PgConnection:
         return self
@@ -603,6 +629,123 @@ class PgConnection:
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# One pool per (dsn, schema) per process. Opening a Postgres connection costs a TCP round trip, a
+# TLS handshake and a backend fork — free on SQLite, and paid on *every* `get_db()` call, of which
+# a single dashboard page render makes dozens.
+_POOLS: dict[tuple[str, str | None], Any] = {}
+_POOL_LOCK = threading.Lock()
+_POOL_UNAVAILABLE = False
+
+
+_OFF = ("0", "false", "no", "off")
+
+
+def _pooling_enabled() -> bool:
+    return os.getenv("EXAMLOPS_POSTGRES_POOL", "1").strip().lower() not in _OFF
+
+
+def _pool_size() -> tuple[int, int]:
+    def _int(name: str, default: int) -> int:
+        try:
+            return max(0, int(os.getenv(name, "").strip() or default))
+        except ValueError:
+            return default
+
+    max_size = max(1, _int("EXAMLOPS_POSTGRES_POOL_MAX", 10))
+    return min(_int("EXAMLOPS_POSTGRES_POOL_MIN", 1), max_size), max_size
+
+
+def _get_pool(dsn: str, schema: str | None) -> Any:
+    """The pool for this (dsn, schema), or ``None`` to open connections directly.
+
+    Returns ``None`` — rather than raising — when pooling is switched off or ``psycopg_pool`` is
+    not installed, because an unpooled connection is slower but correct. A missing optional
+    dependency must never be the reason the platform cannot reach its database.
+    """
+    global _POOL_UNAVAILABLE
+    if not _pooling_enabled() or _POOL_UNAVAILABLE:
+        return None
+    key = (dsn, schema)
+    with _POOL_LOCK:
+        pool = _POOLS.get(key)
+        if pool is not None:
+            return pool
+        try:
+            from psycopg_pool import ConnectionPool  # noqa: PLC0415 - optional dependency
+        except ImportError:
+            _POOL_UNAVAILABLE = True
+            logger.info(
+                "psycopg_pool is not installed — opening an unpooled connection per call. "
+                "Install 'examlops[postgres]' for pooling."
+            )
+            return None
+        min_size, max_size = _pool_size()
+        _ensure_schema(dsn, schema)
+        pool = ConnectionPool(
+            dsn,
+            min_size=min_size,
+            max_size=max_size,
+            # Runs once per *physical* connection, not once per checkout, so the search_path is
+            # set exactly where it belongs: on the connection, for its whole life.
+            configure=_configure_schema(schema),
+            # A pooled connection can be closed under us by a restart, a failover or an idle
+            # timeout. Checking it on the way out turns that into a transparent reconnect rather
+            # than an error handed to a caller who cannot do anything about it.
+            check=ConnectionPool.check_connection,
+            open=True,
+        )
+        _POOLS[key] = pool
+        return pool
+
+
+def _ensure_schema(dsn: str, schema: str | None) -> None:
+    """Create the schema once, on its own connection, before the pool opens any.
+
+    ``CREATE SCHEMA IF NOT EXISTS`` is not race-safe in Postgres: the pool opens ``min_size``
+    connections concurrently, and running it on each of them raced to a duplicate-key error on
+    ``pg_namespace``. Doing it once here is both correct and where a one-time bootstrap belongs —
+    and the same race across two *processes* is still possible, so the error is tolerated.
+    """
+    if not schema:
+        return
+    if not _SCHEMA_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")  # never interpolate raw input
+    import psycopg  # noqa: PLC0415 - optional enterprise dependency
+
+    with psycopg.connect(dsn) as conn:
+        try:
+            conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+            conn.commit()
+        except psycopg.errors.UniqueViolation:  # another process created it at the same moment
+            conn.rollback()
+
+
+def _configure_schema(schema: str | None) -> Callable[[Any], None] | None:
+    if not schema:
+        return None
+    if not _SCHEMA_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")  # never interpolate raw input
+
+    def _configure(conn: Any) -> None:
+        conn.execute(f"SET search_path TO {schema}")
+        conn.commit()
+
+    return _configure
+
+
+@atexit.register
+def close_pools() -> None:
+    """Close every pool at interpreter exit so a short-lived CLI process does not hang on its
+    pool's background worker threads."""
+    with _POOL_LOCK:
+        pools = list(_POOLS.values())
+        _POOLS.clear()
+    for pool in pools:
+        try:
+            pool.close()
+        except Exception:  # noqa: BLE001 - shutting down; nothing useful to do with an error
+            pass
+
 
 def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
     """Open a translating Postgres connection (the SQLite-shaped API above).
@@ -610,7 +753,15 @@ def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
     ``schema`` scopes the whole platform to one Postgres schema, created on demand — the
     equivalent of pointing ``PLATFORM_DB`` at a different file. Used for test isolation and for
     keeping several instances on one server.
+
+    Connections come from a per-``(dsn, schema)`` pool when ``psycopg_pool`` is available
+    (``EXAMLOPS_POSTGRES_POOL=0`` opts out; ``…_POOL_MIN``/``…_POOL_MAX`` size it). Closing the
+    returned object hands the connection back rather than dropping it.
     """
+    pool = _get_pool(dsn, schema)
+    if pool is not None:
+        return PgConnection(pool.getconn(), pool=pool)
+
     import psycopg  # noqa: PLC0415 - optional enterprise dependency, imported on use
 
     conn = psycopg.connect(dsn)

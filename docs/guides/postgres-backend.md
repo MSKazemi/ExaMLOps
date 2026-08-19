@@ -20,7 +20,7 @@ Below those thresholds, stay on SQLite. It is the tested default and it is faste
 ## Enable it
 
 ```bash
-pip install 'examlops[postgres]'          # brings in psycopg
+pip install 'examlops[postgres]'          # brings in psycopg + psycopg-pool
 
 export EXAMLOPS_DB_BACKEND=postgres
 export EXAMLOPS_POSTGRES_DSN='postgresql://examlops:…@db.example.org:5432/examlops'
@@ -45,6 +45,31 @@ must carry both variables. A process that carries only one of them silently keep
 
 The schema is created on demand (127 tables, `CREATE TABLE IF NOT EXISTS`), so pointing at an empty
 database is all the provisioning there is.
+
+### Connection pooling
+
+Connections are pooled per `(DSN, schema)` per process, and you do not have to do anything to get
+it. It matters because `get_db()` opens a connection **per call** — free on SQLite, a TCP round
+trip plus a backend fork on Postgres, and a single dashboard page render makes dozens. Measured
+against a local Postgres 16, 200 × open→query→close:
+
+| | per call |
+|---|---|
+| pooled | **3.3 ms** |
+| unpooled | 28.1 ms |
+
+That gap is a lower bound: it is all connection setup, so it grows with network latency and with
+TLS.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_POSTGRES_POOL` | `1` | `0`/`false`/`off` opens an unpooled connection per call |
+| `EXAMLOPS_POSTGRES_POOL_MIN` | `1` | connections kept open |
+| `EXAMLOPS_POSTGRES_POOL_MAX` | `10` | ceiling per process — **multiply by your process count** and keep it under the server's `max_connections` |
+
+`psycopg-pool` is part of the `postgres` extra. If it is missing the platform opens an unpooled
+connection instead of failing — slower, still correct. Pools are closed at interpreter exit, so a
+short-lived `exa` command does not hang on them.
 
 ## How it works
 
@@ -78,16 +103,15 @@ the cut-over and keep the SQLite file as the archival record of everything befor
 
 Honest status, so you can decide whether this fits your deployment:
 
-- Verified: **the whole unit suite runs on Postgres 16** — 2057 passed, 15 skipped, 0 failed
+- Verified: **the whole unit suite runs on Postgres 16** — 2072 passed, 15 skipped, 0 failed
   (`make test-postgres`), alongside the dedicated live-backend suite
-  (`tests/integration/test_postgres_backend_live.py`, 10 tests) covering schema creation, the audit
-  hash chain, append-only enforcement, upserts, timestamps and `lastrowid`.
+  (`tests/integration/test_postgres_backend_live.py`, 13 tests) covering schema creation, the audit
+  hash chain, append-only enforcement, upserts, timestamps, `lastrowid`, and pooled concurrent
+  writers.
 - The 15 skips are honest, not hidden: 10 SQLite-backup-tier tests, 4 schema-once-bootstrap tests
   (both keyed to a `platform.db` **file**), and one unrelated pre-existing skip. Each names its
   reason. (The dashboard-reader test that used to skip here now runs on both engines — it is the
   guard on the connection change below.)
-- **No connection pooling yet** — one connection per `get_db()` call. Fine for CLI use, not for a
-  high-QPS service.
 - The **backup tier is SQLite-only** (`exa backup`). A Postgres deployment needs `pg_dump` in its
   own backup path until that lands; its tests skip (they do not silently pass) on this backend.
 - **The dashboard reads the configured engine** — `dbconn.connect()` ignores the SQLite path it is

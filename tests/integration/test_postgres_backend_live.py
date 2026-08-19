@@ -124,3 +124,82 @@ def test_project_anatomy_round_trips(pg_schema):
     full = pg_schema.get_project_full("research")
     assert full["name"] == "research"
     assert full["cpu_limit"] == 4
+
+
+# ── connection pooling ────────────────────────────────────────────────────────
+
+
+def test_pooling_reuses_physical_connections(pg_schema, monkeypatch):
+    """The point of the pool: ten checkouts must not cost ten backend processes.
+
+    Backend pids are the only honest evidence of reuse — a timing assertion would be flaky on a
+    loaded CI box. The pool opens its minimum size in the background, so the assertion is on the
+    *number of distinct* backends, not on a single identity.
+    """
+    from examlops.storage import pg as pgmod
+
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_POOL", "1")
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_POOL_MAX", "4")
+    pgmod.close_pools()
+    try:
+        pids = set()
+        for _ in range(10):
+            conn = pgmod.connect(DSN)
+            pids.add(conn.execute("SELECT pg_backend_pid() AS p").fetchone()["p"])
+            conn.close()
+        assert len(pids) <= 4  # bounded by the pool, not by the number of calls
+    finally:
+        pgmod.close_pools()
+
+
+def test_pooling_off_opens_a_fresh_connection_every_time(pg_schema, monkeypatch):
+    """`EXAMLOPS_POSTGRES_POOL=0` must be a real escape hatch, not a no-op."""
+    from examlops.storage import pg as pgmod
+
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_POOL", "0")
+    pgmod.close_pools()
+
+    pids = set()
+    for _ in range(5):
+        conn = pgmod.connect(DSN)
+        pids.add(conn.execute("SELECT pg_backend_pid() AS p").fetchone()["p"])
+        conn.close()
+    assert len(pids) == 5
+
+
+def test_pooled_connections_serve_concurrent_writers(pg_schema, monkeypatch):
+    """The reason the seam exists at all: SQLite allows one writer, Postgres does not.
+
+    Sixteen threads write through the unmodified audit helper at once. Every row must land, and the
+    hash chain — which is what a shared connection would corrupt — must still verify.
+    """
+    import threading
+
+    from examlops.data.audit import export_audit_events, verify_audit_chain, write_audit_event
+
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_POOL", "1")
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_POOL_MAX", "8")
+    from examlops.storage import pg as pgmod
+
+    pgmod.close_pools()
+    errors: list[BaseException] = []
+
+    def _write(i: int) -> None:
+        try:
+            write_audit_event("test", "pool", "pool_test", f"m{i}")
+        except BaseException as exc:  # noqa: BLE001 - surfaced below so the test names the failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_write, args=(i,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    try:
+        assert not errors, errors
+        rows = [e for e in export_audit_events() if e["action"] == "pool_test"]
+        assert len(rows) == 16
+        assert verify_audit_chain()["ok"] is True
+    finally:
+        pgmod.close_pools()

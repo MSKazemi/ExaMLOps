@@ -1,19 +1,18 @@
 """StorageBackend — the repository seam behind ExaMLOps's shared datastore (ADR 0074-lineage, item 0.1).
 
-**Why this exists.** Today ~221 `platform_db` helpers call SQLite directly. One SQLite file is the
+**Why this exists.** Today ~252 `platform_db` helpers call SQLite directly. One SQLite file is the
 platform's data layer *and* event bus *and* security plane *and* integration hub — and SQLite allows
 exactly one writer process-wide, so it is the dominant throughput ceiling and the largest single
 blast-radius SPOF at fleet scale. The enterprise fix is to put a thin **StorageBackend** seam in
 front of the helpers so the engine can become Postgres (multi-writer, HA, backup, per-tenant
 isolation) without touching call sites.
 
-**What this module is (and is not).** This lands the *seam* — a dialect-neutral backend protocol,
-a working SQLite implementation (byte-for-byte the current behaviour, via `resilience.db`), and a
-Postgres implementation skeleton — plus the dialect helpers (`now_expr`, `upsert_sql`, parameter
-style) that let a query be written once and run on either engine. Wiring the 221 helpers through it
-and finishing the Postgres driver is the **follow-on migration** (deliberately out of scope here so
-the seam can land and be reviewed independently). The SQLite path is fully tested; the Postgres path
-is a typed skeleton that fails loudly until its driver work is done — it is NOT yet runtime-verified.
+**What this module is.** The seam itself — a dialect-neutral backend protocol, the SQLite
+implementation (byte-for-byte the current behaviour, via `resilience.db`), the Postgres one, and
+the dialect helpers (`now_expr`, `upsert_sql`, parameter style) that let a query be written once
+and run on either engine. Both engines are runtime-verified: the whole unit suite runs on each, and
+`tests/integration/test_postgres_backend_live.py` covers the schema, the audit hash chain, the
+append-only triggers and pooled concurrent writers against a real server.
 
 Select the backend with ``EXAMLOPS_DB_BACKEND=sqlite|postgres`` (default ``sqlite``).
 """
@@ -87,7 +86,7 @@ class PostgresBackend:
     without editing the ~252 helpers, all of which go through ``platform_db.get_db()``.
 
     Requires the driver (``pip install 'examlops[postgres]'``) and ``EXAMLOPS_POSTGRES_DSN``.
-    Connection pooling and the full-suite parity run are the remaining work.
+    Connections come from a per-``(dsn, schema)`` pool; see :func:`examlops.storage.pg.connect`.
     """
 
     dialect = "postgres"
@@ -131,11 +130,7 @@ class PostgresBackend:
 
 
 def get_backend() -> StorageBackend:
-    """Return the configured backend (``EXAMLOPS_DB_BACKEND``; default ``sqlite``).
-
-    ``postgres`` selects the skeleton engine — usable for dialect-neutral query construction now,
-    and for live connections once its driver work lands.
-    """
+    """Return the configured backend (``EXAMLOPS_DB_BACKEND``; default ``sqlite``)."""
     choice = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
     if choice == "postgres":
         return PostgresBackend()

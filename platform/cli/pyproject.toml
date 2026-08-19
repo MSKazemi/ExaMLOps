@@ -65,7 +65,11 @@ serving-sglang = [
 # psycopg is imported only by examlops.storage.pg, which is reached only when that env var
 # selects the Postgres backend — the default SQLite path never touches it.
 postgres = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3",
+    # Connection pooling. Opening a connection is free on SQLite and is not on Postgres, and
+    # `get_db()` opens one per call. Optional on purpose: without it examlops.storage.pg opens an
+    # unpooled connection per call — slower, still correct.
+    "psycopg-pool>=3.3",
 ]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback

@@ -104,7 +104,7 @@ These are the flags that flip ExaMLOps from single-tenant dev to multi-tenant HA
 
 | Concern | Env / setting | Notes |
 |---|---|---|
-| **Data backend** | `EXAMLOPS_DB_BACKEND=postgres` + `EXAMLOPS_POSTGRES_DSN` | Working: all helpers reach it through `platform_db.get_db()`, which the backend now fronts (`examlops.storage.pg`), and the dashboard through `dbconn.connect()`. Verified live on Postgres 16 — schema, audit hash chain, append-only triggers — with the whole unit suite green against it. Not yet pooled: see [Postgres backend](postgres-backend.md). |
+| **Data backend** | `EXAMLOPS_DB_BACKEND=postgres` + `EXAMLOPS_POSTGRES_DSN` | Working: all helpers reach it through `platform_db.get_db()`, which the backend now fronts (`examlops.storage.pg`), and the dashboard through `dbconn.connect()`. Verified live on Postgres 16 — schema, audit hash chain, append-only triggers — with the whole unit suite green against it. Connections are pooled (`EXAMLOPS_POSTGRES_POOL_MAX`, default 10 per process): see [Postgres backend](postgres-backend.md). |
 | **Coordination** | `EXAMLOPS_COORDINATOR=redis` + `EXAMLOPS_REDIS_URL` | Cross-host leader/lease election; `db` (default) works cross-process on one node. |
 | **Event backbone** | `EXAMLOPS_EVENT_PUBLISHER=nats` (or `kafka`/`redis`) | Transactional outbox; drain with `exa events relay`. `log` is the dependency-free default. |
 | **Identity / SSO** | `EXAMLOPS_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` (`examlops[oidc]`) | RS256 access-token validation. **Off by default** → the only identity is the two dashboard passwords + control-plane token. Turn this on for enterprise. |
@@ -158,7 +158,7 @@ are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant clus
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
 3. **Re-platform state for real.** `EXAMLOPS_DB_BACKEND=postgres` now carries every `platform_db`
    helper *and* the dashboard, and the whole unit suite passes on Postgres 16 — what is left before
-   multi-replica HA is real: connection pooling and a `pg_dump` backup tier. Same for the Redis
+   multi-replica HA is real: a `pg_dump` backup tier. Same for the Redis
    coordinator and NATS/Kafka event backbone (currently loud-failing skeletons). See
    `docs/guides/postgres-backend.md`.
 4. **Identity on by default.** Wire the OIDC dependency across control-plane/dashboard/agent routes and
