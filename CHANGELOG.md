@@ -27,6 +27,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
+  production; if nobody has measured that judge, the promotion gate is a confident guess
+  wearing the clothes of a measurement. A judge must now pass the **Minimum Viable Validation
+  Protocol** before `exa eval gate`, `exa pipeline promote` or `exa autopilot` will act on its
+  scores — chance-corrected κ **with an interval** (never raw agreement, which the evidence
+  measures as 33.8–41.3 pp optimistic), paired **AB+BA** position bias ≤ 0.10, **≥3**
+  replications at temperature 0 with caching off, **≥2** benchmark families spanning preference
+  and correctness, and the **consistency–bias paradox** check — because the study's headline
+  finding is a judge with test–retest 0.992 *and* position bias 0.192: almost perfectly
+  reproducible and almost perfectly wrong.
+  - New `examlops.evaluation.calibration` — pure statistics (Cohen's κ + Wald interval, Wilson
+    interval, position bias, test–retest, sensitivity/specificity, **Rogan–Gladen** correction),
+    `calibrate()` over the existing judge seam and `calibrate_from_records()` for the offline
+    path. No numpy, no scipy, no model calls.
+  - New CLI: `exa eval calibrate <judge> --from <file> [--require-eligible]`,
+    `exa eval calibration show|list`.
+  - **Absence of calibration is not eligibility** — an unmeasured judge returns
+    `(False, ["no_calibration"])` and blocks. The refusal applies in `warn` mode too: `warn`
+    makes *metric regressions* advisory, not the instrument that measures them.
+  - **Evaluator provenance (G7.3):** every `eval_suite_results` row now carries a
+    `calibration_id` resolving to the judge's κ and bias *at the time of that evaluation*;
+    re-measuring a judge never rewrites the provenance of an evaluation that already ran.
+  - **Uncertainty (G7.4):** proportion scores are stored with a Wilson interval
+    (`score_lo`/`score_hi`). Non-proportion metrics get none rather than a fabricated one.
+  - Additive `judge_calibrations` table; guide `docs/guides/judge-calibration.md`.
+  - **This will refuse gates that pass today.** That is the intended behaviour, and there is no
+    flag to skip it — see the guide's Migration section.
+
 - **A working GitHub Actions CI.** `.github/workflows/ci.yml` had been *entirely*
   commented out, so the public repo ran no checks at all. It is now a slim
   lint + unit-test workflow (ruff check, ruff format, `pytest tests/unit`) that gives a

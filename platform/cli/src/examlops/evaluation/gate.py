@@ -4,6 +4,12 @@ Given a per-model gate config ``{suite, baseline_alias, metrics:[{name,min?,max_
 mode}``, compare a candidate version's C2 scores against the baseline alias's scores and
 decide pass/fail. ``block`` mode fails the build/promotion; ``warn`` records only. The
 report is persisted to ``platform_db.gate_reports``.
+
+**ADR 0111 rides on top of this gate.** If the compared scores came from an LLM judge, the
+judge must have passed the MVVP (:mod:`examlops.evaluation.calibration`) or the gate refuses
+outright — in ``warn`` mode too. That asymmetry is deliberate: ``warn`` is a statement about
+*metric regressions* being advisory, never a licence to let an unmeasured instrument decide
+what reaches production.
 """
 
 from __future__ import annotations
@@ -29,12 +35,20 @@ class GateResult:
     passed: bool
     mode: str
     metrics: list[MetricVerdict] = field(default_factory=list)
+    judge: str | None = None
+    judge_eligible: bool = True
+    judge_failures: list[str] = field(default_factory=list)
+    calibration_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "passed": self.passed,
             "mode": self.mode,
             "metrics": [vars(m) for m in self.metrics],
+            "judge": self.judge,
+            "judge_eligible": self.judge_eligible,
+            "judge_failures": list(self.judge_failures),
+            "calibration_id": self.calibration_id,
         }
 
 
@@ -95,6 +109,7 @@ def run_eval_gate(
     baseline_scores: dict[str, float] | None = None,
     higher_is_better: bool = True,
     persist: bool = True,
+    judge: str | None = None,
 ) -> GateResult | None:
     """Run the configured gate for a model. Returns None if no gate is configured.
 
@@ -125,6 +140,9 @@ def run_eval_gate(
         mode=gate["mode"],
         higher_is_better=higher_is_better,
     )
+    if judge is None:
+        judge = judge_for_results(model, gate["suite"], candidate_version)
+    apply_judge_eligibility(result, judge)
     if persist:
         record_gate_report(
             model,
@@ -135,3 +153,78 @@ def run_eval_gate(
             baseline=gate["baseline_alias"],
         )
     return result
+
+
+# ── ADR 0111 — no uncalibrated judge may gate ─────────────────────────────────
+
+
+def judge_for_results(model: str, suite: str, version: str | None = None) -> str | None:
+    """The judge that produced this model's suite scores, or None if none did.
+
+    A suite of purely deterministic evaluators has no judge, and nothing to calibrate — the
+    ADR constrains judged evaluation, not exact-match.
+    """
+    from examlops.data.evaluation import get_eval_results
+
+    for row in get_eval_results(model, suite):
+        if version is not None and str(row.get("model_version")) != str(version):
+            continue
+        if row.get("judge_model"):
+            return str(row["judge_model"])
+    return None
+
+
+def apply_judge_eligibility(result: GateResult, judge: str | None) -> GateResult:
+    """Refuse the gate when a judge decided it and that judge is not MVVP-eligible.
+
+    Mutates and returns ``result`` so callers keep one object. A refusal appends a
+    ``judge_calibration`` verdict, so every existing consumer that lists failing metric names
+    reports the real reason without knowing anything about ADR 0111.
+    """
+    if not judge:
+        return result
+
+    from examlops.data.evaluation import get_judge_calibration
+    from examlops.evaluation.calibration import is_gate_eligible
+
+    eligible, failures = is_gate_eligible(judge)
+    result.judge = judge
+    result.judge_eligible = eligible
+    result.judge_failures = failures
+    row = get_judge_calibration(judge)
+    result.calibration_id = (row or {}).get("calibration_id")
+    if not eligible:
+        result.passed = False  # in warn mode too — see the module docstring
+        result.metrics.append(
+            MetricVerdict(
+                name="judge_calibration",
+                candidate=None,
+                baseline=None,
+                delta=None,
+                min=None,
+                max_drop=None,
+                failed=True,
+                reason=f"judge {judge!r} is not gate-eligible: {', '.join(failures)}",
+            )
+        )
+    return result
+
+
+def judge_eligibility_for_model(model: str) -> tuple[bool, list[str], str | None]:
+    """``(eligible, failures, judge)`` for whichever judge last scored ``model``.
+
+    Used by callers that promote *without* going through :func:`run_eval_gate` — the autopilot's
+    closed loop — so an unmeasured judge cannot reach production by taking the other road.
+    """
+    from examlops.data.evaluation import get_eval_gate
+
+    gate = get_eval_gate(model)
+    if gate is None:
+        return (True, [], None)
+    judge = judge_for_results(model, gate["suite"])
+    if not judge:
+        return (True, [], None)
+    from examlops.evaluation.calibration import is_gate_eligible
+
+    eligible, failures = is_gate_eligible(judge)
+    return (eligible, failures, judge)

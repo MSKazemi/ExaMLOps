@@ -658,6 +658,33 @@ endpoint consistency, OIDC coherence, weak/placeholder secrets) and exit non-zer
 
 Continuous evaluation and feedback
 
+### `exa eval calibrate`
+
+Measure a judge against labelled benchmarks and record the calibration.
+
+Recording a *failing* calibration is not an error: the measurement is the point. Pass
+``--require-eligible`` to make a CI job fail on a judge that may not gate.
+
+- `--from` — JSON of collected judgments (see `exa eval calibration list -h`)
+- `--version` — Judge prompt/model version
+- `--require-eligible` — Exit 1 if the judge fails the MVVP — CI-safe
+
+### `exa eval calibration`
+
+Judge calibration — measure a judge before it may gate (ADR 0111)
+
+#### `exa eval calibration list`
+
+List recorded judge calibrations, newest first.
+
+- `--limit` — Rows to show
+
+#### `exa eval calibration show`
+
+Show a judge's latest calibration and whether it may gate.
+
+- `--version` — Pin to a judge version
+
 ### `exa eval feedback`
 
 Ground-truth feedback loop
@@ -2343,6 +2370,81 @@ Show recent explain requests for a model.
 ### `exa serve infer-check`
 
 Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.
+
+### `exa serve llm`
+
+LLM/VLM endpoints — vLLM lifecycle (Track V)
+
+#### `exa serve llm args`
+
+Print the exact ``vllm serve`` argv this model's engine block renders.
+
+Same renderer the Compose service, the Slurm template and the KServe manifest use, so
+what is printed here is what actually runs on every substrate.
+
+#### `exa serve llm bench`
+
+Measure TTFT and output tokens/s against a live endpoint.
+
+- `--requests, -n` — Sequential requests to send
+- `--prompt`
+- `--max-tokens`
+
+#### `exa serve llm chat`
+
+Send a chat request — with images, this is the VLM smoke test.
+
+- `--message, -m` — The prompt
+- `--image` — Image path or URL (repeatable) — the VLM path
+- `--stream` — Stream token deltas as they arrive
+- `--max-tokens` — Cap the completion length
+- `--temperature` — Sampling temperature
+
+#### `exa serve llm health`
+
+Probe the endpoint and update its recorded state. Exits 1 when not ready (CI gate).
+
+#### `exa serve llm list`
+
+List registered LLM/VLM endpoints.
+
+- `--project` — Filter by project workspace
+- `--state` — Filter by lifecycle state
+
+#### `exa serve llm start`
+
+Start (or register) a vLLM endpoint and record it in the endpoint registry.
+
+- `--hf-model` — Weights to serve (HF id or local path)
+- `--launcher, -l` — external | compose | slurm | flux | kserve
+- `--base-url` — External endpoint URL
+- `--modality` — text | vision | audio | video
+- `--max-images` — limit_mm_per_prompt.image (required for a vision model)
+- `--media-domains` — Comma-separated allow-list for remote media (SSRF guard)
+- `--local-media-path` — Directory from which file:// media may be read
+- `--tp` — tensor_parallel_size (GPUs per node)
+- `--pp` — pipeline_parallel_size (usually = nodes)
+- `--dtype` — auto | float16 | bfloat16 | fp8 | …
+- `--max-model-len` — Context length
+- `--nodes` — HPC nodes to allocate
+- `--gpus` — GPUs per node
+- `--partition` — HPC partition/queue
+- `--walltime` — HPC walltime
+- `--port` — Port the server listens on
+- `--project` — Attribute to a project workspace
+- `--dry-run` — Preview; change nothing
+- `--reason` — Why you are making this change (recorded in the audit trail)
+
+#### `exa serve llm status`
+
+Show one endpoint: registry record, substrate status, and live vLLM metrics.
+
+#### `exa serve llm stop`
+
+Stop an endpoint (and deregister it).
+
+- `--dry-run` — Preview; change nothing
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa serve manifest`
 

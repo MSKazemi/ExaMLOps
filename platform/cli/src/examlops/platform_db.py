@@ -918,6 +918,29 @@ def init_db(*, force: bool = False) -> None:
                 updated_by     TEXT,
                 updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- ADR 0111 · judge calibration (MVVP). One row per measurement of a judge;
+            -- calibration_id is the provenance handle every eval result carries (G7.3), so a
+            -- score can always be resolved back to the judge's kappa and bias AT THAT TIME.
+            CREATE TABLE IF NOT EXISTS judge_calibrations (
+                calibration_id TEXT PRIMARY KEY,
+                judge          TEXT NOT NULL,
+                version        TEXT NOT NULL DEFAULT 'v1',
+                kappa          REAL NOT NULL DEFAULT 0,
+                kappa_lo       REAL,
+                kappa_hi       REAL,
+                position_bias  REAL NOT NULL DEFAULT 0,
+                test_retest    REAL NOT NULL DEFAULT 0,
+                benchmarks     TEXT NOT NULL DEFAULT '[]',   -- json list of benchmark names
+                families       TEXT NOT NULL DEFAULT '[]',   -- json list: preference|correctness
+                replications   INTEGER NOT NULL DEFAULT 0,
+                paradox_flag   INTEGER NOT NULL DEFAULT 0,
+                sensitivity    REAL NOT NULL DEFAULT 0,
+                specificity    REAL NOT NULL DEFAULT 0,
+                n              INTEGER NOT NULL DEFAULT 0,
+                at             TEXT NOT NULL,
+                ts             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_judge_cal_judge ON judge_calibrations (judge, ts DESC);
             CREATE TABLE IF NOT EXISTS gate_reports (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 model         TEXT NOT NULL,
@@ -1592,6 +1615,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # Unified Project workspace (ADR 0086): per-project cost attribution anchor.
     "model_costs": {
         "project": "TEXT",
+    },
+    # ADR 0111 no uncalibrated judge may gate: evaluator provenance (G7.3) + the uncertainty
+    # interval every score must carry (G7.4). NULL = recorded before the ADR landed.
+    "eval_suite_results": {
+        "calibration_id": "TEXT",
+        "score_lo": "REAL",
+        "score_hi": "REAL",
     },
     # D7/2.3 envelope encryption: which KEK (key_id) each secret is wrapped under, so keys can be
     # rotated online and old ciphertext rewrapped. NULL = the legacy single-key era.
@@ -2287,7 +2317,7 @@ from examlops.data.audit import (audit_chain_head, export_audit_events, list_aud
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
 from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
 from examlops.data.drift import (claim_drift_trigger, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
-from examlops.data.evaluation import (get_eval_gate, get_eval_results, get_gate_reports, list_perf_estimates, record_eval_result, record_gate_report, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
+from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
 from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
 from examlops.data.governance import (get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001

@@ -631,6 +631,9 @@ Runs deterministic eval suites, ingests delayed ground-truth labels to compute r
 | `exa eval gate run <model> <candidate>` | Run the regression gate for a candidate version (exit 1 in block mode on failure) — CI-safe (R10). `--higher-is-better`/`--lower-is-better`. | Block promotion of a regressing candidate in CI. | `exa eval gate run JPCP 18` |
 | `exa eval gate set <model>` | **[mutation]** Configure the regression gate. Required `--suite`, `--metric metric[:min=X][:max_drop=Y]` (repeatable); `--baseline` (Production), `--mode block\|warn`. | Declare which metrics guard a model's promotions. | `exa eval gate set JPCP --suite smoke --metric rmse:max_drop=0.5 --mode block` |
 | `exa eval gate show <model>` | Show the configured regression gate for a model. | Verify gate config before a release. | `exa eval gate show JPCP` |
+| `exa eval calibrate <judge>` | **[mutation]** Measure a judge against labelled benchmarks (MVVP, ADR 0111) and record the calibration. Required `--from <file.json>`; `--version`, `--require-eligible` (exit 1 if the judge may not gate). | Make a judge gate-eligible — until it is, every gate refuses. | `exa eval calibrate gpt-judge --from ./eval/judge-calibration.json --require-eligible` |
+| `exa eval calibration show <judge>` | Show a judge's latest calibration (kappa + interval, position bias, test-retest, replications, families, paradox flag) and whether it may gate. `--version`. | Diagnose *why* a gate refused. | `exa eval calibration show gpt-judge` |
+| `exa eval calibration list` | List recorded judge calibrations, newest first, with eligibility. `--limit`. | See which judges are measured at all. | `exa eval calibration list` |
 
 ### `exa slo` — model-quality SLOs (error budgets & burn-rate alerts)
 

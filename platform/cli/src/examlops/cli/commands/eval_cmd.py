@@ -1,4 +1,6 @@
-"""C2/C3 — `exa eval run` (continuous eval) + `exa eval gate` (regression gate)."""
+"""C2/C3 — `exa eval run` (continuous eval) + `exa eval gate` (regression gate)
++ `exa eval calibrate` (ADR 0111 judge calibration — the MVVP a judge must pass
+before it is allowed to gate anything)."""
 
 from __future__ import annotations
 
@@ -193,3 +195,140 @@ def gate_run(
 
 def _fmt(v: float | None) -> str:
     return "—" if v is None else f"{v:.4f}"
+
+
+# ── ADR 0111 — judge calibration (MVVP) ───────────────────────────────────────
+
+calibration_app = typer.Typer(
+    help="Judge calibration — measure a judge before it may gate (ADR 0111)",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(calibration_app, name="calibration")
+
+_EXAMPLES_CAL = (
+    "Examples:\n\n"
+    "  exa eval calibrate gpt-judge --from ./eval/judge-calibration.json\n\n"
+    "  exa eval calibrate gpt-judge --from ./eval/judge-calibration.json --require-eligible\n\n"
+    "  exa eval calibration show gpt-judge\n\n"
+    "  exa eval calibration list"
+)
+
+
+def _eligibility_rows(cal) -> list[list[str]]:
+    from examlops.evaluation.calibration import POSITION_BIAS_MAX, eligibility_failures
+
+    lo, hi = cal.kappa_ci
+    failures = eligibility_failures(cal)
+    return [
+        ["kappa (chance-corrected)", f"{cal.kappa:.3f}  [{lo:.3f}, {hi:.3f}]"],
+        ["position bias", f"{cal.position_bias:.3f}  (max {POSITION_BIAS_MAX})"],
+        ["test-retest", f"{cal.test_retest:.3f}"],
+        ["replications", str(cal.replications)],
+        ["benchmark families", ", ".join(cal.families) or "—"],
+        ["consistency-bias paradox", "YES" if cal.paradox_flag else "no"],
+        ["sensitivity / specificity", f"{cal.sensitivity:.3f} / {cal.specificity:.3f}"],
+        ["gate-eligible", "no — " + "; ".join(failures) if failures else "yes"],
+    ]
+
+
+@app.command("calibrate", epilog=_EXAMPLES_CAL)
+def calibrate_cmd(
+    judge: str = typer.Argument(..., help="Judge model name, as recorded on eval results"),
+    from_file: str = typer.Option(
+        ..., "--from", help="JSON of collected judgments (see `exa eval calibration list -h`)"
+    ),
+    version: str = typer.Option("v1", "--version", help="Judge prompt/model version"),
+    require_eligible: bool = typer.Option(
+        False, "--require-eligible", help="Exit 1 if the judge fails the MVVP — CI-safe"
+    ),
+) -> None:
+    """Measure a judge against labelled benchmarks and record the calibration.
+
+    Recording a *failing* calibration is not an error: the measurement is the point. Pass
+    ``--require-eligible`` to make a CI job fail on a judge that may not gate.
+    """
+    from examlops.data.evaluation import record_judge_calibration
+    from examlops.evaluation.calibration import calibrate_from_records, eligibility_failures
+
+    records = json.loads(Path(from_file).read_text())
+    cal = calibrate_from_records(records, judge=judge, version=version)
+    record_judge_calibration(cal)
+    failures = eligibility_failures(cal)
+
+    if _output.json_mode:
+        _output.print_json({**cal.as_dict(), "eligible": not failures, "failed_checks": failures})
+    else:
+        _output.print_table(
+            f"Judge calibration — {judge} ({cal.calibration_id})",
+            ["Check", "Value"],
+            _eligibility_rows(cal),
+        )
+    if require_eligible and failures:
+        _output.error(f"Judge {judge!r} is NOT gate-eligible: {'; '.join(failures)}")
+    _output.ok(f"Calibration {cal.calibration_id} recorded for {judge}")
+
+
+@calibration_app.command("show")
+def calibration_show(
+    judge: str = typer.Argument(..., help="Judge model name"),
+    version: str | None = typer.Option(None, "--version", help="Pin to a judge version"),
+) -> None:
+    """Show a judge's latest calibration and whether it may gate."""
+    from examlops.data.evaluation import get_judge_calibration
+    from examlops.evaluation.calibration import calibration_from_row, eligibility_failures
+
+    row = get_judge_calibration(judge, version=version)
+    if row is None:
+        _output.error(
+            f"No calibration for {judge!r} — absence of calibration is not eligibility "
+            "(ADR 0111). Run: exa eval calibrate " + judge + " --from <file>"
+        )
+        return
+    cal = calibration_from_row(row)
+    if _output.json_mode:
+        failures = eligibility_failures(cal)
+        _output.print_json({**cal.as_dict(), "eligible": not failures, "failed_checks": failures})
+        return
+    _output.print_table(
+        f"Judge calibration — {judge} ({cal.calibration_id})",
+        ["Check", "Value"],
+        _eligibility_rows(cal),
+    )
+
+
+@calibration_app.command("list")
+def calibration_list(
+    limit: int = typer.Option(50, "--limit", help="Rows to show"),
+) -> None:
+    """List recorded judge calibrations, newest first."""
+    from examlops.data.evaluation import list_judge_calibrations
+    from examlops.evaluation.calibration import calibration_from_row, eligibility_failures
+
+    rows = list_judge_calibrations(limit)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.ok("No judge calibrations recorded — no judge may gate yet (ADR 0111).")
+        return
+    table = []
+    for r in rows:
+        cal = calibration_from_row(r)
+        table.append(
+            [
+                cal.judge,
+                cal.version,
+                f"{cal.kappa:.3f}",
+                f"{cal.position_bias:.3f}",
+                f"{cal.test_retest:.3f}",
+                str(cal.replications),
+                "yes" if not eligibility_failures(cal) else "NO",
+                cal.at,
+            ]
+        )
+    _output.print_table(
+        "Judge calibrations",
+        ["Judge", "Version", "kappa", "Bias", "Retest", "Reps", "Eligible", "At"],
+        table,
+    )

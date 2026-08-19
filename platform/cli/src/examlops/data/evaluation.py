@@ -14,12 +14,16 @@ from typing import Any  # noqa: F401
 from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F401
 
 __all__ = [
+    "get_calibration_by_id",
     "get_eval_gate",
     "get_eval_results",
     "get_gate_reports",
+    "get_judge_calibration",
+    "list_judge_calibrations",
     "list_perf_estimates",
     "record_eval_result",
     "record_gate_report",
+    "record_judge_calibration",
     "record_perf_estimate",
     "set_eval_gate",
 ]
@@ -89,18 +93,34 @@ def record_eval_result(
     sample_size: int = 0,
     judge: dict[str, str] | None = None,
     dataset_revision: str | None = None,
+    calibration_id: str | None = None,
 ) -> None:
-    """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8)."""
+    """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8).
+
+    Every row carries the judge's ``calibration_id`` (ADR 0111 G7.3 — evaluator provenance) and
+    a Wilson interval around the score (G7.4 — no point values). The interval is computed only
+    for scores that are proportions in ``[0, 1]`` over a known sample; a raw RMSE gets none,
+    because a Wilson interval on it would be a fabricated number.
+    """
+    from examlops.evaluation.calibration import wilson_interval
+
     init_db()
     judge_model = (judge or {}).get("model")
     judge_prompt = (judge or {}).get("prompt_version")
+    if calibration_id is None and judge_model:
+        latest = get_judge_calibration(judge_model, version=judge_prompt)
+        calibration_id = (latest or {}).get("calibration_id")
     with get_db() as conn:
         for metric, score in scores.items():
+            lo = hi = None
+            if sample_size > 0 and 0.0 <= float(score) <= 1.0:
+                lo, hi = wilson_interval(float(score) * sample_size, sample_size)
             conn.execute(
                 """INSERT OR IGNORE INTO eval_suite_results
                        (suite, model, model_version, alias, metric, score, sample_size,
-                        judge_model, judge_prompt_version, dataset_revision, run_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        judge_model, judge_prompt_version, dataset_revision, run_id,
+                        calibration_id, score_lo, score_hi)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     suite,
                     model,
@@ -113,6 +133,9 @@ def record_eval_result(
                     judge_prompt,
                     dataset_revision,
                     run_id,
+                    calibration_id,
+                    lo,
+                    hi,
                 ),
             )
 
@@ -176,4 +199,75 @@ def set_eval_gate(
         )
 
 
+def record_judge_calibration(cal: Any) -> str:
+    """Persist a :class:`~examlops.evaluation.calibration.JudgeCalibration`; returns its id.
+
+    Calibrations are immutable measurements, never updated in place — a re-measurement is a new
+    row with a new ``calibration_id``, so an old evaluation still resolves to the judge as it was
+    when that evaluation ran (ADR 0111 G7.3).
+    """
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO judge_calibrations
+                   (calibration_id, judge, version, kappa, kappa_lo, kappa_hi, position_bias,
+                    test_retest, benchmarks, families, replications, paradox_flag,
+                    sensitivity, specificity, n, at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                cal.calibration_id,
+                cal.judge,
+                cal.version,
+                float(cal.kappa),
+                float(cal.kappa_ci[0]),
+                float(cal.kappa_ci[1]),
+                float(cal.position_bias),
+                float(cal.test_retest),
+                json.dumps(list(cal.benchmarks)),
+                json.dumps(list(cal.families)),
+                int(cal.replications),
+                1 if cal.paradox_flag else 0,
+                float(cal.sensitivity),
+                float(cal.specificity),
+                int(cal.n),
+                cal.at,
+            ),
+        )
+    return str(cal.calibration_id)
+
+
+def get_judge_calibration(judge: str, *, version: str | None = None) -> dict[str, Any] | None:
+    """The judge's most recent calibration, or None — and None means *not eligible*."""
+    init_db()
+    q = "SELECT * FROM judge_calibrations WHERE judge=?"
+    params: list[Any] = [judge]
+    if version:
+        q += " AND version=?"
+        params.append(version)
+    q += " ORDER BY ts DESC, rowid DESC LIMIT 1"
+    with get_db() as conn:
+        row = conn.execute(q, params).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_calibration_by_id(calibration_id: str) -> dict[str, Any] | None:
+    """Resolve the provenance handle stored on an evaluation result (G7.3)."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM judge_calibrations WHERE calibration_id=?", (calibration_id,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_judge_calibrations(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM judge_calibrations ORDER BY ts DESC, rowid DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# Applied last so it also wraps the writers defined above (item 0.4).
 install_write_retry(__name__)

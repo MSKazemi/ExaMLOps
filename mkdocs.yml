@@ -85,6 +85,7 @@ nav:
       - Observability & evaluation:
           - AgentOps: guides/agentops.md
           - Evaluation & regression gates: guides/evaluation.md
+          - Judge calibration (ADR 0111): guides/judge-calibration.md
           - Advanced drift: guides/drift-advanced.md
           - SLOs: guides/slos.md
           - Champion-challenger: guides/shadow-champion-challenger.md

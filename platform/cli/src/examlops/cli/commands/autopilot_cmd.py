@@ -405,6 +405,36 @@ def run_cycle(
                 )
                 continue
 
+            # ADR 0111: an LLM judge that has never been measured may not decide what reaches
+            # production. The autopilot promotes without going through run_eval_gate, so the
+            # eligibility rule is enforced here too — otherwise the closed loop would be the
+            # one road around it.
+            from examlops.evaluation.gate import judge_eligibility_for_model
+
+            judge_ok, judge_failures, judge_name = judge_eligibility_for_model(model)
+            if not judge_ok:
+                blocks.append(
+                    {
+                        "model": model,
+                        "gate": "autopilot_promote",
+                        "reason": f"judge {judge_name!r} is not gate-eligible: "
+                        + ", ".join(judge_failures),
+                    }
+                )
+                write_audit_event(
+                    "autopilot",
+                    _actor(),
+                    "autopilot_promote_blocked",
+                    model,
+                    {
+                        "gate": "autopilot_promote",
+                        "judge": judge_name,
+                        "judge_failures": judge_failures,
+                        "adr": "0111",
+                    },
+                )
+                continue
+
             # Policy check: autopilot_promote. Expose synthetic-only training as context so a
             # D5 policy rule can refuse to auto-promote a synthetic-only model (A7 spec R5/GWT-5).
             from examlops.promotion_gates import synthetic_only_training
