@@ -113,6 +113,9 @@ ignore = ["E501"]
 "**/tests/**/*.py" = ["E402"]
 # sys.path injection for registry_loader — intentional before third-party imports
 "serving/ray_serving/app.py" = ["E402"]
+# use-case packs bootstrap sys.path for the modelzoo checkout (EXAMLOPS_MODELZOO_DIR)
+# before importing it — same intentional pattern as pipelines/, ADR 0094
+"usecases/**/model_configs/*.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

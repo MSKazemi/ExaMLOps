@@ -35,6 +35,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Changed
 
+- **The ruff gate now covers `platform/clients/` and `usecases/`.** Both are first-party,
+  shipped code — `usecases/` is a product tier in its own right (ADR 0094) — yet neither
+  was inside any lint scope, so nothing stopped them rotting. Widening the scope surfaced
+  8 real errors, all now fixed: `UP035` (deprecated `typing` imports) in
+  `platform/clients/seanerbus_client.py`, and 7 × `E402` in the use-case pack's model
+  configs. The `E402`s are *intentional* — the packs bootstrap `sys.path` for the
+  `EXAMLOPS_MODELZOO_DIR` checkout before importing it, exactly as `pipelines/` does — so
+  they are recorded as a narrow `usecases/**/model_configs/*.py` per-file-ignore with the
+  reason inline, never a blanket ignore.
+  - The scope is defined in **five** places that must agree: `make lint`, `make lint-fix`,
+    `make ci-examlops`, `make preflight` (steps 2/7 and 3/7), `.gitlab-ci.yml`
+    (`test:examlops`) and `.github/workflows/ci.yml`. All were updated together — a
+    disagreement here is how a change passes locally and fails in CI.
+  - `ruff format --check` (a **hard** CI failure) also passes on the widened scope.
+
 - **chore(repo): the private→public split is now dual-git, replacing the p2p rsync mirror.** One
   working tree carries two independent gits: `.git` holds the curated public subset, `.git-private`
   the full superset. The old `1private/` + `2public/` + `rsync` arrangement is retired, and with it

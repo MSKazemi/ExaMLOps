@@ -112,7 +112,7 @@ Installs the full workspace dev environment (`uv pip install -e ".[dev]"`), then
 
 | Check | Command |
 |---|---|
-| Lint | `.venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/` |
+| Lint | `.venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/` |
 | Format | `.venv/bin/ruff format --check …` (enforced — a hard failure) |
 | Type check | `.venv/bin/mypy … --ignore-missing-imports` (informational, `\|\| true`) |
 | Unit tests | `.venv/bin/pytest tests/unit/` covering CLI, control plane, pipelines, serving, inference pipeline, framework adapter, registry integrity, agent tools, and more |

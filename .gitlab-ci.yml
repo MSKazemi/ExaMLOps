@@ -292,8 +292,8 @@ test:examlops:
     - uv venv --clear .venv   # --clear: runners reuse build dirs; a leftover .venv otherwise fails
     - uv pip install -e ".[dev]"
   script:
-    - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
-    - .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+    - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
+    - .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
     - .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
     - .venv/bin/pytest tests/unit/ -v --tb=short
         --junit-xml=reports/examlops-unit.xml

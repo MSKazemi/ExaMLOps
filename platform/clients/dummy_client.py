@@ -29,6 +29,7 @@ try:
     import httpx
 except ImportError:
     import subprocess
+
     subprocess.check_call([sys.executable, "-m", "pip", "install", "httpx", "-q"])
     import httpx
 
@@ -78,7 +79,9 @@ def check_health(client: httpx.Client) -> None:
     print(f"  models_loaded : {n}")
     for info in data.get("models", []):
         name = info.get("model_name", "?")
-        print(f"  {name:<20} alias={info.get('alias')}  v{info.get('version')}  run_id={info.get('run_id')}")
+        print(
+            f"  {name:<20} alias={info.get('alias')}  v{info.get('version')}  run_id={info.get('run_id')}"
+        )
     print()
 
 
@@ -142,10 +145,12 @@ def benchmark(client: httpx.Client, model_name: str, n: int) -> None:
     ok = len(latencies)
     print(f"  requests  : {n}  (ok={ok}, errors={errors})")
     if latencies:
-        print(f"  latency   : min={min(latencies):.1f}ms  "
-              f"p50={statistics.median(latencies):.1f}ms  "
-              f"p95={sorted(latencies)[int(ok * 0.95)]:.1f}ms  "
-              f"max={max(latencies):.1f}ms")
+        print(
+            f"  latency   : min={min(latencies):.1f}ms  "
+            f"p50={statistics.median(latencies):.1f}ms  "
+            f"p95={sorted(latencies)[int(ok * 0.95)]:.1f}ms  "
+            f"max={max(latencies):.1f}ms"
+        )
     print()
 
 
@@ -153,8 +158,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="ExaMLOps dummy inference client")
     ap.add_argument("--url", default="http://localhost:18001", help="Ray Serve base URL")
     ap.add_argument("--model", help="Model name for --features or --benchmark")
-    ap.add_argument("--features", help='JSON feature dict, e.g. \'{"num_nodes_req_cat": 4}\'')
-    ap.add_argument("--benchmark", type=int, metavar="N", help="Send N random requests and report latency stats")
+    ap.add_argument("--features", help="JSON feature dict, e.g. '{\"num_nodes_req_cat\": 4}'")
+    ap.add_argument(
+        "--benchmark", type=int, metavar="N", help="Send N random requests and report latency stats"
+    )
     args = ap.parse_args()
 
     print(f"ExaMLOps dummy client → {args.url}\n")
@@ -205,7 +212,9 @@ def main() -> None:
             else:
                 print("No models loaded — train a pipeline first:")
                 print("  exa pipeline run --dummy   # dummy data (fast)")
-                print("  exa pipeline run --registry pipelines/model_registry.yaml --env prod  # full run")
+                print(
+                    "  exa pipeline run --registry pipelines/model_registry.yaml --env prod  # full run"
+                )
 
 
 if __name__ == "__main__":

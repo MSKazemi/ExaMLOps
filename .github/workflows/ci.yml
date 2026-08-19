@@ -49,10 +49,10 @@ jobs:
           uv pip install -e ".[dev]"
 
       - name: Ruff (lint)
-        run: .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+        run: .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
       - name: Ruff (format)
-        run: .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+        run: .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
       - name: Unit tests
         run: .venv/bin/pytest tests/unit/ -q --tb=short --junit-xml=reports/examlops-unit.xml

@@ -8,7 +8,8 @@ based API so callers never touch raw Cap'n'Proto payloads directly.
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncGenerator, Awaitable, Callable, TypeVar
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Any, TypeVar
 
 from seanerbus.client import Connection as _RawConnection
 

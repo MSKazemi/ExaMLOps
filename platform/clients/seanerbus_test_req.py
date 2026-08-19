@@ -68,13 +68,18 @@ async def main() -> None:
     response: HpcInferenceResV1 = await conn.request(inference_uuid, job, HpcInferenceResV1)
 
     print("\nHpcInferenceResV1 response:")
-    print(json.dumps({
-        "prediction":    response.prediction,
-        "model_name":    response.model_name,
-        "model_version": response.model_version,
-        "run_id":        response.run_id,
-        "error_msg":     response.error_msg,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "prediction": response.prediction,
+                "model_name": response.model_name,
+                "model_version": response.model_version,
+                "run_id": response.run_id,
+                "error_msg": response.error_msg,
+            },
+            indent=2,
+        )
+    )
 
     await conn.close()
 

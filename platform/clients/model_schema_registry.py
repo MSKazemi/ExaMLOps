@@ -1,4 +1,5 @@
 """YAML-driven per-model feature schema registry for the SeanerBUS bridge."""
+
 from __future__ import annotations
 
 import logging
@@ -55,10 +56,7 @@ class ModelSchemaRegistry:
             output_field = next(iter(output_schema), "")
             task_type = data.get("task_type", "regression")
 
-            inputs = [
-                {"name": field, "type": type_str}
-                for field, type_str in input_schema.items()
-            ]
+            inputs = [{"name": field, "type": type_str} for field, type_str in input_schema.items()]
 
             self._schemas[model_name.upper()] = {
                 "inputs": inputs,
@@ -106,16 +104,21 @@ class ModelSchemaRegistry:
         for field in schema["inputs"]:
             name = field["name"]
             if name not in features:
-                raise ValueError(
-                    f"Missing required feature {name!r} for model {model_name!r}"
-                )
-            if isinstance(field["type"], str) and "list" in field["type"] and not isinstance(features[name], list):
+                raise ValueError(f"Missing required feature {name!r} for model {model_name!r}")
+            if (
+                isinstance(field["type"], str)
+                and "list" in field["type"]
+                and not isinstance(features[name], list)
+            ):
                 raise ValueError(
                     f"Feature {name!r} must be a list for model {model_name!r}, "
                     f"got {type(features[name]).__name__}"
                 )
-            if isinstance(field["type"], str) and "list" not in field["type"] and isinstance(features[name], list):
+            if (
+                isinstance(field["type"], str)
+                and "list" not in field["type"]
+                and isinstance(features[name], list)
+            ):
                 raise ValueError(
-                    f"Feature {name!r} must be a scalar for model {model_name!r}, "
-                    f"got list"
+                    f"Feature {name!r} must be a scalar for model {model_name!r}, got list"
                 )

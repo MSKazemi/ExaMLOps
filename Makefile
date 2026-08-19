@@ -498,13 +498,13 @@ clean: ## Remove .venv, build artifacts, and all cache directories
 ##@ Code Quality
 # =============================================================================
 
-lint: install-dev ## Run ruff linter across src/, tests/, pipelines/, platform/services/
+lint: install-dev ## Run ruff linter across cli/, tests/, pipelines/, serving/, services/, clients/, usecases/
 	@printf "$(BOLD)Linting...$(RESET)\n"
-	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Lint passed.$(RESET)\n"
 
 lint-fix: install-dev ## Run ruff --fix (auto-fix all safe issues)
-	@$(VENV)/bin/ruff check --fix platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@$(VENV)/bin/ruff check --fix platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Auto-fix complete.$(RESET)\n"
 
 typecheck: install-dev ## Run mypy type checker on pipelines/ and platform/services/
@@ -585,7 +585,7 @@ ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
 
 ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + unit
 	@printf "$(BOLD)CI · examlops (uv)$(RESET)\n"
-	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
 	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
@@ -597,9 +597,9 @@ preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — 
 	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
 	@printf "$(BOLD)2/7 ruff check$(RESET)\n"
-	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(BOLD)3/7 ruff format --check$(RESET)  (HARD failure in CI)\n"
-	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/
+	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(BOLD)4/7 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
 	@printf "$(BOLD)5/7 unit tests$(RESET)\n"

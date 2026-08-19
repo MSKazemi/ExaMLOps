@@ -61,19 +61,29 @@ try:
         write_drift_snapshot,
         write_input_snapshot,
     )
+
     _init_platform_db()
     _PLATFORM_DB_AVAILABLE = True
 except Exception:
     _PLATFORM_DB_AVAILABLE = False
-    def write_drift_snapshot(*a, **k): pass  # type: ignore[misc]
-    def write_audit_event(*a, **k): pass  # type: ignore[misc]
-    def write_input_snapshot(*a, **k): pass  # type: ignore[misc]
+
+    def write_drift_snapshot(*a, **k):
+        pass  # type: ignore[misc]
+
+    def write_audit_event(*a, **k):
+        pass  # type: ignore[misc]
+
+    def write_input_snapshot(*a, **k):
+        pass  # type: ignore[misc]
+
 
 try:
     from examlops.resilience import httpx_timeout as _httpx_timeout
 except Exception:
+
     def _httpx_timeout(read=None, connect=None):  # type: ignore[misc]
         return httpx.Timeout(10.0)
+
 
 from model_schema_registry import ModelSchemaRegistry  # noqa: E402
 from seanerbus_client import Connection  # noqa: E402
@@ -109,7 +119,9 @@ DEFAULT_ALIAS = os.getenv("SEANERBUS_DEFAULT_ALIAS", "Production")
 PUBLISH_RESULTS = os.getenv("SEANERBUS_PUBLISH_RESULTS", "true").lower() == "true"
 
 DRIFT_WINDOW = int(os.getenv("DRIFT_WINDOW", os.getenv("CLIENT_SIM_DRIFT_WINDOW", "50")))
-DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", os.getenv("CLIENT_SIM_DRIFT_THRESHOLD", "0.5")))
+DRIFT_THRESHOLD = float(
+    os.getenv("DRIFT_THRESHOLD", os.getenv("CLIENT_SIM_DRIFT_THRESHOLD", "0.5"))
+)
 DRIFT_COOLDOWN = int(os.getenv("DRIFT_COOLDOWN", os.getenv("CLIENT_SIM_DRIFT_COOLDOWN", "300")))
 MODELS_YAML_DIR = os.getenv("MODELS_YAML_DIR", "")
 
@@ -142,9 +154,12 @@ def _load_model_uuids() -> dict[str, uuid.UUID]:
     from pathlib import Path
 
     import yaml as _yaml
+
     models_path = Path(MODELS_YAML_DIR)
     if not models_path.is_dir():
-        log.warning("MODELS_YAML_DIR=%r is not a directory — per-model UUIDs disabled", MODELS_YAML_DIR)
+        log.warning(
+            "MODELS_YAML_DIR=%r is not a directory — per-model UUIDs disabled", MODELS_YAML_DIR
+        )
         return {}
     result: dict[str, uuid.UUID] = {}
     for yaml_file in sorted(models_path.glob("*.yaml")):
@@ -262,6 +277,7 @@ async def run_status_server(port: int = 8003) -> None:
 
 # ── drift tracker ──────────────────────────────────────────────────────────────
 
+
 class DriftTracker:
     """Per-model rolling-error tracker; auto-triggers control-plane retrain on drift."""
 
@@ -304,7 +320,9 @@ class DriftTracker:
         if now - self._last_retrain.get(model, 0) < self.cooldown:
             return
         self._last_retrain[model] = now
-        log.warning("Drift detected for %s (error_rate=%.0f%%) — triggering retrain", model, rate * 100)
+        log.warning(
+            "Drift detected for %s (error_rate=%.0f%%) — triggering retrain", model, rate * 100
+        )
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if CONTROL_PLANE_TOKEN:
             headers["Authorization"] = f"Bearer {CONTROL_PLANE_TOKEN}"
@@ -332,7 +350,10 @@ _drift_tracker = DriftTracker()
 
 # ── inference pipeline call ────────────────────────────────────────────────────
 
-async def _call_pipeline(job: HpcJobV1, override_model: str | None = None) -> tuple[float | None, str | None, str | None]:
+
+async def _call_pipeline(
+    job: HpcJobV1, override_model: str | None = None
+) -> tuple[float | None, str | None, str | None]:
     """POST HpcJobV1 fields to the inference pipeline; return (prediction, run_id, version)."""
     model_name = override_model or job.model_name or DEFAULT_MODEL
     alias = job.alias or DEFAULT_ALIAS
@@ -416,6 +437,7 @@ def _persist_inference_telemetry(
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────
 
+
 async def _run_pubsub(conn: Connection) -> None:
     if JOB_TOPIC_UUID is None:
         log.warning("SEANERBUS_JOB_TOPIC_UUID not set — pubsub mode disabled")
@@ -495,6 +517,7 @@ async def _run_pubsub(conn: Connection) -> None:
 
 # ── req/res inference handler ──────────────────────────────────────────────────
 
+
 async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> HpcInferenceResV1:
     model = override_model or req.model_name or DEFAULT_MODEL
     alias = req.alias or DEFAULT_ALIAS
@@ -547,8 +570,10 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
 
 def _make_inference_handler(model_name: str):
     """Return an HpcJobV1 handler bound to model_name."""
+
     async def _handler(req: HpcJobV1) -> HpcInferenceResV1:
         return await _call_inference(req, override_model=model_name)
+
     return _handler
 
 
@@ -557,6 +582,7 @@ async def _handle_inference(job: HpcJobV1) -> HpcInferenceResV1:
 
 
 # ── req/res retrain handler ────────────────────────────────────────────────────
+
 
 async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
     model = req.model_name or DEFAULT_MODEL
@@ -597,6 +623,7 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
 # go through the inference pipeline (/infer-pipeline/infer) which requires
 # both embedding + num_nodes.  It calls MultiModelServer directly instead.
 
+
 async def _handle_vector(req: VectorReqV1) -> VectorResV1:
     try:
         async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
@@ -615,35 +642,41 @@ async def _handle_vector(req: VectorReqV1) -> VectorResV1:
         return VectorResV1(results=[])
 
 
-async def _run_reqres(inf_conn: Connection, retrain_conn: Connection, vector_conn: Connection) -> None:
+async def _run_reqres(
+    inf_conn: Connection, retrain_conn: Connection, vector_conn: Connection
+) -> None:
     tasks: list[asyncio.Task] = []
 
     if MODEL_UUIDS:
         for model_name, model_uuid in MODEL_UUIDS.items():
             conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
             await conn.connect()
-            tasks.append(asyncio.create_task(
-                conn.serve(model_uuid, HpcJobV1, _make_inference_handler(model_name))
-            ))
+            tasks.append(
+                asyncio.create_task(
+                    conn.serve(model_uuid, HpcJobV1, _make_inference_handler(model_name))
+                )
+            )
             log.info("Registered per-model handler | model=%s uuid=%s", model_name, model_uuid)
     elif INFERENCE_UUID is not None:
         log.info("Registering global inference handler at %s (legacy)", INFERENCE_UUID)
-        tasks.append(asyncio.create_task(
-            inf_conn.serve(INFERENCE_UUID, HpcJobV1, _handle_inference)
-        ))
+        tasks.append(
+            asyncio.create_task(inf_conn.serve(INFERENCE_UUID, HpcJobV1, _handle_inference))
+        )
     else:
-        log.warning("No inference handlers registered — set SEANERBUS_INFERENCE_UUID or add seanerbus_uuid to model YAMLs")
+        log.warning(
+            "No inference handlers registered — set SEANERBUS_INFERENCE_UUID or add seanerbus_uuid to model YAMLs"
+        )
 
     if RETRAIN_UUID is not None:
         log.info("Registering retrain handler at %s", RETRAIN_UUID)
-        tasks.append(asyncio.create_task(
-            retrain_conn.serve(RETRAIN_UUID, RetrainReqV1, _handle_retrain)
-        ))
+        tasks.append(
+            asyncio.create_task(retrain_conn.serve(RETRAIN_UUID, RetrainReqV1, _handle_retrain))
+        )
     if VECTOR_UUID is not None:
         log.info("Registering vector handler at %s", VECTOR_UUID)
-        tasks.append(asyncio.create_task(
-            vector_conn.serve(VECTOR_UUID, VectorReqV1, _handle_vector)
-        ))
+        tasks.append(
+            asyncio.create_task(vector_conn.serve(VECTOR_UUID, VectorReqV1, _handle_vector))
+        )
 
     if not tasks:
         log.warning("No req/res handlers configured — nothing to do in reqres mode")
@@ -654,12 +687,15 @@ async def _run_reqres(inf_conn: Connection, retrain_conn: Connection, vector_con
 
 # ── entry point ────────────────────────────────────────────────────────────────
 
+
 async def main() -> None:
     _BRIDGE_UP.set(1.0)
     _bridge_stats["mode"] = SEANERBUS_MODE
     log.info(
         "SeanerBUS bridge starting | host=%s port=%d mode=%s",
-        SEANERBUS_HOST, SEANERBUS_PORT, SEANERBUS_MODE,
+        SEANERBUS_HOST,
+        SEANERBUS_PORT,
+        SEANERBUS_MODE,
     )
 
     async def _run_bridge() -> None:

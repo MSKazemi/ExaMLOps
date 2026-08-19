@@ -26,12 +26,12 @@ _schema = capnp.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "m
 # NOTE: retrain has no dedicated message type in the current protocol; the
 # RETRAIN_* values below are legacy and inert (no retrain traffic flows over
 # the bus — retrains are driven via the control-plane HTTP API).
-TYPE_VECTOR_REQ_V1        = 5
-TYPE_VECTOR_RES_V1        = 6
-TYPE_HPC_JOB_V1           = 19  # jpcpInferenceReqV1 (was 7 in the legacy numbering)
+TYPE_VECTOR_REQ_V1 = 5
+TYPE_VECTOR_RES_V1 = 6
+TYPE_HPC_JOB_V1 = 19  # jpcpInferenceReqV1 (was 7 in the legacy numbering)
 TYPE_HPC_INFERENCE_RES_V1 = 20  # jpcpInferenceResV1 (was 8 in the legacy numbering)
-TYPE_RETRAIN_REQ_V1       = 9   # legacy/inert — see note above
-TYPE_RETRAIN_RES_V1       = 10  # legacy/inert — see note above
+TYPE_RETRAIN_REQ_V1 = 9  # legacy/inert — see note above
+TYPE_RETRAIN_RES_V1 = 10  # legacy/inert — see note above
 
 
 class VectorReqV1:
@@ -41,7 +41,9 @@ class VectorReqV1:
     @staticmethod
     def from_capnp(msg) -> VectorReqV1:
         if msg.payloadType != TYPE_VECTOR_REQ_V1:
-            raise RuntimeError(f"Expected VectorReqV1 (type {TYPE_VECTOR_REQ_V1}), got {msg.payloadType}")
+            raise RuntimeError(
+                f"Expected VectorReqV1 (type {TYPE_VECTOR_REQ_V1}), got {msg.payloadType}"
+            )
         with _schema.VectorReqV1.from_bytes(msg.payload) as raw:
             return VectorReqV1(values=list(raw.values))
 
@@ -60,7 +62,9 @@ class VectorResV1:
     @staticmethod
     def from_capnp(msg) -> VectorResV1:
         if msg.payloadType != TYPE_VECTOR_RES_V1:
-            raise RuntimeError(f"Expected VectorResV1 (type {TYPE_VECTOR_RES_V1}), got {msg.payloadType}")
+            raise RuntimeError(
+                f"Expected VectorResV1 (type {TYPE_VECTOR_RES_V1}), got {msg.payloadType}"
+            )
         with _schema.VectorResV1.from_bytes(msg.payload) as raw:
             return VectorResV1(results=list(raw.results))
 
@@ -200,7 +204,9 @@ class RetrainReqV1:
     @staticmethod
     def from_capnp(msg) -> RetrainReqV1:
         if msg.payloadType != TYPE_RETRAIN_REQ_V1:
-            raise RuntimeError(f"Expected RetrainReqV1 (type {TYPE_RETRAIN_REQ_V1}), got {msg.payloadType}")
+            raise RuntimeError(
+                f"Expected RetrainReqV1 (type {TYPE_RETRAIN_REQ_V1}), got {msg.payloadType}"
+            )
         with _schema.RetrainReqV1.from_bytes(msg.payload) as raw:
             return RetrainReqV1(
                 model_name=raw.modelName,
@@ -232,7 +238,9 @@ class RetrainResV1:
     @staticmethod
     def from_capnp(msg) -> RetrainResV1:
         if msg.payloadType != TYPE_RETRAIN_RES_V1:
-            raise RuntimeError(f"Expected RetrainResV1 (type {TYPE_RETRAIN_RES_V1}), got {msg.payloadType}")
+            raise RuntimeError(
+                f"Expected RetrainResV1 (type {TYPE_RETRAIN_RES_V1}), got {msg.payloadType}"
+            )
         with _schema.RetrainResV1.from_bytes(msg.payload) as raw:
             return RetrainResV1(
                 flow_run_id=raw.flowRunId,
