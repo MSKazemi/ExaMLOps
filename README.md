@@ -206,7 +206,6 @@ Activate root env: `source .venv/bin/activate`
 ## CI/CD
 
 - `.github/workflows/ci.yml` — three parallel jobs (`modelzoo`, `infra`, `examlops`) on PRs and main
-- `.github/workflows/deploy.yml` — retired (commented out); `.gitlab-ci.yml` deploys to `lxp-cpu01` via `deploy:lxp`
 - `.gitlab-ci.yml` — GitLab mirror of the GitHub workflow
 
 Run all CI checks locally: `make ci`

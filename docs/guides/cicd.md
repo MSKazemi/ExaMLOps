@@ -321,7 +321,7 @@ Note: `make ci` does not run the Ray Serve integration test — run it directly 
 
 Once the GitLab pipeline is live and passing on `main`:
 
-1. Disable or delete `.github/workflows/ci.yml` and `.github/workflows/deploy.yml`
+1. Disable or delete `.github/workflows/ci.yml` (the retired `deploy.yml` was removed on 2026-08-19)
 2. Update the repo README to point to the GitLab pipeline badge
 3. Optionally keep GitHub as a read-only mirror via GitLab's **Settings → Repository → Mirroring repositories**
 
