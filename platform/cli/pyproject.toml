@@ -61,6 +61,12 @@ serving-vllm = [
 serving-sglang = [
     "sglang>=0.4",
 ]
+# Postgres datastore engine (EXAMLOPS_DB_BACKEND=postgres, enterprise-readiness item 0.1).
+# psycopg is imported only by examlops.storage.pg, which is reached only when that env var
+# selects the Postgres backend — the default SQLite path never touches it.
+postgres = [
+    "psycopg[binary]>=3.2",
+]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
 # keeps every subcommand — including the fidelity/privacy release gate — working offline.

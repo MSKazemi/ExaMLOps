@@ -27,6 +27,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The Postgres datastore backend works (enterprise-readiness item 0.1 follow-on).** The audit's
+  root cause is one SQLite file acting as data layer, event bus, security store and integration hub
+  for five processes — and SQLite allows exactly one writer. Phase 0 landed the `StorageBackend`
+  *seam*; the Postgres side was a skeleton that had never opened a connection. It is now real:
+  `EXAMLOPS_DB_BACKEND=postgres` + `EXAMLOPS_POSTGRES_DSN` moves platform state to Postgres.
+  - **None of the 252 datastore helpers changed.** They all reach the database through one function,
+    `platform_db.get_db()`, so the port is a translating connection behind that chokepoint
+    (`examlops/storage/pg.py`) rather than 883 rewritten placeholders: `?`→`%s`,
+    `INTEGER PRIMARY KEY AUTOINCREMENT`→`BIGSERIAL`, `DATETIME`/`REAL`/`BLOB` types,
+    `INSERT OR REPLACE`→`ON CONFLICT` resolved against the live catalogue, `PRAGMA table_info`→
+    `information_schema`, `julianday`/`datetime('now',…)`, and SQLite trigger bodies.
+  - **The audit log keeps its guarantees.** `_immediate_write()` opened its own SQLite connection —
+    the hash chain would have gone on writing to a local file while everything else moved — so it
+    now routes through the backend too; `BEGIN IMMEDIATE` becomes `pg_advisory_xact_lock`, and the
+    D4 append-only triggers become Postgres triggers that still refuse UPDATE and DELETE.
+  - **Timestamps stay text** in SQLite's format: 146 columns are `DATETIME DEFAULT CURRENT_TIMESTAMP`
+    and the helpers compare and return them as strings, so `CURRENT_TIMESTAMP` renders through
+    `to_char(now() …)`. Native timestamps are a later, separately-verified step.
+  - Verified live against **Postgres 16**: all **127** tables create from the unmodified DDL, the
+    hash chain verifies, upserts replace, `lastrowid` survives via `RETURNING`
+    (`tests/integration/test_postgres_backend_live.py`, 10 tests, opt-in via
+    `EXAMLOPS_POSTGRES_TEST_DSN`) plus 16 dialect-translation unit tests that need no server.
+  - New optional extra `examlops[postgres]` (psycopg) and guide `docs/guides/postgres-backend.md`.
+    **Still open:** connection pooling, the full unit suite on Postgres (needs per-test schema
+    isolation), a `pg_dump` backup tier.
+
 - **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
   production; if nobody has measured that judge, the promotion gate is a confident guess
   wearing the clothes of a measurement. A judge must now pass the **Minimum Viable Validation

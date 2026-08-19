@@ -28,12 +28,27 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     waits out lock contention instead of raising ``database is locked`` immediately,
     plus ``check_same_thread=False`` for the threaded services.
     """
-    conn = _rdb.connect(_db_path())
+    conn = _open_conn()
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _open_conn() -> Any:
+    """The datastore engine for this process (enterprise-readiness item 0.1 follow-on).
+
+    ``EXAMLOPS_DB_BACKEND=sqlite`` (the default) is the unchanged direct path — same call, same
+    connection object, no seam in the way. ``postgres`` returns a translating connection
+    (:mod:`examlops.storage.pg`) that speaks the same SQLite-shaped API, which is why none of the
+    ~252 helpers above needed to change.
+    """
+    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() != "postgres":
+        return _rdb.connect(_db_path())
+    from examlops.storage import get_backend
+
+    return get_backend().connect()
 
 
 def write_retry[T](fn: Callable[[], T]) -> T:
@@ -111,16 +126,16 @@ def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
     :func:`write_retry` so a lost lock race (``database is locked`` after busy_timeout) retries
     the whole transaction rather than corrupting or dropping the write.
     """
-    conn = _rdb.connect(_db_path())
+    conn = _open_conn()  # same engine as get_db(): the audit chain must not bypass the backend
     conn.isolation_level = None  # drive BEGIN/COMMIT explicitly (no implicit deferred txn)
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN IMMEDIATE")  # Postgres: a transaction-scoped advisory lock
         yield conn
         conn.execute("COMMIT")
     except BaseException:
         try:
             conn.execute("ROLLBACK")
-        except sqlite3.Error:
+        except Exception:  # noqa: BLE001 - engine-specific; a failed rollback must not mask the cause
             pass
         raise
     finally:

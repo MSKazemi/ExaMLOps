@@ -1,0 +1,126 @@
+"""The platform's real helpers, run against a live Postgres (enterprise-readiness item 0.1).
+
+This is the test that turns "the Postgres backend exists" into "the Postgres backend works": it
+runs the **unmodified** ``platform_db``/``examlops.data`` helpers with
+``EXAMLOPS_DB_BACKEND=postgres`` and asserts the same results the SQLite path gives — including the
+two properties a datastore port most easily loses: the audit **hash chain** and the **append-only**
+tamper-evidence trigger on ``audit_events``.
+
+Opt-in, because it needs a server and it **destroys the target schema**::
+
+    docker run -d --name examlops-pgtest -e POSTGRES_PASSWORD=examlops -e POSTGRES_USER=examlops \
+        -e POSTGRES_DB=examlops -p 15433:5432 postgres:16-alpine
+    EXAMLOPS_POSTGRES_TEST_DSN=postgresql://examlops:examlops@localhost:15433/examlops \
+        .venv/bin/pytest tests/integration/test_postgres_backend_live.py -v
+
+The variable is deliberately **not** ``EXAMLOPS_POSTGRES_DSN``: pointing a suite that runs
+``DROP SCHEMA public CASCADE`` at whatever DSN the environment happens to carry is how a test
+eats a real database. A separate opt-in name cannot be set by accident.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "platform" / "cli" / "src"))
+
+DSN = os.getenv("EXAMLOPS_POSTGRES_TEST_DSN", "")
+
+pytestmark = pytest.mark.skipif(not DSN, reason="set EXAMLOPS_POSTGRES_TEST_DSN to run")
+
+
+@pytest.fixture(autouse=True)
+def pg_schema(monkeypatch):
+    """A pristine schema per test, so ordering can never make one test depend on another."""
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+    monkeypatch.setenv("EXAMLOPS_DB_BACKEND", "postgres")
+    monkeypatch.setenv("EXAMLOPS_POSTGRES_DSN", DSN)
+    from examlops import platform_db as pdb
+
+    pdb.init_db(force=True)
+    yield pdb
+
+
+def _table_count() -> int:
+    import psycopg
+
+    with psycopg.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+        ).fetchone()
+    return int(row[0])
+
+
+def test_full_schema_creates_on_postgres(pg_schema):
+    """The 127-table SQLite DDL — AUTOINCREMENT, DATETIME defaults, triggers — ports whole."""
+    assert _table_count() >= 120
+
+
+def test_audit_hash_chain_verifies(pg_schema):
+    for i in range(3):
+        pg_schema.write_audit_event("cli", "tester", f"action_{i}", "JPCP", {"i": i})
+    chain = pg_schema.verify_audit_chain()
+    assert chain["ok"] is True
+    assert chain["count"] == 3
+    assert chain["head_hash"] != "GENESIS"
+    assert len(pg_schema.export_audit_events()) == 3
+
+
+@pytest.mark.parametrize("stmt", ["UPDATE audit_events SET actor='x'", "DELETE FROM audit_events"])
+def test_audit_log_is_append_only(pg_schema, stmt):
+    """D4 tamper-evidence is a security control, so it is translated, not dropped."""
+    pg_schema.write_audit_event("cli", "tester", "action", "JPCP", None)
+    with pytest.raises(Exception, match="append-only"):
+        with pg_schema.get_db() as conn:
+            conn.execute(stmt)
+
+
+def test_upsert_replaces_rather_than_duplicates(pg_schema):
+    """`INSERT OR REPLACE` must land on the table's real key, not append a second row."""
+    pg_schema.set_traffic_rules("JPCP", {"production": 90, "canary": 10})
+    pg_schema.set_traffic_rules("JPCP", {"production": 50, "canary": 50})
+    assert pg_schema.get_traffic_rules("JPCP") == {"production": 50, "canary": 50}
+
+
+def test_timestamps_are_sqlite_shaped_strings(pg_schema):
+    """Helpers slice and compare ts as text; a native timestamp would change 252 return types."""
+    pg_schema.write_drift_snapshot("JPCP", "Production", 1.5, "job-1")
+    with pg_schema.get_db() as conn:
+        ts = conn.execute("SELECT ts FROM drift_snapshots").fetchone()["ts"]
+    assert isinstance(ts, str)
+    assert len(ts) == 19 and ts[4] == "-" and ts[13] == ":"
+
+
+def test_row_is_addressable_by_name_and_index(pg_schema):
+    with pg_schema.get_db() as conn:
+        row = conn.execute("SELECT 1 AS a, 2 AS b").fetchone()
+    assert row["a"] == 1 and row[1] == 2
+
+
+def test_lastrowid_survives_the_port(pg_schema):
+    """Postgres has no rowid; the wrapper reads the serial back via RETURNING."""
+    with pg_schema.get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target) VALUES (?,?,?,?)",
+            ("cli", "tester", "a", "t"),
+        )
+    assert cur.lastrowid == 1
+
+
+def test_cooldown_claim_uses_translated_date_math(pg_schema):
+    """`claim_drift_trigger` is the julianday() site — and the autopilot's TOCTOU guard."""
+    assert pg_schema.claim_drift_trigger("JPCP", 60) is False  # no config row yet
+
+
+def test_project_anatomy_round_trips(pg_schema):
+    pg_schema.create_project("research", cpu_limit=4, memory_limit_gb=8, storage_gb=100)
+    full = pg_schema.get_project_full("research")
+    assert full["name"] == "research"
+    assert full["cpu_limit"] == 4

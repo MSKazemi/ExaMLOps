@@ -50,6 +50,7 @@ nav:
   - Guides:
       - Quick Start: guides/quickstart.md
       - Architecture: guides/architecture.md
+      - Postgres datastore backend: guides/postgres-backend.md
       - Project Workspace Architecture: architecture/project-workspace.md
       - Projects & Workspaces: guides/projects-workspaces.md
       - Project Anatomy (storage · pipelines · view): guides/project-anatomy.md

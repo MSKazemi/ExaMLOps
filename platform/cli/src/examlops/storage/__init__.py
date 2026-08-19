@@ -63,7 +63,7 @@ class SqliteBackend:
     paramstyle = "qmark"
 
     def __init__(self, path: str | None = None) -> None:
-        self._path = path or os.getenv("PLATFORM_DB", "./platform.db")
+        self._path: str = path or os.getenv("PLATFORM_DB") or "./platform.db"
 
     def connect(self) -> sqlite3.Connection:
         return _rdb.connect(self._path)
@@ -79,12 +79,15 @@ class SqliteBackend:
 
 
 class PostgresBackend:
-    """Enterprise engine skeleton — multi-writer, HA-capable, per-tenant-isolatable.
+    """Enterprise engine — multi-writer, HA-capable, per-tenant-isolatable.
 
-    NOTE: this is the seam's *typed skeleton*. Dialect helpers are complete and correct so queries
-    can already be authored portably, but :meth:`connect` requires the ``psycopg`` driver and a DSN
-    and is not yet runtime-verified. Finishing it (pooling, migrations, the helper migration) is the
-    follow-on to item 0.1.
+    :meth:`connect` returns a :class:`examlops.storage.pg.PgConnection`: a SQLite-shaped connection
+    that translates the platform's SQLite dialect on the way through (see that module for the
+    translation table). That is what lets ``EXAMLOPS_DB_BACKEND=postgres`` move the datastore
+    without editing the ~252 helpers, all of which go through ``platform_db.get_db()``.
+
+    Requires the driver (``pip install 'examlops[postgres]'``) and ``EXAMLOPS_POSTGRES_DSN``.
+    Connection pooling and the full-suite parity run are the remaining work.
     """
 
     dialect = "postgres"
@@ -100,13 +103,15 @@ class PostgresBackend:
                 "postgresql://user:pw@host:5432/examlops)."
             )
         try:
-            import psycopg  # noqa: PLC0415 - optional enterprise dependency
-        except ImportError as exc:  # pragma: no cover - exercised only without the driver
+            from examlops.storage import pg  # noqa: PLC0415 - optional enterprise dependency
+        except ImportError as exc:  # pragma: no cover - defensive
+            raise RuntimeError("examlops.storage.pg is unavailable") from exc
+        try:
+            return pg.connect(self._dsn)
+        except ImportError as exc:
             raise RuntimeError(
-                "PostgresBackend needs the 'psycopg' driver: pip install 'examlops[postgres]'. "
-                "The Postgres backend is a seam skeleton and not yet runtime-verified."
+                "PostgresBackend needs the 'psycopg' driver: pip install 'examlops[postgres]'."
             ) from exc
-        return psycopg.connect(self._dsn)
 
     def now_expr(self) -> str:
         return "NOW()"

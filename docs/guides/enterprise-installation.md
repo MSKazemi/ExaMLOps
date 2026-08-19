@@ -104,7 +104,7 @@ These are the flags that flip ExaMLOps from single-tenant dev to multi-tenant HA
 
 | Concern | Env / setting | Notes |
 |---|---|---|
-| **Data backend** | `EXAMLOPS_DB_BACKEND=postgres` | The `examlops.storage` seam. See gap #3 — the Postgres backend is a typed skeleton; the ~221 `platform_db` helpers are not yet routed through it, so this is not runtime-HA *yet*. |
+| **Data backend** | `EXAMLOPS_DB_BACKEND=postgres` + `EXAMLOPS_POSTGRES_DSN` | Working: all helpers reach it through `platform_db.get_db()`, which the backend now fronts (`examlops.storage.pg`). Verified live on Postgres 16 — schema, audit hash chain, append-only triggers. Not yet pooled, and the full unit suite has not been run on it: see [Postgres backend](postgres-backend.md). |
 | **Coordination** | `EXAMLOPS_COORDINATOR=redis` + `EXAMLOPS_REDIS_URL` | Cross-host leader/lease election; `db` (default) works cross-process on one node. |
 | **Event backbone** | `EXAMLOPS_EVENT_PUBLISHER=nats` (or `kafka`/`redis`) | Transactional outbox; drain with `exa events relay`. `log` is the dependency-free default. |
 | **Identity / SSO** | `EXAMLOPS_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` (`examlops[oidc]`) | RS256 access-token validation. **Off by default** → the only identity is the two dashboard passwords + control-plane token. Turn this on for enterprise. |
@@ -157,7 +157,7 @@ are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant clus
    services as subcharts (Postgres/Redis/NATS operators) or ship an **umbrella chart** so the data
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
 3. **Re-platform state for real.** Route the ~221 `platform_db` helpers through the
-   `EXAMLOPS_DB_BACKEND=postgres` StorageBackend and verify it at runtime — until then multi-replica HA
+   `EXAMLOPS_DB_BACKEND=postgres` backend at scale (pooling + full-suite parity) — until then multi-replica HA
    is not real (the single SQLite `platform.db` is still the data + event + security hub). Same for the
    Redis coordinator and NATS/Kafka event backbone (currently loud-failing skeletons).
 4. **Identity on by default.** Wire the OIDC dependency across control-plane/dashboard/agent routes and
