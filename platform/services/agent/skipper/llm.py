@@ -47,19 +47,36 @@ def build_llm(model: str | None = None):
     )
 
 
-def _endpoint_reachable(url: str, *, timeout: float = 5.0, headers: dict | None = None) -> bool:
-    """True if *url* answers any HTTP status (even 401/404) within *timeout*.
+# Statuses meaning "the endpoint is alive but refused our credential". A live
+# gateway answering 401 cannot serve a single token, so it must report unhealthy:
+# to an operator, a healthy-but-unusable backend is worse than an obviously dead
+# one, because it sends them looking for the fault everywhere except the key.
+_AUTH_REJECTED = frozenset({401, 403})
 
-    Any HTTP response proves the endpoint is up and routable; only a transport
-    error (DNS/connect/timeout) means it is genuinely unreachable. This lets a
-    down Azure/Claude endpoint be reported unhealthy instead of assumed-OK.
+
+def _endpoint_reachable(url: str, *, timeout: float = 5.0, headers: dict | None = None) -> bool:
+    """True if *url* answers within *timeout* and does not reject our credential.
+
+    Three outcomes, two of them unhealthy:
+
+    * transport error (DNS/connect/timeout) -> the endpoint is down;
+    * ``401``/``403`` -> the endpoint is up but the key is invalid, revoked, or
+      issued for a different resource, which is just as fatal for the agent;
+    * anything else (``200``, ``404``, ``5xx``) -> routable, treated as reachable.
+      A non-auth status is deliberately *not* fatal because providers expose
+      different probe paths, and a ``404`` on ``/models`` says nothing about
+      whether chat completions works.
+
+    Verified against the live LXP deployment on 2026-08-20: the Foundry endpoint
+    answered ``401`` to the stored key while ``check_backend()`` still reported
+    ``ok: True``, so the agent advertised a backend it could not use at all.
     """
     try:
         with httpx.Client(timeout=timeout) as client:
-            client.get(url, headers=headers or {})
-        return True
+            resp = client.get(url, headers=headers or {})
     except httpx.RequestError:
         return False
+    return resp.status_code not in _AUTH_REJECTED
 
 
 def check_backend() -> dict:
@@ -70,7 +87,13 @@ def check_backend() -> dict:
     ``ok:True`` and masked the outage.
     """
     if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT:
-        ok = _endpoint_reachable(config.AZURE_OPENAI_ENDPOINT)
+        # Probe /models *with* the key. Probing the bare endpoint unauthenticated
+        # returned the same 401 whether or not a key was supplied, so it could
+        # never distinguish a good key from a revoked one.
+        ok = _endpoint_reachable(
+            config.AZURE_OPENAI_ENDPOINT.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {config.AZURE_OPENAI_API_KEY}"},
+        )
         return {"ok": ok, "type": "azure", "model": config.AZURE_OPENAI_DEPLOYMENT}
     if config.ANTHROPIC_API_KEY:
         ok = _endpoint_reachable(

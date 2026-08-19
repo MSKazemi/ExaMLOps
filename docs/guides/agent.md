@@ -57,6 +57,16 @@ policy / `platform.db` / hosted model, the agent still works.
 
 `check_backend()` reports the live backend as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set the Azure or Claude vars in `.env` to switch.
 
+**What `ok` actually means.** The probe authenticates, so `ok` answers *"can this backend serve a request?"* — not merely *"does the host resolve?"*. It is `false` in two distinct failure modes:
+
+| Probe result | `ok` | Meaning |
+|---|---|---|
+| transport error (DNS / connect / timeout) | `false` | endpoint is down or unroutable |
+| `401` / `403` | `false` | endpoint is **up** but the key is invalid, revoked, or issued for another resource |
+| any other status (`200`, `404`, `5xx`) | `true` | routable; a `404` on a provider's `/models` path does not imply chat completions is broken |
+
+The 401 case is called out because it is the one that wastes an afternoon: a live gateway rejecting a rotated key looks identical to a healthy backend from the outside. Earlier versions probed the Azure endpoint *unauthenticated* and so reported `ok: true` for a key the service refused.
+
 ## Prerequisites
 
 If you have `ollama-tunnel` configured (Omega server, port 11436), start the tunnel first:
@@ -453,6 +463,8 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Error: Ollama is not running at http://localhost:11436` at startup | Omega tunnel is not active | Run `ollama-tunnel start` and verify with `ollama-tunnel status`. |
+| Startup banner shows the Azure backend but every request fails | `AZURE_OPENAI_API_KEY` is revoked, rotated, or belongs to a different Foundry resource | Confirm with `check_backend()` — it now returns `ok: false` on `401`/`403`. Regenerate the key in the Azure AI Foundry portal (Keys and Endpoint) and update `AZURE_OPENAI_API_KEY`. A quick manual check: `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AZURE_OPENAI_API_KEY" "$AZURE_OPENAI_ENDPOINT/models"` — `200` is good, `401` is the key. |
+| Ollama tunnel unit is `active (running)` but nothing listens on the port | The tunnel uses `ExitOnForwardFailure=yes`, so a dead remote makes it exit and systemd restart it in a loop — the unit looks healthy between respawns | Check the port, not the unit: `ss -ltnp \| grep 11436`. If the remote Ollama host is retired, the tunnel cannot succeed; point `AGENT_OLLAMA_URL` at a live host or use another backend. |
 | `Error: Ollama is not running at http://localhost:11434` | Using local Ollama URL but `ollama serve` is not running | Run `ollama serve`, or switch to the tunnel: `AGENT_OLLAMA_URL=http://localhost:11436 make skipper`. |
 | `Error: Cannot reach MLflow at http://localhost:15000 — ...` in a tool response | MLflow container not running | Run `make stack-up` or `exa status` to check which services are up. |
 | `Error: Cannot reach Ray Serve at http://localhost:18001 — ...` | Ray Serve not started | Run `make stack-up` or `exa stack up --service ray-serving`. |

@@ -46,8 +46,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     and the helpers compare and return them as strings, so `CURRENT_TIMESTAMP` renders through
     `to_char(now() …)`. Native timestamps are a later, separately-verified step.
   - **The whole unit suite runs on Postgres**: `make test-postgres` starts a throwaway Postgres 16
-    and executes `tests/unit/` against it — **2057 passed, 15 skipped, 0 failed** — while the
-    SQLite suite is unchanged at **2071 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
+    and executes `tests/unit/` against it — **2072 passed, 15 skipped, 0 failed** — while the
+    SQLite suite is unchanged at **2086 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
     both how the suite isolates itself and how two deployments share one server.
   - Running it is what found the dialect gaps: a placeholder in a `CASE WHEN` boolean position; the
     two tables that key on a natural TEXT id and so have no `rowid` stand-in; `sqlite_master`, now
@@ -57,7 +57,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     on both engines.
   - Verified live against **Postgres 16**: all **127** tables create from the unmodified DDL, the
     hash chain verifies, upserts replace, `lastrowid` survives via `RETURNING`
-    (`tests/integration/test_postgres_backend_live.py`, 10 tests, opt-in via
+    (`tests/integration/test_postgres_backend_live.py`, 13 tests, opt-in via
     `EXAMLOPS_POSTGRES_TEST_DSN`) plus 25 dialect-translation unit tests that need no server.
   - **Skipped, not quietly passed:** the SQLite backup tier and the schema-once bootstrap are keyed
     to a `platform.db` *file* and skip on this backend with a reason. New CI guard: a test may not
@@ -81,9 +81,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     `examlops.workbenches` own their DDL and create it on first use — so those two tables were
     never truncated, and a different random ordering leaked rows into five tests. The probe now
     rebuilds whenever the table count moves.
-  - New optional extra `examlops[postgres]` (psycopg) and guide `docs/guides/postgres-backend.md`.
-    **Still open:** connection pooling, porting the dashboard's SQLite-shaped test fixtures, a
-    `pg_dump` backup tier.
+  - **Connections are pooled**, per `(DSN, schema)` per process. `get_db()` opens a connection per
+    call — free on SQLite, a TCP round trip plus a backend fork on Postgres, and a single dashboard
+    page render makes dozens. Measured locally over 200 open→query→close cycles: **3.3 ms pooled
+    against 28.1 ms unpooled**, and that gap is a lower bound because it is all setup cost, so it
+    grows with network latency. `EXAMLOPS_POSTGRES_POOL=0` opts out; `…_POOL_MIN`/`…_POOL_MAX`
+    (1/10) size it. `psycopg-pool` is part of the extra, and if it is absent the platform opens an
+    unpooled connection rather than failing — a missing *optional* dependency must never be the
+    reason the platform cannot reach its database.
+  - Two things pooling changes that are easy to get wrong, and are now tested: closing hands the
+    connection back **exactly once** (two callers holding one connection is a race that only shows
+    under load), and it rolls back first, because a plain read leaves the connection in a
+    transaction that the pool would otherwise undo at WARNING level once per request. Creating the
+    schema moved out of the per-connection hook — `CREATE SCHEMA IF NOT EXISTS` is not race-safe,
+    and the pool opens its minimum size concurrently.
+  - New optional extra `examlops[postgres]` (psycopg + psycopg-pool) and guide
+    `docs/guides/postgres-backend.md`. **Still open:** porting the dashboard's SQLite-shaped test
+    fixtures, a `pg_dump` backup tier.
 
 - **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
   production; if nobody has measured that judge, the promotion gate is a confident guess
@@ -118,6 +132,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   lint + unit-test workflow (ruff check, ruff format, `pytest tests/unit`) that gives a
   contributor's PR a real signal. Deployment stays in `.gitlab-ci.yml`; the modelzoo
   suite stays in the upstream repo.
+
+### Fixed
+
+- **The agent no longer reports a healthy LLM backend it cannot use.** `check_backend()`
+  probed the Azure/Foundry endpoint **unauthenticated** and counted *any* HTTP response —
+  including `401` — as healthy. A live gateway rejecting a revoked key therefore reported
+  `ok: true`, so the startup banner, `GET /api/info` and the `skipper` CLI all advertised a
+  working backend while every request failed. Found on the LXP deployment, where the stored
+  Foundry key returns `401`.
+  - The probe now sends the credential (`GET <endpoint>/models` with a bearer token) and
+    treats `401`/`403` as **unhealthy**. Transport errors stay unhealthy as before; any other
+    status (`200`, `404`, `5xx`) still counts as reachable, since probe paths differ per
+    provider and a `404` says nothing about chat completions.
+  - Same flaw applied to the Claude branch, which passed auth headers but ignored the status.
+  - Regression-tested at the status level (`401`, `403`, `404`, transport error) and by
+    asserting the probe actually authenticates.
+- **The agent's LLM tests no longer make live network calls.** `test_llm.py` asserted a
+  healthy Azure backend using a fake key against the *real* Foundry endpoint — it passed only
+  because a `401` counted as healthy, so the suite depended on the very bug it should have
+  caught. The probe is now stubbed at the `skipper.llm.httpx` seam (rebinding the module-level
+  name rather than the shared `httpx.Client`, which `openai` both subclasses at import time
+  and `isinstance`-checks at call time).
 
 ### Changed
 
