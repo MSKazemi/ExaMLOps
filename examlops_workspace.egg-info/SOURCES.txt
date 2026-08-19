@@ -1,7 +1,0 @@
-README.md
-pyproject.toml
-examlops_workspace.egg-info/PKG-INFO
-examlops_workspace.egg-info/SOURCES.txt
-examlops_workspace.egg-info/dependency_links.txt
-examlops_workspace.egg-info/requires.txt
-examlops_workspace.egg-info/top_level.txt
