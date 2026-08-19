@@ -1,4 +1,10 @@
-"""Postgres backup tier — ``pg_dump`` of the MLflow + Prefect metadata databases.
+"""Postgres backup tier — ``pg_dump`` of the MLflow + Prefect metadata databases, and of the
+**platform datastore itself** when ``EXAMLOPS_DB_BACKEND=postgres``.
+
+That last part is the one that makes a backup honest. With the Postgres engine selected, platform
+state — the audit chain, the registry, every helper's table — lives in Postgres, and the SQLite
+tier's ``platform.db`` is an empty leftover file. Backing that file up produces a bundle that looks
+complete and restores nothing.
 
 Uses the ``pg_dump`` binary in **custom format** (``-Fc``: compressed, selectively restorable,
 parallelisable) over TCP — in the Compose sidecar this reaches the ``postgres`` service directly
@@ -17,6 +23,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from ._manifest import FAILED, OK, TierResult, TierUnavailable, rollup_status, sha256_file
 
@@ -54,6 +61,42 @@ def _pg_env() -> dict[str, str]:
     env["PGPASSWORD"] = _first(
         os.getenv("PGPASSWORD"), os.getenv("POSTGRES_PASSWORD"), default="mlops"
     )
+    return env
+
+
+def platform_dsn() -> str | None:
+    """The platform datastore's DSN, or ``None`` when the engine is SQLite.
+
+    Public because the SQLite tier asks the same question: exactly one of the two tiers owns
+    platform state, and neither may assume it.
+    """
+    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() != "postgres":
+        return None
+    return os.getenv("EXAMLOPS_POSTGRES_DSN", "").strip() or None
+
+
+def _dsn_env(dsn: str) -> dict[str, str]:
+    """libpq environment for a DSN — the password goes in the env, never in ``argv``.
+
+    ``pg_dump -d postgresql://user:pw@host/db`` puts the password in the process table, where any
+    user on the box can read it with ``ps``. Splitting the URI into ``PG*`` variables keeps the
+    credential out of every process listing, which is also how the tier already handles the
+    MLflow/Prefect databases.
+    """
+    parts = urlsplit(dsn)
+    env = dict(os.environ)
+    env.pop("PGSERVICE", None)  # a stale service file would silently win over these
+    if parts.hostname:
+        env["PGHOST"] = parts.hostname
+    if parts.port:
+        env["PGPORT"] = str(parts.port)
+    if parts.username:
+        env["PGUSER"] = unquote(parts.username)
+    if parts.password:
+        env["PGPASSWORD"] = unquote(parts.password)
+    database = parts.path.lstrip("/")
+    if database:
+        env["PGDATABASE"] = database
     return env
 
 
@@ -97,7 +140,48 @@ def backup_postgres_tier(dest_dir: Path) -> TierResult:
                 "status": OK,
             }
         )
+    items.extend(_backup_platform_db(pg_dir))
     return TierResult("postgres", status=rollup_status([i["status"] for i in items]), items=items)
+
+
+def _backup_platform_db(pg_dir: Path) -> list[dict[str, Any]]:
+    """Dump the platform datastore when Postgres is the configured engine.
+
+    Scoped to ``EXAMLOPS_POSTGRES_SCHEMA`` when set, because that variable is what makes one
+    database hold several independent platform instances — dumping the whole database would mix
+    them, and restoring it would overwrite tenants that were never part of this backup.
+    """
+    dsn = platform_dsn()
+    if not dsn:
+        return []
+    out = pg_dir / "platform.dump"
+    schema = os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "").strip()
+    cmd = ["pg_dump", "-Fc", "-f", str(out)]
+    if schema:
+        cmd += ["--schema", schema]
+    rc, err = _run(cmd, _dsn_env(dsn))
+    if rc != 0:
+        if _is_conn_error(err):
+            raise TierUnavailable(f"platform datastore unreachable: {err.strip()[:160]}")
+        return [
+            {
+                "name": "platform",
+                "status": FAILED,
+                "reason": err.strip()[:200] or f"pg_dump rc={rc}",
+            }
+        ]
+    return [
+        {
+            "name": "platform",
+            "file": f"postgres/{out.name}",
+            "sha256": sha256_file(out),
+            "size_bytes": out.stat().st_size,
+            "format": "pg_dump-custom-v1",
+            "dsn_env": "EXAMLOPS_POSTGRES_DSN",  # restore reconnects from the env, not from argv
+            "schema": schema or None,
+            "status": OK,
+        }
+    ]
 
 
 def restore_postgres_tier(bundle_dir: Path, *, force: bool = False) -> list[dict[str, Any]]:
@@ -116,8 +200,30 @@ def restore_postgres_tier(bundle_dir: Path, *, force: bool = False) -> list[dict
             continue
         db = item["name"]
         dump = bundle_dir / item["file"]
-        rc, err = _run(
-            ["pg_restore", "--clean", "--if-exists", "--no-owner", "-d", db, str(dump)], env
-        )
+        cmd = ["pg_restore", "--clean", "--if-exists", "--no-owner"]
+        if item.get("dsn_env"):
+            # The platform datastore: reconnect from the *current* DSN, not from whatever database
+            # name the dump was taken against, so a restore into a standby is a config change.
+            dsn = platform_dsn()
+            if not dsn:
+                out.append(
+                    {
+                        "name": db,
+                        "ok": False,
+                        "reason": "EXAMLOPS_DB_BACKEND=postgres + EXAMLOPS_POSTGRES_DSN required",
+                    }
+                )
+                continue
+            # `pg_restore` will not take its target from PGDATABASE — it requires -d (or -f) and
+            # exits 1 saying so. The database *name* is not a credential, so naming it in argv is
+            # safe; the password still travels in the environment.
+            env_dsn = _dsn_env(dsn)
+            target = env_dsn.get("PGDATABASE")
+            if not target:
+                out.append({"name": db, "ok": False, "reason": f"no database in {dsn!r}"})
+                continue
+            rc, err = _run([*cmd, "-d", target, str(dump)], env_dsn)
+        else:
+            rc, err = _run([*cmd, "-d", db, str(dump)], env)
         out.append({"name": db, "ok": rc == 0, "reason": None if rc == 0 else err.strip()[:200]})
     return out

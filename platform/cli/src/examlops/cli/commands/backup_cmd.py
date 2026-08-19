@@ -65,6 +65,15 @@ def create(
     from examlops import backup
 
     bundle_mode = all_tiers or bundle_flag or with_postgres or with_objects or with_content
+    if not bundle_mode and backup.platform_dsn():
+        # The single-file mode snapshots `platform.db`. On the Postgres engine that file holds no
+        # state, so the friendly thing is to say which flag actually backs the platform up rather
+        # than to write a bundle that looks fine and restores nothing.
+        _output.error(
+            "EXAMLOPS_DB_BACKEND=postgres — platform state is in Postgres, not in platform.db. "
+            "Use 'exa backup create --with-postgres' (or --all) to dump it."
+        )
+        raise typer.Exit(1)
     if not bundle_mode:
         # Legacy single-DB snapshot — unchanged behaviour + output.
         try:
@@ -278,10 +287,19 @@ def restore_bundle_cmd(
     except (ValueError, Exception) as exc:  # noqa: BLE001
         _output.error(str(exc))
         raise typer.Exit(1) from exc
-    _audit("bundle_restored", bundle_dir, {"tiers": result["restored_tiers"], "forced": force})
+    _audit(
+        "bundle_restored",
+        bundle_dir,
+        {"tiers": result["restored_tiers"], "forced": force, "ok": result["ok"]},
+    )
     if _output.json_mode:
         _output.print_json(result)
-        return
+        raise typer.Exit(0 if result["ok"] else 1)
+    if not result["ok"]:
+        _output.error(f"Restore FAILED for {len(result['failed'])} item(s) — state is NOT back:")
+        for item in result["failed"]:
+            _output.error(f"  {item['tier']}/{item.get('name', '?')}: {item.get('reason')}")
+        raise typer.Exit(1)
     _output.ok(f"Restored tiers {result['restored_tiers']} from {bundle_dir}.")
 
 

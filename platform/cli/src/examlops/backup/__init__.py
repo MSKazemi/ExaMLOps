@@ -28,6 +28,7 @@ from .bundle import (
     restore_bundle,
     verify_bundle,
 )
+from .postgres_tier import platform_dsn
 from .sqlite_tier import (
     create_backup,
     list_backups,
@@ -48,4 +49,6 @@ __all__ = [
     "list_bundles",
     "BundleResult",
     "auto_backup_before",
+    # which engine owns platform state — the two tiers must agree on this
+    "platform_dsn",
 ]

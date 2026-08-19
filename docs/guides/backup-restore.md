@@ -18,7 +18,7 @@ has **zero external dependencies** and always works.
 |---|---|---|---|
 | **sqlite** | `platform.db` (audit, drift, cost, projects…) + `approvals.db` + agent/skipper DBs | online SQLite backup (built-in) | ✅ always |
 | **config** | `~/.config/examlops/` (config.toml, clusters.yaml, policy.yaml, finops.yaml, providers/); secrets **key-ids only** | tar (built-in) | ✅ always |
-| **postgres** | MLflow + Prefect metadata DBs | `pg_dump -Fc` (needs `postgresql-client`) | `--with-postgres` / `--all` |
+| **postgres** | MLflow + Prefect metadata DBs — **plus the platform datastore itself** when `EXAMLOPS_DB_BACKEND=postgres` | `pg_dump -Fc` (needs `postgresql-client`) | `--with-postgres` / `--all` |
 | **objects** | MinIO buckets `mlflow-artifacts` + `examlops-projects` | boto3 S3 mirror (`examlops[backup]`) | `--with-objects` / `--all` |
 | **content** | use-case packs, `pipelines/envs/*.yaml`, the `.dualgit/` classification | tar (built-in) | `--with-content` / `--all` |
 
@@ -27,6 +27,13 @@ has **zero external dependencies** and always works.
 > on disk. The config tier records the **key-ids** present and emits a warning; it never writes the
 > plaintext KEK into the bundle. **Back up `EXAMLOPS_SECRETS_KEYS` out-of-band** (a secret manager),
 > or a restored platform cannot decrypt its secrets.
+
+> **Which tier holds platform state depends on the engine.** On the default SQLite engine it is the
+> sqlite tier. Under `EXAMLOPS_DB_BACKEND=postgres` the `platform.db` file is an empty leftover —
+> the postgres tier dumps the real store (scoped to `EXAMLOPS_POSTGRES_SCHEMA` when set) and the
+> sqlite tier records `platform` as `skipped` with that reason. Bare `exa backup create` refuses on
+> that engine rather than writing a hollow bundle; use `--with-postgres` or `--all`. See
+> [the Postgres backend guide](postgres-backend.md#backing-it-up).
 
 ## Creating backups
 
@@ -152,8 +159,10 @@ Tune the interval to lower RPO; RTO scales with data size (Postgres/object tiers
 ## Recovery order (full disaster)
 
 1. **objects** (MinIO artifacts must exist before the registry references resolve).
-2. **postgres** (MLflow/Prefect metadata — model versions, runs).
-3. **sqlite** (`platform.db` — audit/drift/cost/projects; agent + approvals DBs).
+2. **postgres** (MLflow/Prefect metadata — model versions, runs; on the Postgres engine this is
+   also where `platform.db`'s content comes back from).
+3. **sqlite** (`platform.db` — audit/drift/cost/projects; agent + approvals DBs). On the Postgres
+   engine the platform entry is absent here by design — step 2 restored it.
 4. **config** + restore `EXAMLOPS_SECRETS_KEYS` **out-of-band** so encrypted secrets decrypt.
 5. `exa doctor` + `exa status` to confirm coherence, then `exa audit verify` for the audit chain.
 

@@ -145,6 +145,10 @@ values-eks.yaml
 values-gke.yaml
 charts/*/charts/
 
+# `exa backup create` writes here by default, so running it from a checkout leaves
+# bundles (and database dumps) in the working tree.
+backups/
+
 # Maintainer's private inbox/backlog (single entry point for ideas + tasks,
 # driven by the mska-note skill). Never published.
 .note

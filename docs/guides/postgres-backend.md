@@ -103,7 +103,7 @@ the cut-over and keep the SQLite file as the archival record of everything befor
 
 Honest status, so you can decide whether this fits your deployment:
 
-- Verified: **the whole unit suite runs on Postgres 16** — 2072 passed, 15 skipped, 0 failed
+- Verified: **the whole unit suite runs on Postgres 16** — 2090 passed, 15 skipped, 0 failed
   (`make test-postgres`), alongside the dedicated live-backend suite
   (`tests/integration/test_postgres_backend_live.py`, 13 tests) covering schema creation, the audit
   hash chain, append-only enforcement, upserts, timestamps, `lastrowid`, and pooled concurrent
@@ -112,8 +112,10 @@ Honest status, so you can decide whether this fits your deployment:
   (both keyed to a `platform.db` **file**), and one unrelated pre-existing skip. Each names its
   reason. (The dashboard-reader test that used to skip here now runs on both engines — it is the
   guard on the connection change below.)
-- The **backup tier is SQLite-only** (`exa backup`). A Postgres deployment needs `pg_dump` in its
-  own backup path until that lands; its tests skip (they do not silently pass) on this backend.
+- **Backups cover the platform datastore on this engine** — see [Backing it up](#backing-it-up)
+  below. The 10 skipped backup tests are the SQLite *file*-snapshot tests, which have nothing to
+  snapshot here; the Postgres path has its own 18 tests
+  (`tests/unit/test_backup_platform_datastore.py`).
 - **The dashboard reads the configured engine** — `dbconn.connect()` ignores the SQLite path it is
   handed and opens Postgres when `EXAMLOPS_DB_BACKEND=postgres`, so the consoles and the CLI can no
   longer end up on different stores. It needs `platform/cli/src` on `PYTHONPATH` (the container sets
@@ -126,6 +128,48 @@ Honest status, so you can decide whether this fits your deployment:
 - `exa data retention-prune --vacuum` and `exa doctor`'s DB checks are SQLite-specific.
 
 Progress and the remaining work are tracked in `.claude/plans/enterprise-readiness/05-POSTGRES-MIGRATION.md`.
+
+## Backing it up
+
+On this engine `platform.db` is an empty leftover file: every helper writes to Postgres. A bundle
+that snapshots that file looks complete and restores nothing, so `exa backup` hands the platform
+datastore over to the Postgres tier:
+
+```bash
+exa backup create --with-postgres        # or --all
+```
+
+Bare `exa backup create` **refuses** here rather than writing a hollow bundle:
+
+```
+✗ EXAMLOPS_DB_BACKEND=postgres: platform state is in Postgres, not in platform.db.
+  Use 'exa backup create --with-postgres' (or --all) to dump it.
+```
+
+What that produces, and how it is scoped:
+
+| | |
+|---|---|
+| Dump | `postgres/platform.dump`, `pg_dump -Fc` (custom format: compressed, selectively restorable) |
+| Connection | from `EXAMLOPS_POSTGRES_DSN`, split into `PG*` env vars — the password never reaches `argv`, so it is not visible in `ps` |
+| Scope | `--schema $EXAMLOPS_POSTGRES_SCHEMA` when that is set, so one database holding several instances backs up only its own |
+| SQLite tier | records `platform` as `skipped`, with the reason, instead of snapshotting the empty file |
+
+Restore is guarded by `--force`, because `pg_restore --clean --if-exists` drops objects first:
+
+```bash
+exa backup restore-bundle ./backups/examlops-backup-<stamp> --tier postgres --force --yes
+```
+
+The restore reconnects from the **current** `EXAMLOPS_POSTGRES_DSN`, not from the database name the
+dump was taken against — restoring into a standby is a config change, not a different command. It
+exits non-zero and names every failed item if anything did not come back; a restore that failed and
+reported success is worse than one that raised.
+
+`pg_dump`/`pg_restore` must be on `PATH` (`postgresql-client`). If they are not, or the server is
+unreachable, the tier degrades to `skipped` with a reason and the rest of the bundle still succeeds
+— which also means a bundle can be `ok` with no platform dump in it. `exa backup verify-bundle`
+shows what a bundle actually contains.
 
 ## Run the tests yourself
 

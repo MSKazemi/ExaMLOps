@@ -45,6 +45,9 @@ def test_postgres_happy_path_writes_dumps(tmp_path, monkeypatch):
     from examlops.backup import postgres_tier
 
     monkeypatch.setenv("EXAMLOPS_BACKUP_PG_DBS", "mlflow,prefect")
+    # Pin the engine: under Postgres the tier also dumps the platform datastore, which has its
+    # own tests in test_backup_platform_datastore.py. This one is about the configured DB list.
+    monkeypatch.setenv("EXAMLOPS_DB_BACKEND", "sqlite")
     monkeypatch.setattr(postgres_tier.shutil, "which", lambda _: "/usr/bin/pg_dump")
 
     def fake_run(cmd, env):

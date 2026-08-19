@@ -43,6 +43,10 @@ def _default_db_path() -> str:
     return _db_path()
 
 
+def _platform_is_postgres() -> bool:
+    return os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres"
+
+
 def _resolve_db_path(spec: dict[str, str]) -> str:
     if spec["name"] == "platform":
         return os.getenv("PLATFORM_DB") or _default_db_path()
@@ -306,6 +310,9 @@ def backup_sqlite_tier(dest_dir: Path) -> TierResult:
     An absent optional DB is recorded as ``skipped`` (not an error) — a fresh install may not yet
     have an approvals or agent DB. The platform DB missing entirely is still just ``skipped`` here;
     the bundle-level rollup surfaces it.
+
+    Under ``EXAMLOPS_DB_BACKEND=postgres`` the platform DB is skipped **on purpose**: its state
+    lives in Postgres and is dumped by :mod:`examlops.backup.postgres_tier`.
     """
     sqlite_dir = dest_dir / "sqlite"
     sqlite_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +320,18 @@ def backup_sqlite_tier(dest_dir: Path) -> TierResult:
     items: list[dict[str, Any]] = []
 
     for spec in _SQLITE_DBS:
+        if spec["name"] == "platform" and _platform_is_postgres():
+            # Backing up the leftover file here would produce a bundle that looks complete and
+            # restores nothing: with the Postgres engine selected, `platform.db` holds no state.
+            items.append(
+                {
+                    "name": "platform",
+                    "db_env": spec["env"],
+                    "status": SKIPPED,
+                    "reason": "EXAMLOPS_DB_BACKEND=postgres — platform state is in the postgres tier",
+                }
+            )
+            continue
         src = _resolve_db_path(spec)
         if not src or not Path(src).exists():
             items.append(

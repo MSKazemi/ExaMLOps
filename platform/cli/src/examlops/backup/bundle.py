@@ -204,7 +204,23 @@ def restore_bundle(
         restored["postgres"] = postgres_tier.restore_postgres_tier(d, force=force)
     if "objects" in selected:
         restored["objects"] = objects_tier.restore_objects_tier(d, force=force)
-    return {"bundle": bundle_dir, "restored_tiers": sorted(selected), "detail": restored}
+    # A restore that failed and reported success is worse than one that raised: the operator
+    # believes state is back. Any item that explicitly says `ok: False` is surfaced here so the
+    # caller — and `exa backup restore-bundle`, which exits 1 on it — cannot miss it.
+    failed = [
+        {"tier": tier, **item}
+        for tier, items in restored.items()
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, dict) and item.get("ok") is False
+    ]
+    return {
+        "bundle": bundle_dir,
+        "restored_tiers": sorted(selected),
+        "detail": restored,
+        "failed": failed,
+        "ok": not failed,
+    }
 
 
 def list_bundles(directory: str) -> list[dict[str, Any]]:

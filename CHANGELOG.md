@@ -46,8 +46,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     and the helpers compare and return them as strings, so `CURRENT_TIMESTAMP` renders through
     `to_char(now() …)`. Native timestamps are a later, separately-verified step.
   - **The whole unit suite runs on Postgres**: `make test-postgres` starts a throwaway Postgres 16
-    and executes `tests/unit/` against it — **2072 passed, 15 skipped, 0 failed** — while the
-    SQLite suite is unchanged at **2086 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
+    and executes `tests/unit/` against it — **2090 passed, 15 skipped, 0 failed** — while the
+    SQLite suite is unchanged at **2104 passed, 1 skipped**. `EXAMLOPS_POSTGRES_SCHEMA` scopes an instance to one schema, which is
     both how the suite isolates itself and how two deployments share one server.
   - Running it is what found the dialect gaps: a placeholder in a `CASE WHEN` boolean position; the
     two tables that key on a natural TEXT id and so have no `rowid` stand-in; `sqlite_master`, now
@@ -95,9 +95,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
     transaction that the pool would otherwise undo at WARNING level once per request. Creating the
     schema moved out of the per-connection hook — `CREATE SCHEMA IF NOT EXISTS` is not race-safe,
     and the pool opens its minimum size concurrently.
+  - **Backups follow the engine.** `exa backup` snapshotted SQLite files, so on this backend it
+    produced a bundle that looked complete and restored nothing — `platform.db` is an empty
+    leftover once the helpers write to Postgres. The postgres tier now also dumps the platform
+    datastore (`postgres/platform.dump`, `pg_dump -Fc`), scoped to `--schema
+    $EXAMLOPS_POSTGRES_SCHEMA` when set so one database holding several instances backs up only
+    its own; the sqlite tier records `platform` as **skipped, with the reason**, instead of
+    snapshotting the empty file; and a bare `exa backup create` refuses on this engine rather than
+    writing a hollow bundle. The DSN is split into `PG*` environment variables, so the password
+    never appears in `argv` where `ps` would show it to every user on the box.
+  - Proving the restore end to end found two bugs. `pg_restore` will not take its target from
+    `PGDATABASE` — it requires `-d` and exits 1 saying so, which meant the platform dump could
+    never have been restored. And `exa backup restore-bundle` printed `✓ Restored tiers […]` over
+    a restore that had failed: `restore_bundle` collected per-item `ok: False` results and threw
+    them away. It now returns them, and the command names every failed item and exits 1 — a
+    restore that failed while reporting success is worse than one that raised. Verified live:
+    dump → `DROP SCHEMA … CASCADE` → restore → all seeded audit rows back and the hash chain
+    verifies.
   - New optional extra `examlops[postgres]` (psycopg + psycopg-pool) and guide
     `docs/guides/postgres-backend.md`. **Still open:** porting the dashboard's SQLite-shaped test
-    fixtures, a `pg_dump` backup tier.
+    fixtures.
 
 - **No uncalibrated judge may gate (ADR 0111).** An LLM judge decides which model reaches
   production; if nobody has measured that judge, the promotion gate is a confident guess
