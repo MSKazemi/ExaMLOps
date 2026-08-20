@@ -593,9 +593,9 @@ dr-drill: install-dev ## Disaster-recovery drill — backup → wipe → restore
 
 ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
 	@printf "$(BOLD)CI · infra (compose + slurm)$(RESET)\n"
-	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml config --quiet
-	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile monitoring config --quiet
-	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile dev config --quiet
+	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml config --quiet
+	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile monitoring config --quiet
+	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile dev config --quiet
 	@$(MAKE) alerts-check
 	@if [ -x $(VENV)/bin/ruff ]; then $(VENV)/bin/ruff check platform/infra/slurm-adapter/; \
 	  else ruff check platform/infra/slurm-adapter/; fi
