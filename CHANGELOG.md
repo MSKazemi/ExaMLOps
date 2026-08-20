@@ -48,6 +48,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The dashboard kept its own, divergent copy of the schema — and it broke `exa project
+  add-member`.** `routers/projects.py` declared eight tables itself, under a docstring claiming
+  the set "matches platform_db init". Three of them did not match. The worst was
+  `authz_relations`, declared without `UNIQUE (subject, relation, object)`; `model_costs` dropped
+  `NOT NULL` from `model_name`/`version`/`recorded_at`, and `project_budgets` from `updated_at`.
+  Because both sides used `CREATE TABLE IF NOT EXISTS`, whichever process touched a fresh
+  database first silently won. Where that was the dashboard, every later CLI grant failed with
+  `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint` — `exa project
+  add-member` did not work at all, and no test caught it because the dashboard's own writes never
+  used `ON CONFLICT`. The router now calls `platform_db.init_db()` when `examlops` is importable,
+  so there is one definition; the inline DDL survives only as the degraded path for deployments
+  without the package (the same condition its write endpoints answer with a 503) and is now
+  constraint-for-constraint identical. Adding a member goes through
+  `examlops.data.governance.grant_relation()` — the same code path as the CLI — instead of a raw
+  `INSERT`, so it is idempotent here exactly as it is there. Guarded two ways: a regression test
+  that drives the real endpoint and then grants from the CLI against the database the dashboard
+  just created, and `test_the_product_declares_each_table_only_one_way`, which fails if any table
+  is declared two different ways anywhere in the product (columns *and* constraints), excluding
+  Alembic revisions, which are meant to redefine. Both were confirmed to fail before the fix.
+  The same work taught the schema scrape about `platform_db._COLUMN_MIGRATIONS`, whose columns
+  are added by a runtime `ALTER TABLE` and were previously invisible to it.
+
+  Note for existing deployments: `CREATE TABLE IF NOT EXISTS` cannot repair a table that already
+  exists, so a database whose `authz_relations` was created by the old dashboard code keeps the
+  constraint-less shape and needs a one-off migration. No automatic rebuild is performed.
+
 - **A test fixture was describing a table shape the product has never had — and now none can.**
   `test_projects_anatomy.py` created `project_budgets(project, gpu_hours, cost_usd)`; the real
   columns are `gpu_hours_budget`, `cost_budget`, `period`, `updated_at`, `updated_by`. It passed

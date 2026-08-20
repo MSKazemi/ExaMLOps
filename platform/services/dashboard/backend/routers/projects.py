@@ -34,7 +34,23 @@ def _connect() -> sqlite3.Connection:
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
-    """Idempotently declare the tables this router reads (matches platform_db init)."""
+    """Idempotently declare the tables this router reads.
+
+    Prefers the product's own schema: when ``examlops`` is importable, ``platform_db.init_db()``
+    is the single definition and this function adds nothing of its own. The inline DDL below is
+    only the degraded path for a deployment without the package (the same condition the write
+    endpoints answer with a 503), and it is kept column-for-column and constraint-for-constraint
+    identical to ``platform_db`` — an earlier version was not, and a table it created without
+    ``UNIQUE (subject, relation, object)`` made ``exa project add-member`` fail outright against
+    a database the dashboard had initialised first.
+    """
+    try:
+        from examlops import platform_db as _pdb  # type: ignore
+
+        _pdb.init_db()
+        return
+    except ImportError:  # pragma: no cover - only when examlops is not installed
+        pass
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS projects (
             name TEXT PRIMARY KEY, description TEXT,
@@ -58,15 +74,19 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS project_budgets (
             project TEXT PRIMARY KEY, gpu_hours_budget REAL, cost_budget REAL,
-            period TEXT NOT NULL DEFAULT 'monthly', updated_at DATETIME, updated_by TEXT
+            period TEXT NOT NULL DEFAULT 'monthly',
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT
         );
         CREATE TABLE IF NOT EXISTS model_costs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
-            run_id TEXT, job_id TEXT, gpu_hours REAL, cost_usd REAL, recorded_at TEXT, project TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT NOT NULL, version INTEGER NOT NULL,
+            run_id TEXT, job_id TEXT, gpu_hours REAL, cost_usd REAL,
+            recorded_at TEXT NOT NULL, project TEXT
         );
         CREATE TABLE IF NOT EXISTS authz_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
-            actor TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            actor TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (subject, relation, object)
         );
         CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -331,6 +351,24 @@ def _examlops_projects():
         ) from exc
 
 
+def _grant_relation(subject: str, relation: str, obj: str, *, actor: str | None) -> None:
+    """Grant a relation through the SAME code path as ``exa project add-member``.
+
+    Not a raw INSERT: ``governance.grant_relation`` is idempotent via
+    ``ON CONFLICT (subject, relation, object) DO NOTHING``, so re-adding a member is a no-op
+    here exactly as it is on the CLI. A raw INSERT both duplicated rows and, against a
+    database carrying the old constraint-less table, diverged from the CLI's behaviour.
+    """
+    try:
+        from examlops.data import governance as _gov  # type: ignore
+    except ImportError as exc:  # pragma: no cover - only when examlops is not installed
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "member changes require the examlops package (not available in this deployment)",
+        ) from exc
+    _gov.grant_relation(subject, relation, obj, actor=actor)
+
+
 def _examlops_adopt():
     """Lazy, guarded import of the model-zoo onboarding code path (503 if unavailable).
 
@@ -493,10 +531,7 @@ async def add_member_view(
     if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
         conn.close()
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
-    conn.execute(
-        "INSERT INTO authz_relations (subject, relation, object, actor) VALUES (?,?,?,?)",
-        (subject, role, f"project:{name}", principal.get("sub")),
-    )
+    _grant_relation(subject, role, f"project:{name}", actor=principal.get("sub"))
     _audit(
         conn,
         principal.get("sub", "?"),

@@ -265,3 +265,39 @@ async def test_onboard_all(client, platform_db, _pack):
     )
     assert r.status_code == 200, r.text
     assert r.json()["onboarded"] == 1
+
+
+async def test_dashboard_created_db_does_not_break_the_cli(client, platform_db):
+    """The dashboard must leave a schema ``exa project add-member`` can still write to.
+
+    The router used to declare its own ``authz_relations`` without
+    ``UNIQUE (subject, relation, object)``. Both sides use ``CREATE TABLE IF NOT EXISTS``, so on
+    a deployment where the dashboard touched the database first, its constraint-less table won —
+    and every later CLI grant died with "ON CONFLICT clause does not match any PRIMARY KEY or
+    UNIQUE constraint". Nothing failed on the dashboard's own tests, because the dashboard never
+    used ON CONFLICT.
+    """
+    admin = await _login(client, ADMIN_PW)
+    await _create_project(client, admin)
+    r = await client.post(
+        "/api/v1/projects/research/members",
+        json={"subject": "alice", "role": "editor"},
+        headers={"Authorization": f"Bearer {admin}"},
+    )
+    assert r.status_code < 400, r.text
+
+    from examlops.data import governance
+
+    # the CLI path must work against the very database the dashboard just wrote to,
+    # and must stay idempotent rather than duplicating the member
+    governance.grant_relation("bob", "viewer", "project:research", actor="cli")
+    governance.grant_relation("bob", "viewer", "project:research", actor="cli")
+
+    conn = dbconn.connect(platform_db, row_factory=None)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM authz_relations WHERE subject='bob' AND object='project:research'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1, f"grant_relation should be idempotent, got {n} rows"

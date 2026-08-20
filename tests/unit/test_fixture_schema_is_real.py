@@ -133,6 +133,30 @@ def _sources(roots: list[Path], *, tests: bool) -> list[Path]:
     return out
 
 
+def _migration_columns() -> dict[str, set[str]]:
+    """Columns added after the fact by ``platform_db._COLUMN_MIGRATIONS``.
+
+    These are real product columns, but they are added by an idempotent ``ALTER TABLE`` at
+    init rather than written into the base ``CREATE TABLE`` — so a scrape that only reads
+    CREATE statements does not see them (``audit_events.tenant``/``prev_hash``/``hash``,
+    ``model_costs.project``, and others). Missing them would make a fixture that declares one
+    look like it invented a column, and would make the base CREATE look like it had drifted
+    from a second definition that spells the column out inline.
+    """
+    src = (_REPO / "platform" / "cli" / "src" / "examlops" / "platform_db.py").read_text()
+    for node in ast.walk(ast.parse(src)):
+        target = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            first = node.targets[0]
+            target = first.id if isinstance(first, ast.Name) else None
+        if target == "_COLUMN_MIGRATIONS" and node.value is not None:
+            table_map = ast.literal_eval(node.value)
+            return {t.lower(): {c.lower() for c in cols} for t, cols in table_map.items()}
+    return {}
+
+
 def _product_schema() -> dict[str, set[str]]:
     """table -> every column the product declares for it, anywhere."""
     schema: dict[str, set[str]] = {}
@@ -143,6 +167,8 @@ def _product_schema() -> dict[str, set[str]]:
                 schema.setdefault(table, set()).update(_columns(_body(sql, m.end() - 1)))
         for m in _ALTER.finditer(py.read_text()):  # additive migrations add columns later
             schema.setdefault(m.group(1).lower(), set()).add(m.group(2).lower())
+    for table, cols in _migration_columns().items():
+        schema.setdefault(table, set()).update(cols)
     return schema
 
 
@@ -193,4 +219,92 @@ def test_no_fixture_declares_a_column_the_product_does_not_have():
         + "\n  ".join(invented)
         + "\nA fixture that invents a column tests a schema that does not exist. Seed with "
         "`platform_db.init_db()` instead of hand-rolling the DDL."
+    )
+
+
+# ── the product must not describe one table two ways ────────────────────────────────────────
+#
+# The checks above compare *tests* against the product. This one compares the product against
+# itself, and it exists because the dashboard's projects router carried its own CREATE TABLE for
+# eight tables under a docstring claiming it matched ``platform_db`` — while three of them did
+# not. Its ``authz_relations`` lacked ``UNIQUE (subject, relation, object)``, so on a database the
+# dashboard initialised first, ``exa project add-member`` failed outright with "ON CONFLICT clause
+# does not match any PRIMARY KEY or UNIQUE constraint". Nothing caught it: both sides used
+# ``CREATE TABLE IF NOT EXISTS``, so whichever ran first silently won.
+
+# Alembic migrations are *meant* to redefine a table as the schema evolves; comparing revision N
+# against revision N+1 would report every legitimate migration as a divergence.
+_MIGRATIONS = ("alembic", "versions", "migrations")
+
+
+def _constraints(body: str) -> set[str]:
+    """Table-level constraints, plus the per-column ones that change behaviour."""
+    body = re.sub(r"--[^\n]*", "", body)
+    parts, depth, cur = [], 0, []
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+
+    out: set[str] = set()
+    for part in parts:
+        tok = part.strip().split()
+        if not tok:
+            continue
+        norm = " ".join(part.split()).upper()
+        if tok[0].strip('"').lower() in _CONSTRAINTS:
+            out.add(norm)
+            continue
+        col = tok[0].strip('"').lower()
+        for kw in ("NOT NULL", "PRIMARY KEY", "UNIQUE", "AUTOINCREMENT"):
+            if kw in norm:
+                out.add(f"{col}:{kw}")
+        default = re.search(r"DEFAULT\s+(\S+)", norm)
+        if default:
+            out.add(f"{col}:DEFAULT {default.group(1)}")
+    return out
+
+
+def test_the_product_declares_each_table_only_one_way():
+    """Two CREATE TABLEs for one table must agree on columns *and* constraints."""
+    defs: dict[str, dict[str, tuple[set[str], set[str]]]] = {}
+    for py in _sources(_PRODUCT, tests=False):
+        if any(part in _MIGRATIONS for part in py.parts):
+            continue
+        for _, sql in _sql_literals(py):
+            for m in _CREATE.finditer(sql):
+                table = m.group(1).lower().split(".")[-1]
+                body = _body(sql, m.end() - 1)
+                where = str(py.relative_to(_REPO))
+                cols, cons = defs.setdefault(table, {}).get(where, (set(), set()))
+                defs[table][where] = (cols | _columns(body), cons | _constraints(body))
+
+    problems = []
+    for table, per_file in sorted(defs.items()):
+        if len(per_file) < 2:
+            continue
+        files = list(per_file)
+        first = per_file[files[0]]
+        if all(per_file[f] == first for f in files[1:]):
+            continue
+        later = _migration_columns().get(table, set())
+        all_cols = set().union(*(c for c, _ in per_file.values())) - later
+        all_cons = set().union(*(k for _, k in per_file.values()))
+        for where, (cols, cons) in per_file.items():
+            missing = sorted((all_cols - cols) | {f"[{c}]" for c in (all_cons - cons)})
+            if missing:
+                problems.append(f"{table}: {where} is missing {missing}")
+
+    assert not problems, (
+        "a table is declared two different ways in the product; whichever CREATE TABLE runs "
+        "first wins and the other side's assumptions silently break:\n  "
+        + "\n  ".join(problems)
+        + "\nDeclare it once in platform_db.py and have the other caller use init_db()."
     )
