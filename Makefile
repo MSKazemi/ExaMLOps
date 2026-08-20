@@ -522,10 +522,16 @@ clean: ## Remove .venv, build artifacts, and all cache directories
 lint: install-dev ## Run ruff linter across cli/, tests/, pipelines/, serving/, services/, clients/, usecases/
 	@printf "$(BOLD)Linting...$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
+	@# `ruff format --check` is a HARD failure in CI's test:examlops and was NOT run here, so
+	@# `make check` could report green on a tree that CI rejects on formatting alone. That is
+	@# exactly what produced the v0.26.1 -> v0.27.1 red-pipeline saga, and it recurred on
+	@# 2026-08-20 (two test files landed unformatted and no local gate noticed).
+	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Lint passed.$(RESET)\n"
 
 lint-fix: install-dev ## Run ruff --fix (auto-fix all safe issues)
 	@$(VENV)/bin/ruff check --fix platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
+	@$(VENV)/bin/ruff format platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Auto-fix complete.$(RESET)\n"
 
 typecheck: install-dev ## Run mypy type checker on pipelines/ and platform/services/

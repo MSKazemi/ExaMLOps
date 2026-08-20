@@ -565,11 +565,12 @@ class TestRunCycleJudgeEligibility:
 
     def test_uncalibrated_judge_blocks_the_promote(self):
         with patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}):
-            with patch.object(
-                autopilot_cmd, "_do_promote"
-            ) as mock_promote, patch(
-                "examlops.evaluation.gate.judge_eligibility_for_model",
-                return_value=(False, ["no_calibration"], "gpt-judge"),
+            with (
+                patch.object(autopilot_cmd, "_do_promote") as mock_promote,
+                patch(
+                    "examlops.evaluation.gate.judge_eligibility_for_model",
+                    return_value=(False, ["no_calibration"], "gpt-judge"),
+                ),
             ):
                 result = autopilot_cmd.run_cycle()
         mock_promote.assert_not_called(), "an unmeasured judge must not reach production"
@@ -579,9 +580,12 @@ class TestRunCycleJudgeEligibility:
         from examlops.platform_db import get_db
 
         with patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}):
-            with patch.object(autopilot_cmd, "_do_promote"), patch(
-                "examlops.evaluation.gate.judge_eligibility_for_model",
-                return_value=(False, ["position_bias"], "gpt-judge"),
+            with (
+                patch.object(autopilot_cmd, "_do_promote"),
+                patch(
+                    "examlops.evaluation.gate.judge_eligibility_for_model",
+                    return_value=(False, ["position_bias"], "gpt-judge"),
+                ),
             ):
                 autopilot_cmd.run_cycle()
         with get_db() as conn:

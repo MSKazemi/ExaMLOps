@@ -43,7 +43,9 @@ def test_every_job_declares_a_stage_that_exists():
     doc = _pipeline()
     stages = set(doc["stages"])
     bad = {n: b["stage"] for n, b in _jobs(doc).items() if b.get("stage") not in stages}
-    assert not bad, f"jobs naming a stage that is not in `stages`: {bad} (declared: {sorted(stages)})"
+    assert not bad, (
+        f"jobs naming a stage that is not in `stages`: {bad} (declared: {sorted(stages)})"
+    )
 
 
 def test_every_needs_points_at_a_real_job():
@@ -52,10 +54,7 @@ def test_every_needs_points_at_a_real_job():
     jobs = _jobs(doc)
     dangling: dict[str, list[str]] = {}
     for name, body in jobs.items():
-        wanted = [
-            n["job"] if isinstance(n, dict) else n
-            for n in body.get("needs", [])
-        ]
+        wanted = [n["job"] if isinstance(n, dict) else n for n in body.get("needs", [])]
         missing = [w for w in wanted if w not in jobs]
         if missing:
             dangling[name] = missing

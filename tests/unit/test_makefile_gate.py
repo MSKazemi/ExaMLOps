@@ -90,3 +90,17 @@ def test_dashboard_check_refuses_to_pass_when_it_cannot_run_both_halves():
         "dashboard-check does not check for npm; without it the frontend half is skipped "
         "silently and the gate still reports success"
     )
+
+
+def test_lint_checks_formatting_not_just_rules():
+    """`ruff format --check` is a HARD failure in CI; the local gate must run it too.
+
+    `make lint` used to run only `ruff check`, so `make check` could report green on a tree
+    CI rejects on formatting alone — the v0.26.1 → v0.27.1 red-pipeline saga, which recurred
+    on 2026-08-20 when two test files landed unformatted with every local gate green.
+    """
+    lines = "\n".join(_recipes(MAKEFILE.read_text()).get("lint", []))
+    assert "ruff format --check" in lines, (
+        "`make lint` does not run `ruff format --check`, so `make check` cannot catch a "
+        "formatting failure that CI treats as fatal"
+    )

@@ -132,6 +132,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`make check` could not see the failure that has twice turned the pipeline red.** `make lint`
+  ran `ruff check` but not `ruff format --check`, which CI's `test:examlops` treats as a *hard*
+  failure. So the mandated per-change gate reported green on a tree CI rejects on formatting alone
+  — the v0.26.1 → v0.27.1 saga — and it recurred on 2026-08-20: two test files
+  (`test_autopilot.py`, `test_gitlab_ci_valid.py`) landed unformatted earlier the same day with
+  every local gate green. Both are now formatted, `make lint` runs the format check (and
+  `make lint-fix` applies it), and `tests/unit/test_makefile_gate.py` fails if it is ever dropped
+  again. `make preflight` still runs it separately as step 3/10 — the point is that you no longer
+  have to reach preflight to find out.
+
+- **The auto-rollback destroyed exactly what the deploy was fixed to preserve.** `deploy:lxp`
+  deliberately does not pass `--remove-orphans` — on this compose file it deletes every profile
+  service (six monitoring containers, JupyterHub, vllm, the SeanerBUS bridge), which is what commit
+  a9035877 "persist on-demand services across deploys" was written to stop, and the deploy carries
+  a NOTE saying so. The rollback in `smoke:lxp`, forty lines further down, kept its copy of the
+  flag. So recovering from a bad deploy would have restored the previous code while silently
+  breaking Grafana embeds, project workbenches and the bus tab — at the one moment production is
+  already broken and nobody would connect the missing services to a rollback. Same block: the
+  "no previous SHA" guard tested only for the literal `NONE`, so a missing `prev_sha.txt` (an
+  artifact with `expire_in: 1 hour`) yielded an empty string, slipped past it, and reached
+  `git reset --hard ''` on production under a log line reading "Auto-rolling back to ". Both fixed;
+  `tests/unit/test_deploy_rollback.py` pins them plus the `exit 1` that keeps a rolled-back deploy
+  a pipeline failure. The rollback path is now documented — it never was.
+
 - **A `policy.yaml` that did not parse silently removed every gate — and `exa policy list` called
   the file absent.** The declarative policy layer defaults to `allow` when it yields no rules, so
   an unparsable file (one unterminated quote is enough) turns a `require_approval` gate on an
