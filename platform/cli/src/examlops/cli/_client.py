@@ -153,10 +153,14 @@ def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:
             status=code,
         ) from exc
     if code >= 500:
-        raise ClientError(
-            f"Server error {code} from {url}. Check service logs: exa stack logs",
-            status=code,
-        ) from exc
+        # The server answered, so it is running: prefer its own message over a generic one.
+        detail = _extract_detail(body)
+        message = (
+            f"Server error {code} from {url}: {detail}"
+            if detail
+            else f"Server error {code} from {url}. Check service logs: exa stack logs"
+        )
+        raise ClientError(message, status=code) from exc
     raise ClientError(f"HTTP {code} from {url}", status=code) from exc
 
 
@@ -175,10 +179,21 @@ def _raise_url(exc: urllib.error.URLError, url: str) -> None:
 
 
 def _extract_detail(body: str) -> str:
+    """Best-effort human-readable error out of a JSON error body.
+
+    Handles FastAPI's ``{"detail": …}``, a bare ``{"message": …}``, and the OpenAI-compatible
+    ``{"error": {"message": …}}`` the agent bridge returns — without the last one, an upstream
+    LLM failure reaches the operator as a bare "Server error 500" with the cause thrown away.
+    """
     try:
         d = json.loads(body)
-        if isinstance(d, dict):
-            return str(d.get("detail") or d.get("message") or "")
     except Exception:
-        pass
-    return ""
+        return ""
+    if not isinstance(d, dict):
+        return ""
+    err = d.get("error")
+    if isinstance(err, dict) and err.get("message"):
+        return str(err["message"])
+    if isinstance(err, str) and err:
+        return err
+    return str(d.get("detail") or d.get("message") or "")

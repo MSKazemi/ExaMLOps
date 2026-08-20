@@ -77,10 +77,20 @@ def ask(
                 data = _client.post(url, body, token=token, timeout=120.0)
             answer, hitl = _extract_answer(data)
     except _client.ClientError as exc:
-        _output.error(
-            f"Could not reach the Skipper agent at {cfg.agent_url}: {exc}",
-            hint="Start it with: make skipper-server   (or set AGENT_URL / exa config set agent <url>)",
-        )
+        if exc.status is not None:
+            # The agent answered, so it is running — telling the operator to start it sends them
+            # down the wrong path. Report what it actually said (usually an upstream LLM failure).
+            _output.error(
+                f"The Skipper agent at {cfg.agent_url} returned an error: {exc}",
+                hint="The agent is up (it answered), so this is usually its LLM backend — "
+                "an expired or misconfigured key. Check the agent's own logs.",
+            )
+        else:
+            _output.error(
+                f"Could not reach the Skipper agent at {cfg.agent_url}: {exc}",
+                hint="Start it with: make skipper-server   "
+                "(or set AGENT_URL / exa config set agent <url>)",
+            )
         return
 
     if _output.json_mode:

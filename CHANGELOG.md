@@ -64,6 +64,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`exa ask` told you to start an agent that was already running.** Every failure — transport
+  and HTTP alike — was reported as "Could not reach the Skipper agent … Start it with: make
+  skipper-server". When the agent is up and its *LLM backend* is what failed, that advice sends
+  the operator to restart a healthy service while the real cause (an expired key, say) is never
+  shown. Verified end to end against a live agent: `--stream` surfaced the real upstream 401
+  while `--no-stream` claimed the agent was unreachable, so the two paths disagreed about the
+  same request. `exa ask` now branches on whether the agent answered at all: an HTTP status
+  means it is running and its own message is shown; only a transport failure suggests starting
+  it. `_extract_detail` also learned the OpenAI-compatible `{"error": {"message": …}}` shape the
+  agent bridge returns, and 5xx responses now carry the server's own message instead of a
+  generic "Server error 500" — an improvement for every command, not just `ask`.
+
 - **No dashboard test builds its own schema any more (44 `CREATE TABLE`s across 16 files).**
   Each hand-rolled fixture was a second, unmaintained copy of a table the product already
   defines. The guard added earlier catches a fixture that *invents* a column, but not one that
