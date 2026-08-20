@@ -15,6 +15,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   pipeline had recorded. GitLab's resource group serialises the jobs; both share one group so a
   new deploy cannot start while the previous deploy's health gate is still deciding.
 
+### Fixed
+
+- **Every `exa` command blocked ~30 s when the Postgres datastore was unreachable.** The root
+  callback opens the datastore on every invocation, and `psycopg_pool.getconn()` waits out its
+  full 30 s default while the pool's background workers retry a connect the kernel is refusing
+  instantly — so even commands that never touch the datastore paid it, and an operator diagnosing
+  the outage paid it the most. Measured: `exa status` took **30.9 s**, now **0.96 s**.
+  - A bounded TCP probe (`EXAMLOPS_POSTGRES_CONNECT_TIMEOUT`, default 2 s) runs once per process,
+    before the pool is built, and raises immediately with the address it tried. The pool's own
+    timeout is untouched: that governs waiting for a *free* connection, and shortening it would
+    start failing pools that are merely busy. Unix-socket and multi-host DSNs skip the probe —
+    libpq handles both better than a guess would.
+  - A failed probe is remembered for `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` (default 5 s), because
+    otherwise the budget is paid once per *connection* rather than once per command — invisible
+    against a refused port, real against a black-holed host, where `exa audit` cost 5.6 s (two
+    opens × a 2 s budget) and now costs 3.4 s. It expires, so a long-lived process recovers by
+    itself when the server comes back.
+  - The root callback no longer swallows the failure silently. It prints one line to **stderr**
+    (so `--json` and scripted stdout stay clean) and continues, and `-q` suppresses it.
+
 ### Removed
 
 - **`modelzoo/` is no longer vendored in this repository.** `seanergys_modelzoo` is an

@@ -39,7 +39,9 @@ import atexit
 import logging
 import os
 import re
+import socket
 import threading
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -655,6 +657,88 @@ def _pool_size() -> tuple[int, int]:
     return min(_int("EXAMLOPS_POSTGRES_POOL_MIN", 1), max_size), max_size
 
 
+def _connect_timeout() -> float:
+    """Seconds to wait for the datastore to answer at all. Deliberately small.
+
+    This is *reachability*, not pool saturation: it bounds how long a process waits before
+    concluding the datastore is not there. psycopg_pool's own ``timeout`` (30 s by default) is a
+    different question — how long to wait for a *free* connection — and is left alone, because
+    shortening it would start failing legitimately-busy pools.
+    """
+    try:
+        return max(0.1, float(os.getenv("EXAMLOPS_POSTGRES_CONNECT_TIMEOUT", "").strip() or 2.0))
+    except ValueError:
+        return 2.0
+
+
+# Addresses recently found unreachable, and until when. Without this the probe is paid once per
+# *connection*, not once per command — invisible against a refused port (instant) but linear
+# against a black-holed host, where the budget is a real wait. Measured: `exa audit` cost 5.6 s
+# with a 2 s budget because it opens the datastore twice. The entry expires so a long-lived
+# process (dashboard, bridge) recovers on its own when the server comes back.
+_UNREACHABLE: dict[tuple[str, int], tuple[float, str]] = {}
+_UNREACHABLE_LOCK = threading.Lock()
+
+
+def _unreachable_ttl() -> float:
+    """How long a negative result is trusted. Long enough to cover one CLI command."""
+    try:
+        ttl = float(os.getenv("EXAMLOPS_POSTGRES_UNREACHABLE_TTL", "").strip() or 5.0)
+    except ValueError:
+        ttl = 5.0
+    return max(0.0, ttl)
+
+
+def _require_reachable(dsn: str) -> None:
+    """Fail fast, and clearly, when nothing is listening at the DSN's host:port.
+
+    Without this, an unreachable datastore costs the *pool's* timeout — 30 s — on the first
+    connection of every process, because the background workers retry a refused connect while
+    ``getconn()`` waits out its full budget. On a CLI, where each command is a fresh process, that
+    is 30 s per command for an operator who is very likely diagnosing the outage itself.
+
+    A TCP probe is the honest test and costs one round trip against a healthy server. It runs only
+    when the pool for this DSN does not exist yet — i.e. once per process — so the steady-state
+    path is unchanged. Cases libpq handles better than we can are skipped rather than guessed at:
+    unix sockets, and multi-host DSNs where failover is the whole point.
+    """
+    import psycopg  # noqa: PLC0415 - optional enterprise dependency
+
+    try:
+        info = psycopg.conninfo.conninfo_to_dict(dsn)
+    except Exception:  # noqa: BLE001 - an unparseable DSN is psycopg's error to raise, not ours
+        return
+    host, port = str(info.get("host") or ""), str(info.get("port") or "5432")
+    if not host or host.startswith("/") or "," in host or "," in port:
+        return  # unix socket or multi-host failover — let libpq decide
+    try:
+        port_n = int(port)
+    except ValueError:
+        return
+    key = (host, port_n)
+    now = time.monotonic()
+    with _UNREACHABLE_LOCK:
+        cached = _UNREACHABLE.get(key)
+        if cached and now < cached[0]:
+            raise psycopg.OperationalError(cached[1])
+        if cached:
+            del _UNREACHABLE[key]  # expired: probe again rather than grow the dict
+
+    timeout = _connect_timeout()
+    try:
+        with socket.create_connection((host, port_n), timeout=timeout):
+            return
+    except OSError as exc:
+        message = (
+            f"unreachable at {host}:{port_n} after {timeout:g}s ({exc}). "
+            f"Check EXAMLOPS_POSTGRES_DSN and that the server is running; "
+            f"raise EXAMLOPS_POSTGRES_CONNECT_TIMEOUT if the host is simply slow."
+        )
+        with _UNREACHABLE_LOCK:
+            _UNREACHABLE[key] = (time.monotonic() + _unreachable_ttl(), message)
+        raise psycopg.OperationalError(message) from exc
+
+
 def _get_pool(dsn: str, schema: str | None) -> Any:
     """The pool for this (dsn, schema), or ``None`` to open connections directly.
 
@@ -680,6 +764,7 @@ def _get_pool(dsn: str, schema: str | None) -> Any:
             )
             return None
         min_size, max_size = _pool_size()
+        _require_reachable(dsn)  # before _ensure_schema, which would otherwise hang on connect
         _ensure_schema(dsn, schema)
         pool = ConnectionPool(
             dsn,
@@ -764,6 +849,7 @@ def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
 
     import psycopg  # noqa: PLC0415 - optional enterprise dependency, imported on use
 
+    _require_reachable(dsn)  # the unpooled path pays libpq's own connect budget otherwise
     conn = psycopg.connect(dsn)
     if schema:
         if not _SCHEMA_RE.match(schema):

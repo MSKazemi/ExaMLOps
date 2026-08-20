@@ -66,6 +66,41 @@ TLS.
 | `EXAMLOPS_POSTGRES_POOL` | `1` | `0`/`false`/`off` opens an unpooled connection per call |
 | `EXAMLOPS_POSTGRES_POOL_MIN` | `1` | connections kept open |
 | `EXAMLOPS_POSTGRES_POOL_MAX` | `10` | ceiling per process — **multiply by your process count** and keep it under the server's `max_connections` |
+| `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` | `2.0` | seconds to wait for the server to answer *at all* before declaring it unreachable — see below |
+| `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | seconds an unreachable verdict is remembered, so one command probes once |
+
+### When the server is not there
+
+Reachability and pool saturation are different failures and get different budgets.
+
+Before a process builds its first pool, the platform makes one bounded TCP probe at the DSN's
+host and port. If nothing is listening it raises immediately, naming the address it tried:
+
+```
+warning: platform datastore unavailable — unreachable at 10.0.0.5:5432 after 2s
+  ([Errno 111] Connection refused). Check EXAMLOPS_POSTGRES_DSN and that the server is
+  running; raise EXAMLOPS_POSTGRES_CONNECT_TIMEOUT if the host is simply slow.
+```
+
+Without that probe an unreachable server costs **the pool's** timeout — 30 seconds — on the first
+connection of every process, because the pool's background workers keep retrying a refused connect
+while `getconn()` waits out its full budget. On the CLI, where each command is a fresh process,
+that was 30 s *per command*, paid most by whoever was diagnosing the outage. It is now under a
+second.
+
+Raise `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` if your server is simply slow to accept (a loaded host,
+a distant region). The pool's own timeout is deliberately **not** shortened with it: that one
+governs how long to wait for a *free* connection, and shortening it would start failing pools that
+are merely busy.
+
+A failed probe is remembered for `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` seconds. Without that, the
+budget is paid once per *connection* rather than once per command — invisible against a refused
+port, where each probe is instant, but real against a black-holed host: `exa audit` opens the
+datastore twice and cost 5.6 s with a 2 s budget, now 3.4 s. The verdict expires so a long-lived
+process (dashboard, bridge) recovers by itself when the server comes back.
+
+Two cases are left to libpq rather than guessed at — **unix-socket DSNs** (no TCP port to probe)
+and **multi-host DSNs** (failover is the point of listing several hosts). Both skip the probe.
 
 `psycopg-pool` is part of the `postgres` extra. If it is missing the platform opens an unpooled
 connection instead of failing — slower, still correct. Pools are closed at interpreter exit, so a

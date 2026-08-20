@@ -213,8 +213,16 @@ def main(
         os.environ["EXAMLOPS_CONTEXT"] = context
     try:
         _init_platform_db()
-    except Exception:
-        pass  # non-fatal: DB may not be writable in some envs
+    except Exception as exc:  # noqa: BLE001 - non-fatal: the DB may not be writable in some envs
+        # Non-fatal, but not invisible. Swallowing this silently meant an operator whose datastore
+        # was down saw commands behave oddly with no clue why — and on Postgres they also waited
+        # out the connect budget first. One line on *stderr* keeps stdout clean for `--json` and
+        # for scripts, and `-q` still suppresses it.
+        if not quiet:
+            Console(stderr=True).print(
+                f"[yellow]warning:[/yellow] platform datastore unavailable — {exc}",
+                highlight=False,
+            )
 
 
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
