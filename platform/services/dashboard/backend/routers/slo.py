@@ -101,8 +101,13 @@ async def set_slo(
     name = (payload.get("name") or "").strip()
     if not model or not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "model and name are required")
+    # A missing key used to arrive here as None and be rejected by the TypeError below. That
+    # worked, but by accident; rejecting it up front gives the same 400 with the same message.
+    raw_target = payload.get("target")
+    if raw_target is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "target must be a number")
     try:
-        target = float(payload.get("target"))
+        target = float(raw_target)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "target must be a number") from exc
     if not 0.0 < target <= 1.0:

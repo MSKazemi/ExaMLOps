@@ -41,7 +41,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import joblib
 import mlflow
@@ -82,8 +82,16 @@ from pipelines.registry_loader import export_registry, load_registry, resolve_en
 # ML-framework base classes + helpers. The engine resolves them through the loader so it imports
 # nothing use-case-specific by name; a different pack swaps the whole binding.
 _FRAMEWORK = _usecase.framework()
-SeanergysModel = _FRAMEWORK["model_base"]
-SeanergysModelConfiguration = _FRAMEWORK["config_base"]
+if TYPE_CHECKING:
+    # These two are *values* resolved from the active pack at runtime, so a type checker cannot
+    # follow the binding — and it should not pretend to: which concrete base class they name is
+    # exactly what a pack is free to change. `Any` is the truthful static type. The annotations
+    # below keep the readable names for people, while mypy is told the honest thing.
+    SeanergysModel = Any
+    SeanergysModelConfiguration = Any
+else:
+    SeanergysModel = _FRAMEWORK["model_base"]
+    SeanergysModelConfiguration = _FRAMEWORK["config_base"]
 pipeline_step = _FRAMEWORK["pipeline_step"]  # re-exported for callers  # noqa: F401
 _ModelParams = _FRAMEWORK["model_params"]
 _Dataloader = _FRAMEWORK["dataloader"]

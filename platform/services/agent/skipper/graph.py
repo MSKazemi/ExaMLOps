@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.prebuilt import create_react_agent
 
 from skipper import config, supervisor
@@ -27,7 +29,7 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     if config.AGENT_USE_MCP_TOOLS:
         from skipper.tools.mcp_bridge import mcp_tools
 
-        tools = mcp_tools()
+        tools: list[Any] = mcp_tools()
     else:
         tools = list(TOOLS)
     kwargs: dict = {}

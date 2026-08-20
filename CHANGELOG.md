@@ -17,6 +17,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`make check` could not pass, and therefore never ran the tests.** It exits at `typecheck` on
+  15 mypy errors in 5 files, all of which predate this entry — so the command the contributor
+  guide names as the proof gate stopped before `pytest` was reached, and only `make preflight`
+  (which CI mirrors) actually gated anything. mypy is now clean across all 261 source files.
+  - **Nine of the fifteen were one root cause, and arguably not defects.** ADR 0094's loader seam
+    binds `SeanergysModel`/`SeanergysModelConfiguration` from the active use-case pack at *runtime*,
+    so a type checker cannot follow the binding — and should not pretend to, since which concrete
+    class they name is exactly what a pack is free to change. They are now `Any` under
+    `TYPE_CHECKING` with the real binding in the `else`, which keeps the readable names in the
+    annotations while telling mypy the truth.
+  - **`slo.py` / `prompts.py`** were letting a missing key reach `float()`/`int()` as `None` and
+    relying on the resulting `TypeError`. That worked, but by accident; the key is now rejected up
+    front with the same 400 and the same message.
+  - **Dashboard `main.py`**: FastAPI types `openapi_url` and `swagger_ui_oauth2_redirect_url` as
+    optional because either can be disabled. This app disables only `docs_url`/`redoc_url` —
+    precisely so the vendored Swagger/ReDoc routes can replace them — so both keep FastAPI's
+    defaults; narrowed once at module level rather than at three call sites.
+  - **`skipper/graph.py`**: two tool lists whose declared element types differed.
+
 - **Every `exa` command blocked ~30 s when the Postgres datastore was unreachable.** The root
   callback opens the datastore on every invocation, and `psycopg_pool.getconn()` waits out its
   full 30 s default while the pool's background workers retry a connect the kernel is refusing

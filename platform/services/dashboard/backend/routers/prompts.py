@@ -134,8 +134,11 @@ async def set_label(
     label = (payload.get("label") or "").strip()
     if not label:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "label is required")
+    raw_version = payload.get("version")
+    if raw_version is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "version must be an integer")
     try:
-        version = int(payload.get("version"))
+        version = int(raw_version)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "version must be an integer") from exc
     dp, _dv = _examlops_prompts()

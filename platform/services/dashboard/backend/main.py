@@ -105,6 +105,13 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# FastAPI types `openapi_url` and `swagger_ui_oauth2_redirect_url` as optional because either can
+# be switched off. This app switches off only `docs_url`/`redoc_url` — precisely so the vendored
+# routes below can replace them — so both of these keep FastAPI's own defaults. Narrowing once,
+# here, states that assumption in one place instead of at three call sites.
+_OPENAPI_URL: str = app.openapi_url or "/openapi.json"
+_OAUTH2_REDIRECT_URL: str = app.swagger_ui_oauth2_redirect_url or "/docs/oauth2-redirect"
+
 # Vendored Swagger UI / ReDoc assets (same-origin ⇒ CSP `script-src 'self'` allows them).
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -113,16 +120,16 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 @app.get("/docs", include_in_schema=False)
 async def swagger_ui_html() -> HTMLResponse:
     return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
+        openapi_url=_OPENAPI_URL,
         title=f"{app.title} - Swagger UI",
-        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        oauth2_redirect_url=_OAUTH2_REDIRECT_URL,
         swagger_js_url="/static/swagger-ui-bundle.js",
         swagger_css_url="/static/swagger-ui.css",
         swagger_favicon_url="/static/favicon.png",
     )
 
 
-@app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+@app.get(_OAUTH2_REDIRECT_URL, include_in_schema=False)
 async def swagger_ui_redirect() -> HTMLResponse:
     return get_swagger_ui_oauth2_redirect_html()
 
@@ -130,7 +137,7 @@ async def swagger_ui_redirect() -> HTMLResponse:
 @app.get("/redoc", include_in_schema=False)
 async def redoc_html() -> HTMLResponse:
     return get_redoc_html(
-        openapi_url=app.openapi_url,
+        openapi_url=_OPENAPI_URL,
         title=f"{app.title} - ReDoc",
         redoc_js_url="/static/redoc.standalone.js",
         redoc_favicon_url="/static/favicon.png",
