@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **`resource_group: production-lxp` on `deploy:lxp` and `smoke:lxp`.** There is exactly one
+  LXP node and deploying to it is a `git pull` plus an image rebuild on a shared checkout, but
+  nothing stopped two pipelines from reaching that job at the same time. Interleaved, they would
+  fight over one working tree — and worse, `smoke:lxp` records the *previous* SHA before deploying
+  so it can auto-roll-back, so a concurrent run could roll the node back to a SHA the other
+  pipeline had recorded. GitLab's resource group serialises the jobs; both share one group so a
+  new deploy cannot start while the previous deploy's health gate is still deciding.
+
 ### Removed
 
 - **`modelzoo/` is no longer vendored in this repository.** `seanergys_modelzoo` is an

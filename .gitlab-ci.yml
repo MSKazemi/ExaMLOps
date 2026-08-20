@@ -380,6 +380,12 @@ deploy:lxp:
   stage: deploy
   image: ubuntu:22.04
   timeout: 20 minutes
+  # There is exactly one LXP node, and deploying to it is a `git pull` + image rebuild.
+  # Two pipelines reaching this job at once would interleave on the same checkout, and
+  # smoke:lxp's rollback would then reset to a SHA the *other* pipeline recorded. The
+  # resource group makes GitLab run them one after another; it is shared with smoke:lxp
+  # so a deploy cannot start while the previous deploy's health gate is still deciding.
+  resource_group: production-lxp
   # deploy:lxp only runs on main, where every gating test job is created
   # (full-suite policy), so all are required here — deploy proceeds only when the
   # entire suite is green. test:modelzoo is intentionally excluded: it is a
@@ -478,6 +484,7 @@ smoke:lxp:
   image: ubuntu:22.04
   timeout: 10 minutes
   needs: [deploy:lxp]
+  resource_group: production-lxp   # see deploy:lxp — the rollback path writes to the node too
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: on_success
