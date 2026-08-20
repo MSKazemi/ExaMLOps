@@ -64,6 +64,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`exa autopilot run --dry-run` refused to preview until you armed the loop.** The kill-switch
+  guard ran before the `dry_run` check, so the only way to see what the self-driving loop *would*
+  do was to first `exa autopilot enable` — arming the loop in order to inspect it, which inverts
+  the property the switch exists for. The CLI's own guidance was circular about it: a fresh
+  install's `exa autopilot status` says "no runs yet — run: exa autopilot run --dry-run", and that
+  command answered "autopilot disabled — run: exa autopilot enable". A dry-run takes no lease,
+  triggers no retrain and promotes nothing, so it is now allowed while the switch is off; it warns
+  that the switch is off, and the run is recorded with `enabled_state="disabled"` so the history
+  never implies the loop was live. A real run is still refused — the guard was widened to previews
+  only, and a test pins that.
+
 - **206 Skipper agent tests were gated by nothing — now `test:agent`.** `make check` is
   `lint typecheck test dashboard-check`, and `test` is `pytest tests/` at the repo root, so it
   never reached `platform/services/agent/tests` (33 files, 192 test functions, 206 collected).

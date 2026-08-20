@@ -148,6 +148,43 @@ class TestRunCycleKillSwitch:
             ).fetchall()
         assert len(rows) == 1
 
+    # A dry-run changes nothing, so the switch must not gate it: requiring `enable` first would
+    # mean arming the loop in order to preview it.
+
+    def test_dry_run_previews_while_disabled(self):
+        result = autopilot_cmd.run_cycle(dry_run=True)
+        assert result.get("enabled", True) is not False, "a dry-run must not be refused"
+        assert result["dry_run"] is True
+        assert result["kill_switch_enabled"] is False, "and must say the switch is off"
+        assert "run_id" in result
+
+    def test_dry_run_while_disabled_is_recorded_as_disabled(self):
+        # History must never imply the loop was armed when it was not.
+        from examlops.data.autopilot import list_autopilot_runs
+
+        autopilot_cmd.run_cycle(dry_run=True)
+        runs = list_autopilot_runs(last_n=5)
+        assert runs, "the preview is still recorded"
+        assert runs[0]["enabled_state"] == "disabled"
+        assert runs[0]["dry_run"] in (1, True)
+
+    def test_dry_run_while_disabled_takes_no_lease(self):
+        from examlops.platform_db import get_db
+
+        autopilot_cmd.run_cycle(dry_run=True)
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit_events WHERE action='autopilot_skipped'"
+            ).fetchall()
+        assert rows == [], "a preview is not a skipped cycle"
+
+    def test_a_live_run_is_still_refused_while_disabled(self):
+        # The whole point of the switch. Widening it to dry-run must not widen it to anything else.
+        with patch.object(autopilot_cmd, "_call_retrain") as mock_retrain:
+            result = autopilot_cmd.run_cycle(dry_run=False)
+        assert result.get("enabled") is False
+        mock_retrain.assert_not_called()
+
 
 # ── run_cycle: drift trigger path ─────────────────────────────────────────────
 

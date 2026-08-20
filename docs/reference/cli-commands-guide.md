@@ -670,6 +670,12 @@ Runs the policy-governed loop that detects drift, retrains, checks metrics, and 
 gated by a persistent kill-switch (disabled by default; `EXAMLOPS_AUTOPILOT_ENABLED` also
 applies). See ADR 0085.
 
+**`--dry-run` is not gated by the kill-switch.** A preview takes no lease, triggers no retrain and
+promotes nothing, so `exa autopilot run --dry-run` works while the switch is off — you inspect the
+loop *before* arming it, not after. The preview says the switch is off, and the run is recorded
+with `enabled_state="disabled"` so history never implies the loop was live. A real
+`exa autopilot run` is still refused until you `exa autopilot enable`.
+
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa autopilot enable` | **[mutation]** Enable the autopilot kill-switch (persisted in `platform.db`). | Turn on hands-off closed-loop MLOps. | `exa autopilot enable` |

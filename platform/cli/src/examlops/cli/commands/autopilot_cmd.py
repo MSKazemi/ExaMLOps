@@ -181,7 +181,14 @@ def run_cycle(
     actor = _actor()
 
     # ── kill-switch ─────────────────────────────────────────────────────────
-    if not _is_enabled():
+    # A dry-run is a preview: it takes no lease, triggers no retrain and promotes nothing, so
+    # the kill-switch does not apply to it. Requiring `enable` first would mean arming the loop
+    # in order to inspect it, which inverts the safety property the switch exists for — and the
+    # CLI's own guidance was circular about it ("no runs yet → try --dry-run" → "disabled → run
+    # enable"). The run is still recorded with enabled_state="disabled", so history never
+    # implies the loop was armed when it was not.
+    enabled = _is_enabled()
+    if not enabled and not dry_run:
         write_audit_event(
             "autopilot",
             actor,
@@ -214,7 +221,7 @@ def run_cycle(
             triggered_by=triggered_by,
             model_filter=model_filter,
             dry_run=dry_run,
-            enabled_state="enabled",
+            enabled_state="enabled" if enabled else "disabled",
         )
 
         retrains: list[dict[str, Any]] = []
@@ -587,7 +594,7 @@ def run_cycle(
         except Exception:  # noqa: BLE001 - event publish is best-effort
             pass
 
-        return {"run_id": run_id, "dry_run": dry_run, **summary}
+        return {"run_id": run_id, "dry_run": dry_run, "kill_switch_enabled": enabled, **summary}
     finally:
         if lease_held:
             release_autopilot_lease(lease_holder)
@@ -607,6 +614,14 @@ def run(
     if not result.get("enabled", True):
         _output.warning(result.get("reason", "autopilot disabled"))
         raise typer.Exit(0)
+
+    if not result.get("kill_switch_enabled", True):
+        # Previewing with the switch off is the intended order; say so, so nobody reads a
+        # dry-run summary as evidence that the loop is live.
+        _output.warning(
+            "preview only — the autopilot kill-switch is DISABLED, so nothing here would run "
+            "on a schedule until: exa autopilot enable"
+        )
 
     if _output.json_mode:
         _output.print_json(result)

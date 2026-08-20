@@ -175,7 +175,8 @@ Enable the autopilot kill-switch (persistent, stored in platform.db).
 
 Run one autopilot cycle: drift scan → policy → retrain → metrics → policy → promote.
 
-- `--dry-run` — Preview without acting
+- `--dry-run` — Preview without acting. Works while the kill-switch is disabled (a preview
+  changes nothing); a real run does not.
 
 ### `exa autopilot status`
 
