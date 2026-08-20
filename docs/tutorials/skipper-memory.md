@@ -118,7 +118,9 @@ The procedural / episodic / preference / KB kinds above are tier **T1**. The nex
 architecture (ADRs 0101/0104/0105/0106) adds:
 
 - **T2 Knowledge / docs-RAG** — semantic search over the documentation (`search_knowledge`);
-  build the index with `make skipper-knowledge-ingest`.
+  build the index with `make skipper-knowledge-ingest`. **Check its exit code:** the tier needs a
+  reachable embedding backend, and an ingest that indexed nothing exits `1` and names what was
+  missing. Exit `0` with no files means only that you switched the tier off deliberately.
 - **T3 Monitoring / baseline** — recall "what's normal" for a model (`recall_baseline`), auto-fed
   by the `skipper-watch` daemon (`make skipper-watch`).
 - **T4 Outcome** — the reactive loop records tool telemetry so `tool_success_rate` is real.

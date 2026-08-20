@@ -91,14 +91,28 @@ def ingest(roots: list[str] | None = None) -> dict[str, int]:
     """Chunk + embed every Markdown file under the configured roots into the KB collection.
 
     Idempotent: re-ingesting upserts by a deterministic ``item_id`` (path + chunk index).
-    Returns ``{"files": n, "chunks": m}``. Audited as an ``agent-knowledge`` event (best-effort).
+    Audited as an ``agent-knowledge`` event (best-effort).
+
+    Returns ``{"files": n, "chunks": m}`` on success. When nothing could be indexed the result
+    also carries the reason, so a caller can tell a deliberate ``disabled`` apart from a missing
+    dependency (``unavailable`` plus ``no_embeddings`` / ``no_store``) — the CLI turns the second
+    into a non-zero exit, because an ingest that indexed nothing must not look like a success.
     """
     if not config.AGENT_KNOWLEDGE_ENABLED:
         return {"files": 0, "chunks": 0, "disabled": 1}
     embed = _embed()
     store = _store()
     if embed is None or store is None:
-        return {"files": 0, "chunks": 0, "unavailable": 1}
+        # Name the missing half. "unavailable" alone sent the operator looking at the vector
+        # store when it is almost always the embedding backend that is not running, and the
+        # caller cannot re-probe cheaply enough to work it out itself.
+        return {
+            "files": 0,
+            "chunks": 0,
+            "unavailable": 1,
+            "no_embeddings": int(embed is None),
+            "no_store": int(store is None),
+        }
 
     from examlops.rag import chunk_text
     from examlops.vector_store import VecItem
@@ -196,6 +210,41 @@ def query(question: str, k: int = 5) -> list[Chunk] | None:
 # ── module CLI: `python -m skipper.knowledge {ingest|query} …` ────────────────
 
 
+def _report_ingest(result: dict[str, int], roots: list[str] | None) -> int:
+    """Print a human summary of an ingest and return the process exit code.
+
+    An ingest that indexed nothing used to print a raw dict and exit 0, so
+    ``make skipper-knowledge-ingest`` reported success while the knowledge tier stayed empty and
+    Skipper went on answering ungrounded — the one failure mode nobody would notice from the
+    outside. Only a deliberate switch-off is a success now; a missing dependency or an empty set
+    of roots exits 1 and says which it was.
+    """
+    if result.get("disabled"):
+        print("knowledge tier is switched off (AGENT_KNOWLEDGE_ENABLED=0) — nothing ingested")
+        return 0
+    if result.get("unavailable"):
+        missing = []
+        if result.get("no_embeddings"):
+            missing.append(
+                f"embeddings (AGENT_EMBED_BACKEND={config.AGENT_EMBED_BACKEND!r} is not reachable "
+                "- start Ollama, or set AGENT_EMBED_BACKEND=sentence-transformers to run offline)"
+            )
+        if result.get("no_store"):
+            missing.append("vector store (the examlops package is not importable here)")
+        print("nothing ingested - the knowledge tier is unavailable:")
+        for m in missing or ["reason unknown"]:
+            print(f"  - {m}")
+        print("Skipper falls back to the ripgrep docs tool, i.e. answers are not doc-grounded.")
+        return 1
+    files, chunks = result.get("files", 0), result.get("chunks", 0)
+    if not files:
+        where = ", ".join(roots) if roots else config.AGENT_KNOWLEDGE_ROOTS
+        print(f"nothing ingested - no Markdown found under: {where}")
+        return 1
+    print(f"ingested {files} files / {chunks} chunks into collection {config.AGENT_KNOWLEDGE_KB!r}")
+    return 0
+
+
 def _main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -209,9 +258,7 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "ingest":
-        result = ingest(args.roots)
-        print(f"ingested: {result}")
-        return 0
+        return _report_ingest(ingest(args.roots), args.roots)
     hits = query(args.question, k=args.k)
     if not hits:
         print("(knowledge unavailable or empty — use ripgrep docs)")

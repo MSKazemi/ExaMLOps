@@ -64,6 +64,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`make skipper-knowledge-ingest` reported success after indexing nothing.** Skipper's docs-RAG
+  tier needs a reachable embedding backend; without one, `ingest()` returned
+  `{'files': 0, 'chunks': 0, 'unavailable': 1}` and the command printed that dict and **exited 0**.
+  A deploy step would go green while the knowledge index stayed empty, and Skipper would answer
+  from the model alone with no documentation grounding — the one failure mode invisible from the
+  outside, and the one that would have quietly capped the `exa eval operator-qa` baseline. The
+  command now exits **1** when it indexed nothing, and says which half was missing (embeddings,
+  naming `AGENT_EMBED_BACKEND` and the offline `sentence-transformers` alternative, or the vector
+  store) and that answers are consequently not doc-grounded. Empty roots are also a failure and
+  name where it looked. Deliberately switching the tier off (`AGENT_KNOWLEDGE_ENABLED=0`) stays
+  exit 0 — that is a choice, not a broken deployment. `ingest()` carries the reason back to any
+  caller as `no_embeddings` / `no_store`.
+
 - **`exa ask` told you to start an agent that was already running.** Every failure — transport
   and HTTP alike — was reported as "Could not reach the Skipper agent … Start it with: make
   skipper-server". When the agent is up and its *LLM backend* is what failed, that advice sends

@@ -107,3 +107,59 @@ def test_search_knowledge_tool_uses_semantic_hits(kb, monkeypatch):
     out = ktool.search_knowledge.invoke({"query": "promote a model safely"})
     assert "semantic search" in out.lower()
     assert ".md" in out
+
+
+# ── the CLI must not report success for an ingest that indexed nothing ────────
+#
+# `make skipper-knowledge-ingest` printed a raw dict and exited 0 even when the tier was
+# unavailable, so a deploy could "succeed" with an empty index and Skipper would answer
+# ungrounded with nobody the wiser. These pin the exit code to what actually happened.
+
+
+def test_cli_ingest_succeeds_when_it_indexed_something(kb, capsys):
+    assert knowledge._main(["ingest"]) == 0
+    out = capsys.readouterr().out
+    assert "ingested 2 files" in out
+    assert "test-kb" in out
+
+
+def test_cli_ingest_fails_when_embeddings_are_missing(kb, monkeypatch, capsys):
+    monkeypatch.setattr(knowledge, "_embed", lambda: None)
+    assert knowledge._main(["ingest"]) == 1
+    out = capsys.readouterr().out
+    assert "unavailable" in out
+    # names the half that is missing, and how to run without Ollama
+    assert "embeddings" in out
+    assert "sentence-transformers" in out
+    assert "not doc-grounded" in out
+
+
+def test_cli_ingest_fails_when_the_store_is_missing(kb, monkeypatch, capsys):
+    monkeypatch.setattr(knowledge, "_store", lambda: None)
+    assert knowledge._main(["ingest"]) == 1
+    assert "vector store" in capsys.readouterr().out
+
+
+def test_cli_ingest_fails_when_the_roots_hold_no_markdown(kb, tmp_path, monkeypatch, capsys):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(config, "AGENT_KNOWLEDGE_ROOTS", str(empty))
+    assert knowledge._main(["ingest"]) == 1
+    out = capsys.readouterr().out
+    assert "no Markdown found" in out
+    assert str(empty) in out, "must name where it looked"
+
+
+def test_cli_ingest_switched_off_is_not_a_failure(kb, monkeypatch, capsys):
+    # A deliberate switch-off is a choice, not a broken deployment: exit 0, but say so.
+    monkeypatch.setattr(config, "AGENT_KNOWLEDGE_ENABLED", False)
+    assert knowledge._main(["ingest"]) == 0
+    assert "switched off" in capsys.readouterr().out
+
+
+def test_ingest_names_which_dependency_is_missing(kb, monkeypatch):
+    monkeypatch.setattr(knowledge, "_embed", lambda: None)
+    monkeypatch.setattr(knowledge, "_store", lambda: None)
+    result = knowledge.ingest()
+    assert result["unavailable"] == 1
+    assert result["no_embeddings"] == 1 and result["no_store"] == 1
