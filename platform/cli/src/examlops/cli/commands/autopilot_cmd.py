@@ -318,19 +318,24 @@ def run_cycle(
                 )
                 continue
 
+            # Per-cycle storm cap: never fire more than N retrains in one cycle. Checked for the
+            # preview too — it used to apply only to a live run, so with three drifting models and
+            # a cap of one the dry-run promised three retrains where the real cycle did one. A
+            # preview whose numbers do not match the cycle it previews is worse than no preview.
+            if triggered_this_cycle >= max_retrains:
+                skipped.append(
+                    {
+                        "model": model,
+                        "reason": f"per-cycle retrain cap ({max_retrains}) reached",
+                    }
+                )
+                continue
+
             # Trigger retrain (or dry-run)
             if dry_run:
+                triggered_this_cycle += 1
                 retrains.append({"model": model, "z_score": z, "action": "would retrain"})
             else:
-                # Per-cycle storm cap: never fire more than N retrains in one cycle.
-                if triggered_this_cycle >= max_retrains:
-                    skipped.append(
-                        {
-                            "model": model,
-                            "reason": f"per-cycle retrain cap ({max_retrains}) reached",
-                        }
-                    )
-                    continue
                 # Atomic cooldown claim — closes the TOCTOU: check-and-stamp is one locked write, so an
                 # overlapping cycle cannot also claim this model and double-fire the retrain.
                 if not claim_drift_trigger(model, ar["cooldown_s"]):

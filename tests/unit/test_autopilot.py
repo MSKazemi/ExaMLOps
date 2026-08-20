@@ -496,3 +496,105 @@ class TestAutopilotCLI:
         data = json.loads(result.output)
         assert "run_id" in data
         assert "retrains" in data
+
+
+# ── run_cycle: per-cycle retrain storm cap ────────────────────────────────────
+#
+# The cap is one of the things that makes turning the loop on a bounded risk, and until now
+# nothing tested it. Measuring it turned up that it applied to a live run only: with three
+# drifting models and a cap of one, `--dry-run` promised three retrains where the cycle it was
+# previewing did one.
+
+
+class TestRunCycleStormCap:
+    MODELS = ("MODA", "MODB", "MODC")
+
+    def setup_method(self):
+        set_autopilot_config("enabled", "1")
+        for m in self.MODELS:
+            set_drift_auto_retrain(
+                m, enabled=True, min_z_score=2.0, dataset_name="PM100Dataset", cooldown_s=0
+            )
+            set_drift_baseline(m, {"mean": 1.0, "std": 0.1})
+            for _ in range(10):
+                write_drift_snapshot(m, "Production", 5.0, None)
+
+    def _cap(self, monkeypatch, n):
+        monkeypatch.setenv("EXAMLOPS_AUTOPILOT_MAX_RETRAINS", str(n))
+
+    def test_live_cycle_is_bounded_by_the_cap(self, monkeypatch):
+        self._cap(monkeypatch, 1)
+        with patch.object(
+            autopilot_cmd, "_call_retrain", return_value={"flow_run_id": "x"}
+        ) as mock_retrain:
+            result = autopilot_cmd.run_cycle()
+        assert len(result["retrains"]) == 1
+        assert mock_retrain.call_count == 1, "the cap must stop the call, not just the report"
+        capped = [s for s in result["skipped"] if "cap" in s["reason"]]
+        assert len(capped) == 2, "and the two it stopped must be reported, not silently dropped"
+
+    def test_preview_reports_the_same_count_as_the_cycle_it_previews(self, monkeypatch):
+        self._cap(monkeypatch, 1)
+        dry = autopilot_cmd.run_cycle(dry_run=True)
+        with patch.object(autopilot_cmd, "_call_retrain", return_value={"flow_run_id": "x"}):
+            live = autopilot_cmd.run_cycle()
+        assert [r["model"] for r in dry["retrains"]] == [r["model"] for r in live["retrains"]]
+        assert sorted(s["model"] for s in dry["skipped"] if "cap" in s["reason"]) == sorted(
+            s["model"] for s in live["skipped"] if "cap" in s["reason"]
+        )
+
+    def test_a_cap_above_the_workload_stops_nothing(self, monkeypatch):
+        self._cap(monkeypatch, 10)
+        dry = autopilot_cmd.run_cycle(dry_run=True)
+        assert len(dry["retrains"]) == 3
+        assert [s for s in dry["skipped"] if "cap" in s["reason"]] == []
+
+
+# ── run_cycle: ADR 0111 — an unmeasured judge may not promote ─────────────────
+#
+# The autopilot promotes without going through run_eval_gate, so the calibration refusal is
+# enforced on this road separately. That enforcement had no test: `judge_eligibility_for_model`
+# appeared in no test file at all, which for a rule whose whole point is "absence of calibration
+# is not eligibility" is the wrong thing to take on trust.
+
+
+class TestRunCycleJudgeEligibility:
+    def setup_method(self):
+        set_autopilot_config("enabled", "1")
+        set_promotion_rule(JPCP, "rmse", "lt", 5.0, "Staging", "Production")
+
+    def test_uncalibrated_judge_blocks_the_promote(self):
+        with patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}):
+            with patch.object(
+                autopilot_cmd, "_do_promote"
+            ) as mock_promote, patch(
+                "examlops.evaluation.gate.judge_eligibility_for_model",
+                return_value=(False, ["no_calibration"], "gpt-judge"),
+            ):
+                result = autopilot_cmd.run_cycle()
+        mock_promote.assert_not_called(), "an unmeasured judge must not reach production"
+        assert any("not gate-eligible" in b["reason"] for b in result["policy_blocks"])
+
+    def test_the_block_is_audited_with_the_judge_and_the_adr(self):
+        from examlops.platform_db import get_db
+
+        with patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}):
+            with patch.object(autopilot_cmd, "_do_promote"), patch(
+                "examlops.evaluation.gate.judge_eligibility_for_model",
+                return_value=(False, ["position_bias"], "gpt-judge"),
+            ):
+                autopilot_cmd.run_cycle()
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT details FROM audit_events WHERE action='autopilot_promote_blocked'"
+            ).fetchall()
+        assert len(rows) == 1
+        details = rows[0]["details"]
+        assert "gpt-judge" in details and "position_bias" in details and "0111" in details
+
+    def test_a_model_with_no_judge_is_not_blocked(self):
+        # No eval gate configured → nothing claims a judge decides → the promote proceeds.
+        with patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}):
+            with patch.object(autopilot_cmd, "_do_promote") as mock_promote:
+                autopilot_cmd.run_cycle()
+        mock_promote.assert_called_once()

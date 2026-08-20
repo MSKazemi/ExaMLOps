@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The ADR 0111 calibration refusal on the autopilot's promote road is now tested.** The autopilot
+  promotes without going through `run_eval_gate`, so `judge_eligibility_for_model` is called there
+  separately — and that function appeared in no test file at all. For a rule whose entire point is
+  that *absence* of calibration is not eligibility, that was the wrong thing to take on trust.
+  Three tests: an uncalibrated judge blocks the promote (`_do_promote` never called), the block is
+  audited as `autopilot_promote_blocked` carrying the judge name, the failure reasons and the ADR
+  number, and a model with no judge configured is not blocked by it.
+
 - **`exa eval operator-qa` — the agent's answer quality is now a number.** The agent is meant to
   answer "any kind of question about ExaMLOps"; nobody had ever measured whether it does. A fixed
   set of 30 questions a new operator actually asks (orientation, training, registry, serving,
@@ -63,6 +71,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   new deploy cannot start while the previous deploy's health gate is still deciding.
 
 ### Fixed
+
+- **The autopilot's dry-run promised more retrains than the cycle it previewed.** The per-cycle
+  storm cap (`EXAMLOPS_AUTOPILOT_MAX_RETRAINS`, default 10) was applied on the live path only, so
+  with three drifting models and a cap of one the preview reported three retrains where the real
+  cycle fired one and skipped two. Measured directly before fixing: dry-run `[MODA, MODB, MODC]`
+  vs live `[MODA]`. The cap now applies to previews too and the models it stops are reported the
+  same way in both, so the two agree exactly. The cap itself had **no test at all** — which is why
+  this went unnoticed — and now has three, including one that pins preview/live parity.
 
 - **`exa autopilot run --dry-run` refused to preview until you armed the loop.** The kill-switch
   guard ran before the `dry_run` check, so the only way to see what the self-driving loop *would*
