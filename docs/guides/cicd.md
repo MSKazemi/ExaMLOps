@@ -399,6 +399,22 @@ Note: `make ci` does not run the Ray Serve integration test — run it directly 
 .venv/bin/pytest tests/integration/ -v --tb=short
 ```
 
+### The gate pins its own toolchain
+
+Every recipe reachable from `make check` invokes its tools through `$(VENV_BIN)` — an
+**absolute** path to this repo's `.venv/bin` — rather than a bare `pip`/`pytest`/`ruff`.
+A bare name binds to whatever the caller's shell exposes, which fails in two directions:
+on a PEP-668 host the gate dies with `externally-managed-environment` for a reason that has
+nothing to do with the change under test, and on a host whose system Python is writable it
+*passes*, having installed a different dependency set and run a different interpreter than
+the rest of the gate used. The second is the dangerous one — a green gate that measured
+something else. `tests/unit/test_makefile_gate.py` fails if a bare invocation reappears.
+
+For the same reason `dashboard-check` **fails** rather than skipping when a half cannot
+run: no `.venv/bin/pytest` (run `make install-dev`) or no `npm` on `PATH` exits 1. If you
+genuinely have no node on the host, run `make dashboard-check-backend` — it says in its own
+output that the frontend half did not run, so the omission cannot be mistaken for a pass.
+
 ---
 
 ## GitHub Actions retirement

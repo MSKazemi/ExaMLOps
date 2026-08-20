@@ -36,6 +36,11 @@ DC := docker compose --env-file $(ROOT_DIR)/.env
 VENV   := .venv
 PYTHON := $(VENV)/bin/python
 UV     := uv
+# Absolute, so a recipe that `cd`s into a sub-project still reaches THIS venv. A bare
+# `pip`/`pytest` there resolves against whatever happens to be on PATH: on a PEP-668 host
+# the gate dies for a reason unrelated to the change under test, and on a host where the
+# system Python is writable it silently tests a different interpreter and dependency set.
+VENV_BIN := $(CURDIR)/$(VENV)/bin
 
 # ── MinIO / S3 artifact store ─────────────────────────────────────────────────
 # Dev defaults match docker-compose.yml.  Override in shell or .env for production:
@@ -72,7 +77,7 @@ endif
         monitoring-up monitoring-down \
         seanerbus-up seanerbus-down seanerbus-bridge-logs seanerbus-reqgen-logs \
         seanerbus-install seanerbus-bridge-up seanerbus-test-req \
-        dashboard-up dashboard-logs dashboard-check \
+        dashboard-up dashboard-logs dashboard-check dashboard-check-backend \
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
@@ -385,12 +390,27 @@ dashboard-logs: ## Tail dashboard container logs
 
 dashboard-check: ## Run dashboard backend + frontend tests
 	@printf "$(BOLD)Backend tests...$(RESET)\n"
+	@test -x $(VENV_BIN)/pytest || { \
+	  printf "$(RED)No $(VENV)/bin/pytest — run 'make install-dev' first.$(RESET)\n"; exit 1; }
 	@cd platform/services/dashboard/backend && \
-	  pip install -r requirements.txt -q && \
-	  pytest tests/ -v --tb=short
+	  $(VENV_BIN)/pip install -r requirements.txt -q && \
+	  $(VENV_BIN)/pytest tests/ -v --tb=short
 	@printf "$(BOLD)Frontend tests...$(RESET)\n"
+	@command -v npm >/dev/null 2>&1 || { \
+	  printf "$(RED)npm not on PATH — the frontend half of this gate cannot run.$(RESET)\n"; \
+	  printf "$(RED)Install node, or run 'make dashboard-check-backend' and say so explicitly.$(RESET)\n"; \
+	  exit 1; }
 	@cd platform/services/dashboard/frontend && npm ci -q && npm run lint && npm test && npm run build
-	@printf "$(GREEN)Dashboard checks passed.$(RESET)\n"
+	@printf "$(GREEN)Dashboard checks passed (backend + frontend).$(RESET)\n"
+
+dashboard-check-backend: ## Dashboard BACKEND tests only (use when there is no node on the host)
+	@printf "$(BOLD)Backend tests (frontend deliberately skipped)...$(RESET)\n"
+	@test -x $(VENV_BIN)/pytest || { \
+	  printf "$(RED)No $(VENV)/bin/pytest — run 'make install-dev' first.$(RESET)\n"; exit 1; }
+	@cd platform/services/dashboard/backend && \
+	  $(VENV_BIN)/pip install -r requirements.txt -q && \
+	  $(VENV_BIN)/pytest tests/ -v --tb=short
+	@printf "$(GREEN)Dashboard BACKEND checks passed — the frontend half did NOT run.$(RESET)\n"
 
 # =============================================================================
 ##@ JupyterHub  (multi-user notebook server — Phase 9)

@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The proof gate now pins its own toolchain — and the frontend half actually runs.** Every
+  change in this repo is measured by `make check`, but its `dashboard-check` recipe called a bare
+  `pip` and `pytest`, which bind to whatever the caller's shell exposes. That fails in two
+  directions: on a PEP-668 host the gate dies with `externally-managed-environment` for a reason
+  unrelated to the change under test, and on a host whose system Python is writable it *passes*,
+  having installed a different dependency set and run a different interpreter than the rest of the
+  gate used — a green gate that measured something else. Recipes reachable from `check` now go
+  through `$(VENV_BIN)`, an absolute path to this repo's `.venv/bin`, and `dashboard-check` exits 1
+  rather than skipping when a half cannot run (no venv, or no `npm`). New
+  `make dashboard-check-backend` for hosts genuinely without node — it states in its own output
+  that the frontend half did not run, so the omission cannot be read as a pass.
+  `tests/unit/test_makefile_gate.py` fails if a bare invocation reappears or if `check` stops
+  naming `dashboard-check`.
+
 - **A secret now says which store it came from, and a Vault outage is no longer silent.** The
   secrets client tries OpenBao/Vault, then the local Fernet store, then a plain environment
   variable — but `_vault_get` swallowed *every* exception and returned `None`, so "the Vault
