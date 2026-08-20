@@ -768,7 +768,11 @@ smoke:lxp:
       echo ""
       echo "==> Smoke checks FAILED after $SMOKE_RETRY_COUNT attempts."
 
-      if [ "$PREV_SHA" = "NONE" ]; then
+      # Empty counts as "no SHA" too. prev_sha.txt is a deploy:lxp artifact; if it is ever
+      # absent (expired, or the deploy job replaced) `cat` yields "", the old `= NONE` test
+      # misses, and the block below runs `git reset --hard ''` against production while the
+      # log cheerfully reads "Auto-rolling back to ". Refuse instead.
+      if [ -z "$PREV_SHA" ] || [ "$PREV_SHA" = "NONE" ]; then
         echo "==> No previous SHA recorded — cannot auto-rollback. Manual intervention required."
         exit 1
       fi
@@ -779,10 +783,15 @@ smoke:lxp:
         cd \"$LXP_DEPLOY_PATH\"
         echo 'Resetting to $PREV_SHA ...'
         git reset --hard '$PREV_SHA'
+        # NOTE: NO --remove-orphans — same reason deploy:lxp does not use it. On this compose
+        # file it deletes every profile service (monitoring x6, JupyterHub, vllm, the SeanerBUS
+        # bridge), so a rollback would restore the previous code while destroying Grafana
+        # embeds, project workbenches and the bus — at the one moment production is already
+        # broken and nobody would connect the two. See a9035877.
         docker compose \
           -f platform/infra/docker-compose/docker-compose.yml \
           -f platform/infra/docker-compose/docker-compose.lxp.yml \
-          up --build -d --remove-orphans
+          up --build -d
         echo 'Rollback deployed: $PREV_SHA'
       "
 

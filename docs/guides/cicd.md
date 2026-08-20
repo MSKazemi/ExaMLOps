@@ -294,6 +294,34 @@ The job registers a GitLab **Environment** (`production-lxp`) so every deploy is
 
 ---
 
+## Stage: smoke
+
+### smoke:lxp
+
+Waits `$SMOKE_STARTUP_WAIT`, then runs `platform/ci/smoke_check.sh` on the node, retrying up to
+`$SMOKE_RETRY_COUNT` times. If every attempt fails it **rolls the node back** to the SHA
+`deploy:lxp` recorded in the `prev_sha.txt` artifact, re-checks health, and then exits 1 regardless
+— a rollback is a recovery, not a success, and the bad commit must still fail the pipeline.
+
+Two properties of that path are easy to lose and expensive to lose, so
+`tests/unit/test_deploy_rollback.py` pins them:
+
+* **No `--remove-orphans`.** On this compose file the flag deletes every profile service — the six
+  monitoring containers, JupyterHub, vllm and the SeanerBUS bridge. `deploy:lxp` was changed to
+  stop passing it (a9035877, "persist on-demand services across deploys"); the rollback kept its
+  copy until 2026-08-20, so recovering from a bad deploy would have restored the previous code
+  while destroying Grafana embeds, project workbenches and the bus tab — at the one moment
+  production is already broken and nobody would connect the two.
+* **An empty previous SHA aborts.** The guard used to test only for the literal `NONE`. A missing
+  `prev_sha.txt` makes `cat` yield an empty string, which slipped past it and reached
+  `git reset --hard ''` on production, under a log line reading "Auto-rolling back to ".
+
+The rollback restores the **core stack only** — it does not re-run the modelzoo fetch, the
+JupyterHub image build, the bridge start, the ACL grant or the `exa` CLI refresh that `deploy:lxp`
+does afterwards. Those are all non-fatal extras on the way in; if a rollback ever fires, check them
+by hand.
+
+
 ## Stage: post-deploy
 
 Both jobs run in parallel after `deploy:lxp`.
