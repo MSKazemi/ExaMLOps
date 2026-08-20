@@ -137,29 +137,32 @@ async def set_autoscale(
         gpu_fraction=gpu_fraction,
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "autoscale_policy_set",
-        model,
-        {
-            "min_replicas": min_replicas,
-            "max_replicas": max_replicas,
-            "target_metric": metric,
-            "target_value": target_value,
-            "scale_to_zero_after_s": scale_to_zero_after_s,
-        },
-    )
-    conn.commit()
-    conn.close()
-    return {
-        "model": model,
-        "minReplicas": min_replicas,
-        "maxReplicas": max_replicas,
-        "targetMetric": metric,
-        "targetValue": target_value,
-        "scaleToZeroAfterS": scale_to_zero_after_s,
-    }
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "autoscale_policy_set",
+            model,
+            {
+                "min_replicas": min_replicas,
+                "max_replicas": max_replicas,
+                "target_metric": metric,
+                "target_value": target_value,
+                "scale_to_zero_after_s": scale_to_zero_after_s,
+            },
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "model": model,
+            "minReplicas": min_replicas,
+            "maxReplicas": max_replicas,
+            "targetMetric": metric,
+            "targetValue": target_value,
+            "scaleToZeroAfterS": scale_to_zero_after_s,
+        }
+    finally:
+        conn.close()
 
 
 # ── routing ───────────────────────────────────────────────────────────────────
@@ -220,18 +223,21 @@ async def set_routing(
         decode_pool=decode_pool,
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "routing_config_set",
-        model,
-        {"mode": mode, "slo_latency_ms": slo_latency_ms, "disaggregate": disaggregate},
-    )
-    conn.commit()
-    conn.close()
-    return {
-        "model": model,
-        "mode": mode,
-        "sloLatencyMs": slo_latency_ms,
-        "disaggregate": disaggregate,
-    }
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "routing_config_set",
+            model,
+            {"mode": mode, "slo_latency_ms": slo_latency_ms, "disaggregate": disaggregate},
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "model": model,
+            "mode": mode,
+            "sloLatencyMs": slo_latency_ms,
+            "disaggregate": disaggregate,
+        }
+    finally:
+        conn.close()

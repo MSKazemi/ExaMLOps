@@ -35,19 +35,22 @@ async def get_all_traffic_rules(_=Depends(_viewer)) -> list[dict]:
     """All traffic split rules."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT model, rules, updated_at, updated_by FROM traffic_rules ORDER BY model"
-        ).fetchall()
-        conn.close()
-        return [
-            {
-                "model": r["model"],
-                "rules": json.loads(r["rules"]),
-                "updated_at": r["updated_at"],
-                "updated_by": r["updated_by"],
-            }
-            for r in rows
-        ]
+        try:
+            rows = conn.execute(
+                "SELECT model, rules, updated_at, updated_by FROM traffic_rules ORDER BY model"
+            ).fetchall()
+            conn.close()
+            return [
+                {
+                    "model": r["model"],
+                    "rules": json.loads(r["rules"]),
+                    "updated_at": r["updated_at"],
+                    "updated_by": r["updated_by"],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -57,18 +60,22 @@ async def get_model_traffic_rules(model: str, _=Depends(_viewer)) -> dict | None
     """Traffic split rules for one model."""
     try:
         conn = connect(_db_path())
-        row = conn.execute(
-            "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?", (model,)
-        ).fetchone()
-        conn.close()
-        if not row:
-            return None
-        return {
-            "model": row["model"],
-            "rules": json.loads(row["rules"]),
-            "updated_at": row["updated_at"],
-            "updated_by": row["updated_by"],
-        }
+        try:
+            row = conn.execute(
+                "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?",
+                (model,),
+            ).fetchone()
+            conn.close()
+            if not row:
+                return None
+            return {
+                "model": row["model"],
+                "rules": json.loads(row["rules"]),
+                "updated_at": row["updated_at"],
+                "updated_by": row["updated_by"],
+            }
+        finally:
+            conn.close()
     except Exception:
         return None
 
@@ -78,9 +85,12 @@ async def get_all_promotion_rules(_=Depends(_viewer)) -> list[dict]:
     """All metric-gated promotion rules."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute("SELECT * FROM promotion_rules ORDER BY model").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute("SELECT * FROM promotion_rules ORDER BY model").fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -133,7 +143,10 @@ async def set_model_traffic_rules(
     actor = principal.get("sub", "?")
     serving.set_traffic_rules(model, clean, updated_by=actor)
     conn = connect(_db_path())
-    _audit(conn, actor, "traffic_rules_set", model, {"rules": clean})
-    conn.commit()
-    conn.close()
-    return {"model": model, "rules": clean, "updatedBy": actor}
+    try:
+        _audit(conn, actor, "traffic_rules_set", model, {"rules": clean})
+        conn.commit()
+        conn.close()
+        return {"model": model, "rules": clean, "updatedBy": actor}
+    finally:
+        conn.close()

@@ -55,17 +55,20 @@ async def list_views(_=Depends(_viewer)) -> list[dict]:
     """Registered feature views (features parsed from JSON). Fail-open to []."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT name, entity, features_json, source, ttl_seconds, dataset_revision, updated_at "
-            "FROM feature_views ORDER BY name"
-        ).fetchall()
-        conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["features"] = json.loads(d.pop("features_json") or "[]")
-            out.append(d)
-        return out
+        try:
+            rows = conn.execute(
+                "SELECT name, entity, features_json, source, ttl_seconds, dataset_revision, updated_at "
+                "FROM feature_views ORDER BY name"
+            ).fetchall()
+            conn.close()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["features"] = json.loads(d.pop("features_json") or "[]")
+                out.append(d)
+            return out
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -107,13 +110,16 @@ async def apply_view(
         )
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "feature_view_apply",
-        name,
-        {"entity": entity, "features": features},
-    )
-    conn.commit()
-    conn.close()
-    return {"name": name, "entity": entity, "features": features, "ttlSeconds": ttl}
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "feature_view_apply",
+            name,
+            {"entity": entity, "features": features},
+        )
+        conn.commit()
+        conn.close()
+        return {"name": name, "entity": entity, "features": features, "ttlSeconds": ttl}
+    finally:
+        conn.close()

@@ -55,12 +55,15 @@ async def list_slos(_=Depends(_viewer)) -> list[dict]:
     """SLO specs + best-effort live status (SLI / budget-remaining / burn-rate). Fail-open to []."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT model, tenant, name, sli_source, sli_query, target, window, higher_is_better, "
-            "version, gate_promotion, updated_at FROM slo_specs ORDER BY model, name"
-        ).fetchall()
-        conn.close()
-        specs = [dict(r) for r in rows]
+        try:
+            rows = conn.execute(
+                "SELECT model, tenant, name, sli_source, sli_query, target, window, higher_is_better, "
+                "version, gate_promotion, updated_at FROM slo_specs ORDER BY model, name"
+            ).fetchall()
+            conn.close()
+            specs = [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
     # Best-effort live status via the shared computation; never fail the list if it's unavailable.
@@ -126,13 +129,21 @@ async def set_slo(
     s = _examlops_slo()
     s.apply_spec(spec)
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "slo_set",
-        model,
-        {"name": name, "target": target, "gate_promotion": spec["gate_promotion"]},
-    )
-    conn.commit()
-    conn.close()
-    return {"model": model, "name": name, "target": target, "gatePromotion": spec["gate_promotion"]}
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "slo_set",
+            model,
+            {"name": name, "target": target, "gate_promotion": spec["gate_promotion"]},
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "model": model,
+            "name": name,
+            "target": target,
+            "gatePromotion": spec["gate_promotion"],
+        }
+    finally:
+        conn.close()

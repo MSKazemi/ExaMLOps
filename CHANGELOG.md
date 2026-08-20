@@ -48,6 +48,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Every dashboard connection is now released on the failing path too.** All 51 remaining
+  `conn.close()` calls in the dashboard backend were written as plain statements on the happy
+  path, so any exception raised between the `connect()` and that line walked straight past it —
+  a datastore error, a table missing because a migration was half-applied, or a bug in the code
+  between the two. On SQLite that costs a file handle the GC reclaims. On
+  `EXAMLOPS_DB_BACKEND=postgres` the connection is *pooled*: one that is never returned is gone
+  for the life of the process, the tenth exhausts `max_size`, and every later `getconn()` waits
+  the pool's full 30-second budget — so the symptom is a hung dashboard, not a leak. Each site is
+  now scoped by a `finally`. The existing explicit `close()` calls were left exactly where they
+  are: both `sqlite3.Connection.close()` and `PgConnection.close()` are idempotent, and several of
+  them are deliberate *early* releases that hand the connection back before slow external work.
+
+  Measured against a pool of two, with the handler failing after it had connected: **6 failing
+  requests took 120.3s before, 5.1s after** — four exhausted 30-second waits, gone.
+  `tests/test_pool_survives_error_paths.py` pins that (Postgres-only; it skips where there is no
+  pool), and `tests/test_connections_are_scoped.py`'s ratchet drops from 51 to **0**, so it is now
+  a floor rather than a backlog marker.
+
+  Two handlers turned out to open the datastore *twice* — read, close, do slow external work,
+  re-open to write — and each lifetime got its own `finally`; one `try` spanning both would have
+  released only the second. Correcting an earlier note in this file: the deliberate rejections were
+  never the leak. Those handlers call `close()` *before* they `raise HTTPException`, so a 400
+  always released its connection.
+
 - **The dashboard's tests could not run against Postgres, and the reason was not what it looked
   like.** 34 of its 70 test modules seeded a throwaway `platform.db` with raw `sqlite3` while the
   routers under test read whichever engine was configured — so on `EXAMLOPS_DB_BACKEND=postgres`

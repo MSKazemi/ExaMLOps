@@ -26,17 +26,20 @@ async def get_all_batch_jobs(_=Depends(_viewer)) -> list[dict]:
     """Last 50 batch inference jobs, most recent first."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            """
+        try:
+            rows = conn.execute(
+                """
             SELECT id, ts, model, alias, input_path, output_path,
                    n_inputs, n_success, n_errors, elapsed_s, actor
             FROM batch_jobs
             ORDER BY ts DESC
             LIMIT 50
             """
-        ).fetchall()
-        conn.close()
-        return _rows_to_dicts(rows)
+            ).fetchall()
+            conn.close()
+            return _rows_to_dicts(rows)
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -46,8 +49,9 @@ async def get_model_batch_jobs(model: str, _=Depends(_viewer)) -> list[dict]:
     """Last 50 batch inference jobs for a specific model, most recent first."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            """
+        try:
+            rows = conn.execute(
+                """
             SELECT id, ts, model, alias, input_path, output_path,
                    n_inputs, n_success, n_errors, elapsed_s, actor
             FROM batch_jobs
@@ -55,9 +59,11 @@ async def get_model_batch_jobs(model: str, _=Depends(_viewer)) -> list[dict]:
             ORDER BY ts DESC
             LIMIT 50
             """,
-            (model,),
-        ).fetchall()
-        conn.close()
-        return _rows_to_dicts(rows)
+                (model,),
+            ).fetchall()
+            conn.close()
+            return _rows_to_dicts(rows)
+        finally:
+            conn.close()
     except Exception:
         return []

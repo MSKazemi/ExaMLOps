@@ -39,30 +39,33 @@ async def get_namespaces(_=Depends(_viewer)) -> list[dict]:
     """All namespaces with the number of models assigned to each."""
     try:
         conn = connect(_db_path())
-        _ensure_tables(conn)
-        # Ensure default namespace always present
-        conn.execute("INSERT OR IGNORE INTO namespaces (name) VALUES ('default')")
-        conn.commit()
-        rows = conn.execute(
-            "SELECT name, description, created_at, created_by FROM namespaces ORDER BY name"
-        ).fetchall()
-        result = []
-        for row in rows:
-            count_row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM namespace_models WHERE namespace=?",
-                (row["name"],),
-            ).fetchone()
-            result.append(
-                {
-                    "name": row["name"],
-                    "description": row["description"],
-                    "created_at": row["created_at"],
-                    "created_by": row["created_by"],
-                    "model_count": count_row["cnt"] if count_row else 0,
-                }
-            )
-        conn.close()
-        return result
+        try:
+            _ensure_tables(conn)
+            # Ensure default namespace always present
+            conn.execute("INSERT OR IGNORE INTO namespaces (name) VALUES ('default')")
+            conn.commit()
+            rows = conn.execute(
+                "SELECT name, description, created_at, created_by FROM namespaces ORDER BY name"
+            ).fetchall()
+            result = []
+            for row in rows:
+                count_row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM namespace_models WHERE namespace=?",
+                    (row["name"],),
+                ).fetchone()
+                result.append(
+                    {
+                        "name": row["name"],
+                        "description": row["description"],
+                        "created_at": row["created_at"],
+                        "created_by": row["created_by"],
+                        "model_count": count_row["cnt"] if count_row else 0,
+                    }
+                )
+            conn.close()
+            return result
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -72,25 +75,30 @@ async def get_namespace_models(name: str, _=Depends(_viewer)) -> dict:
     """All models assigned to a specific namespace."""
     try:
         conn = connect(_db_path())
-        _ensure_tables(conn)
-        ns_row = conn.execute(
-            "SELECT name, description, created_at, created_by FROM namespaces WHERE name=?",
-            (name,),
-        ).fetchone()
-        if not ns_row:
+        try:
+            _ensure_tables(conn)
+            ns_row = conn.execute(
+                "SELECT name, description, created_at, created_by FROM namespaces WHERE name=?",
+                (name,),
+            ).fetchone()
+            if not ns_row:
+                conn.close()
+                return {"error": f"Namespace '{name}' not found"}
+            model_rows = conn.execute(
+                "SELECT model, assigned_at FROM namespace_models WHERE namespace=? ORDER BY model",
+                (name,),
+            ).fetchall()
             conn.close()
-            return {"error": f"Namespace '{name}' not found"}
-        model_rows = conn.execute(
-            "SELECT model, assigned_at FROM namespace_models WHERE namespace=? ORDER BY model",
-            (name,),
-        ).fetchall()
-        conn.close()
-        return {
-            "name": ns_row["name"],
-            "description": ns_row["description"],
-            "created_at": ns_row["created_at"],
-            "created_by": ns_row["created_by"],
-            "models": [{"model": r["model"], "assigned_at": r["assigned_at"]} for r in model_rows],
-        }
+            return {
+                "name": ns_row["name"],
+                "description": ns_row["description"],
+                "created_at": ns_row["created_at"],
+                "created_by": ns_row["created_by"],
+                "models": [
+                    {"model": r["model"], "assigned_at": r["assigned_at"]} for r in model_rows
+                ],
+            }
+        finally:
+            conn.close()
     except Exception:
         return {"error": "internal error"}

@@ -22,27 +22,30 @@ async def get_quality_history(model: str, _=Depends(_viewer)) -> list[dict]:
     """Return the last 20 data quality check results for *model*."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            """SELECT id, ts, model, dataset, status, passed, failed, details_json, actor
+        try:
+            rows = conn.execute(
+                """SELECT id, ts, model, dataset, status, passed, failed, details_json, actor
                FROM data_quality_checks
                WHERE model=?
                ORDER BY ts DESC
                LIMIT 20""",
-            (model,),
-        ).fetchall()
-        conn.close()
-        result = []
-        for r in rows:
-            item: dict = dict(r)
-            if item.get("details_json"):
-                try:
-                    item["details"] = json.loads(item["details_json"])
-                except Exception:
+                (model,),
+            ).fetchall()
+            conn.close()
+            result = []
+            for r in rows:
+                item: dict = dict(r)
+                if item.get("details_json"):
+                    try:
+                        item["details"] = json.loads(item["details_json"])
+                    except Exception:
+                        item["details"] = []
+                else:
                     item["details"] = []
-            else:
-                item["details"] = []
-            del item["details_json"]
-            result.append(item)
-        return result
+                del item["details_json"]
+                result.append(item)
+            return result
+        finally:
+            conn.close()
     except Exception:
         return []

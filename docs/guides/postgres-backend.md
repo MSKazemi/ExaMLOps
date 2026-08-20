@@ -69,6 +69,40 @@ TLS.
 | `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` | `2.0` | seconds to wait for the server to answer *at all* before declaring it unreachable — see below |
 | `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | seconds an unreachable verdict is remembered, so one command probes once |
 
+#### If the dashboard starts hanging, suspect a connection that was never returned
+
+Pooling changes what an unreleased connection costs. Unpooled — and on SQLite — a connection you
+forget is collected with the object, and the price is a file handle. Pooled, it is *gone*: the pool
+counts it as checked out for the life of the process. Reach `EXAMLOPS_POSTGRES_POOL_MAX` and every
+later request waits `psycopg_pool`'s full 30-second budget for a connection that is never coming
+back, so the symptom is a dashboard that hangs, then times out, with a perfectly healthy server.
+
+The platform's own code is guarded against this — every connection it opens is released in a
+`finally`, and two tests hold that line: `test_connections_are_scoped.py` reads the source and
+fails on any unguarded site, and `test_pool_survives_error_paths.py` shrinks the pool to two and
+makes a handler fail more times than that. If you are writing code that opens the datastore
+directly, do the same:
+
+```python
+conn = connect(db_path)
+try:
+    ...
+finally:
+    conn.close()
+```
+
+Note that `with sqlite3.connect(...) as conn:` does **not** help — that context manager commits or
+rolls back a transaction, it does not close the connection.
+
+If you need to confirm a leak rather than guess at one, count checked-out backends on the server:
+
+```sql
+SELECT state, count(*) FROM pg_stat_activity WHERE datname = current_database() GROUP BY state;
+```
+
+A pile of `idle in transaction` or a count pinned at exactly your `POOL_MAX` × process count is the
+tell.
+
 ### When the server is not there
 
 Reachability and pool saturation are different failures and get different budgets.

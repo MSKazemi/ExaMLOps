@@ -51,12 +51,15 @@ async def list_systems(_=Depends(_viewer)) -> list[dict]:
     """EU-AI-Act system register (from `compliance_systems`, the table the CLI writes)."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT model, tenant, in_scope, risk_tier, intended_purpose, deployment_context, "
-            "conformity_state, updated_at, updated_by FROM compliance_systems ORDER BY model"
-        ).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute(
+                "SELECT model, tenant, in_scope, risk_tier, intended_purpose, deployment_context, "
+                "conformity_state, updated_at, updated_by FROM compliance_systems ORDER BY model"
+            ).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 

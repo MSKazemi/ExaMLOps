@@ -103,13 +103,16 @@ async def publish_event(
     events, _ = _examlops_events()
     event_id = events.publish(topic, event_payload)
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "event_published",
-        topic,
-        {"id": event_id, "topic": topic},
-    )
-    conn.commit()
-    conn.close()
-    return {"id": event_id, "topic": topic}
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "event_published",
+            topic,
+            {"id": event_id, "topic": topic},
+        )
+        conn.commit()
+        conn.close()
+        return {"id": event_id, "topic": topic}
+    finally:
+        conn.close()

@@ -68,17 +68,20 @@ async def autopilot_status(_=Depends(_viewer)) -> dict:
     recent: list[dict] = []
     try:
         conn = connect(_db_path())
-        row = conn.execute("SELECT value FROM autopilot_config WHERE key='enabled'").fetchone()
-        enabled = bool(row) and str(row["value"]) == "1"
-        recent = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT id, run_at, triggered_by, model_filter, dry_run, retrains_triggered, "
-                "promotions_made, policy_blocks, human_required, skipped, summary "
-                "FROM autopilot_runs ORDER BY id DESC LIMIT 10"
-            ).fetchall()
-        ]
-        conn.close()
+        try:
+            row = conn.execute("SELECT value FROM autopilot_config WHERE key='enabled'").fetchone()
+            enabled = bool(row) and str(row["value"]) == "1"
+            recent = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id, run_at, triggered_by, model_filter, dry_run, retrains_triggered, "
+                    "promotions_made, policy_blocks, human_required, skipped, summary "
+                    "FROM autopilot_runs ORDER BY id DESC LIMIT 10"
+                ).fetchall()
+            ]
+            conn.close()
+        finally:
+            conn.close()
     except Exception:
         pass
     override = _env_override()
@@ -95,10 +98,13 @@ async def _set_enabled(value: str, action: str, principal: dict) -> dict:
     a = _examlops_autopilot()
     a.set_autopilot_config("enabled", value)
     conn = connect(_db_path())
-    _audit(conn, principal.get("sub", "?"), action, {"enabled": value == "1"})
-    conn.commit()
-    conn.close()
-    return {"enabled": value == "1"}
+    try:
+        _audit(conn, principal.get("sub", "?"), action, {"enabled": value == "1"})
+        conn.commit()
+        conn.close()
+        return {"enabled": value == "1"}
+    finally:
+        conn.close()
 
 
 @router.post("/enable")

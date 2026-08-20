@@ -93,15 +93,18 @@ def dependency_health() -> list[dict[str, Any]]:
     start = time.monotonic()
     try:
         conn = connect(_platform_db_path())
-        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-        conn.close()
-        deps.append(
-            {
-                "name": "platform_db",
-                "status": "up",
-                "latencyMs": round((time.monotonic() - start) * 1000.0, 2),
-            }
-        )
+        try:
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            conn.close()
+            deps.append(
+                {
+                    "name": "platform_db",
+                    "status": "up",
+                    "latencyMs": round((time.monotonic() - start) * 1000.0, 2),
+                }
+            )
+        finally:
+            conn.close()
     except Exception as exc:  # pragma: no cover - defensive
         deps.append({"name": "platform_db", "status": "down", "error": str(exc)})
     return deps

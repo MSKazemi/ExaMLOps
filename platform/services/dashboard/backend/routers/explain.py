@@ -20,9 +20,12 @@ def _rows_from_db(sql: str, params: tuple = ()) -> list[dict]:
     """Execute a read query against the platform SQLite DB and return row dicts."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(sql, params).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 

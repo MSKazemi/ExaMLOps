@@ -58,18 +58,21 @@ async def list_keys(_=Depends(_viewer)) -> list[dict]:
     """Virtual keys — stored fields only (hash, scope, budget, spend, revoked). Never the raw key."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by, "
-            "created_at, revoked FROM virtual_keys ORDER BY created_at DESC"
-        ).fetchall()
-        conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["models"] = json.loads(d.pop("models_json") or "[]")
-            d["revoked"] = bool(d["revoked"])
-            out.append(d)
-        return out
+        try:
+            rows = conn.execute(
+                "SELECT key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by, "
+                "created_at, revoked FROM virtual_keys ORDER BY created_at DESC"
+            ).fetchall()
+            conn.close()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["models"] = json.loads(d.pop("models_json") or "[]")
+                d["revoked"] = bool(d["revoked"])
+                out.append(d)
+            return out
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -117,7 +120,10 @@ async def revoke_key(
     _gateway, gov = _examlops_gateway()
     gov.revoke_virtual_key(key_hash)
     conn = connect(_db_path())
-    _audit(conn, principal.get("sub", "?"), "virtual_key_revoked", key_hash, {})
-    conn.commit()
-    conn.close()
-    return {"keyHash": key_hash, "revoked": True}
+    try:
+        _audit(conn, principal.get("sub", "?"), "virtual_key_revoked", key_hash, {})
+        conn.commit()
+        conn.close()
+        return {"keyHash": key_hash, "revoked": True}
+    finally:
+        conn.close()

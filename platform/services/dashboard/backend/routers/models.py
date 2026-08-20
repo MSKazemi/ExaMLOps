@@ -645,18 +645,21 @@ async def get_model_costs(name: str, _=Depends(require_role("viewer"))) -> list[
     db_path = _os.getenv("PLATFORM_DB", "/repo/platform.db")
     try:
         conn = connect(db_path)
-        rows = conn.execute(
-            "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
-            "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
-            (name.upper(),),
-        ).fetchall()
-        if not rows:
+        try:
             rows = conn.execute(
                 "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
                 "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
-                (name.lower(),),
+                (name.upper(),),
             ).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+            if not rows:
+                rows = conn.execute(
+                    "SELECT version, run_id, job_id, gpu_hours, cost_usd, recorded_at "
+                    "FROM model_costs WHERE model_name=? ORDER BY version ASC, id ASC",
+                    (name.lower(),),
+                ).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []

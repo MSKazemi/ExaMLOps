@@ -70,45 +70,48 @@ async def drift_status(
     """Prediction drift status for all models (or one model)."""
     try:
         conn = connect(_db_path())
-        if model:
-            models_list = [model]
-        else:
-            rows = conn.execute("SELECT DISTINCT model FROM drift_snapshots").fetchall()
-            models_list = [r["model"] for r in rows]
-        results = []
-        for m in models_list:
-            snap_rows = conn.execute(
-                "SELECT prediction FROM drift_snapshots WHERE model=? "
-                "ORDER BY ts DESC, rowid DESC LIMIT ?",
-                (m, _SNAPSHOT_WINDOW),
-            ).fetchall()
-            preds = [r["prediction"] for r in snap_rows]
-            if not preds:
-                continue
-            live = _compute_stats(preds)
-            bl_row = conn.execute(
-                "SELECT stats FROM drift_baselines WHERE model=?", (m,)
-            ).fetchone()
-            baseline = json.loads(bl_row["stats"]) if bl_row else None
-            if baseline is None or baseline.get("std", 0) == 0:
-                z = 0.0
-                status = "OK (no baseline)"
+        try:
+            if model:
+                models_list = [model]
             else:
-                z = abs(live["mean"] - baseline["mean"]) / baseline["std"]
-                status = "CRITICAL" if z >= _CRIT_Z else ("WARNING" if z >= _WARN_Z else "OK")
-            results.append(
-                {
-                    "model": m,
-                    "live_mean": round(live["mean"], 3),
-                    "live_std": round(live["std"], 3),
-                    "baseline_mean": round(baseline["mean"], 3) if baseline else None,
-                    "z_score": round(z, 2),
-                    "status": status,
-                    "n_snapshots": len(preds),
-                }
-            )
-        conn.close()
-        return results
+                rows = conn.execute("SELECT DISTINCT model FROM drift_snapshots").fetchall()
+                models_list = [r["model"] for r in rows]
+            results = []
+            for m in models_list:
+                snap_rows = conn.execute(
+                    "SELECT prediction FROM drift_snapshots WHERE model=? "
+                    "ORDER BY ts DESC, rowid DESC LIMIT ?",
+                    (m, _SNAPSHOT_WINDOW),
+                ).fetchall()
+                preds = [r["prediction"] for r in snap_rows]
+                if not preds:
+                    continue
+                live = _compute_stats(preds)
+                bl_row = conn.execute(
+                    "SELECT stats FROM drift_baselines WHERE model=?", (m,)
+                ).fetchone()
+                baseline = json.loads(bl_row["stats"]) if bl_row else None
+                if baseline is None or baseline.get("std", 0) == 0:
+                    z = 0.0
+                    status = "OK (no baseline)"
+                else:
+                    z = abs(live["mean"] - baseline["mean"]) / baseline["std"]
+                    status = "CRITICAL" if z >= _CRIT_Z else ("WARNING" if z >= _WARN_Z else "OK")
+                results.append(
+                    {
+                        "model": m,
+                        "live_mean": round(live["mean"], 3),
+                        "live_std": round(live["std"], 3),
+                        "baseline_mean": round(baseline["mean"], 3) if baseline else None,
+                        "z_score": round(z, 2),
+                        "status": status,
+                        "n_snapshots": len(preds),
+                    }
+                )
+            conn.close()
+            return results
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -118,9 +121,12 @@ async def drift_auto_retrain(_=Depends(_viewer)) -> list[dict]:
     """Auto-retrain configuration for all models."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute("SELECT * FROM drift_auto_retrain").fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -134,57 +140,62 @@ async def input_drift_status(
     INPUT_WINDOW = 200
     try:
         conn = connect(_db_path())
-        if model:
-            models_list = [model]
-        else:
-            rows = conn.execute("SELECT DISTINCT model FROM input_snapshots").fetchall()
-            models_list = [r["model"] for r in rows]
-        results = []
-        for m in models_list:
-            snap_rows = conn.execute(
-                "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots "
-                "WHERE model=? ORDER BY ts DESC LIMIT ?",
-                (m, INPUT_WINDOW),
-            ).fetchall()
-            if not snap_rows:
-                continue
-            norms = [r["emb_norm"] for r in snap_rows]
-            means = [r["emb_mean"] for r in snap_rows]
-            stds = [r["emb_std"] for r in snap_rows]
-            live = {
-                "norm_mean": sum(norms) / len(norms),
-                "mean_mean": sum(means) / len(means),
-                "std_mean": sum(stds) / len(stds),
-            }
-            bl_row = conn.execute(
-                "SELECT stats FROM input_baselines WHERE model=?", (m,)
-            ).fetchone()
-            baseline = json.loads(bl_row["stats"]) if bl_row else None
-            if baseline is None:
-                max_z, status = 0.0, "OK (no baseline)"
+        try:
+            if model:
+                models_list = [model]
             else:
-                zs = []
-                for metric in ("norm_mean", "mean_mean", "std_mean"):
-                    bstd = baseline.get(f"{metric}_std", 0.0)
-                    if bstd > 0:
-                        zs.append(abs(live[metric] - baseline[metric]) / bstd)
-                max_z = max(zs) if zs else 0.0
-                status = (
-                    "CRITICAL" if max_z >= _CRIT_Z else ("WARNING" if max_z >= _WARN_Z else "OK")
-                )
-            results.append(
-                {
-                    "model": m,
-                    "live_norm_mean": round(live["norm_mean"], 3),
-                    "live_emb_mean": round(live["mean_mean"], 4),
-                    "live_emb_std": round(live["std_mean"], 4),
-                    "max_z": round(max_z, 2),
-                    "status": status,
-                    "n_snapshots": len(snap_rows),
+                rows = conn.execute("SELECT DISTINCT model FROM input_snapshots").fetchall()
+                models_list = [r["model"] for r in rows]
+            results = []
+            for m in models_list:
+                snap_rows = conn.execute(
+                    "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots "
+                    "WHERE model=? ORDER BY ts DESC LIMIT ?",
+                    (m, INPUT_WINDOW),
+                ).fetchall()
+                if not snap_rows:
+                    continue
+                norms = [r["emb_norm"] for r in snap_rows]
+                means = [r["emb_mean"] for r in snap_rows]
+                stds = [r["emb_std"] for r in snap_rows]
+                live = {
+                    "norm_mean": sum(norms) / len(norms),
+                    "mean_mean": sum(means) / len(means),
+                    "std_mean": sum(stds) / len(stds),
                 }
-            )
-        conn.close()
-        return results
+                bl_row = conn.execute(
+                    "SELECT stats FROM input_baselines WHERE model=?", (m,)
+                ).fetchone()
+                baseline = json.loads(bl_row["stats"]) if bl_row else None
+                if baseline is None:
+                    max_z, status = 0.0, "OK (no baseline)"
+                else:
+                    zs = []
+                    for metric in ("norm_mean", "mean_mean", "std_mean"):
+                        bstd = baseline.get(f"{metric}_std", 0.0)
+                        if bstd > 0:
+                            zs.append(abs(live[metric] - baseline[metric]) / bstd)
+                    max_z = max(zs) if zs else 0.0
+                    status = (
+                        "CRITICAL"
+                        if max_z >= _CRIT_Z
+                        else ("WARNING" if max_z >= _WARN_Z else "OK")
+                    )
+                results.append(
+                    {
+                        "model": m,
+                        "live_norm_mean": round(live["norm_mean"], 3),
+                        "live_emb_mean": round(live["mean_mean"], 4),
+                        "live_emb_std": round(live["std_mean"], 4),
+                        "max_z": round(max_z, 2),
+                        "status": status,
+                        "n_snapshots": len(snap_rows),
+                    }
+                )
+            conn.close()
+            return results
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -218,34 +229,40 @@ async def set_baseline(
     """
     _require_manage(principal)
     conn = connect(_db_path())
-    rows = conn.execute(
-        "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC LIMIT ?",
-        (model, _BASELINE_WINDOW),
-    ).fetchall()
-    preds = [r["prediction"] for r in rows]
-    if len(preds) < _MIN_BASELINE_SNAPSHOTS:
+    try:
+        rows = conn.execute(
+            "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC LIMIT ?",
+            (model, _BASELINE_WINDOW),
+        ).fetchall()
+        preds = [r["prediction"] for r in rows]
+        if len(preds) < _MIN_BASELINE_SNAPSHOTS:
+            conn.close()
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Need at least {_MIN_BASELINE_SNAPSHOTS} snapshots, have {len(preds)}. "
+                "Run the bridge to collect predictions first.",
+            )
+        stats = _compute_stats(preds)
+        if dry_run:
+            conn.close()
+            return {
+                "dryRun": True,
+                "model": model,
+                "wouldSet": {k: round(v, 4) for k, v in stats.items()},
+            }
         conn.close()
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Need at least {_MIN_BASELINE_SNAPSHOTS} snapshots, have {len(preds)}. "
-            "Run the bridge to collect predictions first.",
-        )
-    stats = _compute_stats(preds)
-    if dry_run:
+        drift = _examlops_drift()
+        drift.set_drift_baseline(model, stats)
+    finally:
         conn.close()
-        return {
-            "dryRun": True,
-            "model": model,
-            "wouldSet": {k: round(v, 4) for k, v in stats.items()},
-        }
-    conn.close()
-    drift = _examlops_drift()
-    drift.set_drift_baseline(model, stats)
     conn = connect(_db_path())
-    _audit(conn, principal.get("sub", "?"), "drift_baseline_set", model, stats)
-    conn.commit()
-    conn.close()
-    return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+    try:
+        _audit(conn, principal.get("sub", "?"), "drift_baseline_set", model, stats)
+        conn.commit()
+        conn.close()
+        return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+    finally:
+        conn.close()
 
 
 @router.post("/reset/{model}")
@@ -260,18 +277,21 @@ async def reset_snapshots(
     """
     _require_manage(principal)
     conn = connect(_db_path())
-    n = conn.execute(
-        "SELECT COUNT(*) AS c FROM drift_snapshots WHERE model=?", (model,)
-    ).fetchone()["c"]
-    if dry_run:
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) AS c FROM drift_snapshots WHERE model=?", (model,)
+        ).fetchone()["c"]
+        if dry_run:
+            conn.close()
+            return {"dryRun": True, "model": model, "wouldClear": n}
+        if n:
+            conn.execute("DELETE FROM drift_snapshots WHERE model=?", (model,))
+            _audit(conn, principal.get("sub", "?"), "drift_reset", model, {"cleared": n})
+            conn.commit()
         conn.close()
-        return {"dryRun": True, "model": model, "wouldClear": n}
-    if n:
-        conn.execute("DELETE FROM drift_snapshots WHERE model=?", (model,))
-        _audit(conn, principal.get("sub", "?"), "drift_reset", model, {"cleared": n})
-        conn.commit()
-    conn.close()
-    return {"model": model, "cleared": n}
+        return {"model": model, "cleared": n}
+    finally:
+        conn.close()
 
 
 @router.post("/auto-retrain/{model}")
@@ -300,22 +320,25 @@ async def configure_auto_retrain(
         model, enabled=enabled, min_z_score=min_z, dataset_name=dataset, cooldown_s=cooldown
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "drift_auto_retrain_configured",
-        model,
-        {"enabled": enabled, "dataset": dataset, "minZ": min_z, "cooldown": cooldown},
-    )
-    conn.commit()
-    conn.close()
-    return {
-        "model": model,
-        "enabled": enabled,
-        "dataset": dataset,
-        "minZ": min_z,
-        "cooldown": cooldown,
-    }
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "drift_auto_retrain_configured",
+            model,
+            {"enabled": enabled, "dataset": dataset, "minZ": min_z, "cooldown": cooldown},
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "model": model,
+            "enabled": enabled,
+            "dataset": dataset,
+            "minZ": min_z,
+            "cooldown": cooldown,
+        }
+    finally:
+        conn.close()
 
 
 def _pop_mean_std(values: list[float]) -> tuple[float, float]:
@@ -340,43 +363,49 @@ async def set_input_baseline_view(
     """
     _require_manage(principal)
     conn = connect(_db_path())
-    rows = conn.execute(
-        "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
-        "ORDER BY ts DESC LIMIT ?",
-        (model, _INPUT_BASELINE_WINDOW),
-    ).fetchall()
-    conn.close()
-    if len(rows) < _MIN_INPUT_SNAPSHOTS:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Need at least {_MIN_INPUT_SNAPSHOTS} input snapshots, have {len(rows)}. "
-            "Run the bridge to collect embeddings first.",
-        )
-    norm_mean, norm_std = _pop_mean_std([r["emb_norm"] for r in rows])
-    mean_mean, mean_std = _pop_mean_std([r["emb_mean"] for r in rows])
-    std_mean, std_std = _pop_mean_std([r["emb_std"] for r in rows])
-    stats = {
-        "norm_mean": norm_mean,
-        "norm_mean_std": norm_std,
-        "mean_mean": mean_mean,
-        "mean_mean_std": mean_std,
-        "std_mean": std_mean,
-        "std_mean_std": std_std,
-        "n": float(len(rows)),
-    }
-    if dry_run:
-        return {
-            "dryRun": True,
-            "model": model,
-            "wouldSet": {k: round(v, 4) for k, v in stats.items()},
+    try:
+        rows = conn.execute(
+            "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
+            "ORDER BY ts DESC LIMIT ?",
+            (model, _INPUT_BASELINE_WINDOW),
+        ).fetchall()
+        conn.close()
+        if len(rows) < _MIN_INPUT_SNAPSHOTS:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Need at least {_MIN_INPUT_SNAPSHOTS} input snapshots, have {len(rows)}. "
+                "Run the bridge to collect embeddings first.",
+            )
+        norm_mean, norm_std = _pop_mean_std([r["emb_norm"] for r in rows])
+        mean_mean, mean_std = _pop_mean_std([r["emb_mean"] for r in rows])
+        std_mean, std_std = _pop_mean_std([r["emb_std"] for r in rows])
+        stats = {
+            "norm_mean": norm_mean,
+            "norm_mean_std": norm_std,
+            "mean_mean": mean_mean,
+            "mean_mean_std": mean_std,
+            "std_mean": std_mean,
+            "std_mean_std": std_std,
+            "n": float(len(rows)),
         }
-    drift = _examlops_drift()
-    drift.set_input_baseline(model, stats)
+        if dry_run:
+            return {
+                "dryRun": True,
+                "model": model,
+                "wouldSet": {k: round(v, 4) for k, v in stats.items()},
+            }
+        drift = _examlops_drift()
+        drift.set_input_baseline(model, stats)
+    finally:
+        conn.close()
     conn = connect(_db_path())
-    _audit(conn, principal.get("sub", "?"), "input_baseline_set", model, {"n": len(rows)})
-    conn.commit()
-    conn.close()
-    return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+    try:
+        _audit(conn, principal.get("sub", "?"), "input_baseline_set", model, {"n": len(rows)})
+        conn.commit()
+        conn.close()
+        return {"model": model, "baseline": {k: round(v, 4) for k, v in stats.items()}}
+    finally:
+        conn.close()
 
 
 @router.post("/input-reset/{model}")
@@ -391,15 +420,18 @@ async def reset_input_snapshots(
     """
     _require_manage(principal)
     conn = connect(_db_path())
-    n = conn.execute(
-        "SELECT COUNT(*) AS c FROM input_snapshots WHERE model=?", (model,)
-    ).fetchone()["c"]
-    if dry_run:
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) AS c FROM input_snapshots WHERE model=?", (model,)
+        ).fetchone()["c"]
+        if dry_run:
+            conn.close()
+            return {"dryRun": True, "model": model, "wouldClear": n}
+        if n:
+            conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
+            _audit(conn, principal.get("sub", "?"), "input_reset", model, {"cleared": n})
+            conn.commit()
         conn.close()
-        return {"dryRun": True, "model": model, "wouldClear": n}
-    if n:
-        conn.execute("DELETE FROM input_snapshots WHERE model=?", (model,))
-        _audit(conn, principal.get("sub", "?"), "input_reset", model, {"cleared": n})
-        conn.commit()
-    conn.close()
-    return {"model": model, "cleared": n}
+        return {"model": model, "cleared": n}
+    finally:
+        conn.close()

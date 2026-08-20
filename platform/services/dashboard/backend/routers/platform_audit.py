@@ -48,24 +48,29 @@ async def get_platform_audit(
     """
     try:
         conn = connect(_db_path())
-        query = "SELECT id, ts, source, actor, action, target, details FROM audit_events WHERE 1=1"
-        params: list = []
-        if last_days is not None:
-            query += " AND ts >= datetime('now', ?)"
-            params.append(f"-{last_days} days")
-        if model:
-            query += " AND target=?"
-            params.append(model)
-        if action:
-            query += " AND action=?"
-            params.append(action)
-        if source:
-            query += " AND source=?"
-            params.append(source)
-        query += " ORDER BY ts DESC LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+        try:
+            query = (
+                "SELECT id, ts, source, actor, action, target, details FROM audit_events WHERE 1=1"
+            )
+            params: list = []
+            if last_days is not None:
+                query += " AND ts >= datetime('now', ?)"
+                params.append(f"-{last_days} days")
+            if model:
+                query += " AND target=?"
+                params.append(model)
+            if action:
+                query += " AND action=?"
+                params.append(action)
+            if source:
+                query += " AND source=?"
+                params.append(source)
+            query += " ORDER BY ts DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+            conn.close()
+        finally:
+            conn.close()
     except Exception as exc:  # noqa: BLE001
         logger.exception("platform audit query failed")
         raise HTTPException(status_code=500, detail="Failed to read platform audit log") from exc

@@ -111,13 +111,16 @@ async def submit_admission(
         priority=priority,
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "admission_submit",
-        kind,
-        {"id": item_id, "tenant": tenant, "project": project, "priority": priority},
-    )
-    conn.commit()
-    conn.close()
-    return {"id": item_id, "kind": kind, "tenant": tenant, "priority": priority}
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "admission_submit",
+            kind,
+            {"id": item_id, "tenant": tenant, "project": project, "priority": priority},
+        )
+        conn.commit()
+        conn.close()
+        return {"id": item_id, "kind": kind, "tenant": tenant, "priority": priority}
+    finally:
+        conn.close()

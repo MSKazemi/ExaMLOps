@@ -37,24 +37,30 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
 async def list_versions(_=Depends(_viewer)) -> list[dict]:
     """Return the last 50 feature versions across all models."""
     conn = connect(_db_path())
-    _ensure_table(conn)
-    rows = conn.execute(
-        "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"
-        " FROM feature_versions ORDER BY ts DESC, id DESC LIMIT 50"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        _ensure_table(conn)
+        rows = conn.execute(
+            "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"
+            " FROM feature_versions ORDER BY ts DESC, id DESC LIMIT 50"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 @router.get("/versions/{model}")
 async def list_versions_for_model(model: str, _=Depends(_viewer)) -> list[dict]:
     """Return feature versions for a specific model."""
     conn = connect(_db_path())
-    _ensure_table(conn)
-    rows = conn.execute(
-        "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"
-        " FROM feature_versions WHERE model=? ORDER BY ts DESC, id DESC LIMIT 50",
-        (model,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        _ensure_table(conn)
+        rows = conn.execute(
+            "SELECT id, ts, model, name, version, local_path, size_bytes, schema_json, actor"
+            " FROM feature_versions WHERE model=? ORDER BY ts DESC, id DESC LIMIT 50",
+            (model,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

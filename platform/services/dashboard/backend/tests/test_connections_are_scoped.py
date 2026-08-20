@@ -8,9 +8,13 @@ before failing, which is how a suite that leaked a handful of connections stoppe
 leak and started looking like a hang.
 
 ``conn.close()`` written as the last statement of a function is not enough — it runs only on the
-happy path. The release has to be in a ``finally`` (or a ``with``). This test does not demand that
-the whole app be converted at once; it pins the number of unprotected sites so that **new** code
-cannot add one, and the tracked backlog can retire the existing ones.
+happy path. The release has to be in a ``finally`` (or a ``with``). The baseline below started at
+51 and is now 0: every site is scoped, so this is no longer a ratchet but a floor, and any new
+unprotected connection fails the suite.
+
+One shape this rules out is worth naming, because it read as correct: a handler that called
+``conn.close()`` and then ``raise HTTPException(400, ...)`` released the connection on the happy
+path and leaked it on every rejected request — the paths a caller can trigger at will.
 """
 
 import ast
@@ -18,10 +22,9 @@ from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Sites where ``conn.close()`` exists but is not reached when the body raises. Ratchet only: this
-# number may go down (retire a site) and must never go up. Retiring them is tracked in
-# the enterprise-readiness backlog under the Postgres backend work.
-_UNPROTECTED_BASELINE = 51
+# Sites where ``conn.close()`` exists but is not reached when the body raises. Now zero, and it
+# stays zero: put the close in a ``finally`` rather than raising this number.
+_UNPROTECTED_BASELINE = 0
 
 
 def _connect_sites(tree: ast.AST) -> list[tuple[int, str]]:
@@ -41,9 +44,7 @@ def _connect_sites(tree: ast.AST) -> list[tuple[int, str]]:
 
             # A helper that hands the connection back is not the owner; its caller is.
             if any(
-                isinstance(r, ast.Return)
-                and isinstance(r.value, ast.Name)
-                and r.value.id == var
+                isinstance(r, ast.Return) and isinstance(r.value, ast.Name) and r.value.id == var
                 for r in ast.walk(fn)
             ):
                 continue

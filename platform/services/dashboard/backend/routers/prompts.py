@@ -57,31 +57,34 @@ async def list_prompts(_=Depends(_viewer)) -> list[dict]:
     """All prompts with their versions (newest first) + labels. Fail-open to []."""
     try:
         conn = connect(_db_path())
-        vrows = conn.execute(
-            "SELECT name, version, variables, actor, created_at FROM prompt_versions "
-            "ORDER BY name, version DESC"
-        ).fetchall()
-        lrows = conn.execute(
-            "SELECT name, label, version, updated_at FROM prompt_labels ORDER BY name, label"
-        ).fetchall()
-        conn.close()
-        prompts: dict[str, dict] = {}
-        for r in vrows:
-            p = prompts.setdefault(r["name"], {"name": r["name"], "versions": [], "labels": []})
-            p["versions"].append(
-                {
-                    "version": r["version"],
-                    "variables": json.loads(r["variables"] or "[]"),
-                    "actor": r["actor"],
-                    "created_at": r["created_at"],
-                }
-            )
-        for r in lrows:
-            p = prompts.setdefault(r["name"], {"name": r["name"], "versions": [], "labels": []})
-            p["labels"].append(
-                {"label": r["label"], "version": r["version"], "updated_at": r["updated_at"]}
-            )
-        return list(prompts.values())
+        try:
+            vrows = conn.execute(
+                "SELECT name, version, variables, actor, created_at FROM prompt_versions "
+                "ORDER BY name, version DESC"
+            ).fetchall()
+            lrows = conn.execute(
+                "SELECT name, label, version, updated_at FROM prompt_labels ORDER BY name, label"
+            ).fetchall()
+            conn.close()
+            prompts: dict[str, dict] = {}
+            for r in vrows:
+                p = prompts.setdefault(r["name"], {"name": r["name"], "versions": [], "labels": []})
+                p["versions"].append(
+                    {
+                        "version": r["version"],
+                        "variables": json.loads(r["variables"] or "[]"),
+                        "actor": r["actor"],
+                        "created_at": r["created_at"],
+                    }
+                )
+            for r in lrows:
+                p = prompts.setdefault(r["name"], {"name": r["name"], "versions": [], "labels": []})
+                p["labels"].append(
+                    {"label": r["label"], "version": r["version"], "updated_at": r["updated_at"]}
+                )
+            return list(prompts.values())
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -112,12 +115,15 @@ async def create_version(
     if label:
         dp.set_prompt_label(name, label, version)
     conn = connect(_db_path())
-    _audit(conn, actor, "prompt_create", name, {"version": version, "variables": variables})
-    if label:
-        _audit(conn, actor, "prompt_label", name, {"label": label, "version": version})
-    conn.commit()
-    conn.close()
-    return {"name": name, "version": version, "variables": variables, "label": label or None}
+    try:
+        _audit(conn, actor, "prompt_create", name, {"version": version, "variables": variables})
+        if label:
+            _audit(conn, actor, "prompt_label", name, {"label": label, "version": version})
+        conn.commit()
+        conn.close()
+        return {"name": name, "version": version, "variables": variables, "label": label or None}
+    finally:
+        conn.close()
 
 
 @router.post("/{name}/label")
@@ -146,9 +152,16 @@ async def set_label(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"{name} v{version} does not exist")
     dp.set_prompt_label(name, label, version)
     conn = connect(_db_path())
-    _audit(
-        conn, principal.get("sub", "?"), "prompt_label", name, {"label": label, "version": version}
-    )
-    conn.commit()
-    conn.close()
-    return {"name": name, "label": label, "version": version}
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "prompt_label",
+            name,
+            {"label": label, "version": version},
+        )
+        conn.commit()
+        conn.close()
+        return {"name": name, "label": label, "version": version}
+    finally:
+        conn.close()

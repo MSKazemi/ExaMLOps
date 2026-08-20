@@ -50,13 +50,16 @@ async def list_secrets(_=Depends(_viewer)) -> list[dict]:
     """Secret METADATA only — never the value (path/tenant/version/updated_by/updated_at). Fail-open."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
-            "ORDER BY path, tenant"
-        ).fetchall()
-        conn.close()
-        # `hasValue` is always true for a stored row; the plaintext is intentionally absent.
-        return [{**dict(r), "hasValue": True} for r in rows]
+        try:
+            rows = conn.execute(
+                "SELECT path, tenant, version, updated_by, updated_at FROM secrets_store "
+                "ORDER BY path, tenant"
+            ).fetchall()
+            conn.close()
+            # `hasValue` is always true for a stored row; the plaintext is intentionally absent.
+            return [{**dict(r), "hasValue": True} for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 

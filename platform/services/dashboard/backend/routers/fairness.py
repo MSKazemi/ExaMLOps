@@ -56,19 +56,22 @@ async def list_fairness(_=Depends(_viewer)) -> list[dict]:
     """Per-model fairness configs (slice_attrs parsed from JSON). Fail-open to []."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(
-            "SELECT model, tenant, slice_attrs, threshold, min_samples, gate_promotion, enabled, "
-            "updated_at FROM fairness_config ORDER BY model"
-        ).fetchall()
-        conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["slice_attrs"] = json.loads(d.pop("slice_attrs") or "[]")
-            d["gate_promotion"] = bool(d["gate_promotion"])
-            d["enabled"] = bool(d["enabled"])
-            out.append(d)
-        return out
+        try:
+            rows = conn.execute(
+                "SELECT model, tenant, slice_attrs, threshold, min_samples, gate_promotion, enabled, "
+                "updated_at FROM fairness_config ORDER BY model"
+            ).fetchall()
+            conn.close()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["slice_attrs"] = json.loads(d.pop("slice_attrs") or "[]")
+                d["gate_promotion"] = bool(d["gate_promotion"])
+                d["enabled"] = bool(d["enabled"])
+                out.append(d)
+            return out
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -111,19 +114,22 @@ async def set_fairness(
         enabled=enabled,
     )
     conn = connect(_db_path())
-    _audit(
-        conn,
-        principal.get("sub", "?"),
-        "fairness_config_set",
-        model,
-        {"slice_attrs": slice_attrs, "threshold": threshold, "gate_promotion": gate},
-    )
-    conn.commit()
-    conn.close()
-    return {
-        "model": model,
-        "sliceAttrs": slice_attrs,
-        "threshold": threshold,
-        "gatePromotion": gate,
-        "enabled": enabled,
-    }
+    try:
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "fairness_config_set",
+            model,
+            {"slice_attrs": slice_attrs, "threshold": threshold, "gate_promotion": gate},
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "model": model,
+            "sliceAttrs": slice_attrs,
+            "threshold": threshold,
+            "gatePromotion": gate,
+            "enabled": enabled,
+        }
+    finally:
+        conn.close()

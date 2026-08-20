@@ -32,12 +32,15 @@ def _db_path() -> str:
 def _audit(actor: str, action: str, target: str, details: dict) -> None:
     try:
         conn = connect(_db_path())
-        conn.execute(
-            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-            ("dashboard", actor, action, target, json.dumps(details)),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+                ("dashboard", actor, action, target, json.dumps(details)),
+            )
+            conn.commit()
+            conn.close()
+        finally:
+            conn.close()
     except sqlite3.Error:
         pass  # auditing must never block the operation
 

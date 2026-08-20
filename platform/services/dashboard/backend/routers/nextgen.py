@@ -28,9 +28,12 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
     """Run a read query, returning [] on any error (fail-open)."""
     try:
         conn = connect(_db_path())
-        rows = conn.execute(sql, params).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
     except Exception:
         return []
 
