@@ -103,3 +103,41 @@ jobs:
           name: agent-test-report
           path: reports/
           if-no-files-found: ignore
+
+  frontend:
+    name: dashboard frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: platform/services/dashboard/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: platform/services/dashboard/frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: platform/services/dashboard/frontend
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: platform/services/dashboard/frontend
+        run: npx vitest run --reporter=junit --outputFile="$GITHUB_WORKSPACE/reports/frontend-unit.xml"
+
+      # tsc -b is the type check. Until 2026-08-20 it ran ONLY inside the deploy image build.
+      - name: Type check + build
+        working-directory: platform/services/dashboard/frontend
+        run: npm run build
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-report
+          path: reports/
+          if-no-files-found: ignore

@@ -77,7 +77,7 @@ endif
         monitoring-up monitoring-down \
         seanerbus-up seanerbus-down seanerbus-bridge-logs seanerbus-reqgen-logs \
         seanerbus-install seanerbus-bridge-up seanerbus-test-req \
-        dashboard-up dashboard-logs dashboard-check dashboard-check-backend \
+        dashboard-up dashboard-logs dashboard-check dashboard-check-backend ci-frontend \
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
@@ -574,7 +574,7 @@ test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.h
 check: lint typecheck test dashboard-check ## Run all quality checks: lint · typecheck · test · dashboard
 	@printf "\n$(GREEN)$(BOLD)All checks passed.$(RESET)\n\n"
 
-ci: ci-modelzoo ci-infra ci-examlops ci-agent ## Run every CI job group locally (mirrors GitLab CI)
+ci: ci-modelzoo ci-infra ci-examlops ci-agent ci-frontend ## Run every CI job group locally (mirrors GitLab CI)
 	@printf "\n$(GREEN)$(BOLD)All CI job groups passed locally.$(RESET)\n\n"
 
 smoke-check: ## Run post-deploy health probes against the local stack
@@ -634,6 +634,13 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
 
+ci-frontend: ## Mirror GitLab 'test:frontend' job — dashboard frontend lint + vitest + tsc build
+	@printf "$(BOLD)CI · dashboard frontend (npm)$(RESET)\n"
+	@command -v npm >/dev/null 2>&1 || { \
+	  printf "$(RED)npm not on PATH — cannot mirror the test:frontend gate.$(RESET)\n"; exit 1; }
+	@cd platform/services/dashboard/frontend && npm ci -q && npm run lint && npm test && npm run build
+	@printf "$(GREEN)CI · dashboard frontend passed.$(RESET)\n"
+
 ci-agent: install-dev ## Mirror the 'test:agent' job — the Skipper agent suite
 	@printf "$(BOLD)CI · agent (skipper)$(RESET)\n"
 	@$(MAKE) --no-print-directory skipper-test
@@ -641,26 +648,28 @@ ci-agent: install-dev ## Mirror the 'test:agent' job — the Skipper agent suite
 
 preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
 	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
-	@printf "$(BOLD)1/8 sanity: python syntax$(RESET)\n"
+	@printf "$(BOLD)1/9 sanity: python syntax$(RESET)\n"
 	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" \
 	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
-	@printf "$(BOLD)2/8 ruff check$(RESET)\n"
+	@printf "$(BOLD)2/9 ruff check$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)3/8 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@printf "$(BOLD)3/9 ruff format --check$(RESET)  (HARD failure in CI)\n"
 	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)4/8 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@printf "$(BOLD)4/9 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
-	@printf "$(BOLD)5/8 unit tests$(RESET)\n"
+	@printf "$(BOLD)5/9 unit tests$(RESET)\n"
 	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
-	@printf "$(BOLD)6/8 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@printf "$(BOLD)6/9 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
 	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
-	@printf "$(BOLD)7/8 dashboard backend$(RESET)\n"
+	@printf "$(BOLD)7/9 dashboard backend$(RESET)\n"
 	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
 	@cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q
-	@printf "$(BOLD)8/8 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
+	@printf "$(BOLD)8/9 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
 	@$(MAKE) --no-print-directory skipper-test
+	@printf "$(BOLD)9/9 dashboard frontend$(RESET)  (blocking in CI since the test:frontend job)\n"
+	@$(MAKE) --no-print-directory ci-frontend
 	@$(MAKE) ci-infra
 	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
 	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"

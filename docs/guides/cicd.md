@@ -8,7 +8,7 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The eight test jobs run in parallel; deploy, smoke and post-deploy
+Six stages arranged as a DAG. The nine test jobs run in parallel; deploy, smoke and post-deploy
 fire only on `main` after all tests pass, and `release` fires only on a tag.
 
 ```
@@ -20,7 +20,8 @@ sanity:check-structure ─┼─► test:modelzoo          ─┐
                         └─► test:examlops           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
                             test:postgres           │                              └► post-deploy:lxp:retrain-push-models
                             test:integration         │
-                            test:agent              ─┘
+                            test:agent               │
+                            test:frontend           ─┘
 ```
 
 | Stage | Runs on | Purpose |
@@ -198,7 +199,28 @@ It declares **no cache**: the shared `uv-$CI_COMMIT_REF_SLUG` key holds the `.ve
 pulls, and pushing a langchain-laden one into it would slow them all down for nothing.
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-agent` (or `make skipper-test`),
-and it is step 8/8 of `make preflight`.
+and it is step 8/9 of `make preflight`.
+
+### test:frontend
+
+Runs the dashboard frontend's lint, its 373 vitest tests, and `tsc -b && vite build`
+(`platform/services/dashboard/frontend`).
+
+Until 2026-08-20 the frontend ran in **no pipeline at all**, and `tsc -b` executed only inside the
+image build in `deploy:lxp` — so a TypeScript error surfaced on the production node, after
+`release:gitlab` had already tagged. That is the most expensive place a compile error can be
+found. The 373 component tests gated nothing whatsoever.
+
+It uses `node:24-alpine`, matching `Dockerfile.dashboard`'s builder stage, and `npm ci` rather
+than the image build's `npm install --include=dev`, so CI is lockfile-exact. The whole job takes
+roughly 70 s locally (`npm ci` 12 s · lint 16 s · vitest 29 s · build 15 s).
+
+`deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-frontend`, and it is step
+9/9 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
+
+> The image build still uses `npm install --include=dev`, which does not honour the lockfile.
+> Switching it to `npm ci` would make the deployed bundle reproducible; it is not done here
+> because it cannot be proved without a Docker daemon.
 
 ### release:gitlab
 **Image:** `registry.gitlab.com/gitlab-org/release-cli` | **Runs on:** tags only

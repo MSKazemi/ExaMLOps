@@ -453,6 +453,39 @@ test:agent:
     when: always
     expire_in: 7 days
 
+test:frontend:
+  stage: test
+  image: node:24-alpine
+  interruptible: true
+  needs: [sanity:check-structure]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
+    - changes:
+        - platform/services/dashboard/frontend/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  timeout: 15 minutes
+  # The dashboard frontend ran in NO pipeline until 2026-08-20. `tsc -b` happened only inside
+  # the image build in deploy:lxp, so a type error surfaced on the production node AFTER
+  # release:gitlab had already tagged — the most expensive place to find it. 373 vitest tests
+  # gated nothing at all. The four steps below are the same ones `make dashboard-check` runs.
+  before_script:
+    - cd platform/services/dashboard/frontend
+    - npm ci                       # lockfile-exact, unlike the image build's `npm install`
+  script:
+    - npm run lint
+    - npx vitest run --reporter=junit --outputFile="$CI_PROJECT_DIR/reports/frontend-unit.xml"
+    - npm run build                # tsc -b && vite build — the type check, before deploy
+  artifacts:
+    reports:
+      junit: reports/frontend-unit.xml
+    when: always
+    expire_in: 7 days
+
 test:integration:
   stage: test
   image: python:3.12
@@ -514,6 +547,7 @@ release:gitlab:
     - job: test:infra:alert-rules
     - job: test:integration
     - job: test:agent
+    - job: test:frontend
   script:
     # `release:` (below) is what actually creates the object; this only prepares the text.
     # awk over the CHANGELOG: print the section for this tag, stopping at the next `## [`.
@@ -560,6 +594,7 @@ deploy:lxp:
     - job: test:infra:alert-rules
     - job: test:integration
     - job: test:agent
+    - job: test:frontend
   rules:
     # A nightly schedule exists to *find out* whether main is green, not to ship it.
     # Without this a scheduled pipeline satisfies the branch condition below and would

@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`test:frontend` — the dashboard frontend now gates the pipeline; until today it gated
+  nothing.** No CI job on either remote ran the frontend's linter or its **373 vitest tests**, and
+  `tsc -b` executed only inside the image build in `deploy:lxp`. A TypeScript error therefore
+  surfaced on the production node *after* `release:gitlab` had already tagged — the most expensive
+  place a compile error can be found — and a broken component test reached `main` with every gate
+  green. The new job runs lint → vitest (junit artifact) → `tsc -b && vite build` on
+  `node:24-alpine`, matching `Dockerfile.dashboard`'s builder, with `npm ci` so CI is
+  lockfile-exact where the image build's `npm install --include=dev` is not. `deploy:lxp` and
+  `release:gitlab` both require it; the same four steps run in GitHub Actions, in
+  `make ci-frontend`, as step 9/9 of `make preflight`, and inside `make dashboard-check`. The
+  recipe was proved locally end-to-end before being written into either CI file (`npm ci` 12 s ·
+  lint 16 s · vitest 29 s · build 15 s; junit reports 373 tests, 0 failures).
+
 - **The proof gate now pins its own toolchain — and the frontend half actually runs.** Every
   change in this repo is measured by `make check`, but its `dashboard-check` recipe called a bare
   `pip` and `pytest`, which bind to whatever the caller's shell exposes. That fails in two
