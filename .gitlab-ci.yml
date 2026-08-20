@@ -453,6 +453,43 @@ test:agent:
     when: always
     expire_in: 7 days
 
+test:control-plane:
+  stage: test
+  image: python:3.12-slim
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
+    - changes:
+        - platform/services/control_plane/**/*
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  timeout: 15 minutes
+  # 82 tests — the approval-gate reliability suite, weak-token rejection, the modelzoo
+  # webhooks, model metadata — ran in no pipeline and no local gate until 2026-08-20, and had
+  # rotted to the point of not collecting (`ModuleNotFoundError: model_meta`). The service runs
+  # with its own directory as cwd, so its tests need it on sys.path; tests/conftest.py now does
+  # that, the same way platform/services/agent/tests/conftest.py does.
+  before_script:
+    - pip install --quiet --upgrade pip uv
+    - uv venv --clear .venv
+    # The service has no requirements.txt — its deps are an inline pip line in its Dockerfile.
+    # These are what app.py/metrics.py/model_meta.py actually import, plus the test runner.
+    - uv pip install fastapi "uvicorn[standard]" prometheus_client pyyaml
+    - uv pip install pytest pytest-asyncio httpx
+  script:
+    - .venv/bin/pytest platform/services/control_plane/tests -v --tb=short
+        --junit-xml=reports/control-plane-unit.xml
+  artifacts:
+    reports:
+      junit: reports/control-plane-unit.xml
+    when: always
+    expire_in: 7 days
+
 test:frontend:
   stage: test
   image: node:24-alpine
@@ -548,6 +585,7 @@ release:gitlab:
     - job: test:integration
     - job: test:agent
     - job: test:frontend
+    - job: test:control-plane
   script:
     # `release:` (below) is what actually creates the object; this only prepares the text.
     # awk over the CHANGELOG: print the section for this tag, stopping at the next `## [`.
@@ -595,6 +633,7 @@ deploy:lxp:
     - job: test:integration
     - job: test:agent
     - job: test:frontend
+    - job: test:control-plane
   rules:
     # A nightly schedule exists to *find out* whether main is green, not to ship it.
     # Without this a scheduled pipeline satisfies the branch condition below and would

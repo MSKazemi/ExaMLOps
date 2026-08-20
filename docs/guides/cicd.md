@@ -8,7 +8,7 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The nine test jobs run in parallel; deploy, smoke and post-deploy
+Six stages arranged as a DAG. The ten test jobs run in parallel; deploy, smoke and post-deploy
 fire only on `main` after all tests pass, and `release` fires only on a tag.
 
 ```
@@ -21,7 +21,8 @@ sanity:check-structure ─┼─► test:modelzoo          ─┐
                             test:postgres           │                              └► post-deploy:lxp:retrain-push-models
                             test:integration         │
                             test:agent               │
-                            test:frontend           ─┘
+                            test:frontend            │
+                            test:control-plane      ─┘
 ```
 
 | Stage | Runs on | Purpose |
@@ -216,7 +217,28 @@ than the image build's `npm install --include=dev`, so CI is lockfile-exact. The
 roughly 70 s locally (`npm ci` 12 s · lint 16 s · vitest 29 s · build 15 s).
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-frontend`, and it is step
-9/9 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
+9/10 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
+
+### test:control-plane
+
+Runs the control plane service's own 82 tests (`platform/services/control_plane/tests`) — the
+approval-gate reliability suite, weak-token rejection, the modelzoo webhooks, and model metadata.
+
+Like `test:agent` and `test:frontend` before it, this suite ran in **no pipeline and no local
+gate**: `make test` is `pytest tests/` at the repo root, and `test:examlops` runs `tests/unit/`,
+so neither reaches `platform/services/`. It had also rotted past the point of running at all —
+`pytest` could not even collect it (`ModuleNotFoundError: No module named 'model_meta'`), because
+the service runs with its own directory as the working directory and its tests import
+`model_meta`/`metrics` the same way. A `tests/conftest.py` puts that directory on `sys.path`, the
+same idiom `platform/services/agent/tests/conftest.py` uses. With it, all 82 pass.
+
+The service has **no `requirements.txt`** — its dependencies are an inline `pip install` line in
+its Dockerfile — so the job installs what `app.py`/`metrics.py`/`model_meta.py` actually import
+(`fastapi`, `uvicorn[standard]`, `prometheus_client`, `pyyaml`) plus the test runner. That set was
+proved in a clean throwaway venv before being written here.
+
+`deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-control-plane`, and it is
+step 10/10 of `make preflight`.
 
 > The image build still uses `npm install --include=dev`, which does not honour the lockfile.
 > Switching it to `npm ci` would make the deployed bundle reproducible; it is not done here

@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`test:control-plane` — 82 more tests that gated nothing, and had rotted to the point of not
+  running.** Asking "which suites does no job's exit code depend on?" a third time found the
+  control plane's own tests: the approval-gate reliability suite, weak-token rejection (the
+  Phase-0 fix that makes a placeholder `CONTROL_PLANE_TOKEN` fail closed), the modelzoo webhooks,
+  and model metadata. `make test` is `pytest tests/` at the repo root and `test:examlops` runs
+  `tests/unit/`, so neither reaches `platform/services/`. Worse, the suite no longer collected at
+  all — `ModuleNotFoundError: No module named 'model_meta'`, because the service runs with its own
+  directory as the working directory and its tests import the way it does. A `tests/conftest.py`
+  restores that (same idiom as the agent's), and all 82 pass. New CI job on both remotes, required
+  by `deploy:lxp` and `release:gitlab`, mirrored as `make ci-control-plane` and step 10/10 of
+  `make preflight`. The service has no `requirements.txt` — its deps are an inline pip line in its
+  Dockerfile — so the job installs what the code actually imports, a set proved in a clean
+  throwaway venv before being written into either CI file.
+
 - **`test:frontend` — the dashboard frontend now gates the pipeline; until today it gated
   nothing.** No CI job on either remote ran the frontend's linter or its **373 vitest tests**, and
   `tsc -b` executed only inside the image build in `deploy:lxp`. A TypeScript error therefore
