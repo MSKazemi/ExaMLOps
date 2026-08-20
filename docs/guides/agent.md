@@ -481,3 +481,46 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 | Agent answers questions without calling tools | Chosen model does not support tool calling well | Use `llama3.1:8b` (default) or `hermes3:8b`. Avoid embedding-only models like `nomic-embed-text`. |
 | Agent calls a tool but returns confusing output | LLM hallucinated an argument (e.g. wrong feature count) | Rephrase with explicit values: `"run inference on JPCP with features [1.2, 0.8, 3.4, 0.5, 2.1]"`. |
 | `httpx.ReadTimeout` in tool output | Service is slow to respond (e.g. MLflow cold start) | Wait for the service to become healthy (`exa status`). The tool timeout is 10 s. |
+
+## Measuring answer quality (`exa eval operator-qa`)
+
+The agent is meant to answer "any kind of question about ExaMLOps". Whether it *does* is a
+measurement, not an opinion — so there is a fixed set of 30 questions a new operator actually
+asks in their first week, spanning orientation, training, the registry, serving, drift,
+governance, HPC and cost.
+
+```bash
+exa eval operator-qa                        # ask all 30, print the pass rate
+exa eval operator-qa --category serving     # just one area
+exa eval operator-qa --out ./qa.jsonl       # keep the answers
+exa --json eval operator-qa                 # machine-readable, for CI
+```
+
+Grading is **deterministic**: each question declares what any correct answer must name (for
+example, an answer about splitting traffic has to mention `exa serve traffic`). No judge model is
+involved, which means a run costs one call per question instead of two, the score cannot drift as
+a judge model changes, and the suite needs no judge calibration — which, under
+[ADR 0111](judge-calibration.md), an LLM judge would need before it were allowed to gate anything.
+
+Read the expectations as **necessary, not sufficient**: naming `exa drift status` does not prove
+the answer was good, but failing to name it proves it was not. The suite catches regressions and
+blind spots; it does not certify quality.
+
+Two properties matter when you read a result:
+
+- **An unreachable agent exits non-zero** with the transport error, rather than reporting a score
+  of zero. An outage and a bad agent are different findings and must not look alike.
+- **An empty answer never passes.** A dead backend returning empty strings scores 0, not a
+  vacuous pass.
+
+The question set lives in `examlops.evaluation.operator_qa`. Every `exa …` command it expects is
+checked against the live CLI tree by `tests/unit/test_operator_qa.py`, so the set cannot start
+asserting a command that does not exist — an expectation like that would fail against any agent,
+however good, and read as the agent's fault.
+
+To feed the answers into the persisted eval store, pass the JSONL on to `exa eval run`:
+
+```bash
+exa eval operator-qa --out ./qa.jsonl
+exa eval run operator-qa --items ./qa.jsonl --model skipper
+```

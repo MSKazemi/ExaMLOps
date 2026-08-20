@@ -100,6 +100,111 @@ def run(
     _output.ok(f"Eval suite '{suite}' complete ({result.sample_size} items)")
 
 
+_EXAMPLES_OPQA = (
+    "Examples:\n\n"
+    "  exa eval operator-qa                      # ask the agent all 30 and score them\n\n"
+    "  exa eval operator-qa --category serving   # only the serving questions\n\n"
+    "  exa eval operator-qa --out ./qa.jsonl     # keep the answers for `exa eval run`\n\n"
+    "  exa --json eval operator-qa"
+)
+
+
+@app.command("operator-qa", epilog=_EXAMPLES_OPQA)
+def operator_qa(
+    category: str | None = typer.Option(None, "--category", help="Only questions in this category"),
+    out: str | None = typer.Option(
+        None, "--out", help="Write the answers as JSONL (feeds `exa eval run`)"
+    ),
+    agent_url: str | None = typer.Option(
+        None, "--agent-url", help="Agent bridge base URL (default: configured agent_url)"
+    ),
+    timeout: float = typer.Option(120.0, "--timeout", help="Per-question timeout in seconds"),
+) -> None:
+    """Ask the agent a fixed set of operator questions and report the pass rate.
+
+    Measures whether the agent can answer what a new operator actually asks. Grading is
+    deterministic (does the answer name the right command), so no judge model is involved and
+    no judge calibration is required. Exits non-zero if the agent is unreachable, so an
+    unanswerable run can never be mistaken for a bad score.
+    """
+    import httpx
+
+    from examlops.cli._config import load_config
+    from examlops.evaluation.operator_qa import OPERATOR_QUESTIONS, MentionsAll, by_id, to_items
+
+    questions = [q for q in OPERATOR_QUESTIONS if not category or q.category == category]
+    if not questions:
+        _output.error(f"no questions in category {category!r}")
+        raise typer.Exit(2)
+
+    url = f"{(agent_url or load_config().agent_url).rstrip('/')}/v1/chat/completions"
+    answers: dict[str, str] = {}
+    failures: list[str] = []
+    for q in questions:
+        try:
+            r = httpx.post(
+                url,
+                json={
+                    "messages": [{"role": "user", "content": q.prompt}],
+                    "stream": False,
+                },
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            answers[q.id] = r.json()["choices"][0]["message"]["content"] or ""
+        except Exception as exc:  # unreachable agent, timeout, malformed reply
+            failures.append(f"{q.id}: {type(exc).__name__}: {exc}")
+
+    if not answers:
+        # Every question failed to even get an answer: that is an outage, not a score of zero.
+        _output.error(
+            f"the agent answered none of {len(questions)} questions via {url} — "
+            f"first error: {failures[0] if failures else 'unknown'}"
+        )
+        raise typer.Exit(1)
+
+    ev = MentionsAll(questions=by_id())
+    scored = [(item, ev.score(item)) for item in to_items(answers)]
+    passed = [s for _, s in scored if s.score == 1.0]
+    rate = len(passed) / len(scored)
+
+    if out:
+        with open(out, "w") as fh:
+            for item, score in scored:
+                fh.write(
+                    json.dumps(
+                        {
+                            "output": item.output,
+                            "prompt": item.prompt,
+                            "metadata": {**item.metadata, "score": score.score},
+                        }
+                    )
+                    + "\n"
+                )
+
+    _output.print_json(
+        {
+            "asked": len(questions),
+            "answered": len(answers),
+            "passed": len(passed),
+            "passRate": round(rate, 3),
+            "unanswered": failures,
+            "failures": [
+                {
+                    "id": s.detail.get("question_id"),
+                    "category": s.detail.get("category"),
+                    "score": s.score,
+                    "missing": s.detail.get("missing"),
+                }
+                for _, s in scored
+                if s.score < 1.0
+            ],
+        }
+    )
+    if not _output.json_mode:
+        _output.info(f"Operator QA — {len(passed)}/{len(scored)} passed ({rate:.0%})")
+
+
 gate_app = typer.Typer(
     help="Eval regression gate (block/warn promotion on regression)",
     no_args_is_help=True,

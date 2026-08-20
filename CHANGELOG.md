@@ -7,6 +7,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`exa eval operator-qa` — the agent's answer quality is now a number.** The agent is meant to
+  answer "any kind of question about ExaMLOps"; nobody had ever measured whether it does. A fixed
+  set of 30 questions a new operator actually asks (orientation, training, registry, serving,
+  drift, governance, HPC, cost) lives in `examlops.evaluation.operator_qa`, and the command asks
+  the agent each one and reports a pass rate, optionally writing the answers as JSONL for
+  `exa eval run`. Grading is deterministic — each question declares what a correct answer must
+  name — so a run costs one call per question rather than two, the score cannot drift as a judge
+  model changes, and no judge calibration is required (which, per ADR 0111, an LLM judge would
+  need before gating anything). Expectations are necessary, not sufficient: they catch
+  regressions and blind spots rather than certifying quality. An unreachable agent exits
+  non-zero with the transport error instead of reporting a score of zero, because an outage and
+  a bad agent are different findings; an empty answer scores 0 rather than passing vacuously.
+  Every `exa …` command the set expects is checked against the live CLI tree by
+  `tests/unit/test_operator_qa.py`, so an expectation cannot name a command that does not exist
+  and fail against any agent however good. Guide: `docs/guides/agent.md`.
+
 - **`test:postgres` — CI runs on the Postgres engine for the first time.** `EXAMLOPS_DB_BACKEND=
   postgres` is a supported production engine, but every CI job used the SQLite default, so a
   dialect regression could only be found by someone remembering to run `make test-postgres` by
