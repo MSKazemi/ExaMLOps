@@ -4,8 +4,7 @@ Verifies: reads are viewer-gated; every mutation requires admin (project.manage)
 (malicious upload rejected before it lands), and is audited.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -22,9 +21,9 @@ EVIL = "import os\nclass P(Provider):\n    def compute(self, i): return {}\n"
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
-        """CREATE TABLE audit_events (
+        """CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
         );"""
@@ -97,7 +96,7 @@ async def test_save_list_read_activate_delete(client, env):
     d = await client.delete("/api/v1/providers/research/cost/c1", headers=h)
     assert d.status_code == 200 and d.json()["deleted"] is True
     # Audited (authored + activated + removed).
-    conn = sqlite3.connect(env)
+    conn = dbconn.connect(env, row_factory=None)
     actions = {
         r[0]
         for r in conn.execute(

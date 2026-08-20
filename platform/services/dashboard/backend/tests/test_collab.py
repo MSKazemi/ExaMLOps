@@ -1,8 +1,7 @@
 """Collaboration store + endpoints (F22 / ADR 0073)."""
 
-import sqlite3
-
 import collab
+import dbconn
 import pytest
 
 from tests.conftest import VIEWER_PW
@@ -11,9 +10,9 @@ from tests.conftest import VIEWER_PW
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     path = tmp_path / "platform.db"
-    conn = sqlite3.connect(path)
+    conn = dbconn.connect(path, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
+        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
         "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.commit()
@@ -42,7 +41,7 @@ def test_add_comment_sanitizes_extracts_mentions_and_audits(db):
     c = collab.add_comment(db, "models", "jpcp", "default", "alice", "look @bob <b>bold</b>")
     assert c["mentions"] == ["bob"]
     assert "<b>" not in c["body"]
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     row = conn.execute("SELECT source, action, target FROM audit_events").fetchone()
     conn.close()
     assert row == ("dashboard-collab", "comment_added", "models/jpcp")

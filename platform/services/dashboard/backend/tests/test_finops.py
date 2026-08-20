@@ -1,7 +1,6 @@
 """FinOps + Green-AI aggregators + /api/v1/finops/overview (F13 / ADR 0066)."""
 
-import sqlite3
-
+import dbconn
 import finops
 import pytest
 
@@ -11,18 +10,18 @@ from tests.conftest import VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE model_costs (
+        CREATE TABLE IF NOT EXISTS model_costs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
             run_id TEXT, job_id TEXT, gpu_hours REAL, cost_usd REAL, recorded_at TEXT
         );
-        CREATE TABLE project_budgets (
+        CREATE TABLE IF NOT EXISTS project_budgets (
             project TEXT PRIMARY KEY, gpu_hours_budget REAL, cost_budget REAL,
             period TEXT, updated_at TEXT, updated_by TEXT
         );
-        CREATE TABLE carbon_records (
+        CREATE TABLE IF NOT EXISTS carbon_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, run_id TEXT, model TEXT,
             kwh REAL, co2e_g REAL, grid_intensity REAL
         );
@@ -72,7 +71,7 @@ def test_cost_rollup_aggregates_per_model(platform_db):
 
 def test_cost_rollup_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     out = finops.cost_rollup(str(db))
     assert out["rows"] == [] and out["total_cost_usd"] == 0.0
@@ -110,10 +109,10 @@ def test_carbon_summary_uses_provider_methodology(tmp_path, monkeypatch):
     # Records tagged with a single pluggable provider → surface that provider's own methodology +
     # uncertainty instead of the platform defaults (ADR 0074 / S4).
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE carbon_records (
+        CREATE TABLE IF NOT EXISTS carbon_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, run_id TEXT, model TEXT,
             kwh REAL, co2e_g REAL, grid_intensity REAL, provider TEXT
         );

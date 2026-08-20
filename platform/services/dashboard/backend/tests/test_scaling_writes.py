@@ -6,8 +6,7 @@ Verifies the E4/E5 edit-parity: set a model's autoscale policy through the share
 `source=dashboard`. Reads surface the recorded config/events/stats (pure platform.db).
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,7 +18,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -57,7 +59,7 @@ async def test_autoscale_set_persists_and_audits(client, platform_db):
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT min_replicas, max_replicas, target_value, scale_to_zero_after_s "
         "FROM autoscale_config WHERE model='JPCP'"
@@ -132,7 +134,7 @@ async def test_routing_set_persists_and_audits(client, platform_db):
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT mode, slo_latency_ms, disaggregate FROM inference_gateway_config "
         "WHERE model='JPCP' AND tenant='default'"

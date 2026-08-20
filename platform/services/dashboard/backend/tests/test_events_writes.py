@@ -6,8 +6,7 @@ reads surface outbox backlog by state via `examlops.data.events.outbox_stats` (m
 `exa events stats`, pure platform.db).
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,7 +18,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -48,7 +50,7 @@ async def test_publish_persists_and_audits(client, platform_db):
     )
     assert r.status_code == 200, r.text
     event_id = r.json()["id"]
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT topic, payload, published_at FROM event_outbox WHERE id=?", (event_id,)
     ).fetchone()
@@ -74,7 +76,7 @@ async def test_publish_accepts_json_string_payload(client, platform_db):
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     payload = conn.execute(
         "SELECT payload FROM event_outbox WHERE id=?", (r.json()["id"],)
     ).fetchone()[0]

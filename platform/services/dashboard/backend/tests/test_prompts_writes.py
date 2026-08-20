@@ -5,8 +5,7 @@ the template) and point/rollback labels, through the shared `examlops.data.promp
 admin + `prompt.manage` gated, audited `source=dashboard`.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -18,7 +17,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -50,7 +52,7 @@ async def test_create_autodeclares_vars_and_audits(client, platform_db):
     assert body["version"] == 1
     assert set(body["variables"]) == {"ticket", "team"}
     assert body["label"] == "dev"
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT COUNT(*) FROM prompt_versions WHERE name='triage'").fetchone()[0] == 1
     )
@@ -92,7 +94,7 @@ async def test_second_version_increments_and_label_rollback(client, platform_db)
         "/api/prompts/triage/label", json={"label": "prod", "version": 1}, headers=h
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute(
             "SELECT version FROM prompt_labels WHERE name='triage' AND label='prod'"

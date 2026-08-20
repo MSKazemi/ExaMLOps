@@ -60,6 +60,7 @@ os.environ["DASHBOARD_JWT_SECRET"] = "test-jwt-secret-32-bytes-of-zeros!"
 os.environ["DASHBOARD_JWT_TTL_HOURS"] = "12"
 os.environ["DASHBOARD_SECRET_KEY"] = "TVk4sP_ws6A6sRz38Kw1jJZX0d3Jcq3V0z0b6n6kE-c="
 
+import pytest
 import pytest_asyncio
 from database import Base, get_db
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -100,3 +101,24 @@ async def client(db_engine):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_postgres_state():
+    """Give every dashboard test an empty platform datastore when running on Postgres.
+
+    The `platform_db` fixtures in this suite point `PLATFORM_DB` at a `tmp_path` file, which is
+    perfect isolation on SQLite and completely meaningless on Postgres — there every test in the
+    process shares one schema. Without this they would see each other's rows, and the suite's
+    result would depend on the order pytest happened to pick.
+
+    Shared with the platform's own suite via `examlops.storage.testing` rather than copied, since
+    a divergence between the two would be invisible until one of them started lying. No-op on
+    SQLite, so the default path is exactly as it was.
+    """
+    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() != "postgres":
+        yield
+        return
+    from examlops.storage.testing import postgres_isolation
+
+    yield from postgres_isolation()

@@ -1,7 +1,6 @@
 """MLOps console aggregators + /api/v1/mlops endpoints (F9 / ADR 0060)."""
 
-import sqlite3
-
+import dbconn
 import mlops
 import pytest
 
@@ -14,21 +13,21 @@ from tests.conftest import VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db, wired into the mlops router via PLATFORM_DB."""
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE drift_snapshots (
+        CREATE TABLE IF NOT EXISTS drift_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME, model TEXT,
             alias TEXT, prediction REAL, job_id TEXT
         );
-        CREATE TABLE model_costs (
+        CREATE TABLE IF NOT EXISTS model_costs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
             run_id TEXT, job_id TEXT, gpu_hours REAL, cost_usd REAL, recorded_at TEXT
         );
-        CREATE TABLE traffic_rules (
+        CREATE TABLE IF NOT EXISTS traffic_rules (
             model TEXT PRIMARY KEY, rules TEXT, updated_at DATETIME, updated_by TEXT
         );
-        CREATE TABLE promotion_rules (
+        CREATE TABLE IF NOT EXISTS promotion_rules (
             model TEXT PRIMARY KEY, metric TEXT, operator TEXT, threshold REAL,
             from_alias TEXT, to_alias TEXT, enabled INTEGER, updated_at DATETIME
         );
@@ -118,7 +117,7 @@ def test_promotion_denied_with_reason_when_no_policy(platform_db):
 
 
 def test_promotion_denied_when_policy_disabled(platform_db):
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     conn.execute("UPDATE promotion_rules SET enabled=0 WHERE model='jpcp'")
     conn.commit()
     conn.close()

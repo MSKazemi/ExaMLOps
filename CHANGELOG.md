@@ -17,6 +17,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The dashboard's tests could not run against Postgres, and the reason was not what it looked
+  like.** 34 of its 70 test modules seeded a throwaway `platform.db` with raw `sqlite3` while the
+  routers under test read whichever engine was configured — so on `EXAMLOPS_DB_BACKEND=postgres`
+  a test wrote to one store and asserted against another. 110 failed / 340 passed. Now **423 pass**
+  (SQLite unchanged at 450/450), with the remaining 27 characterised below.
+  - All 96 raw `sqlite3.connect` sites in those tests now go through `dbconn.connect` — the app's
+    own adapter, which ignores the path under Postgres. The guard `test_no_bare_sqlite_connect`
+    used to exempt `tests/` on the grounds that "test fixtures build throwaway SQLite files
+    directly"; that rationale is exactly what this invalidates, so it now covers `tests/` too.
+  - The per-test `init_db(force=True)` in 12 fixtures re-ran the full 127-table DDL against the
+    shared schema every time, costing ~30 s per test. It was never needed: `_init_key()` is already
+    engine-aware, and on SQLite a fresh `tmp_path` was never in the cache to begin with.
+  - 87 hand-rolled `CREATE TABLE` statements across 31 modules assumed an empty database and now
+    say `IF NOT EXISTS`, so the real schema wins.
+  - Row isolation now comes from one shared autouse fixture. The mechanism moved out of the
+    platform suite's `conftest.py` into **`examlops.storage.testing`**, because a library that
+    offers a second engine has to offer the test isolation that goes with it — and a copy in two
+    conftests would drift invisibly.
+
+- **`PgRow` compared unequal to a tuple, silently.** Under SQLite a caller who sets
+  `row_factory=None` gets a real tuple, so `row == (0.995, 1)` is an ordinary assertion; against
+  Postgres it returned `False` and the caller concluded the *row* was wrong rather than the
+  comparison. Honouring `row_factory=None` literally is not the fix — it is already the Postgres
+  connection's default and means "ignored", so obeying it would hand tuples to all ~252 platform
+  helpers, every one of which reads rows by name. `PgRow.__eq__` now also matches a sequence of
+  its values.
+
+
 - **`exa ask` never streamed, so a long answer looked like a hang.** The Skipper bridge
   (`skipper/oai_compat.py`) has served Server-Sent Events since it was written, but the CLI
   always sent `"stream": false` and then waited for the whole body against a 120 s timeout. Since

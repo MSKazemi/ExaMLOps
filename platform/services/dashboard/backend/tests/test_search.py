@@ -1,7 +1,6 @@
 """Federated global search + /api/v1/search endpoint (F2 / ADR 0056)."""
 
-import sqlite3
-
+import dbconn
 import pytest
 import search as search_lib
 
@@ -11,19 +10,19 @@ from tests.conftest import VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE promotion_rules (
+        CREATE TABLE IF NOT EXISTS promotion_rules (
             model TEXT PRIMARY KEY, metric TEXT, operator TEXT, threshold REAL,
             from_alias TEXT, to_alias TEXT, enabled INTEGER, updated_at DATETIME
         );
-        CREATE TABLE hpc_jobs (
+        CREATE TABLE IF NOT EXISTS hpc_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, scheduler TEXT,
             flow_run_id TEXT, model TEXT, dataset TEXT, state TEXT,
             nodes INTEGER, gpus INTEGER, cpus INTEGER, updated_at TEXT
         );
-        CREATE TABLE audit_events (
+        CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT,
             action TEXT, target TEXT, details TEXT, ts TEXT
         );
@@ -99,7 +98,7 @@ def test_search_pages_need_no_db(platform_db):
 
 def test_search_graceful_without_tables(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     out = search_lib.search(str(db), "models")
     # pages still match even with no platform tables

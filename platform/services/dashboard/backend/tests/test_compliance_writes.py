@@ -5,8 +5,7 @@ advance its conformity state, through the shared `examlops.compliance` code path
 state-machine + hash-chained `source=dashboard` audit), admin + `compliance.classify` gated.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -20,7 +19,10 @@ def platform_db(tmp_path, monkeypatch):
     # the router writes through the shared examlops path, so tests exercise that path end-to-end.
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -48,7 +50,7 @@ async def test_classify_persists_and_audits_as_dashboard(client, platform_db):
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT risk_tier, in_scope, intended_purpose FROM compliance_systems WHERE model='JPCP'"
     ).fetchone()
@@ -81,7 +83,7 @@ async def test_conformity_valid_then_invalid_transition(client, platform_db):
         "/api/compliance/conformity/JPCP", json={"state": "documented"}, headers=h
     )
     assert ok.status_code == 200, ok.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute(
             "SELECT conformity_state FROM compliance_systems WHERE model='JPCP'"

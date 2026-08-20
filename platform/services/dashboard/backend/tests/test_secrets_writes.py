@@ -5,8 +5,7 @@ Verifies the D7 secrets edit-parity: set/update an encrypted secret through the 
 gated, audited `source=dashboard`. Hard rule: the plaintext value is never returned or listed.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -20,7 +19,10 @@ def platform_db(tmp_path, monkeypatch):
     # legacy keyring fallback so encrypt/decrypt works fully offline (no Vault).
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -47,7 +49,7 @@ async def test_set_stores_encrypted_and_never_returns_value(client, platform_db)
     body = r.json()
     assert body == {"path": "svc/token", "tenant": "default", "version": 1}
     assert "value" not in body and "s3cr3t" not in r.text  # value never echoed
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     ct = conn.execute("SELECT ciphertext FROM secrets_store WHERE path='svc/token'").fetchone()[0]
     assert ct and "s3cr3t" not in ct  # stored encrypted, not plaintext
     assert (

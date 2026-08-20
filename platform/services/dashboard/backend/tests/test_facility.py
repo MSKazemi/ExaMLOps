@@ -1,7 +1,6 @@
 """Facility console aggregators + /api/v1/facility endpoints (F6 / ADR 0059)."""
 
-import sqlite3
-
+import dbconn
 import facility
 import pytest
 
@@ -12,10 +11,10 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db with hpc_jobs across two clusters."""
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE hpc_jobs (
+        CREATE TABLE IF NOT EXISTS hpc_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, scheduler TEXT,
             flow_run_id TEXT, model TEXT, dataset TEXT, state TEXT,
             submit_time TEXT, start_time TEXT, end_time TEXT,
@@ -71,7 +70,7 @@ def test_overview_cluster_filter(platform_db):
 
 def test_overview_graceful_on_empty(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
-    sqlite3.connect(db).close()  # no hpc_jobs table
+    dbconn.connect(db, row_factory=None).close()  # no hpc_jobs table
     monkeypatch.setenv("PLATFORM_DB", str(db))
     ov = facility.facility_overview(str(db))
     assert ov["queueDepth"] == 0
@@ -142,17 +141,17 @@ async def test_job_endpoint_404(client, platform_db):
 @pytest.fixture
 def fleet_db(platform_db):
     """Augment the seeded platform.db with an hpc_clusters registry table."""
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE hpc_clusters (
+        CREATE TABLE IF NOT EXISTS hpc_clusters (
             name TEXT PRIMARY KEY, scheduler TEXT, transport TEXT, host TEXT,
             ssh_user TEXT, ssh_port INTEGER, ssh_key TEXT, key_fingerprint TEXT,
             state TEXT NOT NULL DEFAULT 'PENDING', capabilities TEXT,
             requested_by TEXT, approved_by TEXT, reason TEXT,
             created_at TEXT, updated_at TEXT
         );
-        CREATE TABLE audit_events (
+        CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT
@@ -183,10 +182,10 @@ async def test_fleet_lists_clusters(client, fleet_db):
 @pytest.mark.asyncio
 async def test_fleet_capacity_from_node_snapshot_and_jobs(client, fleet_db):
     # Seed a live node snapshot (half the GPUs allocated) + a completed GPU job.
-    conn = sqlite3.connect(fleet_db)
+    conn = dbconn.connect(fleet_db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE hpc_nodes (
+        CREATE TABLE IF NOT EXISTS hpc_nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, cluster TEXT, scheduler TEXT, node TEXT,
             cpus INTEGER, memory_mb INTEGER, gpus INTEGER, gpu_model TEXT, state TEXT,
             partition TEXT, captured_at TEXT
@@ -226,7 +225,7 @@ async def test_fleet_admin_approve_flips_state_and_audits(client, fleet_db):
     assert r.status_code == 200
     assert r.json()["state"] == "ACTIVE"
 
-    conn = sqlite3.connect(fleet_db)
+    conn = dbconn.connect(fleet_db, row_factory=None)
     state = conn.execute("SELECT state FROM hpc_clusters WHERE name='lxp'").fetchone()[0]
     audit = conn.execute(
         "SELECT action, target FROM audit_events WHERE action='cluster_approved'"
@@ -247,7 +246,7 @@ async def test_fleet_reject_with_reason(client, fleet_db):
     assert r.status_code == 200
     assert r.json()["state"] == "REJECTED"
 
-    conn = sqlite3.connect(fleet_db)
+    conn = dbconn.connect(fleet_db, row_factory=None)
     row = conn.execute("SELECT state, reason FROM hpc_clusters WHERE name='lxp'").fetchone()
     conn.close()
     assert row == ("REJECTED", "wrong account")

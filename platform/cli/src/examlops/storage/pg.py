@@ -419,6 +419,22 @@ class PgRow(dict):
             return list(self.values())[key]
         return super().__getitem__(key)
 
+    def __eq__(self, other: Any) -> bool:
+        """Compare equal to a plain tuple of the same values, as well as to a mapping.
+
+        Without this the seam has a *silent* fidelity gap rather than a loud one. Under SQLite a
+        caller who sets ``row_factory=None`` gets a real tuple, so ``row == (0.995, 1)`` is a
+        perfectly ordinary assertion; here it returned False and the caller concluded the row was
+        wrong rather than that the comparison was. Honouring ``row_factory=None`` literally is not
+        the fix — it is already this connection's default and means "ignored", so obeying it would
+        hand tuples to all ~252 platform helpers, every one of which reads rows by name.
+        """
+        if isinstance(other, (tuple, list)):
+            return tuple(self.values()) == tuple(other)
+        return super().__eq__(other)
+
+    __hash__ = None  # type: ignore[assignment]  # as for dict; spelled out since __eq__ is defined
+
 
 def _adapt(params: Any) -> Any:
     """SQLite stores ``bool`` as 0/1 in INTEGER columns; Postgres is strict, so do it here."""

@@ -6,8 +6,7 @@ and every mutation is audited ``source=dashboard`` through the shared ``examlops
 path (never a parallel implementation).
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -23,9 +22,9 @@ GOOD = (
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
-        """CREATE TABLE audit_events (
+        """CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
         );"""
@@ -49,7 +48,7 @@ async def _save(client, token, **body):
 
 
 def _count(db, action):
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE source='dashboard' AND action=?", (action,)
     ).fetchone()[0]

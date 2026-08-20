@@ -1,9 +1,9 @@
 """Alert aggregation + /api/v1/alerts endpoints (F12 / ADR 0062)."""
 
 import json
-import sqlite3
 
 import alerts
+import dbconn
 import pytest
 
 from tests.conftest import VIEWER_PW
@@ -12,24 +12,24 @@ from tests.conftest import VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE drift_snapshots (
+        CREATE TABLE IF NOT EXISTS drift_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME, model TEXT, alias TEXT,
             prediction REAL, job_id TEXT
         );
-        CREATE TABLE drift_baselines (model TEXT PRIMARY KEY, stats TEXT, set_at DATETIME);
-        CREATE TABLE project_budgets (
+        CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT, set_at DATETIME);
+        CREATE TABLE IF NOT EXISTS project_budgets (
             project TEXT PRIMARY KEY, gpu_hours_budget REAL, cost_budget REAL,
             period TEXT, updated_at TEXT, updated_by TEXT
         );
-        CREATE TABLE model_costs (
+        CREATE TABLE IF NOT EXISTS model_costs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, gpu_hours REAL, cost_usd REAL
         );
-        CREATE TABLE eval_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, suite TEXT, status TEXT, actor TEXT);
-        CREATE TABLE eval_results (id INTEGER PRIMARY KEY AUTOINCREMENT, eval_run_id INTEGER, metric TEXT, value REAL, baseline REAL, passed INTEGER);
-        CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS eval_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, suite TEXT, status TEXT, actor TEXT);
+        CREATE TABLE IF NOT EXISTS eval_results (id INTEGER PRIMARY KEY AUTOINCREMENT, eval_run_id INTEGER, metric TEXT, value REAL, baseline REAL, passed INTEGER);
+        CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP);
         """
     )
     # drift: baseline mean 1.0 std 0.5; latest mean ~5 → z=8 → critical
@@ -78,10 +78,10 @@ def test_active_alerts_merges_sources_severity_sorted(platform_db):
 
 def test_no_drift_alert_within_baseline(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
-        "CREATE TABLE drift_snapshots (id INTEGER PRIMARY KEY, model TEXT, prediction REAL);"
-        "CREATE TABLE drift_baselines (model TEXT PRIMARY KEY, stats TEXT);"
+        "CREATE TABLE IF NOT EXISTS drift_snapshots (id INTEGER PRIMARY KEY, model TEXT, prediction REAL);"
+        "CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT);"
     )
     conn.execute(
         "INSERT INTO drift_baselines (model, stats) VALUES ('m', ?)",
@@ -96,7 +96,7 @@ def test_no_drift_alert_within_baseline(tmp_path, monkeypatch):
 
 def test_active_alerts_graceful_empty(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     assert alerts.active_alerts(str(db)) == {"alerts": [], "count": 0, "counts": {}}
 
@@ -106,7 +106,7 @@ def test_active_alerts_graceful_empty(tmp_path, monkeypatch):
 
 def test_acknowledge_writes_audit(platform_db):
     assert alerts.acknowledge(platform_db, "drift:jpcp", "admin") is True
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT source, action, target FROM audit_events WHERE action='alert_ack'"
     ).fetchone()

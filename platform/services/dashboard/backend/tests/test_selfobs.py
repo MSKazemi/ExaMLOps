@@ -1,7 +1,6 @@
 """Dashboard self-observability: metrics + status page + UI audit (F24 / ADR 0067)."""
 
-import sqlite3
-
+import dbconn
 import pytest
 import selfobs
 
@@ -34,7 +33,7 @@ def test_metrics_percentiles_on_empty():
 
 def test_status_payload_reports_platform_db_up(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     payload = selfobs.status_payload()
     names = {d["name"] for d in payload["dependencies"]}
@@ -48,9 +47,9 @@ def test_status_payload_reports_platform_db_up(tmp_path, monkeypatch):
 
 def test_record_ui_action_writes_audit(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
+        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
         "actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.commit()
@@ -58,7 +57,7 @@ def test_record_ui_action_writes_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
 
     assert selfobs.record_ui_action("view_model", "JPCP", "viewer") is True
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     row = conn.execute("SELECT source, actor, action, target FROM audit_events").fetchone()
     conn.close()
     assert row == ("dashboard-ui", "viewer", "view_model", "JPCP")
@@ -66,7 +65,7 @@ def test_record_ui_action_writes_audit(tmp_path, monkeypatch):
 
 def test_record_ui_action_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     assert selfobs.record_ui_action("x", "y", "viewer") is False
 
@@ -88,7 +87,7 @@ async def test_status_endpoint_requires_auth(client):
 @pytest.mark.asyncio
 async def test_status_endpoint_returns_health_and_metrics(client, tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     token = await _login(client, VIEWER_PW)
     r = await client.get("/api/v1/selfobs/status", headers={"Authorization": f"Bearer {token}"})
@@ -102,9 +101,9 @@ async def test_status_endpoint_returns_health_and_metrics(client, tmp_path, monk
 @pytest.mark.asyncio
 async def test_action_endpoint_audits(client, tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
+        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
         "actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.commit()

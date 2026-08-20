@@ -5,8 +5,8 @@ goes through the shared examlops.data.drift code paths (so the dashboard can't d
 """
 
 import json
-import sqlite3
 
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -15,26 +15,26 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE drift_snapshots (
+        CREATE TABLE IF NOT EXISTS drift_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, alias TEXT,
             prediction REAL NOT NULL, job_id TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE drift_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
-        CREATE TABLE drift_auto_retrain (
+        CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS drift_auto_retrain (
             model TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
             min_z_score REAL NOT NULL DEFAULT 3.0, dataset_name TEXT NOT NULL DEFAULT '',
             cooldown_s INTEGER NOT NULL DEFAULT 3600
         );
-        CREATE TABLE input_snapshots (
+        CREATE TABLE IF NOT EXISTS input_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, alias TEXT,
             emb_norm REAL NOT NULL, emb_mean REAL NOT NULL, emb_std REAL NOT NULL,
             job_id TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE input_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
-        CREATE TABLE audit_events (
+        CREATE TABLE IF NOT EXISTS input_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
         );
@@ -75,14 +75,14 @@ async def test_baseline_dry_run_then_set(client, platform_db):
     assert dry.json()["dryRun"] is True
     assert dry.json()["wouldSet"]["n"] == 20
     # Nothing written yet.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert conn.execute("SELECT COUNT(*) FROM drift_baselines").fetchone()[0] == 0
     conn.close()
     # Real set.
     r = await client.post("/api/drift/baseline/JPCP", headers=h)
     assert r.status_code == 200, r.text
     assert "baseline" in r.json()
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     stats = json.loads(
         conn.execute("SELECT stats FROM drift_baselines WHERE model='JPCP'").fetchone()[0]
     )
@@ -112,7 +112,7 @@ async def test_reset_snapshots(client, platform_db):
     r = await client.post("/api/drift/reset/JPCP", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["cleared"] == 20
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT COUNT(*) FROM drift_snapshots WHERE model='JPCP'").fetchone()[0] == 0
     )
@@ -143,7 +143,7 @@ async def test_auto_retrain_enable_then_disable(client, platform_db):
     )
     assert en.status_code == 200, en.text
     assert en.json()["enabled"] is True
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT enabled, dataset_name, min_z_score, cooldown_s FROM drift_auto_retrain WHERE model='JPCP'"
     ).fetchone()
@@ -152,7 +152,7 @@ async def test_auto_retrain_enable_then_disable(client, platform_db):
     dis = await client.post("/api/drift/auto-retrain/JPCP", json={"enabled": False}, headers=h)
     assert dis.status_code == 200
     assert dis.json()["enabled"] is False
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT enabled FROM drift_auto_retrain WHERE model='JPCP'").fetchone()[0] == 0
     )
@@ -183,12 +183,12 @@ async def test_input_baseline_dry_run_then_set(client, platform_db):
     assert dry.status_code == 200, dry.text
     assert dry.json()["dryRun"] is True
     assert dry.json()["wouldSet"]["n"] == 20
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert conn.execute("SELECT COUNT(*) FROM input_baselines").fetchone()[0] == 0
     conn.close()
     r = await client.post("/api/drift/input-baseline/JPCP", headers=h)
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     stats = json.loads(
         conn.execute("SELECT stats FROM input_baselines WHERE model='JPCP'").fetchone()[0]
     )
@@ -228,7 +228,7 @@ async def test_input_reset(client, platform_db):
     r = await client.post("/api/drift/input-reset/JPCP", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["cleared"] == 20
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT COUNT(*) FROM input_snapshots WHERE model='JPCP'").fetchone()[0] == 0
     )

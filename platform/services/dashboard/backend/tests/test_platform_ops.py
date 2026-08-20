@@ -5,8 +5,7 @@ Guards the edit-parity guarantee: the dashboard's platform-management writes reu
 attributed to the logged-in principal + audited ``source=dashboard``, and viewers are denied writes.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -49,7 +48,7 @@ def _hdr(token):
 
 
 def _audit(db, action):
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     rows = conn.execute(
         "SELECT actor, source FROM audit_events WHERE action=?", (action,)
     ).fetchall()

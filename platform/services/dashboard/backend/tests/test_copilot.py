@@ -1,8 +1,7 @@
 """Embedded copilot BFF + endpoint (F11 / ADR 0065)."""
 
-import sqlite3
-
 import copilot
+import dbconn
 import httpx
 import pytest
 
@@ -115,9 +114,9 @@ async def test_ask_copilot_degrades_gracefully_when_agent_down():
 
 def test_audit_copilot_writes_event(tmp_path):
     db = tmp_path / "p.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
+        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
         "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.commit()
@@ -128,7 +127,7 @@ def test_audit_copilot_writes_event(tmp_path):
         )
         is True
     )
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     row = conn.execute("SELECT source, action, target FROM audit_events").fetchone()
     conn.close()
     assert row == ("dashboard-copilot", "copilot_query", "/drift")
@@ -136,7 +135,7 @@ def test_audit_copilot_writes_event(tmp_path):
 
 def test_audit_copilot_missing_table_is_noop(tmp_path):
     db = tmp_path / "e.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     assert copilot.audit_copilot(str(db), "viewer", "q", None, []) is False
 
 
@@ -167,9 +166,9 @@ async def test_copilot_endpoint_empty_question(client):
 async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path, monkeypatch):
     # No agent running in the test env → graceful envelope, never a 500 (still audited).
     db = tmp_path / "p.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
+        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
         "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
     )
     conn.commit()
@@ -185,7 +184,7 @@ async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path
     assert r.status_code == 200
     assert r.json()["_partial"] == ["agent"]
     # audited even on degrade
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     n = conn.execute("SELECT COUNT(*) FROM audit_events WHERE action='copilot_query'").fetchone()[0]
     conn.close()
     assert n == 1

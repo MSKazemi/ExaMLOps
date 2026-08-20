@@ -1,7 +1,6 @@
 """LLMOps console aggregators + /api/v1/llmops/overview (F10 / ADR 0064)."""
 
-import sqlite3
-
+import dbconn
 import llmops
 import pytest
 
@@ -11,18 +10,18 @@ from tests.conftest import VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE llm_endpoints (
+        CREATE TABLE IF NOT EXISTS llm_endpoints (
             model TEXT PRIMARY KEY, engine TEXT, hf_model_id TEXT, max_model_len INTEGER,
             tensor_parallel_size INTEGER, dtype TEXT, enabled INTEGER, updated_at TEXT, updated_by TEXT
         );
-        CREATE TABLE eval_runs (
+        CREATE TABLE IF NOT EXISTS eval_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, suite TEXT,
             status TEXT, actor TEXT
         );
-        CREATE TABLE eval_results (
+        CREATE TABLE IF NOT EXISTS eval_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT, eval_run_id INTEGER, metric TEXT,
             value REAL, baseline REAL, passed INTEGER
         );
@@ -73,7 +72,7 @@ def test_endpoints_registry(platform_db):
 
 def test_endpoints_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     assert llmops.endpoints(str(db)) == {"rows": [], "count": 0}
 
@@ -96,7 +95,7 @@ def test_eval_summary_uses_latest_run(platform_db):
 
 def test_eval_summary_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     assert llmops.eval_summary(str(db)) == {"models": [], "count": 0}
 

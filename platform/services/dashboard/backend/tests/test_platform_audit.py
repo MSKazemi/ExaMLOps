@@ -5,8 +5,7 @@ endpoint previously hardcoded a 30-day window (hiding older events) and swallowe
 into an empty result. It now defaults to the full history and surfaces errors as HTTP 500.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,9 +18,9 @@ async def _login(client, password):
 
 def _seed_audit_db(path: str) -> None:
     """Create an audit_events table with one old (>30d) and one recent event."""
-    conn = sqlite3.connect(path)
+    conn = dbconn.connect(path, row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events ("
+        "CREATE TABLE IF NOT EXISTS audit_events ("
         "id INTEGER PRIMARY KEY, ts DATETIME, source TEXT, actor TEXT, "
         "action TEXT, target TEXT, details TEXT)"
     )
@@ -98,9 +97,9 @@ async def test_platform_audit_tolerates_non_json_details(client, monkeypatch, tm
     try/except, so any older row with non-JSON details crashed the endpoint (limit=100 → 500,
     limit=80 → 200). Non-JSON details are now returned verbatim."""
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(str(db))
+    conn = dbconn.connect(str(db), row_factory=None)
     conn.execute(
-        "CREATE TABLE audit_events ("
+        "CREATE TABLE IF NOT EXISTS audit_events ("
         "id INTEGER PRIMARY KEY, ts DATETIME, source TEXT, actor TEXT, "
         "action TEXT, target TEXT, details TEXT)"
     )

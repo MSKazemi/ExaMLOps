@@ -6,8 +6,7 @@ admin + `traffic.manage` gated, and are audited `source=dashboard`; reads surfac
 shadow config/comparisons (mirroring `exa serve ab status` / `shadow status|log`), fail-open.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,7 +18,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -50,7 +52,7 @@ async def test_ab_start_persists_and_audits(client, platform_db):
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT model, variant_a, variant_b, split_pct, status FROM ab_tests WHERE model='JPCP'"
     ).fetchone()
@@ -93,7 +95,7 @@ async def test_ab_stop_marks_completed_and_audits(client, platform_db):
     r = await client.post("/api/v1/traffic/ab/stop", json={"model": "JPCP"}, headers=h)
     assert r.status_code == 200
     assert r.json()["stopped"] is True
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT status FROM ab_tests WHERE model='JPCP'").fetchone()[0] == "completed"
     )
@@ -155,7 +157,7 @@ async def test_shadow_enable_then_disable_persists_and_audits(client, platform_d
         headers=h,
     )
     assert r.status_code == 200, r.text
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert conn.execute(
         "SELECT shadow_alias, enabled FROM shadow_config WHERE model='JPCP'"
     ).fetchone() == ("Canary", 1)

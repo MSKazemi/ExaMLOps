@@ -4,8 +4,7 @@ Verifies the config-write parity added to the dashboard: every mutation requires
 (project.manage) and is audited, and the storage bind goes through the shared examlops helpers.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -15,7 +14,7 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """Empty platform.db; the projects router self-provisions its tables on first write."""
     db = tmp_path / "platform.db"
-    sqlite3.connect(db).close()
+    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
@@ -55,7 +54,7 @@ async def test_delete_project(client, platform_db):
     lr = await client.get("/api/v1/projects", headers={"Authorization": f"Bearer {token}"})
     assert all(p["name"] != "research" for p in lr.json())
     # Audited.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE action='project_deleted' AND target='research'"
     ).fetchone()[0]
@@ -116,7 +115,7 @@ async def test_bind_storage(client, platform_db):
     assert body["project"] == "research"
     assert body["bucket"]  # a bucket was provisioned
     # Audited.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE action='project_storage_bound'"
     ).fetchone()[0]
@@ -181,7 +180,7 @@ async def test_update_project_quota_budget_namespace(client, platform_db):
     assert anat["budget"]["gpuHours"] == 100
     assert anat["budget"]["costUsd"] == 250
     # Audited.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE action='project_updated' AND target='research'"
     ).fetchone()[0]
@@ -243,7 +242,7 @@ async def test_onboard_model_provisions_and_audits(client, platform_db, _pack):
     lr = await client.get("/api/v1/projects", headers={"Authorization": f"Bearer {token}"})
     assert any(p["name"] == "jpcp" for p in lr.json())
     # audited as a dashboard event
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE action='project_onboarded' AND target='jpcp'"
     ).fetchone()[0]

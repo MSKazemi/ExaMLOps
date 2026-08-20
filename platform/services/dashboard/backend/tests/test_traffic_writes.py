@@ -5,8 +5,8 @@ can write, and the change is audited + goes through examlops.data.serving.set_tr
 """
 
 import json
-import sqlite3
 
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -15,14 +15,14 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE traffic_rules (
+        CREATE TABLE IF NOT EXISTS traffic_rules (
             model TEXT PRIMARY KEY, rules TEXT NOT NULL,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_by TEXT
         );
-        CREATE TABLE audit_events (
+        CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
         );
@@ -78,7 +78,7 @@ async def test_traffic_set_and_read_back(client, platform_db):
     )
     assert got.json()["rules"] == {"Production": 90, "Canary": 10}
     # Audited + persisted through the shared code path.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     stored = json.loads(
         conn.execute("SELECT rules FROM traffic_rules WHERE model='JPCP'").fetchone()[0]
     )

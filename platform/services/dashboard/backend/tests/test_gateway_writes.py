@@ -6,8 +6,8 @@ admin + `gateway.manage` gated, audited `source=dashboard`.
 """
 
 import hashlib
-import sqlite3
 
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,7 +19,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(db))
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -50,7 +53,7 @@ async def test_issue_returns_raw_once_and_stores_only_hash(client, platform_db):
     raw = r.json()["key"]
     assert raw.startswith("exa-")
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT project, budget_usd, revoked FROM virtual_keys WHERE key_hash=?", (key_hash,)
     ).fetchone()
@@ -92,7 +95,7 @@ async def test_revoke_flips_revoked_and_audits(client, platform_db):
     r = await client.post(f"/api/gateway/keys/{key_hash}/revoke", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["revoked"] is True
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT revoked FROM virtual_keys WHERE key_hash=?", (key_hash,)).fetchone()[0]
         == 1

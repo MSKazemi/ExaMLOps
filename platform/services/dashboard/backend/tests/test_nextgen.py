@@ -5,8 +5,7 @@ distributed runs, gateway config, and feature views, is viewer-gated, and fails 
 result, never 500) when the tables/DB are absent.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import VIEWER_PW
@@ -16,47 +15,47 @@ from tests.conftest import VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db wired into the nextgen router via PLATFORM_DB."""
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE federated_runs (
+        CREATE TABLE IF NOT EXISTS federated_runs (
             run_id TEXT PRIMARY KEY, strategy TEXT, dp_enabled INTEGER, secure_agg INTEGER,
             epsilon REAL, delta REAL, epsilon_per_round REAL, rounds_completed INTEGER,
             status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE federated_sites (run_id TEXT, site TEXT, authorized INTEGER);
-        CREATE TABLE federated_rounds (
+        CREATE TABLE IF NOT EXISTS federated_sites (run_id TEXT, site TEXT, authorized INTEGER);
+        CREATE TABLE IF NOT EXISTS federated_rounds (
             id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, round_num INTEGER,
             global_metric REAL, sites_participated INTEGER, epsilon REAL
         );
-        CREATE TABLE device_pools (
+        CREATE TABLE IF NOT EXISTS device_pools (
             name TEXT PRIMARY KEY, target TEXT, accelerator TEXT, capabilities TEXT,
             count INTEGER, region TEXT, cost_per_hour REAL, carbon_factor REAL,
             supports_fractions INTEGER, status TEXT
         );
-        CREATE TABLE placement_decisions (
+        CREATE TABLE IF NOT EXISTS placement_decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, workload TEXT, accelerator_requested TEXT,
             device_chosen TEXT, pool TEXT, target TEXT, region TEXT, decision TEXT,
             fraction_honored INTEGER, reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE burst_events (
+        CREATE TABLE IF NOT EXISTS burst_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, workload TEXT, from_pool TEXT, to_pool TEXT,
             residency TEXT, allowed INTEGER, reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE autoscale_config (
+        CREATE TABLE IF NOT EXISTS autoscale_config (
             model TEXT PRIMARY KEY, min_replicas INTEGER, max_replicas INTEGER
         );
-        CREATE TABLE scale_events (
+        CREATE TABLE IF NOT EXISTS scale_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, direction TEXT
         );
-        CREATE TABLE distributed_runs (
+        CREATE TABLE IF NOT EXISTS distributed_runs (
             run_id TEXT PRIMARY KEY, strategy TEXT, status TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE inference_gateway_config (
+        CREATE TABLE IF NOT EXISTS inference_gateway_config (
             model TEXT, tenant TEXT, mode TEXT
         );
-        CREATE TABLE feature_views (name TEXT PRIMARY KEY, entity TEXT, ttl INTEGER);
+        CREATE TABLE IF NOT EXISTS feature_views (name TEXT PRIMARY KEY, entity TEXT, ttl INTEGER);
         """
     )
     conn.execute(
@@ -192,7 +191,7 @@ async def test_summary_counts(client, platform_db):
 async def test_fails_open_without_tables(client, tmp_path, monkeypatch):
     # No tables at all → empty list, never a 500.
     empty = tmp_path / "empty.db"
-    sqlite3.connect(empty).close()
+    dbconn.connect(empty, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(empty))
     token = await _login(client, VIEWER_PW)
     r = await _get(client, "/api/nextgen/federated/runs", token)

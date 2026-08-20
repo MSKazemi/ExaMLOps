@@ -4,8 +4,7 @@ Verifies: connections are read-only and never leak a secret value; workbench lis
 viewer-gated; status flips require admin and are audited.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -14,16 +13,16 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    conn = sqlite3.connect(db)
+    conn = dbconn.connect(db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE connections (
+        CREATE TABLE IF NOT EXISTS connections (
             name TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
             config_json TEXT NOT NULL DEFAULT '{}', secret_ref TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT,
             PRIMARY KEY (project, name)
         );
-        CREATE TABLE workbenches (
+        CREATE TABLE IF NOT EXISTS workbenches (
             name TEXT NOT NULL, project TEXT NOT NULL,
             image TEXT NOT NULL DEFAULT 'jupyter/scipy-notebook:latest',
             cpu REAL, memory_gb REAL, storage_volume TEXT,
@@ -31,7 +30,7 @@ def platform_db(tmp_path, monkeypatch):
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT,
             PRIMARY KEY (project, name)
         );
-        CREATE TABLE audit_events (
+        CREATE TABLE IF NOT EXISTS audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
             source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
         );
@@ -112,7 +111,7 @@ async def test_connection_create_and_list(client, platform_db):
     names = {c["name"] for c in lr.json()}
     assert "zenodo" in names
     # And it was audited.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     n = conn.execute(
         "SELECT COUNT(*) FROM audit_events WHERE action='connection_created' AND target='zenodo'"
     ).fetchone()[0]
@@ -233,7 +232,7 @@ async def test_workbench_status_flip_audited(client, platform_db):
     assert r.status_code == 200
     assert r.json()["status"] == "RUNNING"
 
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     row = conn.execute(
         "SELECT status FROM workbenches WHERE project='research' AND name='nb'"
     ).fetchone()
@@ -292,7 +291,7 @@ async def test_workbench_create_and_delete(client, platform_db):
     )
     assert "nb2" in {w["name"] for w in lr.json()}
     # Audited.
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM audit_events WHERE action='workbench_created' AND target='nb2'"

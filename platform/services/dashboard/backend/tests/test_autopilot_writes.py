@@ -5,8 +5,7 @@ Verifies the ADR-0085 self-driving-autopilot kill-switch edit-parity: flip the p
 code path, admin + `autopilot.manage` gated, audited `source=dashboard`.
 """
 
-import sqlite3
-
+import dbconn
 import pytest
 
 from tests.conftest import ADMIN_PW, VIEWER_PW
@@ -19,7 +18,10 @@ def platform_db(tmp_path, monkeypatch):
     monkeypatch.delenv("EXAMLOPS_AUTOPILOT_ENABLED", raising=False)
     from examlops import data as pdb
 
-    pdb.init_db(force=True)
+    # force=False on purpose: the DDL is cached per engine (SQLite: this tmp path, never seen
+    # before; Postgres: this schema, already built), and re-running 127 CREATE TABLEs per test
+    # cost ~30s each there. Row isolation is the autouse fixture in conftest, not the DDL.
+    pdb.init_db()
     return str(db)
 
 
@@ -50,7 +52,7 @@ async def test_enable_then_disable_persist_and_audit(client, platform_db):
     en = await client.post("/api/autopilot/enable", headers=h)
     assert en.status_code == 200, en.text
     assert en.json()["enabled"] is True
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT value FROM autopilot_config WHERE key='enabled'").fetchone()[0] == "1"
     )
@@ -61,7 +63,7 @@ async def test_enable_then_disable_persist_and_audit(client, platform_db):
 
     dis = await client.post("/api/autopilot/disable", headers=h)
     assert dis.json()["enabled"] is False
-    conn = sqlite3.connect(platform_db)
+    conn = dbconn.connect(platform_db, row_factory=None)
     assert (
         conn.execute("SELECT value FROM autopilot_config WHERE key='enabled'").fetchone()[0] == "0"
     )
