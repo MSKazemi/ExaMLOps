@@ -41,6 +41,31 @@ fail-closed: supply_chain · deploy · budget · tenancy
 fail-open  : promotion · approval · model_card · …
 ```
 
+### A `policy.yaml` that does not parse is not "no policy"
+
+`~/.config/examlops/policy.yaml` (the declarative layer read by `examlops.policy.decide`) defaults
+to **allow** when it yields no rules. That is right for a file that is absent — nobody has asked
+for a gate — but it means an unparsable file silently removes *every* rule you wrote, including a
+human-approval gate on an autopilot promote. Fail-open here is deliberate (a broken file must not
+wedge a mutation path) but it is no longer silent:
+
+- `exa policy list` **exits 1** and names the file and the parse error. It used to report a file
+  that was right there as *absent*, which sends you looking in the wrong place entirely.
+- `exa policy test <action>` prints the same warning above the decision — otherwise it answers
+  "allow — no matching policy", which is true of the rules that loaded and deeply misleading about
+  the rules you actually wrote.
+- Every other caller goes through `_load_policies`, which logs a `WARNING` on the
+  `examlops.policy` logger and carries on.
+
+An **empty** file is not an error (it is a legitimate "no policies"), but a file whose top-level
+key is wrong — `rules:` instead of `policies:` — is: it parses cleanly and gates nothing.
+
+Check it after every edit:
+
+```bash
+exa policy list && echo "policy file is live"
+```
+
 ## Domain gates — built-in default-deny a bundle can only tighten
 
 ```python

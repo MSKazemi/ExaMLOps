@@ -98,3 +98,78 @@ def test_audit_failure_never_raises(monkeypatch):
 
 def test_load_policies_missing_file(tmp_path):
     assert policy._load_policies(tmp_path / "nope.yaml") == []
+
+
+# ── an unreadable policy file is not the same state as no policy file ─────────
+#
+# The layer defaults to `allow`, so a policy.yaml that does not parse silently removes every gate
+# the operator wrote — including a human-approval gate on an autopilot promote. Fail-open is
+# deliberate (a broken file must not wedge a mutation path) but it must not be silent, and
+# `exa policy list` used to report a file that was right there as "absent".
+
+_GOOD = """policies:
+  - action: autopilot_promote
+    effect: require_approval
+"""
+_BROKEN = 'policies:\n  - action: autopilot_promote\n    effect: "unterminated\n'
+
+
+def test_a_valid_file_loads_with_no_error(tmp_path):
+    f = tmp_path / "policy.yaml"
+    f.write_text(_GOOD)
+    rules, error = policy.load_policies_with_status(f)
+    assert error is None
+    assert rules == [{"action": "autopilot_promote", "effect": "require_approval"}]
+
+
+def test_a_missing_file_is_not_an_error(tmp_path):
+    rules, error = policy.load_policies_with_status(tmp_path / "nope.yaml")
+    assert (rules, error) == ([], None), "no file is a legitimate 'no policies'"
+
+
+def test_an_empty_file_is_not_an_error(tmp_path):
+    f = tmp_path / "policy.yaml"
+    f.write_text("   \n")
+    assert policy.load_policies_with_status(f) == ([], None)
+
+
+def test_an_unparsable_file_reports_why(tmp_path):
+    f = tmp_path / "policy.yaml"
+    f.write_text(_BROKEN)
+    rules, error = policy.load_policies_with_status(f)
+    assert rules == []
+    assert error and str(f) in error, "must name the file the operator has to fix"
+    assert "could not be parsed" in error
+
+
+def test_a_file_with_the_wrong_key_reports_why(tmp_path):
+    # `rules:` instead of `policies:` — parses fine, gates nothing.
+    f = tmp_path / "policy.yaml"
+    f.write_text("rules:\n  - action: promote\n    effect: deny\n")
+    rules, error = policy.load_policies_with_status(f)
+    assert rules == []
+    assert error and "policies" in error
+
+
+def test_a_broken_file_still_fails_open_but_warns(tmp_path, caplog):
+    # The mutation path must not wedge; it must also not go quiet.
+    f = tmp_path / "policy.yaml"
+    f.write_text(_BROKEN)
+    with caplog.at_level("WARNING", logger="examlops.policy"):
+        assert policy._load_policies(f) == []
+    assert any("falls back to 'allow'" in r.getMessage() for r in caplog.records)
+
+
+def test_the_gate_really_does_disappear_when_the_file_breaks(tmp_path, monkeypatch):
+    # The reason any of this matters, stated as a test.
+    good = tmp_path / "good.yaml"
+    good.write_text(_GOOD)
+    assert decide(
+        "autopilot_promote", policies=policy._load_policies(good), audit=False
+    ).requires_approval
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text(_BROKEN)
+    assert decide(
+        "autopilot_promote", policies=policy._load_policies(broken), audit=False
+    ).allowed, "documented behaviour: fail-open — which is exactly why it must be loud"

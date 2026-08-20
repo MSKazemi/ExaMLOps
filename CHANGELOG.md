@@ -72,6 +72,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A `policy.yaml` that did not parse silently removed every gate — and `exa policy list` called
+  the file absent.** The declarative policy layer defaults to `allow` when it yields no rules, so
+  an unparsable file (one unterminated quote is enough) turns a `require_approval` gate on an
+  autopilot promote into an unattended promote, with nothing said anywhere. Worse, the CLI reported
+  the state as `No policies loaded (<path> absent)` about a file that was right there, sending the
+  operator to look in the wrong place. Fail-open is kept deliberately — a broken file must not
+  wedge a mutation path — but it is no longer silent: new `load_policies_with_status()` returns
+  `(rules, error)` and distinguishes absent (fine), empty (fine), unparsable, not-a-mapping, and
+  the wrong top-level key (`rules:` instead of `policies:`, which parses cleanly and gates
+  nothing). `exa policy list` now exits 1 and names the file and the parse error; `exa policy test`
+  warns above the decision it prints; every other caller gets a `WARNING` on the `examlops.policy`
+  logger. Seven tests, three proved red, including one that states plainly why it matters: the same
+  rule file gives `require_approval` when it parses and `allow` when it does not.
+
 - **The autopilot's dry-run promised more retrains than the cycle it previewed.** The per-cycle
   storm cap (`EXAMLOPS_AUTOPILOT_MAX_RETRAINS`, default 10) was applied on the live path only, so
   with three drifting models and a cap of one the preview reported three retrains where the real

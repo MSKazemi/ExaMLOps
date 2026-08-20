@@ -27,14 +27,27 @@ _EXAMPLES = (
 @app.command("list", epilog=_EXAMPLES)
 def list_rules():
     """List the policy rules currently loaded from policy.yaml."""
-    from examlops.policy import POLICY_YAML, _load_policies
+    from examlops.policy import POLICY_YAML, load_policies_with_status
 
-    rules = _load_policies()
+    rules, error = load_policies_with_status()
     if _output.json_mode:
-        _output.print_json({"path": str(POLICY_YAML), "policies": rules})
+        _output.print_json({"path": str(POLICY_YAML), "policies": rules, "error": error})
+        if error:
+            raise typer.Exit(1)
         return
+    if error:
+        # A file that cannot be read is not the same state as no file: the layer defaults to
+        # allow, so every rule the operator wrote is gone. Saying "absent" about a file that is
+        # right there sent them looking in the wrong place entirely.
+        _output.error(
+            f"policy file ignored — {error}",
+            hint="until this parses, every action falls back to 'allow' and any gate you "
+            "wrote (including a human-approval gate on autopilot promotes) is not in effect.",
+        )
+        raise typer.Exit(1)
     if not rules:
-        _output.info(f"No policies loaded ({POLICY_YAML} absent) — default effect is 'allow'.")
+        state = "absent" if not POLICY_YAML.is_file() else "empty"
+        _output.info(f"No policies loaded ({POLICY_YAML} {state}) — default effect is 'allow'.")
         return
     rows = [
         [
@@ -80,12 +93,25 @@ def test(
                     value = raw
         context[key.strip()] = value
 
+    from examlops.policy import load_policies_with_status
+
+    _, error = load_policies_with_status()
     decision = decide(action, context, audit=False)
     if _output.json_mode:
         _output.print_json(
-            {"action": action, "context": context, "effect": decision.effect, "rule": decision.rule}
+            {
+                "action": action,
+                "context": context,
+                "effect": decision.effect,
+                "rule": decision.rule,
+                "error": error,
+            }
         )
         return
+    if error:
+        # Without this the command answers "allow — no matching policy", which is true of the
+        # rules that loaded and deeply misleading about the rules the operator actually wrote.
+        _output.warning(f"policy file ignored — {error}")
     style = {"allow": _output.ok, "deny": _output.error}.get(decision.effect, _output.warning)
     style(f"{action}: {decision.effect} — {decision.reason}")
 

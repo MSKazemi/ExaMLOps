@@ -28,11 +28,14 @@ Example ``policy.yaml``::
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("examlops.policy")
 
 ALLOW = "allow"
 DENY = "deny"
@@ -69,20 +72,50 @@ class Decision:
         return self.effect == REQUIRE_APPROVAL
 
 
-def _load_policies(path: Path | str | None = None) -> list[dict[str, Any]]:
-    """Read the ``policies`` list from ``policy.yaml`` (empty when absent/malformed — fail-open)."""
+def load_policies_with_status(
+    path: Path | str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """``(rules, error)`` — the ``policies`` list from ``policy.yaml`` and why it is empty.
+
+    A file that cannot be read is **not** the same state as no file at all, and the difference
+    matters: the policy layer defaults to ``allow``, so an unparsable ``policy.yaml`` silently
+    removes every gate the operator wrote — including the human-approval gate on an autopilot
+    promote. Fail-open is deliberate (a broken file must not wedge a mutation path), but it must
+    not be *silent*. Callers that can afford to be loud — ``exa policy list``/``test`` — use this
+    and say so; :func:`_load_policies` logs a warning and carries on.
+
+    ``error`` is ``None`` for a missing file and for an empty one; both are legitimately "no
+    policies". It is set only when the file has content that does not yield rules.
+    """
     p = Path(path) if path else POLICY_YAML
     if not p.is_file():
-        return []
+        return [], None
     try:
         import yaml
 
         with open(p) as fh:
-            data = yaml.safe_load(fh) or {}
-    except Exception:  # pragma: no cover - a malformed file must not break a mutation path
-        return []
+            raw = fh.read()
+        data = yaml.safe_load(raw) or {}
+    except Exception as exc:  # a malformed file must not break a mutation path
+        return [], f"{p} could not be parsed: {exc}"
+    if not raw.strip():
+        return [], None
+    if not isinstance(data, Mapping):
+        return [], f"{p} is not a mapping (expected a top-level 'policies:' list)"
     rules = data.get("policies")
-    return [dict(r) for r in rules if isinstance(r, Mapping)] if isinstance(rules, list) else []
+    if rules is None:
+        return [], f"{p} has no 'policies:' list"
+    if not isinstance(rules, list):
+        return [], f"{p}: 'policies' must be a list, got {type(rules).__name__}"
+    return [dict(r) for r in rules if isinstance(r, Mapping)], None
+
+
+def _load_policies(path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Read the ``policies`` list from ``policy.yaml`` (empty when absent/malformed — fail-open)."""
+    rules, error = load_policies_with_status(path)
+    if error:
+        log.warning("policy file ignored — every action falls back to 'allow': %s", error)
+    return rules
 
 
 def _rule_matches(rule: Mapping[str, Any], action: str, context: Mapping[str, Any]) -> bool:
