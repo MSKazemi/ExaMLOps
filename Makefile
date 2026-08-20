@@ -86,7 +86,8 @@ endif
         venv install install-dev install-hooks clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \
         alerts-check dr-drill helm-validate \
-        ci ci-modelzoo ci-infra ci-examlops \
+        ci ci-modelzoo ci-infra ci-examlops ci-agent \
+        preflight preflight-nopg \
         modelzoo-test agent-test \
         docs-serve docs-build docs-cli \
         bootstrap \
@@ -659,33 +660,62 @@ ci-agent: install-dev ## Mirror the 'test:agent' job — the Skipper agent suite
 
 preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
 	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
-	@printf "$(BOLD)1/10 sanity: python syntax$(RESET)\n"
+	@printf "$(BOLD)1/14 sanity: python syntax$(RESET)\n"
 	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" \
 	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
-	@printf "$(BOLD)2/10 ruff check$(RESET)\n"
+	@printf "$(BOLD)2/14 sanity: repo structure$(RESET)\n"
+	@test -f pyproject.toml
+	@test -d platform/cli/src/examlops
+	@test -d platform/services/dashboard
+	@test -d platform/services/control_plane
+	@test -f platform/infra/docker-compose/docker-compose.yml
+	@test -d usecases/seanergy/models
+	@printf "$(BOLD)3/14 sanity: secret scan$(RESET)\n"
+	@$(VENV)/bin/exa secrets scan platform/
+	@$(VENV)/bin/exa secrets scan pipelines/
+	@printf "$(BOLD)4/14 ruff check$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)3/10 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@printf "$(BOLD)5/14 ruff format --check$(RESET)  (HARD failure in CI)\n"
 	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)4/10 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@printf "$(BOLD)6/14 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
-	@printf "$(BOLD)5/10 unit tests$(RESET)\n"
+	@printf "$(BOLD)7/14 unit tests$(RESET)\n"
 	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
-	@printf "$(BOLD)6/10 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@printf "$(BOLD)8/14 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
 	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
-	@printf "$(BOLD)7/10 dashboard backend$(RESET)\n"
+	@printf "$(BOLD)9/14 dashboard backend$(RESET)\n"
 	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
 	@cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q
-	@printf "$(BOLD)8/10 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
+	@printf "$(BOLD)10/14 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
 	@$(MAKE) --no-print-directory skipper-test
-	@printf "$(BOLD)9/10 dashboard frontend$(RESET)  (blocking in CI since the test:frontend job)\n"
+	@printf "$(BOLD)11/14 dashboard frontend$(RESET)  (blocking in CI since the test:frontend job)\n"
 	@$(MAKE) --no-print-directory ci-frontend
-	@printf "$(BOLD)10/10 control plane$(RESET)  (blocking in CI since the test:control-plane job)\n"
+	@printf "$(BOLD)12/14 control plane$(RESET)  (blocking in CI since the test:control-plane job)\n"
 	@$(MAKE) --no-print-directory ci-control-plane
-	@$(MAKE) ci-infra
-	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
+	@printf "$(BOLD)13/14 infra$(RESET)  (compose + slurm-lint + alert-rules)\n"
+	@$(MAKE) --no-print-directory ci-infra
+	@printf "$(BOLD)14/14 postgres backend$(RESET)  (the whole suite again on Postgres — slow; needs docker)\n"
+	@if [ -n "$(PREFLIGHT_SKIP_PG)" ]; then \
+	  printf "$(RED)SKIPPED by PREFLIGHT_SKIP_PG — the blocking job test:postgres was NOT mirrored.$(RESET)\n"; \
+	else \
+	  docker info >/dev/null 2>&1 || { \
+	    printf "$(RED)No docker daemon — test:postgres is a BLOCKING CI job and cannot be mirrored here.$(RESET)\n"; \
+	    printf "$(RED)Start docker, or run 'make preflight-nopg', which says out loud that it did not run.$(RESET)\n"; \
+	    exit 1; }; \
+	  $(MAKE) --no-print-directory test-postgres; \
+	fi
+	@if [ -n "$(PREFLIGHT_SKIP_PG)" ]; then \
+	  printf "\n$(BOLD)$(RED)Preflight incomplete — test:postgres did not run. Say so before you push.$(RESET)\n"; \
+	else \
+	  printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"; \
+	fi
 	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"
+
+preflight-nopg: ## Preflight WITHOUT the Postgres mirror (only when there is no docker daemon)
+	@$(MAKE) --no-print-directory preflight PREFLIGHT_SKIP_PG=1
+
 
 # =============================================================================
 ##@ Documentation  (MkDocs)

@@ -8,29 +8,38 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The ten test jobs run in parallel; deploy, smoke and post-deploy
-fire only on `main` after all tests pass, and `release` fires only on a tag.
+Six stages arranged as a DAG. The eleven check jobs run in parallel; deploy, smoke and
+post-deploy fire only on `main`, and `release` fires only on a tag.
 
 ```
-sanity:python-syntax  ─┐
-sanity:check-structure ─┼─► test:modelzoo          ─┐
-                        │   test:infra:compose      │   (tag only)
-                        │   test:infra:slurm-lint   ├─► release:gitlab
-                        │   test:infra:alert-rules  │
-                        └─► test:examlops           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
-                            test:postgres           │                              └► post-deploy:lxp:retrain-push-models
-                            test:integration         │
-                            test:agent               │
-                            test:frontend            │
-                            test:control-plane      ─┘
+sanity:python-syntax   ─┐    test:modelzoo  (allow_failure — gates nothing by design)
+sanity:check-structure ─┤
+sanity:secret-scan     ─┼─►  test:infra:compose     ─┐
+                        │    test:infra:slurm-lint   │   (tag only)
+                        │    test:infra:alert-rules  ├─► release:gitlab
+                        └─►  test:examlops           │
+                             test:postgres           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
+                             test:integration        │                              └► post-deploy:lxp:retrain-push-models
+                             test:agent              │
+                             test:frontend           │
+                             test:control-plane     ─┘
 ```
+
+> **`needs:` is the gate, not the stage order.** `deploy:lxp` and `release:gitlab` declare
+> `needs:`, which makes them DAG jobs: GitLab starts them as soon as *the jobs they name*
+> succeed, no matter what else in the pipeline has failed. A blocking job left out of that list
+> turns the pipeline red **and lets production be deployed anyway**. Until 2026-08-20 two were
+> missing — `test:postgres` and `sanity:secret-scan`, the latter being the job whose entire
+> purpose is to stop a credential reaching a shared remote. Both lists now name every blocking
+> `sanity`/`test` job, and `tests/unit/test_ci_gate_coverage.py` fails if a new one is added and
+> not wired in (mark it `allow_failure: true` to say out loud that it only advises).
 
 | Stage | Runs on | Purpose |
 |---|---|---|
 | `sanity` | all branches + MRs | Syntax check + directory structure guard — blocks everything on failure |
-| `test` | all branches + MRs | Eight parallel jobs covering all test types (change-filtered off `main`) |
+| `test` | all branches + MRs | Ten parallel jobs covering all test types (change-filtered off `main`) |
 | `release` | tags only | Turns the tag into a GitLab Release described by its CHANGELOG section |
-| `deploy` | `main` only, never on a schedule | SSH deploy to lxp-cpu01 after all tests pass |
+| `deploy` | `main` only, never on a schedule | SSH deploy to lxp-cpu01 after every blocking check named in its `needs:` passes |
 | `smoke` | after `deploy` | Post-deploy health gate with automatic rollback |
 | `post-deploy` | `main` only | Notify Control Plane of model changes + trigger Prefect retraining |
 
@@ -56,6 +65,15 @@ platform/services/control_plane    (control plane service)
 platform/infra/docker-compose/docker-compose.yml
 pipelines/models/                  (per-model YAML configs)
 ```
+
+### sanity:secret-scan
+Runs `exa secrets scan` over `platform/` and `pipelines/` — the repo's own scanner, so the rule
+set is the one the CLI ships rather than a separate CI-only list.
+
+**Blocking, and since 2026-08-20 actually blocking:** it is named in `deploy:lxp`'s and
+`release:gitlab`'s `needs:`. Before that it could go red while the same pipeline deployed to
+lxp-cpu01 and published a release — a credential-exposure gate that stopped nothing. Locally it
+is step 3/14 of `make preflight`.
 
 ---
 
@@ -157,7 +175,13 @@ the Postgres engine *optional*, and installing a driver into every SQLite job wo
 
 **Runs on:** `main` and tags always; on branches/MRs only when `examlops/storage/`,
 `platform_db*.py`, the dashboard backend or `.gitlab-ci.yml` change. Locally: `make test-postgres`,
-which spins a throwaway container and runs the same three suites plus the live round-trip test.
+which spins a throwaway container and runs the same three suites plus the live round-trip test —
+now also step 14/14 of `make preflight` (last, because it is the slow one, and gated on a docker
+daemon rather than skipped silently).
+
+**Blocking, and since 2026-08-20 actually blocking.** It was omitted from `deploy:lxp`'s and
+`release:gitlab`'s `needs:`, so a dialect regression on the production engine turned the pipeline
+red without stopping either. Both now require it.
 
 ---
 
@@ -200,7 +224,7 @@ It declares **no cache**: the shared `uv-$CI_COMMIT_REF_SLUG` key holds the `.ve
 pulls, and pushing a langchain-laden one into it would slow them all down for nothing.
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-agent` (or `make skipper-test`),
-and it is step 8/9 of `make preflight`.
+and it is step 10/14 of `make preflight`.
 
 ### test:frontend
 
@@ -217,7 +241,7 @@ than the image build's `npm install --include=dev`, so CI is lockfile-exact. The
 roughly 70 s locally (`npm ci` 12 s · lint 16 s · vitest 29 s · build 15 s).
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-frontend`, and it is step
-9/10 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
+11/14 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
 
 ### test:control-plane
 
@@ -238,7 +262,7 @@ its Dockerfile — so the job installs what `app.py`/`metrics.py`/`model_meta.py
 proved in a clean throwaway venv before being written here.
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-control-plane`, and it is
-step 10/10 of `make preflight`.
+step 12/14 of `make preflight`.
 
 > The image build still uses `npm install --include=dev`, which does not honour the lockfile.
 > Switching it to `npm ci` would make the deployed bundle reproducible; it is not done here
@@ -460,16 +484,36 @@ Caches are per-branch. The first pipeline run on a new branch installs everythin
 The Makefile mirrors each CI job group so contributors can reproduce failures without pushing:
 
 ```bash
-make ci              # run all three groups
-make ci-modelzoo     # poetry: lint + unit + smoke tests
-make ci-infra        # compose validation + slurm lint + alert-rules check
-make ci-examlops     # uv: lint + mypy + unit + dashboard tests
+make ci                # every job group
+make ci-modelzoo       # poetry: lint + unit + smoke tests (upstream; not run by preflight)
+make ci-infra          # compose validation + slurm lint + alert-rules check
+make ci-examlops       # uv: lint + mypy + unit + dashboard tests
+make ci-agent          # the Skipper agent suite
+make ci-frontend       # dashboard frontend: lint + vitest + build
+make ci-control-plane  # the control plane's own suite
+make test-postgres     # the whole suite again on a throwaway Postgres 16
 ```
 
 Note: `make ci` does not run the Ray Serve integration test — run it directly with:
 ```bash
 .venv/bin/pytest tests/integration/ -v --tb=short
 ```
+
+### `make preflight` mirrors the blocking jobs, and proves that it does
+
+`preflight` is fourteen steps covering every blocking `sanity`/`test` job. That claim used to
+rest on someone remembering to extend it; `tests/unit/test_ci_gate_coverage.py` now enumerates
+the blocking jobs out of `.gitlab-ci.yml` and fails if one has no recorded local mirror — so
+adding a CI check forces a decision about running it locally rather than leaving the sentence
+above quietly false. (It was: `sanity:check-structure`, `sanity:secret-scan` and `test:postgres`
+were all missing on 2026-08-20.)
+
+The one deliberate omission is `test:modelzoo`, which preflight names in its closing line —
+it needs poetry and an upstream checkout, and it is `allow_failure: true` in CI anyway.
+
+`test:postgres` needs a docker daemon. Without one, preflight **exits 1** rather than skipping;
+`make preflight-nopg` runs everything else and ends in red with *"Preflight incomplete —
+test:postgres did not run"*, so the omission cannot be mistaken for a pass.
 
 ### The gate pins its own toolchain
 

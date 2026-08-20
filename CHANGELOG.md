@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two blocking CI jobs could not stop a deploy or a release — one of them the secret scan.**
+  `deploy:lxp` and `release:gitlab` declare `needs:`, which makes them DAG jobs: GitLab starts
+  them as soon as the jobs *they name* succeed, whatever else in the pipeline has failed. Their
+  lists named eight of the ten blocking checks. The two missing were `test:postgres` — the whole
+  unit and dashboard suites on the production Postgres engine — and **`sanity:secret-scan`**,
+  whose only purpose is to stop a credential reaching a shared remote. Either could go red while
+  the same pipeline deployed to lxp-cpu01 and published a GitLab release; the pipeline showed red
+  afterwards, which is the wrong order. Both lists now name every blocking `sanity`/`test` job,
+  and the comment above `deploy:lxp`'s `needs:` no longer claims a completeness the DAG did not
+  provide. `tests/unit/test_ci_gate_coverage.py` computes the transitive `needs:` closure and
+  fails when a new blocking job is added and not wired in — the fix has to be a decision
+  (require it, or mark it `allow_failure: true`) rather than an omission.
+
+- **`make preflight` claimed to mirror every blocking CI job and mirrored eleven of fourteen.**
+  Missing: `sanity:check-structure`, `sanity:secret-scan` and `test:postgres` — the last being an
+  entire second run of the suite against Postgres, the engine the platform actually deploys on.
+  The claim now holds and is enforced: the same guard enumerates the blocking jobs out of
+  `.gitlab-ci.yml` and fails if one has no recorded local mirror, so adding a check forces a
+  decision about running it locally. Preflight is fourteen steps; the Postgres step is last
+  because it is slow, and it **exits 1** when no docker daemon is present rather than skipping —
+  `make preflight-nopg` runs the rest and ends in red saying the gate did not run, which is the
+  same shape `dashboard-check` uses for a missing `npm`.
+
 ### Added
 
 - **`test:control-plane` — 82 more tests that gated nothing, and had rotted to the point of not
@@ -16,7 +41,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   all — `ModuleNotFoundError: No module named 'model_meta'`, because the service runs with its own
   directory as the working directory and its tests import the way it does. A `tests/conftest.py`
   restores that (same idiom as the agent's), and all 82 pass. New CI job on both remotes, required
-  by `deploy:lxp` and `release:gitlab`, mirrored as `make ci-control-plane` and step 10/10 of
+  by `deploy:lxp` and `release:gitlab`, mirrored as `make ci-control-plane` and step 12/14 of
   `make preflight`. The service has no `requirements.txt` — its deps are an inline pip line in its
   Dockerfile — so the job installs what the code actually imports, a set proved in a clean
   throwaway venv before being written into either CI file.
@@ -30,7 +55,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `node:24-alpine`, matching `Dockerfile.dashboard`'s builder, with `npm ci` so CI is
   lockfile-exact where the image build's `npm install --include=dev` is not. `deploy:lxp` and
   `release:gitlab` both require it; the same four steps run in GitHub Actions, in
-  `make ci-frontend`, as step 9/9 of `make preflight`, and inside `make dashboard-check`. The
+  `make ci-frontend`, as step 11/14 of `make preflight`, and inside `make dashboard-check`. The
   recipe was proved locally end-to-end before being written into either CI file (`npm ci` 12 s ·
   lint 16 s · vitest 29 s · build 15 s; junit reports 373 tests, 0 failures).
 

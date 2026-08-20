@@ -586,6 +586,8 @@ release:gitlab:
     - job: test:agent
     - job: test:frontend
     - job: test:control-plane
+    - job: test:postgres
+    - job: sanity:secret-scan
   script:
     # `release:` (below) is what actually creates the object; this only prepares the text.
     # awk over the CHANGELOG: print the section for this tag, stopping at the next `## [`.
@@ -620,11 +622,14 @@ deploy:lxp:
   # resource group makes GitLab run them one after another; it is shared with smoke:lxp
   # so a deploy cannot start while the previous deploy's health gate is still deciding.
   resource_group: production-lxp
-  # deploy:lxp only runs on main, where every gating test job is created
-  # (full-suite policy), so all are required here — deploy proceeds only when the
-  # entire suite is green. test:modelzoo is intentionally excluded: it is a
-  # non-blocking, informational job (ModelZoo owns its own CI/CD) and is not
-  # created on plain main pushes, so requiring it would break pipeline creation.
+  # `needs:` makes this a DAG job: it starts as soon as THESE jobs pass, whatever else in
+  # the pipeline has failed. So this list is not documentation of the suite — it IS the
+  # gate, and a blocking job left out of it turns the pipeline red while production is
+  # deployed anyway. Every blocking sanity/test job therefore appears here; the guard
+  # tests/unit/test_ci_gate_coverage.py fails if a new one is added and forgotten.
+  # test:modelzoo is the one deliberate exclusion: it is `allow_failure: true`
+  # (ModelZoo owns its own CI/CD) and is not created on plain main pushes, so requiring
+  # it would break pipeline creation.
   needs:
     - job: test:examlops            # core gate — always runs
     - job: test:infra:compose
@@ -634,6 +639,8 @@ deploy:lxp:
     - job: test:agent
     - job: test:frontend
     - job: test:control-plane
+    - job: test:postgres
+    - job: sanity:secret-scan
   rules:
     # A nightly schedule exists to *find out* whether main is green, not to ship it.
     # Without this a scheduled pipeline satisfies the branch condition below and would
