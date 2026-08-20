@@ -119,3 +119,28 @@ def _nonempty_tables_sql(conn: Any) -> str:
             f"SELECT '{t}' AS t WHERE EXISTS (SELECT 1 FROM \"{t}\")" for t in tables
         )
     return _NONEMPTY_SQL
+
+
+def empty_datastore(tmp_path: Any, monkeypatch: Any) -> str:
+    """Point the platform at a datastore that exists but holds no tables — on either engine.
+
+    Several surfaces make the same promise: on finding its table absent, degrade honestly —
+    return ``False``, or fail loudly with a 500 — rather than report an empty result as though
+    it had read one. Posing that question on SQLite is trivial: an empty file.
+
+    On Postgres there is no file to be empty. ``PLATFORM_DB`` is ignored, and the shared schema
+    always carries the full ~100 tables, so the same test quietly stopped asking its question and
+    failed on the answer it got instead. Here it asks again, against a sibling schema that is
+    deliberately never bootstrapped — one extra schema for the whole run, so the connection pool
+    is not fragmented per test.
+
+    Returns the ``PLATFORM_DB`` path, already set, for callers that pass it explicitly.
+    """
+    db = tmp_path / "empty.db"
+    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres":
+        base = os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "public")
+        monkeypatch.setenv("EXAMLOPS_POSTGRES_SCHEMA", f"{base}_empty")
+    else:
+        db.touch()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    return str(db)

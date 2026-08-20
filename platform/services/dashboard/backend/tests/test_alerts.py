@@ -6,32 +6,20 @@ import alerts
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    # Build the *real* platform schema instead of a hand-rolled subset of it. The subset was a
+    # column subset — no `model_costs.version`, no `recorded_at` — so a seed written against the
+    # product's actual NOT NULL columns failed here while passing on Postgres, where the real
+    # schema already exists and `CREATE TABLE IF NOT EXISTS` is a no-op. One schema, both engines.
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS drift_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME, model TEXT, alias TEXT,
-            prediction REAL, job_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT, set_at DATETIME);
-        CREATE TABLE IF NOT EXISTS project_budgets (
-            project TEXT PRIMARY KEY, gpu_hours_budget REAL, cost_budget REAL,
-            period TEXT, updated_at TEXT, updated_by TEXT
-        );
-        CREATE TABLE IF NOT EXISTS model_costs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, gpu_hours REAL, cost_usd REAL
-        );
-        CREATE TABLE IF NOT EXISTS eval_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, suite TEXT, status TEXT, actor TEXT);
-        CREATE TABLE IF NOT EXISTS eval_results (id INTEGER PRIMARY KEY AUTOINCREMENT, eval_run_id INTEGER, metric TEXT, value REAL, baseline REAL, passed INTEGER);
-        CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP);
-        """
-    )
     # drift: baseline mean 1.0 std 0.5; latest mean ~5 → z=8 → critical
     conn.execute(
         "INSERT INTO drift_baselines (model, stats) VALUES ('jpcp', ?)",
@@ -43,7 +31,10 @@ def platform_db(tmp_path, monkeypatch):
     )
     # budget: consumed 20 > budget 15 → error
     conn.execute("INSERT INTO project_budgets (project, cost_budget) VALUES ('eu-hpc', 15.0)")
-    conn.execute("INSERT INTO model_costs (model_name, cost_usd) VALUES ('jpcp', 20.0)")
+    conn.execute(  # `version` and `recorded_at` are NOT NULL in the real schema
+        "INSERT INTO model_costs (model_name, version, cost_usd, recorded_at) "
+        "VALUES ('jpcp', 1, 20.0, '2026-01-01T00:00:00')"
+    )
     # eval regression: latest run has a failed metric → warn
     conn.execute(
         "INSERT INTO eval_runs (id, model, suite, status) VALUES (1, 'llama3', 'mmlu', 'complete')"
@@ -54,7 +45,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -78,19 +68,18 @@ def test_active_alerts_merges_sources_severity_sorted(platform_db):
 
 def test_no_drift_alert_within_baseline(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()  # the real schema, so `alias NOT NULL` is the same constraint on both engines
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        "CREATE TABLE IF NOT EXISTS drift_snapshots (id INTEGER PRIMARY KEY, model TEXT, prediction REAL);"
-        "CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT);"
-    )
     conn.execute(
         "INSERT INTO drift_baselines (model, stats) VALUES ('m', ?)",
         (json.dumps({"mean": 1.0, "std": 1.0}),),
     )
-    conn.execute("INSERT INTO drift_snapshots (model, prediction) VALUES ('m', 1.2)")  # z=0.2
+    conn.execute(  # z=0.2 — `alias` is NOT NULL in the real schema, so it must be seeded
+        "INSERT INTO drift_snapshots (model, alias, prediction) VALUES ('m', 'Production', 1.2)"
+    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     assert alerts.active_alerts(str(db))["count"] == 0
 
 

@@ -8,6 +8,7 @@ into an empty result. It now defaults to the full history and surfaces errors as
 import dbconn
 import pytest
 
+from examlops.storage.testing import empty_datastore
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
@@ -82,9 +83,7 @@ async def test_platform_audit_last_days_narrows(client, monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_platform_audit_surfaces_errors_not_empty(client, monkeypatch, tmp_path):
     """A missing/unreadable DB must 500, never masquerade as 'no audit activity' (0 total)."""
-    db = tmp_path / "missing.db"  # no such file, and no audit_events table
-    _ = db
-    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "missing.db"))
+    empty_datastore(tmp_path, monkeypatch)  # a datastore with no audit_events table
     token = await _login(client, ADMIN_PW)
     r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 500

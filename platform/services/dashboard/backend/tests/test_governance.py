@@ -37,7 +37,9 @@ def platform_db(tmp_path, monkeypatch):
     conn.execute("INSERT INTO model_cards (model, output_path) VALUES ('jpcp', '/cards/jpcp.md')")
     # 'demo' has costs but no card → uncarded
     conn.execute(
-        "INSERT INTO model_costs (model_name, version, gpu_hours, cost_usd) VALUES ('demo', 1, 1.0, 4.0)"
+        # `recorded_at` is NOT NULL in the real schema
+        "INSERT INTO model_costs (model_name, version, gpu_hours, cost_usd, recorded_at) "
+        "VALUES ('demo', 1, 1.0, 4.0, '2026-01-01T00:00:00')"
     )
     conn.executemany(
         "INSERT INTO audit_events (source, actor, action, target) VALUES (?,?,?,?)",

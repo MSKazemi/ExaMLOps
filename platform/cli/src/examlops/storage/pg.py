@@ -16,6 +16,7 @@ use (``execute``/``executescript``/``executemany``/``commit``/``close``, ``fetch
 |-------------------------------------|-------------------------------------------------------|
 | ``?`` placeholders                  | ``%s``                                                |
 | ``INTEGER PRIMARY KEY AUTOINCREMENT``| ``BIGSERIAL PRIMARY KEY``                            |
+| ``INTEGER``                          | ``BIGINT`` (SQLite's is 8 bytes, not int4)           |
 | ``DATETIME`` / ``REAL`` / ``BLOB``  | ``TEXT`` / ``DOUBLE PRECISION`` / ``BYTEA``           |
 | ``CURRENT_TIMESTAMP``               | ``to_char(now() …)`` — a *string*, keeping SQLite's   |
 |                                     | ``'YYYY-MM-DD HH:MM:SS'`` text semantics intact       |
@@ -43,6 +44,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Sequence
+from decimal import Decimal
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,13 @@ _TYPE_MAP = (
     (r"\bDATETIME\b", "TEXT"),
     (r"\bREAL\b", "DOUBLE PRECISION"),
     (r"\bBLOB\b", "BYTEA"),
+    # SQLite's INTEGER holds up to 8 bytes; Postgres's is int4, which stops at 2,147,483,647.
+    # Left alone, every column the schema declares INTEGER silently becomes a narrower type than
+    # the one the platform was written against — and it fails at *write* time, as an error the
+    # caller sees only once a value gets big enough. `project_storage.used_bytes` is the plain
+    # example: any project holding more than ~2 GB cannot record its own usage. Epoch-millisecond
+    # timestamps and the other byte counters have the same ceiling. BIGINT is what SQLite meant.
+    (r"\bINTEGER\b", "BIGINT"),
 )
 
 
@@ -433,6 +442,20 @@ class PgRow(dict):
             return tuple(self.values()) == tuple(other)
         return super().__eq__(other)
 
+    def __iter__(self) -> Any:
+        """Iterate the row's *values*, as :class:`sqlite3.Row` does — not its keys.
+
+        This is what makes ``actor, source = row`` work, and it is the other half of the tuple
+        fidelity :meth:`__eq__` restores: a caller that can compare a row to a tuple should also
+        be able to unpack one. Inheriting dict's key iteration meant the unpack silently bound the
+        *column names*, so an assertion read ``'source' == 'dashboard'`` and looked like a data bug.
+
+        Name-keyed use is unaffected: ``row["col"]``, ``in``, ``.keys()`` and ``**row`` all still go
+        through dict. ``dict(row)`` is safe too — CPython's dict-merge fast path is guarded on
+        ``tp_iter`` being dict's own, so overriding it here routes the copy via ``keys()``.
+        """
+        return iter(self.values())
+
     __hash__ = None  # type: ignore[assignment]  # as for dict; spelled out since __eq__ is defined
 
 
@@ -443,11 +466,30 @@ def _adapt(params: Any) -> Any:
     return tuple(int(p) if isinstance(p, bool) else p for p in params)
 
 
+def _demote_numeric(value: Any) -> Any:
+    """Return a Postgres ``numeric`` as the number SQLite would have produced.
+
+    Nothing in this schema *declares* a numeric column — the translation in :data:`_TYPE_MAP`
+    only ever emits ``TEXT``/``BIGINT``/``DOUBLE PRECISION``/``BYTEA``. So every ``Decimal``
+    that reaches a caller is an aggregate artefact: Postgres widens ``SUM(bigint)`` to
+    ``numeric``, whereas SQLite keeps ``SUM`` over an INTEGER column an integer.
+
+    Left alone the difference survives arithmetic and hides, then surfaces at the API edge —
+    pydantic renders a ``Decimal`` as the JSON *string* ``"12"``, so a dashboard field the
+    frontend reads as a number silently becomes text on Postgres and stays a number on SQLite.
+    Int when the value is whole, float otherwise, is exactly what the SQLite path returns.
+    """
+    if isinstance(value, Decimal):
+        whole = int(value)
+        return whole if value == whole else float(value)
+    return value
+
+
 def _row_factory(cursor: Any) -> Callable[[Sequence[Any]], PgRow]:
     cols = [c.name for c in (cursor.description or [])]
 
     def make(values: Sequence[Any]) -> PgRow:
-        return PgRow(zip(cols, values, strict=False))
+        return PgRow(zip(cols, map(_demote_numeric, values), strict=False))
 
     return make
 

@@ -8,6 +8,7 @@ result, never 500) when the tables/DB are absent.
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
@@ -15,49 +16,14 @@ from tests.conftest import VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db wired into the nextgen router via PLATFORM_DB."""
     db = tmp_path / "platform.db"
+    # Build the *real* platform schema rather than a hand-rolled approximation of it. The router
+    # reads these tables with ``SELECT *``, so a simplified local DDL let the test assert columns
+    # the product does not have — and it only stayed hidden because each SQLite test got its own
+    # file. Under Postgres the tables already exist in the shared schema, so ``CREATE TABLE IF NOT
+    # EXISTS`` was a silent no-op and the invented shape evaporated.
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS federated_runs (
-            run_id TEXT PRIMARY KEY, strategy TEXT, dp_enabled INTEGER, secure_agg INTEGER,
-            epsilon REAL, delta REAL, epsilon_per_round REAL, rounds_completed INTEGER,
-            status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS federated_sites (run_id TEXT, site TEXT, authorized INTEGER);
-        CREATE TABLE IF NOT EXISTS federated_rounds (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, round_num INTEGER,
-            global_metric REAL, sites_participated INTEGER, epsilon REAL
-        );
-        CREATE TABLE IF NOT EXISTS device_pools (
-            name TEXT PRIMARY KEY, target TEXT, accelerator TEXT, capabilities TEXT,
-            count INTEGER, region TEXT, cost_per_hour REAL, carbon_factor REAL,
-            supports_fractions INTEGER, status TEXT
-        );
-        CREATE TABLE IF NOT EXISTS placement_decisions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, workload TEXT, accelerator_requested TEXT,
-            device_chosen TEXT, pool TEXT, target TEXT, region TEXT, decision TEXT,
-            fraction_honored INTEGER, reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS burst_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, workload TEXT, from_pool TEXT, to_pool TEXT,
-            residency TEXT, allowed INTEGER, reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS autoscale_config (
-            model TEXT PRIMARY KEY, min_replicas INTEGER, max_replicas INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS scale_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, direction TEXT
-        );
-        CREATE TABLE IF NOT EXISTS distributed_runs (
-            run_id TEXT PRIMARY KEY, strategy TEXT, status TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS inference_gateway_config (
-            model TEXT, tenant TEXT, mode TEXT
-        );
-        CREATE TABLE IF NOT EXISTS feature_views (name TEXT PRIMARY KEY, entity TEXT, ttl INTEGER);
-        """
-    )
     conn.execute(
         "INSERT INTO federated_runs (run_id, strategy, dp_enabled, secure_agg, epsilon, delta, "
         "epsilon_per_round, rounds_completed, status) VALUES "
@@ -88,20 +54,27 @@ def platform_db(tmp_path, monkeypatch):
     conn.execute(
         "INSERT INTO autoscale_config (model, min_replicas, max_replicas) VALUES ('JPCP',0,8)"
     )
-    conn.execute("INSERT INTO scale_events (model, direction) VALUES ('JPCP','up')")
+    # The real `scale_events` records replica counts, not a `direction` string; the router
+    # reads it with SELECT *, so seed the columns that actually exist.
     conn.execute(
-        "INSERT INTO distributed_runs (run_id, strategy, status) VALUES ('d-1','fsdp','running')"
+        "INSERT INTO scale_events (model, from_replicas, to_replicas, reason) "
+        "VALUES ('JPCP', 1, 3, 'load')"
+    )
+    conn.execute(
+        # `model` is NOT NULL in the real schema
+        "INSERT INTO distributed_runs (run_id, model, strategy, status) "
+        "VALUES ('d-1','JPCP','fsdp','running')"
     )
     conn.execute(
         "INSERT INTO inference_gateway_config (model, tenant, mode) VALUES "
         "('JPCP','default','cache_aware')"
     )
     conn.execute(
-        "INSERT INTO feature_views (name, entity, ttl) VALUES ('user_activity','user',3600)"
+        "INSERT INTO feature_views (name, entity, features_json, ttl_seconds) "
+        "VALUES ('user_activity','user','[\"embedding\"]',3600)"
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -164,7 +137,7 @@ async def test_autoscale_and_distributed_and_gateway(client, platform_db):
     cfg = await _get(client, "/api/nextgen/autoscale/config", token)
     assert cfg.json()[0]["max_replicas"] == 8
     ev = await _get(client, "/api/nextgen/autoscale/events", token)
-    assert ev.json()[0]["direction"] == "up"
+    assert ev.json()[0]["to_replicas"] == 3
     dist = await _get(client, "/api/nextgen/distributed/runs", token)
     assert dist.json()[0]["strategy"] == "fsdp"
     gw = await _get(client, "/api/nextgen/gateway/config", token)

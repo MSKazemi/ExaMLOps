@@ -4,6 +4,7 @@ import dbconn
 import pytest
 import selfobs
 
+from examlops.storage.testing import empty_datastore
 from tests.conftest import VIEWER_PW
 
 # ── metrics collector (F24 R4) ───────────────────────────────────────────────
@@ -64,9 +65,7 @@ def test_record_ui_action_writes_audit(tmp_path, monkeypatch):
 
 
 def test_record_ui_action_graceful_without_table(tmp_path, monkeypatch):
-    db = tmp_path / "empty.db"
-    dbconn.connect(db, row_factory=None).close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
+    empty_datastore(tmp_path, monkeypatch)
     assert selfobs.record_ui_action("x", "y", "viewer") is False
 
 

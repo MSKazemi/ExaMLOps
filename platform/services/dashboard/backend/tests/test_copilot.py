@@ -5,6 +5,7 @@ import dbconn
 import httpx
 import pytest
 
+from examlops.storage.testing import empty_datastore
 from tests.conftest import VIEWER_PW
 
 # ── context grounding (R2/R6) ────────────────────────────────────────────────
@@ -133,10 +134,9 @@ def test_audit_copilot_writes_event(tmp_path):
     assert row == ("dashboard-copilot", "copilot_query", "/drift")
 
 
-def test_audit_copilot_missing_table_is_noop(tmp_path):
-    db = tmp_path / "e.db"
-    dbconn.connect(db, row_factory=None).close()
-    assert copilot.audit_copilot(str(db), "viewer", "q", None, []) is False
+def test_audit_copilot_missing_table_is_noop(tmp_path, monkeypatch):
+    db = empty_datastore(tmp_path, monkeypatch)
+    assert copilot.audit_copilot(db, "viewer", "q", None, []) is False
 
 
 # ── endpoint ──────────────────────────────────────────────────────────────────

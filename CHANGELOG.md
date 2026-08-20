@@ -20,8 +20,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - **The dashboard's tests could not run against Postgres, and the reason was not what it looked
   like.** 34 of its 70 test modules seeded a throwaway `platform.db` with raw `sqlite3` while the
   routers under test read whichever engine was configured — so on `EXAMLOPS_DB_BACKEND=postgres`
-  a test wrote to one store and asserted against another. 110 failed / 340 passed. Now **423 pass**
-  (SQLite unchanged at 450/450), with the remaining 27 characterised below.
+  a test wrote to one store and asserted against another. 110 failed / 340 passed. The suite now
+  passes **450/450 on Postgres**, matching SQLite exactly, and does so with pooling on.
   - All 96 raw `sqlite3.connect` sites in those tests now go through `dbconn.connect` — the app's
     own adapter, which ignores the path under Postgres. The guard `test_no_bare_sqlite_connect`
     used to exempt `tests/` on the grounds that "test fixtures build throwaway SQLite files
@@ -43,6 +43,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   connection's default and means "ignored", so obeying it would hand tuples to all ~252 platform
   helpers, every one of which reads rows by name. `PgRow.__eq__` now also matches a sequence of
   its values.
+
+- **`PgRow` unpacked to its column *names*.** `actor, source = row` bound `('actor', 'source')`,
+  because `dict` iterates keys while `sqlite3.Row` — the thing `PgRow` stands in for — iterates
+  values. The assertion downstream then read `'source' == 'dashboard'` and looked like a data bug.
+  `PgRow.__iter__` now yields values, the other half of the tuple fidelity `__eq__` restores.
+  Name-keyed use is untouched: `row["col"]`, `in`, `.keys()`, `**row` and `dict(row)` all still go
+  through `dict` (CPython guards its dict-merge fast path on `tp_iter`, so the copy routes via
+  `keys()`).
+
+- **A Postgres `SUM` reached the browser as a JSON string.** Postgres widens `SUM(bigint)` to
+  `numeric`, which psycopg returns as `Decimal` and pydantic serialises as `"12"`, not `12` — so
+  the dashboard's `facility.gpusAllocated` was a number on SQLite and text on Postgres. No column
+  in this schema is *declared* numeric (the dialect map only ever emits `TEXT`/`BIGINT`/`DOUBLE
+  PRECISION`/`BYTEA`), so every `Decimal` reaching a caller is an aggregate artefact; the row
+  factory now demotes it to `int` when whole and `float` otherwise, which is what SQLite returns.
+
+- **`INTEGER` narrowed to int4 on Postgres.** SQLite's `INTEGER` holds 8 bytes; Postgres's stops
+  at 2,147,483,647, and the dialect map passed it through unchanged. `project_storage.used_bytes`
+  is the plain case — any project holding more than ~2 GB could not record its own usage, and only
+  at write time. It now translates to `BIGINT`, which is what SQLite meant.
+
+- **Three graceful-degradation tests had stopped asking their question.** `test_copilot`,
+  `test_selfobs` and `test_platform_audit` each prove that a surface finding its table absent
+  degrades honestly instead of reporting an empty result. They posed that as an empty SQLite
+  *file*; on Postgres there is no file to be empty, so they simply failed. New
+  `examlops.storage.testing.empty_datastore()` poses it on either engine — an empty file, or a
+  sibling schema that is deliberately never bootstrapped.
+
+- **A dashboard test asserted on a column the product has never had.** `test_nextgen` hand-rolled
+  a simplified `scale_events(model, direction)` and asserted `direction == "up"`; the real table
+  records `from_replicas`/`to_replicas`, and the router reads it with `SELECT *`. It survived only
+  because every SQLite test gets its own file, so the invented schema always won. The fixture now
+  builds the real schema with `init_db()` and seeds against it.
+
+- **The dashboard leaked pooled connections, and it is a production bug.** Under SQLite an unclosed
+  connection is collected and forgotten; under `psycopg_pool` it is never returned, so ten leaks
+  exhaust `max_size` and every later caller waits out the pool's full 30 s default — which is why
+  the suite looked like a hang rather than a leak. A runtime detector attributed the leaks to test
+  fixtures that raised mid-seed, now fixed. The latent risk is separate and real: 51 sites write
+  `conn.close()` outside a `finally`, so an exception on those paths still leaks permanently. New
+  `tests/test_connections_are_scoped.py` asserts zero never-closed sites and ratchets that 51 so
+  new code cannot add one.
 
 
 - **`exa ask` never streamed, so a long answer looked like a hang.** The Skipper bridge
