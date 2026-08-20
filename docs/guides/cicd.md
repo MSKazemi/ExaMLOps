@@ -8,23 +8,27 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Four stages arranged as a DAG. The six test jobs run in parallel; deploy and post-deploy fire only on `main` after all tests pass.
+Six stages arranged as a DAG. The seven test jobs run in parallel; deploy, smoke and post-deploy
+fire only on `main` after all tests pass, and `release` fires only on a tag.
 
 ```
 sanity:python-syntax  ─┐
 sanity:check-structure ─┼─► test:modelzoo          ─┐
-                        │   test:infra:compose      │
-                        │   test:infra:slurm-lint   ├─► deploy:lxp ──► post-deploy:lxp:notify-model-changes
-                        │   test:infra:alert-rules  │                 └► post-deploy:lxp:retrain-push-models
-                        └─► test:examlops           │
+                        │   test:infra:compose      │   (tag only)
+                        │   test:infra:slurm-lint   ├─► release:gitlab
+                        │   test:infra:alert-rules  │
+                        └─► test:examlops           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
+                            test:postgres           │                              └► post-deploy:lxp:retrain-push-models
                             test:integration        ─┘
 ```
 
 | Stage | Runs on | Purpose |
 |---|---|---|
 | `sanity` | all branches + MRs | Syntax check + directory structure guard — blocks everything on failure |
-| `test` | all branches + MRs | Six parallel jobs covering all test types |
-| `deploy` | `main` only | SSH deploy to lxp-cpu01 after all tests pass |
+| `test` | all branches + MRs | Seven parallel jobs covering all test types (change-filtered off `main`) |
+| `release` | tags only | Turns the tag into a GitLab Release described by its CHANGELOG section |
+| `deploy` | `main` only, never on a schedule | SSH deploy to lxp-cpu01 after all tests pass |
+| `smoke` | after `deploy` | Post-deploy health gate with automatic rollback |
 | `post-deploy` | `main` only | Notify Control Plane of model changes + trigger Prefect retraining |
 
 Push-cancellation: `workflow: auto_cancel: on_new_commit: interruptible` cancels in-progress runs when a new commit arrives on the same branch. All test jobs are marked `interruptible: true`.
@@ -126,6 +130,34 @@ Dashboard tests run against a fully in-memory setup; the conftest at `platform/s
 
 The `before_script` uses `uv venv --clear .venv`: the `uv` cache restores `.venv` between runs, so a plain `uv venv .venv` intermittently failed with "a virtual environment already exists".
 
+### test:postgres
+**Image:** `python:3.12-slim` | **Service:** `postgres:16-alpine` | **Toolchain:** uv
+
+`EXAMLOPS_DB_BACKEND=postgres` is a supported production engine, and until this job existed
+nothing in CI ever ran on it — every other job used the SQLite default, so a dialect regression
+could only be found by someone remembering to run `make test-postgres` locally.
+
+Runs both suites that carry the platform's data layer against a real Postgres 16 service:
+
+```bash
+EXAMLOPS_POSTGRES_SCHEMA=exa_ci      pytest tests/unit/
+EXAMLOPS_POSTGRES_SCHEMA=exa_ci_dash pytest platform/services/dashboard/backend/tests/
+```
+
+The dashboard suite is included deliberately: it is a separate app with its own connection
+adapter, and every Postgres-specific defect found so far surfaced there first. The two suites get
+separate schemas because each has its own truncate-based isolation fixture and sharing one would
+let them race.
+
+`psycopg` is installed in this job rather than added to the root `[dev]` extra — it is what makes
+the Postgres engine *optional*, and installing a driver into every SQLite job would weaken that.
+
+**Runs on:** `main` and tags always; on branches/MRs only when `examlops/storage/`,
+`platform_db*.py`, the dashboard backend or `.gitlab-ci.yml` change. Locally: `make test-postgres`,
+which spins a throwaway container and runs the same three suites plus the live round-trip test.
+
+---
+
 ### test:integration
 **Image:** `python:3.12` (full image — Ray needs system libs) | **Toolchain:** uv
 
@@ -140,14 +172,43 @@ Runs `test_inference_pipeline_e2e.py`, which:
 
 **Timeout:** 15 minutes.
 
-**`allow_failure: true`** — This job is allowed to fail without blocking deploy because Ray requires ≥ 4 CPUs and GitLab shared runners typically provide 2. Once a dedicated runner with ≥ 4 CPUs is registered, set `allow_failure: false` in `.gitlab-ci.yml` to make this test blocking.
+**Blocking.** This job once carried `allow_failure: true` because Ray needs ≥ 4 CPUs and the shared runners provided 2; the active runner satisfies that, so a failure here now fails the pipeline and blocks deploy.
+
+---
+
+## Stage: release
+
+### release:gitlab
+**Image:** `registry.gitlab.com/gitlab-org/release-cli` | **Runs on:** tags only
+
+The project had a full tag history and *zero* GitLab Releases, so tags carried no notes and
+nothing linked a version to what changed in it. This job turns each tag into a Release whose
+description is that version's own `CHANGELOG.md` section — extracted with `awk`, so there are no
+hand-written notes to keep in sync.
+
+If `CHANGELOG.md` has no `## [X.Y.Z]` section for the tag, the job **fails**. That is deliberate:
+it is the cheapest possible check that the changelog was updated before tagging.
 
 ---
 
 ## Stage: deploy
 
 ### deploy:lxp
-**Image:** `ubuntu:22.04` | **Runs on:** `main` only
+**Image:** `ubuntu:22.04` | **Runs on:** `main` only, never on a scheduled pipeline
+
+Three rules, in order — GitLab takes the first match:
+
+| Condition | Result | Why |
+|---|---|---|
+| `$CI_PIPELINE_SOURCE == "schedule"` | `never` | A nightly pipeline exists to *report* on `main`, not to ship it. A scheduled run satisfies the branch condition below, so without this it would redeploy production every night. |
+| `main` **and** `$DEPLOY_REQUIRES_APPROVAL` set | `manual` | Production becomes a button rather than an automatic consequence of merging. This is the tier-free substitute for GitLab's Premium deployment approvals: it gates *when*, not *who*, which is the half that matters with one maintainer. |
+| `main` | `on_success` | Default: merge to `main` deploys. |
+
+`resource_group: production-lxp` is shared with `smoke:lxp`. There is one node and deploying is a
+`git pull` + rebuild on a shared checkout, so two pipelines reaching it at once would interleave —
+and `smoke:lxp` records the previous SHA for rollback, so a concurrent run could roll the node back
+to a SHA the *other* pipeline recorded.
+
 
 Connects to `lxp-cpu01` via SSH and runs a rolling deploy:
 
@@ -204,6 +265,7 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 | `LXP_MODELZOO_REPO` | | ✅ | Clone URL of the **upstream** `software/modelzoo` repo. `seanergys_modelzoo` is not vendored in this repo (ADR 0094) — the deploy job fetches it into `$LXP_DEPLOY_PATH/modelzoo`, which is where `EXAMLOPS_MODELZOO_DIR` resolves by default. Unset ⇒ not fetched, and training/serving fail until it is present. |
 | `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
 | `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
+| `DEPLOY_REQUIRES_APPROVAL` | | | **Optional.** Any value turns `deploy:lxp` into a manual button. Unset ⇒ `main` deploys automatically. |
 
 **Masked** variables are hidden in job logs. **Protected** variables are only injected into pipelines running on protected branches (e.g. `main`).
 

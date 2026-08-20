@@ -526,7 +526,7 @@ PGTEST_CONTAINER ?= examlops-pgtest
 PGTEST_PORT      ?= 15433
 PGTEST_DSN       ?= postgresql://examlops:examlops@localhost:$(PGTEST_PORT)/examlops
 
-test-postgres: install-dev ## Run the unit suite against a throwaway Postgres (item 0.1 parity)
+test-postgres: install-dev ## Run the unit + dashboard suites against a throwaway Postgres (item 0.1 parity)
 	@printf "$(BOLD)Starting $(PGTEST_CONTAINER) on port $(PGTEST_PORT)...$(RESET)\n"
 	@docker rm -f $(PGTEST_CONTAINER) >/dev/null 2>&1 || true
 	@docker run -d --name $(PGTEST_CONTAINER) \
@@ -536,8 +536,14 @@ test-postgres: install-dev ## Run the unit suite against a throwaway Postgres (i
 	@EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
 	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ -q; \
 	 status=$$?; \
+	 (cd platform/services/dashboard/backend && \
+	  EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
+	  EXAMLOPS_POSTGRES_SCHEMA=exa_test_dash \
+	  PYTHONPATH=$(CURDIR)/platform/cli/src \
+	  $(CURDIR)/$(VENV)/bin/pytest tests/ -q); \
+	 dash=$$?; \
 	 EXAMLOPS_POSTGRES_TEST_DSN='$(PGTEST_DSN)' $(VENV)/bin/pytest tests/integration/test_postgres_backend_live.py -q; \
-	 live=$$?; docker rm -f $(PGTEST_CONTAINER) >/dev/null; exit $$((status + live))
+	 live=$$?; docker rm -f $(PGTEST_CONTAINER) >/dev/null; exit $$((status + dash + live))
 
 test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.html
 	@$(VENV)/bin/pytest tests/ \

@@ -7,6 +7,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`test:postgres` — CI runs on the Postgres engine for the first time.** `EXAMLOPS_DB_BACKEND=
+  postgres` is a supported production engine, but every CI job used the SQLite default, so a
+  dialect regression could only be found by someone remembering to run `make test-postgres` by
+  hand. A new job runs the unit suite *and* the dashboard backend suite against a real
+  `postgres:16-alpine` service, in separate schemas so their truncate-based isolation fixtures
+  cannot race. The dashboard half is deliberate: it is a separate app with its own connection
+  adapter, and every Postgres-specific defect found so far surfaced there first. `psycopg` is
+  installed in the job rather than added to the root `[dev]` extra — it is what makes the Postgres
+  engine *optional*, and putting a driver in every SQLite job would weaken that claim.
+  `make test-postgres` now runs the dashboard suite too, so the local and CI paths agree.
+
+- **`release:gitlab` — tags become GitLab Releases.** The project had a full tag history and zero
+  Release objects, so tags carried no notes and nothing linked a version to what changed in it.
+  A tag pipeline now creates a Release whose description is that version's own `CHANGELOG.md`
+  section, extracted with `awk` so there are no hand-written notes to keep in sync. A tag whose
+  version has no changelog section **fails** the job — the cheapest possible check that the
+  changelog was updated before tagging.
+
+- **The production deploy can be made a button.** Setting the `DEPLOY_REQUIRES_APPROVAL` CI/CD
+  variable turns `deploy:lxp` into `when: manual`; unset, `main` still deploys automatically. This
+  is the tier-free substitute for GitLab's Premium deployment approvals — it gates *when* rather
+  than *who*, which is the half that matters with a single maintainer.
+
+- **`tests/unit/test_gitlab_ci_valid.py` — the pipeline is checked before it is pushed.** This
+  project's red-pipeline history is largely *pipeline-creation* errors: a job naming a stage that
+  does not exist, a `needs:` left pointing at a renamed job, a rule that silently never matches.
+  GitLab reports those only after a push, which is a very long feedback loop on a repo where
+  pushing is a deliberate, approved act. Six guards now run in the local gate, including that the
+  deploy job's *first* rule excludes scheduled pipelines — without it a nightly pipeline satisfies
+  the `main` branch condition and would redeploy production every night.
+
 - **`resource_group: production-lxp` on `deploy:lxp` and `smoke:lxp`.** There is exactly one
   LXP node and deploying to it is a `git pull` plus an image rebuild on a shared checkout, but
   nothing stopped two pipelines from reaching that job at the same time. Interleaved, they would
