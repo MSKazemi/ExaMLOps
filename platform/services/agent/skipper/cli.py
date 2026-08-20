@@ -14,7 +14,7 @@ from langgraph.types import Command
 from skipper import config
 from skipper.confirm import _is_affirmative
 from skipper.graph import build_graph
-from skipper.llm import check_backend
+from skipper.llm import _FIX_HINT, check_backend
 
 # ── Feature 7: ANSI colours (disabled for non-tty or NO_COLOR) ────────────────
 
@@ -359,12 +359,21 @@ def _startup_brief() -> None:
 def main() -> None:
     info = check_backend()
     if not info["ok"]:
+        # Name the backend that actually failed. This used to blame Ollama whatever had gone
+        # wrong, which sent an operator hunting everywhere except the credential that was
+        # rejected — the exact failure mode of 2026-08-20.
+        tried = ", ".join(info.get("skipped") or [info["type"]])
+        print(f"Error: no usable LLM backend. Tried, in preference order: {tried}.")
         print(
-            f"Error: Ollama not reachable at {config.AGENT_OLLAMA_URL}. "
-            "Start it (ollama-tunnel start), or set AZURE_OPENAI_API_KEY + "
-            "AZURE_OPENAI_ENDPOINT, or set ANTHROPIC_API_KEY."
+            f"       The preferred one is '{info['type']}' — fix {info.get('fix', 'its config')}."
         )
         sys.exit(1)
+    if info.get("skipped"):
+        # Falling back silently would change every answer's quality without telling anyone.
+        print(
+            f"Warning: {', '.join(info['skipped'])} unusable — falling back to "
+            f"'{info['type']}'. Fix {_FIX_HINT.get(info['skipped'][0], 'its config')}."
+        )
 
     state = CliState(model=info["model"])
     graph = build_graph(model=state.model)

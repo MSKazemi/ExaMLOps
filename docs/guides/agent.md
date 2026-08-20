@@ -47,7 +47,7 @@ policy / `platform.db` / hosted model, the agent still works.
 
 ## LLM Backends
 
-`build_llm()` selects a backend at startup by which environment variables are set, in this preference order:
+`check_backend()` selects a backend at startup — by which environment variables are set **and** whether that backend actually answers — in this preference order:
 
 | Order | Backend | Trigger vars | Default model | Notes |
 |---|---|---|---|---|
@@ -55,7 +55,16 @@ policy / `platform.db` / hosted model, the agent still works.
 | 2 | **Claude API** | `ANTHROPIC_API_KEY` | `claude-opus-4-8` (`ANTHROPIC_MODEL`) | `ChatAnthropic` with **adaptive thinking** (`thinking={"type": "adaptive"}`), `max_tokens=16000`. |
 | 3 | **Ollama** (fallback) | none required | `llama3.1:8b` (`AGENT_MODEL`) | `ChatOllama` at `AGENT_OLLAMA_URL`, `temperature=0`, with `keep_alive` / `reasoning` tuning for CPU-only servers. |
 
-`check_backend()` reports the live backend as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set the Azure or Claude vars in `.env` to switch.
+`check_backend()` reports the backend that will actually be used as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set the Azure or Claude vars in `.env` to switch.
+
+**Preferred means preferred-when-usable.** A configured backend whose credential is *rejected* is skipped, not used: the candidates are probed in order and the first working one wins. `build_llm()` then builds whichever one was found working, so the backend the banner reports and the backend that serves your question are always the same. Two extra fields appear when it matters:
+
+| Field | When | Meaning |
+|---|---|---|
+| `skipped` | a backend was tried and rejected first | which ones, in order — the CLI prints this as a warning, because falling back silently would change every answer's quality without telling you |
+| `fix` | nothing is usable | the environment variable to repair, for the **preferred** backend (the one you meant to use) |
+
+With nothing usable, the CLI exits 1 naming what it tried and what to fix, rather than starting and failing on the first token. Until 2026-08-20 it did neither: `build_llm()` chose a backend on env-var *presence* alone, so a rejected Azure key produced a client that raised `AuthenticationError` on the first request while a working Claude/Ollama path sat unused — and the error message blamed Ollama regardless of what had actually failed.
 
 **What `ok` actually means.** The probe authenticates, so `ok` answers *"can this backend serve a request?"* — not merely *"does the host resolve?"*. It is `false` in two distinct failure modes:
 

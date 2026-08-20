@@ -25,6 +25,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   - **New CI variable `LXP_MODELZOO_REPO`** — clone URL of the upstream repo, used by
     `deploy:lxp`. Unset ⇒ not fetched, and training/serving fail until it is present.
 
+### Fixed
+
+- **Skipper picked a broken LLM backend and never fell back.** `build_llm()` selected Azure
+  whenever `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` were merely *non-empty* — it never
+  asked whether the credential worked. With a rejected key it therefore built a client that raised
+  `AuthenticationError` on the first token, while a working Claude or Ollama path sat unused behind
+  it, and the CLI's error message blamed Ollama whatever had actually failed. `check_backend()`
+  already detected this correctly and reported `ok: false`; nothing acted on it.
+  - Candidates are now probed in preference order and the **first usable one wins**, so one stale
+    key no longer takes the agent down. `build_llm()` builds whichever backend was found working,
+    which is what keeps the backend the banner reports and the backend that answers the same one.
+  - A fallback is never silent — it changes the quality of every answer, so the CLI warns and names
+    what it skipped. When nothing is usable it exits 1 naming the candidates tried and the exact
+    variable to repair for the *preferred* backend, instead of starting and dying on the first
+    request.
+  - `build_llm()` still performs **no I/O**: probing belongs at the process entry points, which
+    already call `check_backend()` at startup. `build_graph()` therefore stays network-free.
+  - Found while checking whether the agent could answer questions at all: it could not. Its stored
+    Azure key is rejected by the resource, and `AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`
+    hold each other's shapes. 13 `test_llm.py` tests (5 new), 200 agent tests green.
+
 ### Added
 
 - **The Postgres datastore backend works (enterprise-readiness item 0.1 follow-on).** The audit's
