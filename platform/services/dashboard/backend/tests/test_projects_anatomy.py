@@ -7,64 +7,56 @@ and P7 pipeline surfaces, and is fail-open when the new tables are absent.
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
+    """Build the **real** schema, then seed it through the product's own code paths.
+
+    This fixture used to hand-roll its own ``CREATE TABLE``s, and that is exactly how it came to
+    declare ``project_budgets(project, gpu_hours, cost_usd)`` — three columns the product has never
+    had (they are ``gpu_hours_budget``/``cost_budget``). It survived because nothing read them
+    back, and because on SQLite the fixture's copy *wins*: every test gets its own file, so the
+    invented shape is never confronted with the real one. `test_fixture_schema_is_real.py` now
+    fails on any such invention; this is the fixture that motivated it.
+
+    ``connections`` is deliberately *not* created by ``init_db()`` — ``examlops.connections`` owns
+    it and creates it on first write — so the row goes in via ``create_connection()``, which also
+    exercises the secret indirection the secret-safety test below is actually about.
+    """
     db = tmp_path / "platform.db"
-    conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS projects (
-            name TEXT PRIMARY KEY, description TEXT, cpu_limit REAL, memory_limit_gb REAL,
-            storage_gb REAL, gpu_limit INTEGER, network_name TEXT, status TEXT,
-            created_at TEXT, created_by TEXT, updated_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS project_resources (project TEXT, kind TEXT, ref TEXT, PRIMARY KEY (project, kind, ref));
-        CREATE TABLE IF NOT EXISTS project_models (project TEXT, model TEXT, assigned_at TEXT, PRIMARY KEY (project, model));
-        CREATE TABLE IF NOT EXISTS project_storage (
-            project TEXT PRIMARY KEY, bucket TEXT, prefix TEXT, connection_ref TEXT,
-            quota_gb REAL, used_bytes INTEGER, updated_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS project_pipelines (
-            project TEXT, kind TEXT, ref TEXT, status TEXT, schedule TEXT, last_run_at TEXT,
-            updated_at TEXT, PRIMARY KEY (project, kind)
-        );
-        CREATE TABLE IF NOT EXISTS connections (
-            name TEXT, project TEXT, kind TEXT, config_json TEXT, secret_ref TEXT,
-            created_at TEXT, created_by TEXT, PRIMARY KEY (project, name)
-        );
-        CREATE TABLE IF NOT EXISTS traffic_rules (model TEXT PRIMARY KEY, rules TEXT, updated_at TEXT, updated_by TEXT);
-        CREATE TABLE IF NOT EXISTS authz_relations (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, relation TEXT, object TEXT, actor TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS model_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, project TEXT, gpu_hours REAL, cost_usd REAL, recorded_at TEXT);
-        CREATE TABLE IF NOT EXISTS namespace_models (model TEXT, namespace TEXT, assigned_at TEXT, PRIMARY KEY (model, namespace));
-        CREATE TABLE IF NOT EXISTS project_budgets (project TEXT PRIMARY KEY, gpu_hours REAL, cost_usd REAL);
-        """
-    )
-    conn.execute(
-        "INSERT INTO projects (name, description, cpu_limit, memory_limit_gb, storage_gb, gpu_limit,"
-        " network_name, status) VALUES ('demo','d',4,8,100,2,'examlops-demo','ACTIVE')"
-    )
-    conn.execute("INSERT INTO project_models (project, model) VALUES ('demo','JPCP')")
-    conn.execute(
-        "INSERT INTO project_storage (project, bucket, prefix, connection_ref, quota_gb, used_bytes)"
-        " VALUES ('demo','examlops-projects','demo/',NULL,100,25000000000)"
-    )
-    conn.execute(
-        "INSERT INTO project_pipelines (project, kind, ref, status, schedule) VALUES"
-        " ('demo','prefect','examlops-jpcp','healthy','0 2 * * *')"
-    )
-    conn.execute(
-        "INSERT INTO connections (name, project, kind, config_json, secret_ref) VALUES"
-        " ('raw','demo','s3','{\"bucket\":\"b\"}','connections/demo/raw')"
-    )
-    conn.execute(
-        "INSERT INTO traffic_rules (model, rules) VALUES ('JPCP', '{\"Production\": 100}')"
-    )
-    conn.commit()
-    conn.close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+
+    conn = dbconn.connect(db, row_factory=None)
+    try:
+        conn.execute(
+            "INSERT INTO projects (name, description, cpu_limit, memory_limit_gb, storage_gb,"
+            " gpu_limit, network_name, status) VALUES ('demo','d',4,8,100,2,'examlops-demo','ACTIVE')"
+        )
+        conn.execute("INSERT INTO project_models (project, model) VALUES ('demo','JPCP')")
+        conn.execute(
+            "INSERT INTO project_storage (project, bucket, prefix, connection_ref, quota_gb,"
+            " used_bytes) VALUES ('demo','examlops-projects','demo/',NULL,100,25000000000)"
+        )
+        conn.execute(
+            "INSERT INTO project_pipelines (project, kind, ref, status, schedule) VALUES"
+            " ('demo','prefect','examlops-jpcp','healthy','0 2 * * *')"
+        )
+        conn.execute(
+            "INSERT INTO traffic_rules (model, rules) VALUES ('JPCP', '{\"Production\": 100}')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from examlops.connections import create_connection
+
+    create_connection(
+        "raw", "s3", project="demo", config={"bucket": "b"}, secret_value="not-transported"
+    )
     return str(db)
 
 

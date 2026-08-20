@@ -48,6 +48,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A test fixture was describing a table shape the product has never had — and now none can.**
+  `test_projects_anatomy.py` created `project_budgets(project, gpu_hours, cost_usd)`; the real
+  columns are `gpu_hours_budget`, `cost_budget`, `period`, `updated_at`, `updated_by`. It passed
+  only because nothing read those columns back, which is exactly the state `scale_events.direction`
+  was in until a test finally tried. The fixture now builds the real schema with
+  `platform_db.init_db()` and seeds its connection through `examlops.connections.create_connection()`,
+  so the secret-safety assertion is testing the real secret indirection rather than a hand-written
+  `secret_ref` string.
+
+  The general problem is that a hand-rolled `CREATE TABLE` is a second, unmaintained copy of
+  something the product already defines, and on SQLite the copy **wins** — every test gets its own
+  database file, so an invented shape is never confronted with the real one.
+  `tests/unit/test_fixture_schema_is_real.py` now fails when any fixture in either test tree names
+  a table or a column the product does not define. It reads the schema from the product's own
+  source rather than a list kept beside the test, since a list would be a third copy with the same
+  failure mode; that also means tables created lazily by their owning module (`connections`,
+  `workbenches`) are found, where an earlier draft that knew only `init_db()` called them fictional.
+
+  It reads SQL out of the **AST's string values**, not the raw file. DDL in this repo is routinely
+  written as adjacent string literals, and scanning raw text leaves the quote characters sitting
+  inside the column list — so the column at each seam parses as garbage and is silently dropped.
+  In a guard whose whole job is to have no false negatives that is the worst possible defect, and
+  the first version of this check had it: it saw 137 tables / 1046 columns where there are **141 /
+  1081**, and missed 4 of the 48 fixture definitions outright. It now catches an invented column
+  even when the `CREATE TABLE` is split across two literals.
+
 - **Every dashboard connection is now released on the failing path too.** All 51 remaining
   `conn.close()` calls in the dashboard backend were written as plain statements on the happy
   path, so any exception raised between the `connect()` and that line walked straight past it —
