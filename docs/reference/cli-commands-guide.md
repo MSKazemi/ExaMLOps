@@ -49,9 +49,12 @@ Runs a self-check over configuration, connectivity, and database health so you c
 
 Routes a plain-English question to the Skipper agent's OpenAI-compatible bridge. Great when you don't know which exact command to run.
 
+The answer **streams** at a terminal: tokens appear as the agent produces them, and each tool it calls is announced on its own dim line. That matters because the agent's tool loop runs before it writes anything, so without streaming a slow answer is silence followed by a wall of text — indistinguishable from a hang. Piped or `--json` output does not stream, because there the point is one parseable object; `--no-stream` forces that behaviour at a terminal too.
+
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa ask "<question>"` | Sends a natural-language question to the Skipper agent and prints its answer; `--session` keeps context across turns. | When you want an answer or an action described conversationally instead of hunting for the precise CLI command. | `exa ask "which models are drifting and why?"`<br>`exa ask "now retrain the worst one" --session mysession` |
+| `exa ask "<question>"` | Sends a natural-language question to the Skipper agent and prints its answer as it arrives; `--session` keeps context across turns. | When you want an answer or an action described conversationally instead of hunting for the precise CLI command. | `exa ask "which models are drifting and why?"`<br>`exa ask "now retrain the worst one" --session mysession` |
+| `exa ask "<question>" --no-stream` | Waits for the complete answer and prints it in one go. | Logging a transcript, or any context where interleaved output is awkward. | `exa ask "summarise last week" --no-stream` |
 
 ### `exa explain` — plain-language command help
 

@@ -17,6 +17,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`exa ask` never streamed, so a long answer looked like a hang.** The Skipper bridge
+  (`skipper/oai_compat.py`) has served Server-Sent Events since it was written, but the CLI
+  always sent `"stream": false` and then waited for the whole body against a 120 s timeout. Since
+  the agent runs its tool loop *before* it writes a word, that meant a long silence and then a
+  wall of text — and a timeout was indistinguishable from a bad answer.
+  - `exa ask` now streams by default at a terminal, printing tokens as they arrive and announcing
+    each tool the agent calls on its own line (the tool events are the only sign of life during
+    the slowest part of an answer). `--no-stream` forces the old behaviour; piped and `--json`
+    output do not stream, because there the point is a single parseable object.
+  - New `_client.post_sse()`. Note its `timeout` is an **idle** timeout — the gap allowed between
+    two frames — not a budget for the whole answer, which is the useful semantic for a chat
+    stream: a long answer is fine, a silent one is not.
+  - Frames that are not JSON are skipped rather than raising, so a keep-alive or a comment cannot
+    abort an otherwise healthy stream.
+
+- **A 200 response whose body is not JSON reached the user as a raw traceback.** Found while
+  proving the above. An HTML error page from a proxy, or anything other than the expected service
+  answering on that address, surfaced a `JSONDecodeError` from inside the standard library rather
+  than an actionable message. `_client` now raises a `ClientError` naming the URL and quoting the
+  first of the body. This is on the path every `exa` command uses, not just `ask`.
+
+
 - **`make check` could not pass, and therefore never ran the tests.** It exits at `typecheck` on
   15 mypy errors in 5 files, all of which predate this entry — so the command the contributor
   guide names as the proof gate stopped before `pytest` was reached, and only `make preflight`

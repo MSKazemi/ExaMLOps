@@ -88,6 +88,7 @@ Reject a pending model change — no training will run.
 Ask the Skipper agent a question in natural language.
 
 - `--session, -s` — Session id to preserve conversational context
+- `--stream` — Print the answer as it is generated (default: on at a terminal, off when piped)
 
 ## `exa assets`
 

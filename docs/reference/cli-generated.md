@@ -2,13 +2,30 @@
 
 ExaMLOps platform CLI — manage models, training, inference, and services.
 
-- `--output, -o` — Output format: table (human) | json | yaml | csv (for scripting/agents)
+- `--output, -o` — Output format: table (human) | json | yaml | csv | md | html (scripting/agents/reports)
 - `--json` — Shorthand for --output json (kept for compatibility)
 - `--context, -c` — Use a named config context for this invocation
 - `--yes, -y` — Skip all confirmation prompts
 - `--quiet, -q` — Suppress non-essential output (hints, info, progress detail)
 - `--verbose, -v` — Show extra diagnostic detail
 - `--version, -V` — Print version and exit
+
+## `exa admission`
+
+Admission-control queue (per-tenant fair-share)
+
+### `exa admission stats`
+
+Show queue depth by state (queued/running/done/rejected/failed).
+
+### `exa admission submit`
+
+Enqueue a work item (durable; drained under the global + per-tenant caps).
+
+- `--payload, -p` — JSON payload
+- `--tenant` — Tenant for fair-share accounting
+- `--project` — Project attribution
+- `--priority` — Higher runs first within a tenant
 
 ## `exa agentops`
 
@@ -47,6 +64,7 @@ Sysadmin approval gate
 Approve a pending model change — fires Prefect training immediately.
 
 - `--dry-run` — Show what would be approved without firing training
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa approvals delete`
 
@@ -70,6 +88,7 @@ Reject a pending model change — no training will run.
 Ask the Skipper agent a question in natural language.
 
 - `--session, -s` — Session id to preserve conversational context
+- `--stream` — Print the answer as it is generated (default: on at a terminal, off when piped)
 
 ## `exa assets`
 
@@ -136,6 +155,10 @@ Archival export of the audit trail (D4·R4). Append-only — never deletes.
 
 Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken.
 
+### `exa audit verify-worm`
+
+Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4).
+
 ## `exa autopilot`
 
 Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)
@@ -159,6 +182,84 @@ Run one autopilot cycle: drift scan → policy → retrain → metrics → polic
 Show recent autopilot run history.
 
 - `--last` — Number of recent runs to show
+
+## `exa backup`
+
+Backup / restore the platform datastore
+
+### `exa backup create`
+
+Snapshot the platform. Bare = single ``platform.db`` file; any tier flag = a tiered bundle.
+
+- `--out, -o` — Directory to write the backup into
+- `--all` — Full bundle: all SQLite DBs + config + Postgres + MinIO objects
+- `--bundle` — Control-plane bundle (all SQLite DBs + config) instead of one .db
+- `--with-postgres` — Include the Postgres tier
+- `--with-objects` — Include the MinIO/object-store tier
+- `--with-content` — Include use-case packs / envs / .dualgit classification
+- `--push` — Replicate the finished bundle off-site (S3)
+- `--strict` — Fail (don't skip) any requested tier that can't run
+
+### `exa backup list`
+
+List available backups & bundles (newest first) with their manifest metadata.
+
+- `--dir, -d` — Backup directory
+- `--remote` — List off-site bundles (S3) instead
+
+### `exa backup prune`
+
+Prune old bundles by count and/or age (never removes the newest / last-good bundle).
+
+- `--dir, -d` — Backup directory
+- `--keep` — Keep the newest N bundles
+- `--days` — Keep bundles newer than N days
+
+### `exa backup pull`
+
+Download + extract an off-site bundle (verify it before restoring).
+
+- `--dest` — Directory to extract into
+
+### `exa backup restore`
+
+Restore a verified backup over the platform DB (guarded + re-verified after).
+
+- `--force` — Overwrite a non-empty target DB (DANGEROUS)
+- `--yes, -y` — Skip the confirmation prompt
+
+### `exa backup restore-bundle`
+
+Restore selected tiers from a verified bundle (guarded; verifies before touching anything).
+
+- `--tier` — Tier(s) to restore (repeatable). Default: sqlite + config
+- `--force` — Overwrite non-empty targets (DANGEROUS)
+- `--yes, -y` — Skip the confirmation prompt
+
+### `exa backup schedule`
+
+Run the scheduled backup loop (what the Compose ``backup`` sidecar runs).
+
+- `--interval` — Seconds between cycles (env default)
+- `--tiers` — Comma-separated tiers (env default)
+- `--out, -o` — Backup directory (env default)
+- `--push` — Replicate each bundle off-site
+- `--all` — Shorthand for --tiers sqlite,config,postgres,objects
+- `--once` — Run a single cycle then exit (for tests/CI)
+
+### `exa backup status`
+
+Show the latest bundle, per-tier health, retention count, and off-site reachability.
+
+- `--dir, -d` — Backup directory
+
+### `exa backup verify`
+
+Verify a backup: checksum vs manifest + SQLite integrity + audit hash-chain. Exit 1 if bad.
+
+### `exa backup verify-bundle`
+
+Verify a whole bundle: manifest + every tier item's checksum + platform.db audit chain.
 
 ## `exa cards`
 
@@ -235,6 +336,17 @@ CLI configuration
 ### `exa config contexts`
 
 List configured contexts (environments) and show the active one.
+
+### `exa config export`
+
+One-file YAML snapshot of ALL ExaMLOps configuration (generated, secrets redacted).
+
+Aggregates the CLI config (with provenance), contexts, the HPC cluster registry,
+object-store split (artifact vs dataset MinIO), per-model YAMLs, environment
+overlays, FinOps providers, and every platform env var — always derived live
+from the real sources, so it can never drift from reality.
+
+- `--out, -o` — Write the snapshot to a file instead of stdout
 
 ### `exa config init`
 
@@ -330,6 +442,40 @@ Resolve the current dataset state to a revision and record it (spec R8).
 - `--backend, -b` — Storage backend (zenodo|minio|dataplane)
 - `--path, -p` — Local file/dir of already-materialised parquet to hash
 
+### `exa data synth`
+
+Synthetic data generation + fidelity/privacy gate (A7)
+
+#### `exa data synth evaluate`
+
+Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3).
+
+- `--real` — Local parquet file/dir of the real data
+- `--synthetic` — Local parquet file/dir of the synthetic data
+- `--min-fidelity` — Fidelity release floor
+- `--min-privacy` — Privacy release floor
+
+#### `exa data synth fit`
+
+Fit a generator to real data and report what it learned (spec R1 smoke-check).
+
+- `--path, -p` — Local parquet file/dir of real data
+- `--method, -m` — gaussian_copula | ctgan | tvae
+- `--seed` — Deterministic seed
+
+#### `exa data synth generate`
+
+Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4).
+
+- `--path, -p` — Local parquet file/dir of real data
+- `--rows, -n` — Number of synthetic rows to generate
+- `--method, -m` — gaussian_copula | ctgan | tvae
+- `--seed` — Deterministic seed
+- `--min-fidelity` — Fidelity release floor
+- `--min-privacy` — Privacy release floor
+- `--out, -o` — Directory to write the released synthetic parquet
+- `--force` — Record even if the gate blocks (still flagged, never as real)
+
 ### `exa data validate`
 
 Validate a dataset against its data contract; exit non-zero on error violations (spec R11).
@@ -361,7 +507,7 @@ Disable drift-triggered auto-retrain for a model.
 
 Enable drift-triggered auto-retrain for a model.
 
-- `--dataset, -d` — Dataset class name
+- `--dataset, -d` — Dataset class name (default: model's primary dataset)
 - `--min-z` — Z-score threshold to trigger retrain
 - `--cooldown` — Seconds between triggers
 
@@ -374,6 +520,7 @@ Show auto-retrain config for all models.
 Store current rolling stats as the drift baseline for a model.
 
 - `--dry-run` — Show the baseline that would be set without writing it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa drift concept`
 
@@ -398,6 +545,16 @@ List unified drift events across all kinds (C5·R6).
 - `--kind` — feature|prediction|input_embedding|concept|data_quality
 - `--last-n` — Max events (newest first)
 
+### `exa drift forecast`
+
+Predict WHEN a model's drift will breach the threshold (pre-emptive, item 5.2).
+
+Fits a trend to recent prediction drift and projects the breach ETA, so the autopilot can
+retrain BEFORE the degradation window instead of after. Exit 1 if a breach is imminent.
+
+- `--threshold` — Critical z-score threshold
+- `--horizon` — Look-ahead steps
+
 ### `exa drift input`
 
 #### `exa drift input baseline`
@@ -405,12 +562,14 @@ List unified drift events across all kinds (C5·R6).
 Store current rolling embedding statistics as the input drift baseline.
 
 - `--dry-run` — Show the input baseline that would be set without writing it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 #### `exa drift input reset`
 
 Clear all input embedding snapshots for a model (keeps baseline).
 
 - `--dry-run` — Show how many snapshots would be cleared without deleting them
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 #### `exa drift input status`
 
@@ -428,6 +587,7 @@ Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).
 Clear all drift snapshots for a model (keeps baseline).
 
 - `--dry-run` — Show how many snapshots would be cleared without deleting them
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa drift snapshots`
 
@@ -490,9 +650,41 @@ Show a collection's active/staging encoder + reindex history.
 
 Show the effective configuration and the source of every value.
 
+With ``--validate``, cross-check the effective environment for enterprise-readiness (backend ↔
+endpoint consistency, OIDC coherence, weak/placeholder secrets) and exit non-zero on any error.
+
+- `--validate` — Check the effective config for coherence; exit 1 on errors (4.2)
+
 ## `exa eval`
 
 Continuous evaluation and feedback
+
+### `exa eval calibrate`
+
+Measure a judge against labelled benchmarks and record the calibration.
+
+Recording a *failing* calibration is not an error: the measurement is the point. Pass
+``--require-eligible`` to make a CI job fail on a judge that may not gate.
+
+- `--from` — JSON of collected judgments (see `exa eval calibration list -h`)
+- `--version` — Judge prompt/model version
+- `--require-eligible` — Exit 1 if the judge fails the MVVP — CI-safe
+
+### `exa eval calibration`
+
+Judge calibration — measure a judge before it may gate (ADR 0111)
+
+#### `exa eval calibration list`
+
+List recorded judge calibrations, newest first.
+
+- `--limit` — Rows to show
+
+#### `exa eval calibration show`
+
+Show a judge's latest calibration and whether it may gate.
+
+- `--version` — Pin to a judge version
 
 ### `exa eval feedback`
 
@@ -554,6 +746,53 @@ Run a deterministic eval suite over items and persist scores (exit != 0 on error
 - `--sample` — Sample N items by request_hash
 - `--dataset-revision` — A1 revision
 - `--run-id` — Idempotency key (default: derived)
+
+## `exa events`
+
+NovaFabric event backbone (transactional outbox)
+
+### `exa events publish`
+
+Enqueue an event to the outbox (durable; relayed by `exa events relay`).
+
+- `--payload, -p` — JSON payload
+
+### `exa events relay`
+
+Publish pending outbox events to the configured broker (EXAMLOPS_EVENT_PUBLISHER).
+
+- `--limit, -n` — Max events to publish this pass
+- `--loop` — Keep relaying until the outbox is drained
+
+### `exa events stats`
+
+Show outbox backlog: pending / published / poison (attempts exhausted).
+
+## `exa exchange`
+
+NovaFabric Exchange — signed shareable packages
+
+### `exa exchange import`
+
+Verify-before-import: verify signature + integrity, then extract. Refuses unverified.
+
+- `--dest, -d` — Directory to extract into
+
+### `exa exchange inspect`
+
+Show a package's manifest without importing it.
+
+### `exa exchange pack`
+
+Build a signed .novapack (fails closed without EXAMLOPS_SIGNING_KEY).
+
+- `--file, -f` — File to include (repeatable)
+- `--out, -o` — Output .novapack path
+- `--version` — Package version
+
+### `exa exchange verify`
+
+Verify a package's signature + file integrity. Exit 1 if untrusted/tampered.
 
 ## `exa explain`
 
@@ -768,6 +1007,29 @@ HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'
 #### `exa finops cost providers`
 
 List the available cost providers (rate cards) — built-ins + entry-point plugins.
+
+## `exa fleet`
+
+Fleet Digital Twin — what-if simulation
+
+### `exa fleet heatmap`
+
+Server-side tile grid for the 3D/NOC fleet heatmap (item 5.4); JSON the 3D view renders.
+
+- `--cluster, -c` — Limit to one cluster
+- `--cols` — Grid width override
+
+### `exa fleet simulate`
+
+Project a hypothetical scenario over the live fleet — placements, GPU-hours, cost, carbon, queue.
+
+- `--jobs, -j` — Number of jobs to submit in the scenario
+- `--gpus, -g` — GPUs per job
+- `--nodes, -N` — Nodes per job
+- `--duration` — Hours per job (for cost/carbon)
+- `--add-gpus` — Add idle GPUs, e.g. --add-gpus lxp=8 (repeatable)
+- `--carbon` — Override grid carbon, e.g. --carbon lxp=600 (repeatable)
+- `--optimize` — Placement provider: least-loaded|carbon-aware|cost-aware|carbon-cost-balanced
 
 ## `exa gateway`
 
@@ -1080,6 +1342,13 @@ Fail-fast pre-submit checks against a cluster (exit 1 on any failure).
 - `--gpus, -g` — GPUs the job will request
 - `--nodes, -N` — Nodes the job will request
 
+### `exa hpc prometheus-sd`
+
+Generate Prometheus file_sd scrape targets (node_exporter + DCGM) from the fleet registry (3.1).
+
+- `--out, -o` — Write file_sd JSON here (else stdout)
+- `--cluster, -c` — Limit to one cluster
+
 ### `exa hpc queue`
 
 Show the live scheduler queue for an ACTIVE cluster (read-only).
@@ -1102,6 +1371,12 @@ Print the A2A Agent Card describing this platform's agent skills.
 
 - `--url` — Public base URL where this agent is reachable
 - `--all` — Advertise mutating tools in the card
+
+### `exa mcp capabilities`
+
+Show what the agent can do, grouped by lifecycle use case (management, monitoring, …).
+
+- `--all` — Include mutating (write) tools even if writes are disabled
 
 ### `exa mcp prompts`
 
@@ -1236,6 +1511,21 @@ Verify a model's signature against current artifact bytes (verify-before-load ga
 ## `exa modelzoo`
 
 ModelZoo repository freshness and events
+
+### `exa modelzoo adopt`
+
+Provision one project per model (storage · MinIO connection · budget · workbench · pipelines).
+Idempotent.
+
+Wires each model its own project with a bound per-project MinIO/S3 connection (endpoint/keys from
+the platform S3 env; secret via the secrets store, never printed). A project can still hold
+several models via `exa project assign` — this just makes one-project-per-model the zero-effort
+default (ADR 0086).
+
+- `--all` — Adopt every Zoo/pack model.
+- `--connection-name` — Name of the per-project S3/MinIO connection to provision.
+- `--no-connection` — Skip provisioning the per-project MinIO connection.
+- `--dry-run` — Preview what would be provisioned without writing.
 
 ### `exa modelzoo config`
 
@@ -1430,7 +1720,7 @@ Run training pipeline(s) locally via Prefect.
 
 ### `exa pipeline validate`
 
-Validate pipelines/models/*.yaml against Python model shims.
+Validate the pack's models/*.yaml against Python model shims.
 
 ### `exa pipeline validate-model`
 
@@ -1687,11 +1977,48 @@ Show a prompt version's template (by version or name@label).
 
 Pluggable calculation providers (all domains)
 
+### `exa providers activate`
+
+Make a provider the active one for its (project, domain) — used when no --provider is given.
+
+- `--project, -p`
+
+### `exa providers author`
+
+Save a project-scoped provider from a Python file (AST-sandboxed; audited).
+
+- `--file, -f` — Python file defining a Provider subclass
+- `--project, -p` — Project that owns the provider
+
+### `exa providers authored`
+
+List a project's notebook/dashboard-authored providers (with gate status).
+
+- `--project, -p` — Project to list authored providers for
+
 ### `exa providers list`
 
 List calculation providers across every domain (built-ins + entry-point plugins + config).
 
 - `--domain, -d` — Only this domain (default: all known domains)
+
+### `exa providers rm`
+
+Delete an authored provider file (audited).
+
+- `--project, -p`
+
+### `exa providers show`
+
+Print the stored source of an authored provider.
+
+- `--project, -p`
+
+### `exa providers validate`
+
+Statically validate a provider file against the AST sandbox (exit 1 if rejected). CI-safe.
+
+- `--file, -f` — Python file to gate-check (no side effects)
 
 ## `exa rag`
 
@@ -1718,6 +2045,18 @@ Answer a question from a knowledge base, citing retrieved chunks.
 - `--question` — The question to answer
 - `-k, --k` — Number of chunks to retrieve
 - `--tenant` — Tenant namespace
+
+## `exa report`
+
+Offline cost/carbon/SLA reports
+
+### `exa report generate`
+
+Assemble + render a cost/carbon/project report. PDF degrades to HTML if WeasyPrint is absent.
+
+- `--format, -f` — html | pdf | text
+- `--out, -o` — Write to this file (else stdout)
+- `--project` — Scope to one project
 
 ## `exa reproduce`
 
@@ -1756,6 +2095,7 @@ Trigger a Prefect training run via the Control Plane.
 - `--dummy` — Use dummy data (dev-safe, no downloads)
 - `--backend` — Storage backend
 - `--dry-run` — Show what would be scheduled without triggering it
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ## `exa scaffold`
 
@@ -1801,6 +2141,16 @@ Resolve a secret. Redacts by default; --reveal prints plaintext.
 List secret metadata (paths/versions) — never values.
 
 - `--tenant` — Filter by tenant
+
+### `exa secrets rewrap`
+
+Re-encrypt every local secret under the ACTIVE KEK (online key rotation, item 2.3).
+
+Run after adding a new key to EXAMLOPS_SECRETS_KEYS and pointing EXAMLOPS_SECRETS_ACTIVE_KEY at
+it: secrets migrate to the new key so the old one can be decommissioned. Plaintext never leaves
+the process; the operation is audited.
+
+- `--dry-run` — Report what would rewrap; change nothing
 
 ### `exa secrets rotate`
 
@@ -2022,6 +2372,81 @@ Show recent explain requests for a model.
 
 Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.
 
+### `exa serve llm`
+
+LLM/VLM endpoints — vLLM lifecycle (Track V)
+
+#### `exa serve llm args`
+
+Print the exact ``vllm serve`` argv this model's engine block renders.
+
+Same renderer the Compose service, the Slurm template and the KServe manifest use, so
+what is printed here is what actually runs on every substrate.
+
+#### `exa serve llm bench`
+
+Measure TTFT and output tokens/s against a live endpoint.
+
+- `--requests, -n` — Sequential requests to send
+- `--prompt`
+- `--max-tokens`
+
+#### `exa serve llm chat`
+
+Send a chat request — with images, this is the VLM smoke test.
+
+- `--message, -m` — The prompt
+- `--image` — Image path or URL (repeatable) — the VLM path
+- `--stream` — Stream token deltas as they arrive
+- `--max-tokens` — Cap the completion length
+- `--temperature` — Sampling temperature
+
+#### `exa serve llm health`
+
+Probe the endpoint and update its recorded state. Exits 1 when not ready (CI gate).
+
+#### `exa serve llm list`
+
+List registered LLM/VLM endpoints.
+
+- `--project` — Filter by project workspace
+- `--state` — Filter by lifecycle state
+
+#### `exa serve llm start`
+
+Start (or register) a vLLM endpoint and record it in the endpoint registry.
+
+- `--hf-model` — Weights to serve (HF id or local path)
+- `--launcher, -l` — external | compose | slurm | flux | kserve
+- `--base-url` — External endpoint URL
+- `--modality` — text | vision | audio | video
+- `--max-images` — limit_mm_per_prompt.image (required for a vision model)
+- `--media-domains` — Comma-separated allow-list for remote media (SSRF guard)
+- `--local-media-path` — Directory from which file:// media may be read
+- `--tp` — tensor_parallel_size (GPUs per node)
+- `--pp` — pipeline_parallel_size (usually = nodes)
+- `--dtype` — auto | float16 | bfloat16 | fp8 | …
+- `--max-model-len` — Context length
+- `--nodes` — HPC nodes to allocate
+- `--gpus` — GPUs per node
+- `--partition` — HPC partition/queue
+- `--walltime` — HPC walltime
+- `--port` — Port the server listens on
+- `--project` — Attribute to a project workspace
+- `--dry-run` — Preview; change nothing
+- `--reason` — Why you are making this change (recorded in the audit trail)
+
+#### `exa serve llm status`
+
+Show one endpoint: registry record, substrate status, and live vLLM metrics.
+
+#### `exa serve llm stop`
+
+Stop an endpoint (and deregister it).
+
+- `--dry-run` — Preview; change nothing
+- `--reason` — Why you are making this change (recorded in the audit trail)
+
 ### `exa serve manifest`
 
 Generate a schema-valid KServe InferenceService manifest from the model registry (E1).
@@ -2102,6 +2527,7 @@ Show or set traffic split across model aliases (must sum to 100).
 - `--canary` — % traffic to Canary alias
 - `--staging` — % traffic to Staging alias
 - `--dry-run` — Show the split that would be applied without changing routing
+- `--reason` — Why you are making this change (recorded in the audit trail)
 
 ### `exa serve traffic-list`
 

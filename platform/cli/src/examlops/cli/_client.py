@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 
@@ -29,6 +30,51 @@ def post(url: str, body: dict[str, Any], token: str = "", timeout: float = 10.0)
     return _send(req, url, timeout=timeout)
 
 
+def post_sse(
+    url: str, body: dict[str, Any], token: str = "", timeout: float = 120.0
+) -> Iterator[dict[str, Any]]:
+    """POST and yield each ``data:`` frame of a Server-Sent Events response, decoded.
+
+    The plain ``post`` above waits for the whole body, so a slow answer is indistinguishable
+    from a hang. This yields as the server writes.
+
+    Note what ``timeout`` means here, because it is *not* what it means for ``post``. urllib
+    applies it to each socket operation, so on a streamed response it is an **idle** timeout —
+    the gap allowed between two frames — not a budget for the whole answer. That is the useful
+    semantic for a chat stream: a long answer is fine, a silent one is not.
+
+    Frames that are not JSON are skipped rather than raising: the wire is a text protocol and a
+    stray comment or keep-alive must not abort a stream that is otherwise fine. The terminal
+    ``[DONE]`` sentinel ends iteration.
+    """
+    data = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if payload == "[DONE]":
+                    return
+                try:
+                    frame = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(frame, dict):
+                    yield frame
+    except urllib.error.HTTPError as exc:
+        _raise_http(exc, url)
+    except urllib.error.URLError as exc:
+        _raise_url(exc, url)
+    except TimeoutError as exc:
+        raise ClientError(f"Stream from {url} went silent for {timeout:g}s") from exc
+
+
 def delete(url: str, token: str | None = None) -> Any:
     headers: dict[str, str] = {}
     if token:
@@ -49,7 +95,18 @@ def put(url: str, body: Any, token: str | None = None) -> Any:
 def _send(req: urllib.request.Request, url: str, timeout: float = 10.0) -> Any:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            return json.loads(resp.read().decode())
+            body = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError as exc:
+                # A 200 whose body is not JSON — an HTML error page from a proxy, a stray SSE
+                # stream, a captive portal. Left unhandled this reached the user as a raw
+                # traceback from inside json/decoder.py, which says nothing about what to do.
+                snippet = " ".join(body.split())[:120]
+                raise ClientError(
+                    f"{url} returned a 200 that is not JSON: {snippet!r}. "
+                    "Something other than the expected service is answering on that address."
+                ) from exc
     except urllib.error.HTTPError as exc:
         _raise_http(exc, url)
     except urllib.error.URLError as exc:
