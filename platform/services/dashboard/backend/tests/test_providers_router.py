@@ -7,6 +7,7 @@ Verifies: reads are viewer-gated; every mutation requires admin (project.manage)
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 GOOD = (
@@ -21,16 +22,11 @@ EVIL = "import os\nclass P(Provider):\n    def compute(self, i): return {}\n"
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-            source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
-        );"""
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     monkeypatch.setenv("EXAMLOPS_PROVIDERS_DIR", str(tmp_path / "providers"))
     return str(db)
 

@@ -4,29 +4,20 @@ import dbconn
 import llmops
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS llm_endpoints (
-            model TEXT PRIMARY KEY, engine TEXT, hf_model_id TEXT, max_model_len INTEGER,
-            tensor_parallel_size INTEGER, dtype TEXT, enabled INTEGER, updated_at TEXT, updated_by TEXT
-        );
-        CREATE TABLE IF NOT EXISTS eval_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, suite TEXT,
-            status TEXT, actor TEXT
-        );
-        CREATE TABLE IF NOT EXISTS eval_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, eval_run_id INTEGER, metric TEXT,
-            value REAL, baseline REAL, passed INTEGER
-        );
-        """
-    )
     conn.execute(
         "INSERT INTO llm_endpoints (model, engine, hf_model_id, max_model_len, tensor_parallel_size, "
         "dtype, enabled) VALUES ('llama3', 'vllm', 'meta-llama/Llama-3-8B', 8192, 2, 'bfloat16', 1)"
@@ -48,7 +39,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -73,7 +63,6 @@ def test_endpoints_registry(platform_db):
 def test_endpoints_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
     dbconn.connect(db, row_factory=None).close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     assert llmops.endpoints(str(db)) == {"rows": [], "count": 0}
 
 
@@ -96,7 +85,6 @@ def test_eval_summary_uses_latest_run(platform_db):
 def test_eval_summary_graceful_without_table(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
     dbconn.connect(db, row_factory=None).close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     assert llmops.eval_summary(str(db)) == {"models": [], "count": 0}
 
 

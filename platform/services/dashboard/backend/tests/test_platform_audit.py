@@ -8,6 +8,7 @@ into an empty result. It now defaults to the full history and surfaces errors as
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from examlops.storage.testing import empty_datastore
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
@@ -20,11 +21,6 @@ async def _login(client, password):
 def _seed_audit_db(path: str) -> None:
     """Create an audit_events table with one old (>30d) and one recent event."""
     conn = dbconn.connect(path, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events ("
-        "id INTEGER PRIMARY KEY, ts DATETIME, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT)"
-    )
     conn.execute(
         "INSERT INTO audit_events (ts, source, actor, action, target, details) "
         "VALUES (datetime('now','-400 days'), 'cli', 'alice', 'retrain', 'JPCP', NULL)"
@@ -41,8 +37,9 @@ def _seed_audit_db(path: str) -> None:
 @pytest.mark.asyncio
 async def test_platform_audit_requires_admin(client, monkeypatch, tmp_path):
     db = tmp_path / "platform.db"
-    _seed_audit_db(str(db))
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    _seed_audit_db(str(db))
     token = await _login(client, VIEWER_PW)
     r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 403
@@ -52,8 +49,9 @@ async def test_platform_audit_requires_admin(client, monkeypatch, tmp_path):
 async def test_platform_audit_defaults_to_full_history(client, monkeypatch, tmp_path):
     """The regression: an event older than 30 days must still surface (all-time default)."""
     db = tmp_path / "platform.db"
-    _seed_audit_db(str(db))
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    _seed_audit_db(str(db))
     token = await _login(client, ADMIN_PW)
     r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
@@ -66,8 +64,9 @@ async def test_platform_audit_defaults_to_full_history(client, monkeypatch, tmp_
 @pytest.mark.asyncio
 async def test_platform_audit_last_days_narrows(client, monkeypatch, tmp_path):
     db = tmp_path / "platform.db"
-    _seed_audit_db(str(db))
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    _seed_audit_db(str(db))
     token = await _login(client, ADMIN_PW)
     r = await client.get(
         "/api/platform-audit?last_days=30", headers={"Authorization": f"Bearer {token}"}
@@ -96,12 +95,9 @@ async def test_platform_audit_tolerates_non_json_details(client, monkeypatch, tm
     try/except, so any older row with non-JSON details crashed the endpoint (limit=100 → 500,
     limit=80 → 200). Non-JSON details are now returned verbatim."""
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(str(db), row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events ("
-        "id INTEGER PRIMARY KEY, ts DATETIME, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT)"
-    )
     conn.execute(
         "INSERT INTO audit_events (ts, source, actor, action, target, details) "
         "VALUES (datetime('now','-1 days'), 'cli', 'alice', 'note', 'X', 'not-valid-json{')"
@@ -113,7 +109,6 @@ async def test_platform_audit_tolerates_non_json_details(client, monkeypatch, tm
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     token = await _login(client, ADMIN_PW)
     r = await client.get("/api/platform-audit", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200

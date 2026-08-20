@@ -5,6 +5,7 @@ import dbconn
 import httpx
 import pytest
 
+from examlops import platform_db as pdb
 from examlops.storage.testing import empty_datastore
 from tests.conftest import VIEWER_PW
 
@@ -113,15 +114,10 @@ async def test_ask_copilot_degrades_gracefully_when_agent_down():
 # ── audit (D4) ───────────────────────────────────────────────────────────────
 
 
-def test_audit_copilot_writes_event(tmp_path):
+def test_audit_copilot_writes_event(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
-    conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
-    conn.commit()
-    conn.close()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     assert (
         copilot.audit_copilot(
             str(db), "viewer", "why drift?", {"page": "/drift"}, [{"command": "exa retrain m"}]
@@ -166,14 +162,11 @@ async def test_copilot_endpoint_empty_question(client):
 async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path, monkeypatch):
     # No agent running in the test env → graceful envelope, never a 500 (still audited).
     db = tmp_path / "p.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     monkeypatch.setenv("AGENT_URL", "http://127.0.0.1:9")  # nothing listening
     token = await _login(client, VIEWER_PW)
     r = await client.post(

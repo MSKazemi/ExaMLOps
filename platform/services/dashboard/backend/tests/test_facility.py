@@ -4,6 +4,7 @@ import dbconn
 import facility
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
@@ -11,19 +12,11 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db with hpc_jobs across two clusters."""
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS hpc_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, scheduler TEXT,
-            flow_run_id TEXT, model TEXT, dataset TEXT, state TEXT,
-            submit_time TEXT, start_time TEXT, end_time TEXT,
-            queue_seconds REAL, run_seconds REAL, nodes INTEGER, gpus INTEGER,
-            cpus INTEGER, exit_code INTEGER, mlflow_run_id TEXT,
-            created_at TEXT, updated_at TEXT
-        );
-        """
-    )
     rows = [
         # (job_id, scheduler, model, dataset, state, submit, queue_s, nodes, gpus, cpus, mlflow)
         ("j1", "slurm", "JPCP", "PM100", "RUNNING", "2026-07-01T10:00", 30.0, 2, 4, 16, "run-a"),
@@ -40,7 +33,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -71,7 +63,6 @@ def test_overview_cluster_filter(platform_db):
 def test_overview_graceful_on_empty(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
     dbconn.connect(db, row_factory=None).close()  # no hpc_jobs table
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     ov = facility.facility_overview(str(db))
     assert ov["queueDepth"] == 0
     assert ov["clusters"] == []
@@ -144,18 +135,6 @@ def fleet_db(platform_db):
     conn = dbconn.connect(platform_db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS hpc_clusters (
-            name TEXT PRIMARY KEY, scheduler TEXT, transport TEXT, host TEXT,
-            ssh_user TEXT, ssh_port INTEGER, ssh_key TEXT, key_fingerprint TEXT,
-            state TEXT NOT NULL DEFAULT 'PENDING', capabilities TEXT,
-            requested_by TEXT, approved_by TEXT, reason TEXT,
-            created_at TEXT, updated_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-            source TEXT, actor TEXT, action TEXT, target TEXT, details TEXT
-        );
         INSERT INTO hpc_clusters (name, scheduler, transport, host, state, capabilities)
         VALUES ('lxp', 'flux', 'ssh', 'lxp-login', 'PENDING', '{"total_gpus": 8}');
         """
@@ -185,14 +164,9 @@ async def test_fleet_capacity_from_node_snapshot_and_jobs(client, fleet_db):
     conn = dbconn.connect(fleet_db, row_factory=None)
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS hpc_nodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, cluster TEXT, scheduler TEXT, node TEXT,
-            cpus INTEGER, memory_mb INTEGER, gpus INTEGER, gpu_model TEXT, state TEXT,
-            partition TEXT, captured_at TEXT
-        );
         INSERT INTO hpc_nodes (cluster, scheduler, node, gpus, state) VALUES
-            ('lxp', 'flux', 'n1', 4, 'idle'),
-            ('lxp', 'flux', 'n2', 4, 'allocated');
+        ('lxp', 'flux', 'n1', 4, 'idle'),
+        ('lxp', 'flux', 'n2', 4, 'allocated');
         UPDATE hpc_jobs SET run_seconds = 3600 WHERE scheduler = 'flux' AND gpus = 8;
         """
     )

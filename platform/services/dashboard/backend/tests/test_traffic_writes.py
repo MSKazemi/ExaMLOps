@@ -9,28 +9,18 @@ import json
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS traffic_rules (
-            model TEXT PRIMARY KEY, rules TEXT NOT NULL,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_by TEXT
-        );
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-            source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
-        );
-        """
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 

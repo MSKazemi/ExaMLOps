@@ -4,6 +4,7 @@ import dbconn
 import mlops
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
@@ -13,26 +14,9 @@ from tests.conftest import VIEWER_PW
 def platform_db(tmp_path, monkeypatch):
     """A seeded platform.db, wired into the mlops router via PLATFORM_DB."""
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS drift_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME, model TEXT,
-            alias TEXT, prediction REAL, job_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS model_costs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
-            run_id TEXT, job_id TEXT, gpu_hours REAL, cost_usd REAL, recorded_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS traffic_rules (
-            model TEXT PRIMARY KEY, rules TEXT, updated_at DATETIME, updated_by TEXT
-        );
-        CREATE TABLE IF NOT EXISTS promotion_rules (
-            model TEXT PRIMARY KEY, metric TEXT, operator TEXT, threshold REAL,
-            from_alias TEXT, to_alias TEXT, enabled INTEGER, updated_at DATETIME
-        );
-        """
-    )
     # jpcp: fully wired (drift + enabled policy + cost + traffic) → ok/governed
     conn.executemany(
         "INSERT INTO drift_snapshots (ts, model, alias, prediction) VALUES (?,?,?,?)",
@@ -62,7 +46,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 

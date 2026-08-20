@@ -4,30 +4,18 @@ import dbconn
 import pytest
 import search as search_lib
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS promotion_rules (
-            model TEXT PRIMARY KEY, metric TEXT, operator TEXT, threshold REAL,
-            from_alias TEXT, to_alias TEXT, enabled INTEGER, updated_at DATETIME
-        );
-        CREATE TABLE IF NOT EXISTS hpc_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, scheduler TEXT,
-            flow_run_id TEXT, model TEXT, dataset TEXT, state TEXT,
-            nodes INTEGER, gpus INTEGER, cpus INTEGER, updated_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT,
-            action TEXT, target TEXT, details TEXT, ts TEXT
-        );
-        """
-    )
     conn.execute(
         "INSERT INTO promotion_rules (model, metric, operator, threshold, from_alias, "
         "to_alias, enabled) VALUES ('jpcp','rmse','<',5.0,'Staging','Production',1)"
@@ -42,7 +30,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -99,7 +86,6 @@ def test_search_pages_need_no_db(platform_db):
 def test_search_graceful_without_tables(tmp_path, monkeypatch):
     db = tmp_path / "empty.db"
     dbconn.connect(db, row_factory=None).close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     out = search_lib.search(str(db), "models")
     # pages still match even with no platform tables
     assert any(r["kind"] == "page" for r in out["results"])

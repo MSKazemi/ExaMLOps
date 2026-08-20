@@ -308,3 +308,32 @@ def test_the_product_declares_each_table_only_one_way():
         + "\n  ".join(problems)
         + "\nDeclare it once in platform_db.py and have the other caller use init_db()."
     )
+
+
+def test_no_dashboard_fixture_builds_its_own_schema():
+    """The dashboard tests must use the product's schema, never a hand-written copy of it.
+
+    The checks above catch a fixture that *invents* a column. They cannot catch one that quietly
+    *drops* one: a fixture declaring a subset of the real table still passes, while testing
+    against a schema laxer than production — a missing NOT NULL or default is invisible until it
+    is not. Two of the fixtures converted here did exactly that, declaring ``audit_events``
+    without ``NOT NULL`` on ``source``/``action``.
+
+    Calling ``platform_db.init_db()`` removes the whole class, because there is then only one
+    definition. For the few tables ``init_db()`` deliberately does not own — ``connections`` and
+    ``workbenches``, each created by its own module on first write — seed through that module's
+    own API (see ``test_connections_workbenches.py``), which is also the only way the secret
+    takes its real indirection.
+    """
+    dashboard = _REPO / "platform" / "services" / "dashboard" / "backend" / "tests"
+    offenders = [
+        f"{py.relative_to(_REPO)}:{line} declares {m.group(1)}"
+        for py in _sources([dashboard], tests=True)
+        for line, sql in _sql_literals(py)
+        for m in _CREATE.finditer(sql)
+    ]
+    assert not offenders, (
+        "a dashboard test builds its own schema instead of using the product's:\n  "
+        + "\n  ".join(offenders)
+        + "\nUse platform_db.init_db(), plus the owning module's API for connections/workbenches."
+    )

@@ -7,47 +7,44 @@ viewer-gated; status flips require admin and are audited.
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
+    """Seed through the owning modules, not raw INSERTs.
+
+    ``connections`` and ``workbenches`` are deliberately *not* created by ``init_db()`` — each is
+    owned by its own module and created on first write — so seeding them by hand meant keeping a
+    second copy of two more schemas. Going through ``create_connection``/``create_workbench``
+    also means the secret takes the real D7 indirection rather than a hand-written ``secret_ref``.
+    """
+    from examlops.connections import create_connection
+    from examlops.workbenches import create_workbench
+
     db = tmp_path / "platform.db"
-    conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS connections (
-            name TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
-            config_json TEXT NOT NULL DEFAULT '{}', secret_ref TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT,
-            PRIMARY KEY (project, name)
-        );
-        CREATE TABLE IF NOT EXISTS workbenches (
-            name TEXT NOT NULL, project TEXT NOT NULL,
-            image TEXT NOT NULL DEFAULT 'jupyter/scipy-notebook:latest',
-            cpu REAL, memory_gb REAL, storage_volume TEXT,
-            status TEXT NOT NULL DEFAULT 'STOPPED',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP, created_by TEXT,
-            PRIMARY KEY (project, name)
-        );
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-            source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO connections (name, project, kind, config_json, secret_ref, created_by) "
-        "VALUES ('minio', 'research', 's3', ?, 'conn/research/minio', 'alice')",
-        ('{"endpoint":"http://localhost:19000","bucket":"data","access_key":"minioadmin"}',),
-    )
-    conn.execute(
-        "INSERT INTO workbenches (name, project, image, status, storage_volume, created_by) "
-        "VALUES ('nb', 'research', 'jupyter/scipy-notebook:latest', 'STOPPED', 'research-nb-data', 'alice')"
-    )
-    conn.commit()
-    conn.close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    pdb.create_project("research", created_by="alice")
+    create_connection(
+        "minio",
+        "s3",
+        project="research",
+        config={
+            "endpoint": "http://localhost:19000",
+            "bucket": "data",
+            "access_key": "minioadmin",
+        },
+        secret_value="minioadmin-secret",
+        created_by="alice",
+    )
+    create_workbench(
+        "nb",
+        "research",
+        image="jupyter/scipy-notebook:latest",
+        created_by="alice",
+    )
     return str(db)
 
 

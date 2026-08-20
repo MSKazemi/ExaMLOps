@@ -48,6 +48,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **No dashboard test builds its own schema any more (44 `CREATE TABLE`s across 16 files).**
+  Each hand-rolled fixture was a second, unmaintained copy of a table the product already
+  defines. The guard added earlier catches a fixture that *invents* a column, but not one that
+  quietly *drops* one — and a fixture declaring a subset still passes while testing against a
+  schema laxer than production. Two were doing exactly that, declaring `audit_events` without
+  `NOT NULL` on `source`/`action`. Fixtures now call `platform_db.init_db()`, so there is one
+  definition and they cannot drift. For the two tables `init_db()` deliberately does not own —
+  `connections` and `workbenches`, each created by its own module on first write — the fixture
+  seeds through that module's API (`create_connection`/`create_workbench`) instead of a raw
+  `INSERT`, which also gives the secret its real D7 indirection rather than a hand-written
+  `secret_ref`. `test_no_dashboard_fixture_builds_its_own_schema` keeps the count at zero.
+
 - **The dashboard kept its own, divergent copy of the schema — and it broke `exa project
   add-member`.** `routers/projects.py` declared eight tables itself, under a docstring claiming
   the set "matches platform_db init". Three of them did not match. The worst was

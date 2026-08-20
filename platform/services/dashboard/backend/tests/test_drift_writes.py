@@ -14,32 +14,18 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
+    """Real platform schema, seeded — never a hand-written copy of it.
+
+    ``init_db()`` is the product's own definition, so this fixture cannot drift from it (and
+    cannot quietly drop a NOT NULL the product relies on). It must run after ``PLATFORM_DB`` is
+    pointed at the temp file, which is why the setenv comes first.
+    """
+    from examlops import platform_db as pdb
+
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS drift_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, alias TEXT,
-            prediction REAL NOT NULL, job_id TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS drift_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS drift_auto_retrain (
-            model TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
-            min_z_score REAL NOT NULL DEFAULT 3.0, dataset_name TEXT NOT NULL DEFAULT '',
-            cooldown_s INTEGER NOT NULL DEFAULT 3600
-        );
-        CREATE TABLE IF NOT EXISTS input_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, alias TEXT,
-            emb_norm REAL NOT NULL, emb_mean REAL NOT NULL, emb_std REAL NOT NULL,
-            job_id TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS input_baselines (model TEXT PRIMARY KEY, stats TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-            source TEXT NOT NULL, actor TEXT, action TEXT NOT NULL, target TEXT, details TEXT
-        );
-        """
-    )
     for i in range(20):
         conn.execute(
             "INSERT INTO drift_snapshots (model, alias, prediction) VALUES ('JPCP','Production',?)",
@@ -52,7 +38,6 @@ def platform_db(tmp_path, monkeypatch):
         )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 

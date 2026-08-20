@@ -4,32 +4,18 @@ import dbconn
 import governance
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def platform_db(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS compliance_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, version INTEGER,
-            risk_class TEXT, annex_iv_path TEXT, provenance_hash TEXT
-        );
-        CREATE TABLE IF NOT EXISTS model_cards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, model TEXT, output_path TEXT, actor TEXT
-        );
-        CREATE TABLE IF NOT EXISTS model_costs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model_name TEXT, version INTEGER,
-            gpu_hours REAL, cost_usd REAL, recorded_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT,
-            action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
     conn.execute(
         "INSERT INTO compliance_records (model, version, risk_class, annex_iv_path, provenance_hash) "
         "VALUES ('jpcp', 18, 'high', '/files/jpcp_annexiv.pdf', 'abc123')"
@@ -50,7 +36,6 @@ def platform_db(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)
 
 
@@ -117,7 +102,6 @@ def test_nist_posture_honest_grading(platform_db):
 def test_posture_graceful_on_empty(tmp_path, monkeypatch):
     db = tmp_path / "e.db"
     dbconn.connect(db, row_factory=None).close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     out = governance.nist_posture(str(db))
     # empty evidence → all gaps, never false green
     assert all(c["status"] == "gap" for c in out["controls"])

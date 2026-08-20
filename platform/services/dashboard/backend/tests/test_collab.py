@@ -4,20 +4,18 @@ import collab
 import dbconn
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import VIEWER_PW
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     path = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(path))
+    pdb.init_db()
     conn = dbconn.connect(path, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(path))
     return str(path)
 
 

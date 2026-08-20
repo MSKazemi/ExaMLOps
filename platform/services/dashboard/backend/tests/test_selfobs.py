@@ -4,6 +4,7 @@ import dbconn
 import pytest
 import selfobs
 
+from examlops import platform_db as pdb
 from examlops.storage.testing import empty_datastore
 from tests.conftest import VIEWER_PW
 
@@ -34,8 +35,9 @@ def test_metrics_percentiles_on_empty():
 
 def test_status_payload_reports_platform_db_up(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    dbconn.connect(db, row_factory=None).close()
     payload = selfobs.status_payload()
     names = {d["name"] for d in payload["dependencies"]}
     assert "platform_db" in names and "bff" in names
@@ -48,14 +50,11 @@ def test_status_payload_reports_platform_db_up(tmp_path, monkeypatch):
 
 def test_record_ui_action_writes_audit(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
-        "actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
 
     assert selfobs.record_ui_action("view_model", "JPCP", "viewer") is True
     conn = dbconn.connect(db, row_factory=None)
@@ -86,8 +85,9 @@ async def test_status_endpoint_requires_auth(client):
 @pytest.mark.asyncio
 async def test_status_endpoint_returns_health_and_metrics(client, tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
-    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    dbconn.connect(db, row_factory=None).close()
     token = await _login(client, VIEWER_PW)
     r = await client.get("/api/v1/selfobs/status", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
@@ -100,14 +100,11 @@ async def test_status_endpoint_returns_health_and_metrics(client, tmp_path, monk
 @pytest.mark.asyncio
 async def test_action_endpoint_audits(client, tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
-        "actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     token = await _login(client, VIEWER_PW)
     r = await client.post(
         "/api/v1/selfobs/action",

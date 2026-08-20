@@ -4,6 +4,7 @@ import dbconn
 import feature_flags as ff
 import pytest
 
+from examlops import platform_db as pdb
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 # ── deterministic bucket (F25 R5) ────────────────────────────────────────────
@@ -50,8 +51,9 @@ def test_percentage_rollout_deterministic_and_admin_bypass():
 
 def test_evaluate_all_returns_decisions(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
-    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    dbconn.connect(db, row_factory=None).close()
     decisions = ff.evaluate_all(str(db), role="viewer", tenant="default", subject="u")
     assert set(decisions) == set(ff.FLAG_DEFS)
     assert decisions["mlopsConsole"] is True
@@ -62,14 +64,11 @@ def test_evaluate_all_returns_decisions(tmp_path, monkeypatch):
 
 def test_set_override_persists_and_audits(tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, "
-        "actor TEXT, action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
 
     assert ff.set_override(str(db), "mlopsConsole", False, "admin") is True
     # override now visible in evaluation
@@ -84,8 +83,9 @@ def test_set_override_persists_and_audits(tmp_path, monkeypatch):
 
 def test_set_override_rejects_unknown_flag(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
-    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    dbconn.connect(db, row_factory=None).close()
     assert ff.set_override(str(db), "nope", True, "admin") is False
 
 
@@ -100,8 +100,9 @@ async def _login(client, password):
 @pytest.mark.asyncio
 async def test_flags_endpoint_returns_decisions(client, tmp_path, monkeypatch):
     db = tmp_path / "p.db"
-    dbconn.connect(db, row_factory=None).close()
     monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
+    dbconn.connect(db, row_factory=None).close()
     token = await _login(client, VIEWER_PW)
     r = await client.get("/api/v1/flags", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
@@ -118,14 +119,11 @@ async def test_admin_view_requires_admin(client):
 @pytest.mark.asyncio
 async def test_admin_can_set_flag(client, tmp_path, monkeypatch):
     db = tmp_path / "platform.db"
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    pdb.init_db()
     conn = dbconn.connect(db, row_factory=None)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, actor TEXT, "
-        "action TEXT, target TEXT, details TEXT, ts TEXT DEFAULT CURRENT_TIMESTAMP)"
-    )
     conn.commit()
     conn.close()
-    monkeypatch.setenv("PLATFORM_DB", str(db))
     token = await _login(client, ADMIN_PW)
     r = await client.post(
         "/api/v1/flags/mlopsConsole",
