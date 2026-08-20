@@ -64,6 +64,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **206 Skipper agent tests were gated by nothing — now `test:agent`.** `make check` is
+  `lint typecheck test dashboard-check`, and `test` is `pytest tests/` at the repo root, so it
+  never reached `platform/services/agent/tests` (33 files, 192 test functions, 206 collected).
+  Neither `.gitlab-ci.yml` nor `.github/workflows/ci.yml` mentioned the agent at all. A change to
+  `skipper/` could therefore break every one of them with the local gate and the pipeline both
+  green — the worst component for that to be true of, since an agent's regressions are the hardest
+  kind to notice by using it. Added as its own job in both CI files rather than folded into
+  `test:examlops`, because the suite needs eleven LangChain/LangGraph packages the root `[dev]`
+  extras deliberately do not carry; the job declares **no cache**, so a langchain-laden `.venv`
+  never lands in the shared `uv-$CI_COMMIT_REF_SLUG` key every other job pulls. `deploy:lxp` and
+  `release:gitlab` now require it. Locally: `make ci-agent`, included in `make ci` and as step 8/8
+  of `make preflight`. Verified in a clean throwaway venv built exactly the way the job builds it —
+  206 passed.
+- **`make skipper-test` installed a drifted copy of the agent's dependencies.** It hardcoded a
+  ten-package `pip install` list while `platform/services/agent/requirements.txt` was the pinned
+  source of truth, and the two had already diverged (the list was missing `httpx` and asked for
+  `uvicorn` rather than `uvicorn[standard]`). It now installs from the requirements file.
+- **`.github/workflows/ci.yml` was documented as three jobs it never had.** `CLAUDE.md` described
+  `modelzoo`, `infra` and `examlops` running in parallel there; the workflow contained only
+  `examlops` (the `make ci-modelzoo`/`ci-infra` targets are real, but mirror the **GitLab** jobs).
+  Corrected rather than quietly rewritten, so the discrepancy is visible.
+
 - **`make skipper-knowledge-ingest` reported success after indexing nothing.** Skipper's docs-RAG
   tier needs a reachable embedding backend; without one, `ingest()` returned
   `{'files': 0, 'chunks': 0, 'unavailable': 1}` and the command printed that dict and **exited 0**.

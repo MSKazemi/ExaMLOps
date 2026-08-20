@@ -8,7 +8,7 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The seven test jobs run in parallel; deploy, smoke and post-deploy
+Six stages arranged as a DAG. The eight test jobs run in parallel; deploy, smoke and post-deploy
 fire only on `main` after all tests pass, and `release` fires only on a tag.
 
 ```
@@ -19,13 +19,14 @@ sanity:check-structure ─┼─► test:modelzoo          ─┐
                         │   test:infra:alert-rules  │
                         └─► test:examlops           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
                             test:postgres           │                              └► post-deploy:lxp:retrain-push-models
-                            test:integration        ─┘
+                            test:integration         │
+                            test:agent              ─┘
 ```
 
 | Stage | Runs on | Purpose |
 |---|---|---|
 | `sanity` | all branches + MRs | Syntax check + directory structure guard — blocks everything on failure |
-| `test` | all branches + MRs | Seven parallel jobs covering all test types (change-filtered off `main`) |
+| `test` | all branches + MRs | Eight parallel jobs covering all test types (change-filtered off `main`) |
 | `release` | tags only | Turns the tag into a GitLab Release described by its CHANGELOG section |
 | `deploy` | `main` only, never on a schedule | SSH deploy to lxp-cpu01 after all tests pass |
 | `smoke` | after `deploy` | Post-deploy health gate with automatic rollback |
@@ -177,6 +178,27 @@ Runs `test_inference_pipeline_e2e.py`, which:
 ---
 
 ## Stage: release
+
+### test:agent
+
+Runs the Skipper agent's 206 tests (`platform/services/agent/tests`).
+
+Until 2026-08-20 this suite ran in no pipeline and in no local gate: `make check` is
+`lint typecheck test dashboard-check`, and `test` is `pytest tests/` at the repo root, so nothing
+reached `platform/services/agent/tests`. A change to `skipper/` could break all 206 with every
+gate green — the worst component for that to be true of, because an agent's regressions are the
+hardest kind to notice by using it.
+
+It is a separate job rather than part of `test:examlops` because it needs eleven
+LangChain/LangGraph packages that the root `[dev]` extras deliberately do not carry. It installs
+from `platform/services/agent/requirements.txt` (the pinned source of truth), plus `pytest-asyncio`
+and an editable `platform/cli` — the tests import `examlops` the way the agent itself does.
+
+It declares **no cache**: the shared `uv-$CI_COMMIT_REF_SLUG` key holds the `.venv` every other job
+pulls, and pushing a langchain-laden one into it would slow them all down for nothing.
+
+`deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-agent` (or `make skipper-test`),
+and it is step 8/8 of `make preflight`.
 
 ### release:gitlab
 **Image:** `registry.gitlab.com/gitlab-org/release-cli` | **Runs on:** tags only

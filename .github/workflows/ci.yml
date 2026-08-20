@@ -64,3 +64,42 @@ jobs:
           name: unit-test-report
           path: reports/
           if-no-files-found: ignore
+
+  agent:
+    # The Skipper suite (206 tests) ran nowhere: `make check` is `pytest tests/` at the
+    # repo root, and these live under platform/services/agent/tests, so a change to
+    # skipper/ could break all of them with every gate green. Its own job because it needs
+    # eleven LangChain/LangGraph packages the root [dev] extras deliberately do not carry.
+    name: skipper agent tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv venv --clear .venv
+          uv pip install -r platform/services/agent/requirements.txt
+          uv pip install pytest pytest-asyncio
+          uv pip install -e platform/cli
+
+      - name: Agent tests
+        run: .venv/bin/pytest platform/services/agent/tests -q --tb=short --junit-xml=reports/agent-unit.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-test-report
+          path: reports/
+          if-no-files-found: ignore

@@ -554,7 +554,7 @@ test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.h
 check: lint typecheck test dashboard-check ## Run all quality checks: lint · typecheck · test · dashboard
 	@printf "\n$(GREEN)$(BOLD)All checks passed.$(RESET)\n\n"
 
-ci: ci-modelzoo ci-infra ci-examlops ## Run all three CI job groups locally (mirrors GitLab CI)
+ci: ci-modelzoo ci-infra ci-examlops ci-agent ## Run every CI job group locally (mirrors GitLab CI)
 	@printf "\n$(GREEN)$(BOLD)All CI job groups passed locally.$(RESET)\n\n"
 
 smoke-check: ## Run post-deploy health probes against the local stack
@@ -614,26 +614,33 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
 
+ci-agent: install-dev ## Mirror the 'test:agent' job — the Skipper agent suite
+	@printf "$(BOLD)CI · agent (skipper)$(RESET)\n"
+	@$(MAKE) --no-print-directory skipper-test
+	@printf "$(GREEN)CI · agent passed.$(RESET)\n"
+
 preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
 	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
-	@printf "$(BOLD)1/7 sanity: python syntax$(RESET)\n"
+	@printf "$(BOLD)1/8 sanity: python syntax$(RESET)\n"
 	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" \
 	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
-	@printf "$(BOLD)2/7 ruff check$(RESET)\n"
+	@printf "$(BOLD)2/8 ruff check$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)3/7 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@printf "$(BOLD)3/8 ruff format --check$(RESET)  (HARD failure in CI)\n"
 	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)4/7 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@printf "$(BOLD)4/8 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
-	@printf "$(BOLD)5/7 unit tests$(RESET)\n"
+	@printf "$(BOLD)5/8 unit tests$(RESET)\n"
 	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
-	@printf "$(BOLD)6/7 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@printf "$(BOLD)6/8 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
 	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
-	@printf "$(BOLD)7/7 dashboard backend$(RESET)\n"
+	@printf "$(BOLD)7/8 dashboard backend$(RESET)\n"
 	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
 	@cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q
+	@printf "$(BOLD)8/8 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
+	@$(MAKE) --no-print-directory skipper-test
 	@$(MAKE) ci-infra
 	@printf "\n$(GREEN)$(BOLD)Preflight passed — safe to push.$(RESET)\n"
 	@printf "$(DIM)Note: test:modelzoo (poetry) is not run here; use 'make ci-modelzoo' for the upstream gate.$(RESET)\n\n"
@@ -670,8 +677,12 @@ modelzoo-test: ## Run modelzoo test suite — smoke + unit (uses poetry in model
 	@printf "$(GREEN)ModelZoo tests passed.$(RESET)\n"
 
 skipper-test:  ## Run the Skipper agent unit tests
-	.venv/bin/pip install -q langgraph langgraph-checkpoint-sqlite langchain langchain-anthropic langchain-openai langchain-ollama anthropic respx fastapi uvicorn
-	.venv/bin/pytest platform/services/agent/tests -v
+	@# Install from requirements.txt, the pinned source of truth. The hardcoded list that
+	@# used to live here had already drifted from it (no httpx, uvicorn without [standard]),
+	@# which is what a second copy of a dependency set always does.
+	@$(VENV)/bin/pip install -q -r platform/services/agent/requirements.txt
+	@$(VENV)/bin/pip install -q pytest-asyncio
+	@$(VENV)/bin/pytest platform/services/agent/tests -v
 
 agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)
 
