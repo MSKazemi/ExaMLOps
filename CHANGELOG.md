@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **A secret now says which store it came from, and a Vault outage is no longer silent.** The
+  secrets client tries OpenBao/Vault, then the local Fernet store, then a plain environment
+  variable — but `_vault_get` swallowed *every* exception and returned `None`, so "the Vault
+  answered, this secret is not in it" and "the Vault is down / my token is denied" collapsed into
+  the same outcome: fall through, log nothing, tell nobody. An operator who deliberately put the
+  model-signing key, the vLLM API key or a project connection secret in a Vault could have every
+  one of them served from a different trust domain — possibly from an environment variable — with
+  a `secret_access` audit row identical to a clean Vault read. For a subsystem whose reason to
+  exist is credential provenance, that was the wrong gap to leave. The fallback stays (a Vault
+  blip must not take the platform down) and the silence goes: `_vault_get` now returns
+  `(value, error)` and distinguishes a 404 (the Vault answered — falling through is correct, no
+  warning) from an outage; a degraded read logs a WARNING on `examlops.secrets`; the audit event
+  carries `backend` (`vault`/`local`/`env`/`none`) plus `vault_error`, and is now written on
+  *every* outcome including the failures; `exa secrets get` prints the backend and warns when the
+  Vault was skipped; and `EXAMLOPS_VAULT_STRICT=1` refuses the downgrade outright, failing the
+  read instead of serving another store. New `resolve_secret()` returns the provenance;
+  `get_secret()` is unchanged for its four callers. The Vault backend previously had no test at
+  all — six now cover it. Guide: `docs/guides/secrets.md`.
+
 - **The ADR 0111 calibration refusal on the autopilot's promote road is now tested.** The autopilot
   promotes without going through `run_eval_gate`, so `judge_eligibility_for_model` is called there
   separately — and that function appeared in no test file at all. For a rule whose entire point is

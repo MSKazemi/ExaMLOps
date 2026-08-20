@@ -17,6 +17,30 @@ Design: ADR 0011 · spec `design/vision/specs/D7-secrets-management.md`.
 A missing or access-denied secret **fails fast** with a clear, non-leaking error — a
 service never starts with an empty credential.
 
+### Knowing which backend served a value
+
+The fallback chain is a feature — a Vault blip must not take the platform down — but it
+moves a credential between trust domains, so it is never silent:
+
+* `exa secrets get <path>` prints the **backend** that served the value (`vault`, `local`
+  or `env`), and warns when a configured Vault could not be reached.
+* Every read writes a `secret_access` audit event carrying `backend`, plus `vault_error`
+  when the Vault was configured but did not answer. A clean Vault read and a downgrade to
+  an environment variable are therefore distinguishable in the audit trail.
+* A Vault **404** is not a degradation: the Vault answered, the secret is simply not
+  there, and falling through is correct. Only a genuine outage (connection refused, denied
+  token, malformed reply) is reported as one.
+* Set **`EXAMLOPS_VAULT_STRICT=1`** to refuse the downgrade altogether — an unreachable
+  Vault then fails the read instead of serving whatever the local store or the environment
+  happens to hold. Recommended wherever Vault is the system of record.
+
+```bash
+$ EXAMLOPS_VAULT_ADDR=https://vault.example:8200 exa secrets get control-plane/token
+⚠ vault unreachable (URLError: ...) - this value came from the local store, which may
+  hold something different. Set EXAMLOPS_VAULT_STRICT=1 to fail instead.
+  backend: local
+```
+
 ## CLI
 
 ```bash

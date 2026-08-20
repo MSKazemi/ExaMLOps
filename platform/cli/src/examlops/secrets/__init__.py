@@ -14,12 +14,15 @@ Access, writes, and rotations are audited (spec R4/R6). Secrets are scoped by
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets as _pysecrets
 from typing import Any
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+log = logging.getLogger("examlops.secrets")
 
 
 class SecretNotFound(RuntimeError):
@@ -152,10 +155,18 @@ def _known_tenant_prefixes() -> set[str]:
 # --- backends ----------------------------------------------------------------
 
 
-def _vault_get(path: str) -> str | None:
+def _vault_get(path: str) -> tuple[str | None, str | None]:
+    """``(value, error)`` from the vault — ``error`` is set only when it *failed to answer*.
+
+    Two very different outcomes used to collapse into a bare ``None``: "the vault answered,
+    this secret is not in it" (a 404 — falling through to the local store is exactly right)
+    and "the vault is down, or refused my token" (an outage — falling through serves a value
+    from a *different trust domain*, possibly a stale one). Only the second is a degradation,
+    so only the second returns an ``error`` for the caller to report.
+    """
     addr = os.getenv("EXAMLOPS_VAULT_ADDR", "").strip()
     if not addr:
-        return None
+        return None, None
     try:
         import json
         import urllib.request
@@ -165,9 +176,13 @@ def _vault_get(path: str) -> str | None:
         req = urllib.request.Request(url, headers={"X-Vault-Token": token})
         with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 - operator-configured
             data = json.loads(resp.read().decode())
-        return data["data"]["data"]["value"]
-    except Exception:
-        return None  # fall through to local store
+        return data["data"]["data"]["value"], None
+    except Exception as exc:
+        import urllib.error
+
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            return None, None  # the vault answered: not here. Not a degradation.
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 # --- public API --------------------------------------------------------------
@@ -175,26 +190,70 @@ def _vault_get(path: str) -> str | None:
 
 def get_secret(path: str, *, tenant: str = "default", actor: str | None = None) -> str:
     """Resolve a secret (spec R1-R3, R5-R6). Fails fast if absent."""
+    return resolve_secret(path, tenant=tenant, actor=actor)["value"]
+
+
+def resolve_secret(
+    path: str, *, tenant: str = "default", actor: str | None = None
+) -> dict[str, Any]:
+    """Resolve a secret and say **where it came from**: ``{value, backend, vault_error}``.
+
+    :func:`get_secret` is the thin wrapper that returns only the value. Operator-facing
+    surfaces (``exa secrets get``) use this one so they can show the backend and warn when
+    a configured vault was skipped.
+
+    The audit event records **which backend served the value** (``vault``/``local``/``env``),
+    and ``vault_error`` when a configured vault could not be reached. Without that, a clean
+    vault read and a silent downgrade to an environment variable left identical audit rows,
+    which defeats the point of auditing a secrets subsystem. Set ``EXAMLOPS_VAULT_STRICT=1``
+    to refuse the downgrade outright and fail the read instead.
+    """
     if not _tenant_allowed(path, tenant):
         _audit("secret_denied", path, actor, {"tenant": tenant})
         raise SecretAccessDenied(f"tenant '{tenant}' may not read secret '{path}'")
-    _audit("secret_access", path, actor, {"tenant": tenant})
 
-    val = _vault_get(path)
-    if val is not None:
-        return val
+    backend = "none"
+    extra: dict[str, Any] = {"tenant": tenant}
+    try:
+        val, vault_error = _vault_get(path)
+        if vault_error:
+            extra["vault_error"] = vault_error
+            if os.getenv("EXAMLOPS_VAULT_STRICT", "").strip().lower() in _TRUTHY:
+                raise SecretNotFound(
+                    f"vault unreachable for secret '{path}' ({vault_error}) and "
+                    "EXAMLOPS_VAULT_STRICT is set — refusing to fall back to another store"
+                )
+            # Keep serving — a vault blip must not take the platform down — but say so. The
+            # value below comes from a different store than the operator configured.
+            log.warning(
+                "vault unreachable for secret %r (%s) - falling back to the local store/env; "
+                "the value served may differ from the one held in the vault",
+                path,
+                vault_error,
+            )
+        if val is not None:
+            backend = "vault"
+            return {"value": val, "backend": backend, "vault_error": vault_error}
 
-    from examlops.data.secrets import get_secret_record
+        from examlops.data.secrets import get_secret_record
 
-    rec = get_secret_record(path, tenant)
-    if rec is not None:
-        return _decrypt(rec["ciphertext"], rec.get("key_id"))
+        rec = get_secret_record(path, tenant)
+        if rec is not None:
+            backend = "local"
+            value = _decrypt(rec["ciphertext"], rec.get("key_id"))
+            return {"value": value, "backend": backend, "vault_error": vault_error}
 
-    env_key = path.replace("/", "_").replace("-", "_").upper()
-    if env_key in os.environ:
-        return os.environ[env_key]
+        env_key = path.replace("/", "_").replace("-", "_").upper()
+        if env_key in os.environ:
+            backend = "env"
+            return {"value": os.environ[env_key], "backend": backend, "vault_error": vault_error}
 
-    raise SecretNotFound(f"secret '{path}' not found (tenant '{tenant}')")
+        raise SecretNotFound(f"secret '{path}' not found (tenant '{tenant}')")
+    finally:
+        # Audited on every outcome, including the failures - an access that found nothing (or
+        # was refused by strict mode) is exactly the event an operator needs to see.
+        extra["backend"] = backend
+        _audit("secret_access", path, actor, extra)
 
 
 def set_secret(

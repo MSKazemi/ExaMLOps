@@ -114,3 +114,135 @@ def test_no_encryption_key_fails_clearly(monkeypatch):
     monkeypatch.delenv("DASHBOARD_SECRET_KEY", raising=False)
     with pytest.raises(sec.SecretNotFound, match="encryption key"):
         sec.set_secret("x/y", "v", actor="me")
+
+
+# --- the vault backend: which store actually served the value ----------------
+# The vault is the FIRST of three backends and the only one outside this process's trust
+# domain, yet a configured-but-unreachable vault used to fall through to the local store
+# (or to a plain environment variable) with nothing logged and nothing in the audit row to
+# say so. These tests pin the two properties that makes safe: the fallback still happens,
+# and it is never silent.
+
+
+def _audit_details(action: str = "secret_access") -> list[dict]:
+    import json
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT details FROM audit_events WHERE action = ?", (action,)
+        ).fetchall()
+    return [json.loads(r["details"]) if r["details"] else {} for r in rows]
+
+
+class _FakeResp:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _vault_returning(value: str):
+    import json
+
+    body = json.dumps({"data": {"data": {"value": value}}}).encode()
+    return lambda *a, **k: _FakeResp(body)
+
+
+def _vault_raising(exc: Exception):
+    def _boom(*a, **k):
+        raise exc
+
+    return _boom
+
+
+def test_vault_serves_the_value_and_the_audit_names_it(monkeypatch):
+    import urllib.request
+
+    monkeypatch.setenv("EXAMLOPS_VAULT_ADDR", "http://vault.invalid:8200")
+    monkeypatch.setattr(urllib.request, "urlopen", _vault_returning("from-vault"))
+    sec.set_secret("cp/token", "from-local", actor="me")
+
+    assert sec.get_secret("cp/token", actor="me") == "from-vault"
+    assert _audit_details()[-1]["backend"] == "vault"
+
+
+def test_unreachable_vault_falls_back_but_never_silently(monkeypatch, caplog):
+    import urllib.request
+
+    monkeypatch.setenv("EXAMLOPS_VAULT_ADDR", "http://vault.invalid:8200")
+    monkeypatch.setattr(urllib.request, "urlopen", _vault_raising(OSError("connection refused")))
+    sec.set_secret("cp/token", "from-local", actor="me")
+
+    with caplog.at_level("WARNING", logger="examlops.secrets"):
+        assert sec.get_secret("cp/token", actor="me") == "from-local"
+
+    assert any("connection refused" in r.getMessage() for r in caplog.records)
+    detail = _audit_details()[-1]
+    assert detail["backend"] == "local"
+    assert "connection refused" in detail["vault_error"]
+
+
+def test_unreachable_vault_downgrading_to_an_env_var_is_recorded_as_env(monkeypatch):
+    import urllib.request
+
+    monkeypatch.setenv("EXAMLOPS_VAULT_ADDR", "http://vault.invalid:8200")
+    monkeypatch.setenv("MY_SVC_TOKEN", "from-env")
+    monkeypatch.setattr(urllib.request, "urlopen", _vault_raising(OSError("timed out")))
+
+    assert sec.get_secret("my/svc/token", actor="me") == "from-env"
+    detail = _audit_details()[-1]
+    assert detail["backend"] == "env"
+    assert detail.get("vault_error")
+
+
+def test_vault_saying_not_found_is_not_a_degradation(monkeypatch, caplog):
+    """A 404 means the vault answered: this secret is not there. Falling through is correct."""
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("EXAMLOPS_VAULT_ADDR", "http://vault.invalid:8200")
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _vault_raising(urllib.error.HTTPError("u", 404, "Not Found", {}, None)),  # type: ignore[arg-type]
+    )
+    sec.set_secret("cp/token", "from-local", actor="me")
+
+    with caplog.at_level("WARNING", logger="examlops.secrets"):
+        assert sec.get_secret("cp/token", actor="me") == "from-local"
+
+    assert not caplog.records
+    detail = _audit_details()[-1]
+    assert detail["backend"] == "local"
+    assert "vault_error" not in detail
+
+
+def test_strict_mode_refuses_to_downgrade(monkeypatch):
+    """EXAMLOPS_VAULT_STRICT: a vault outage fails the read instead of serving another store."""
+    import urllib.request
+
+    monkeypatch.setenv("EXAMLOPS_VAULT_ADDR", "http://vault.invalid:8200")
+    monkeypatch.setenv("EXAMLOPS_VAULT_STRICT", "1")
+    monkeypatch.setattr(urllib.request, "urlopen", _vault_raising(OSError("connection refused")))
+    sec.set_secret("cp/token", "from-local", actor="me")
+
+    with pytest.raises(sec.SecretNotFound) as exc:
+        sec.get_secret("cp/token", actor="me")
+    assert "connection refused" in str(exc.value)
+    assert _audit_details()[-1]["backend"] == "none"
+
+
+def test_no_vault_configured_is_not_reported_as_an_error(monkeypatch, caplog):
+    sec.set_secret("cp/token", "from-local", actor="me")
+    with caplog.at_level("WARNING", logger="examlops.secrets"):
+        assert sec.get_secret("cp/token", actor="me") == "from-local"
+    assert not caplog.records
+    detail = _audit_details()[-1]
+    assert detail["backend"] == "local" and "vault_error" not in detail

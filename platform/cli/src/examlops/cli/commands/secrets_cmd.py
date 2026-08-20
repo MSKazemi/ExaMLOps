@@ -55,19 +55,37 @@ def get_cmd(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
     reveal: bool = typer.Option(False, "--reveal", help="Print the plaintext value (dangerous)"),
 ) -> None:
-    """Resolve a secret. Redacts by default; --reveal prints plaintext."""
-    from examlops.secrets import SecretAccessDenied, SecretNotFound, get_secret
+    """Resolve a secret. Redacts by default; --reveal prints plaintext.
+
+    Also reports the backend that served it (vault/local/env), and warns when a configured
+    vault was unreachable — that fallback changes which store the value came from.
+    """
+    from examlops.secrets import SecretAccessDenied, SecretNotFound, resolve_secret
 
     try:
-        value = get_secret(path, tenant=tenant, actor=_actor())
+        res = resolve_secret(path, tenant=tenant, actor=_actor())
     except (SecretNotFound, SecretAccessDenied) as exc:
-        _output.error(str(exc))
+        _output.error(str(exc))  # raises typer.Exit(1)
         return
+    value, backend, vault_error = res["value"], res["backend"], res.get("vault_error")
     shown = value if reveal else ("•" * 8 + f" ({len(value)} chars)")
     if _output.json_mode:
-        _output.print_json({"path": path, "tenant": tenant, "value": value if reveal else None})
+        _output.print_json(
+            {
+                "path": path,
+                "tenant": tenant,
+                "value": value if reveal else None,
+                "backend": backend,
+                "vault_error": vault_error,
+            }
+        )
         return
-    _output.print_record({"path": path, "tenant": tenant, "value": shown})
+    if vault_error:
+        _output.warning(
+            f"vault unreachable ({vault_error}) - this value came from the {backend} store, "
+            "which may hold something different. Set EXAMLOPS_VAULT_STRICT=1 to fail instead."
+        )
+    _output.print_record({"path": path, "tenant": tenant, "value": shown, "backend": backend})
 
 
 @app.command("rotate", epilog=_EX_ROTATE)
