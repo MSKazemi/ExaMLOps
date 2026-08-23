@@ -195,6 +195,21 @@ groups:
           summary: "Approval queue > 10 pending"
           description: "{{ $value }} approvals are pending — operator review may be backlogged."
 
+      # The three alerts above are only as good as the values they select, and both gauges are read
+      # from the approval store at scrape time. If that read fails the gauges keep their last known
+      # values — deliberately, because the alternative is publishing a fresh zero, which is what
+      # "no approvals pending" looks like. Stale values cannot be trusted for long, so the failed
+      # read is alerted on directly.
+      - alert: ApprovalMetricsUnreadable
+        expr: increase(examlops_metrics_scrape_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: control-plane
+        annotations:
+          summary: "Control plane cannot read its approval store during scrapes"
+          description: "The approval gauges are stale, so ApprovalsStale and PendingApprovalQueueLarge cannot be trusted."
+
       - alert: HighRetrainErrorRate
         expr: |
           sum(rate(examlops_retrain_requests_total{outcome="error"}[15m]))

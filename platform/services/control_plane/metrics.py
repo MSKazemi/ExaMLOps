@@ -51,6 +51,16 @@ approvals_expired: Counter = Counter(
     "Total pending approvals that were auto-expired by the background cleanup",
 )
 
+# A scrape that could not read the approval store used to be invisible to Prometheus: the handler
+# logged the exception and published the fallback age, and the fallback is 0 — which the gauge
+# above documents as "none pending". The one value meaning *all clear* was what a broken store
+# produced, so `ApprovalsStale` was guaranteed silent exactly when it mattered. This counter is
+# what an alert selects instead.
+metrics_scrape_errors: Counter = Counter(
+    "examlops_metrics_scrape_errors_total",
+    "Scrapes of /metrics whose read of the approval store failed",
+)
+
 
 def record_created(model_id: str, pending_count: int) -> None:
     approval_events.labels(model_id=model_id, action="created").inc()
@@ -87,6 +97,28 @@ def observe_retrain_duration(model_name: str, dataset_name: str, duration_second
 
 def record_approvals_expired(count: int) -> None:
     approvals_expired.inc(count)
+
+
+def record_scrape_error() -> None:
+    """A /metrics scrape could not read the approval store.
+
+    The gauges are deliberately left alone. Publishing a fallback would overwrite the last values
+    known to be true with ones that mean "queue empty, nothing waiting", and neither approval alert
+    could fire for as long as the store stayed broken. A stale gauge is honest about being stale;
+    a fabricated zero is not.
+    """
+    metrics_scrape_errors.inc()
+
+
+def set_pending(pending_count: int) -> None:
+    """Set the queue depth from the store rather than from this process's event history.
+
+    ``record_created``/``record_approved``/``record_rejected`` only move the gauge when an approval
+    event happens *in this process*. Restart the control plane with a full queue and nobody
+    approving, and the gauge reads 0 until the next event — the reading that means "nothing is
+    waiting" published at the moment a backlog is going unattended.
+    """
+    approvals_pending.set(pending_count)
 
 
 def update_age(oldest_pending_ts: str | None) -> None:

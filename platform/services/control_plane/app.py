@@ -1695,19 +1695,31 @@ def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[s
 
 @app.get("/metrics", include_in_schema=False)
 def metrics_endpoint() -> Response:
+    """Publish the approval gauges from the store, or say the store could not be read.
+
+    Both gauges are derived here rather than carried in memory. The queue depth used to move only
+    when an approval event happened in this process, so a restart with a full queue published 0 —
+    and ``PendingApprovalQueueLarge`` cannot fire on 0. A failed read used to publish the age
+    fallback, which is also 0, and ``ApprovalsStale`` cannot fire on that either. Both alerts were
+    therefore guaranteed to stay silent in precisely the states they exist to catch.
+    """
     try:
         with _DB_LOCK:
             conn = _get_db()
             try:
                 row = conn.execute(
-                    "SELECT MIN(requested_at) FROM pending_approvals WHERE status = 'pending'"
+                    "SELECT COUNT(*), MIN(requested_at) FROM pending_approvals "
+                    "WHERE status = 'pending'"
                 ).fetchone()
             finally:
                 conn.close()
-        _metrics.update_age(row[0])
+        _metrics.set_pending(int(row[0] or 0))
+        _metrics.update_age(row[1])
     except Exception as exc:
+        # Leave the gauges holding their last known-true values. Overwriting them here would
+        # replace "unknown" with "all clear"; the counter is what makes the failure visible.
         logger.error("metrics_endpoint DB read failed: %s", exc)
-        _metrics.update_age(None)
+        _metrics.record_scrape_error()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

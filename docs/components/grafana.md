@@ -142,6 +142,7 @@ Rules are defined in `platform/infra/docker-compose/alert_rules.yml`, mounted in
 | `ApprovalsStale` | `examlops-control-plane` | warning | Oldest pending approval > 24h for 30m |
 | `ApprovalsStaleUrgent` | `examlops-control-plane` | critical | Oldest pending approval > 72h (auto-expiry imminent) |
 | `PendingApprovalQueueLarge` | `examlops-control-plane` | warning | > 10 approvals pending for 5m |
+| `ApprovalMetricsUnreadable` | `examlops-control-plane` | warning | Scrape could not read the approval store in the last 10m — the two gauges above are stale |
 | `HighRetrainErrorRate` | `examlops-control-plane` | warning | 15m retrain error ratio > 20% for 10m |
 | `PrefectCircuitBreakerOpen` | `examlops-control-plane` | critical | CB open events in last 5m |
 | `PrefectRetryRateHigh` | `examlops-control-plane` | warning | Prefect retry rate > 0.1/s for 10m |
