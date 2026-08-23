@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **Two tests named a behaviour they could not detect.** `test_quiet_suppresses_info_and_hint`
+  called `info()` and `hint()` under quiet mode and asserted nothing, so it passed whether quiet
+  suppressed the output, printed it, or the emitters printed in no mode at all;
+  `test_detail_only_under_verbose` requested the `capsys` fixture and never read it. Both now prove
+  each half — printed normally, silent under the flag. The `--quiet`/`--verbose` feature itself was
+  verified correct before the tests were touched.
+- **The CLI's output modes leaked between tests.** The root callback sets `json_mode`, `quiet_mode`,
+  `verbose_mode`, `yes_mode` and `output_format` as module globals and never restores them, so one
+  `invoke(app, ["-q", …])` left the process quiet and a sub-app invocation never ran the callback
+  that would clear it — a leaked `quiet_mode` silently satisfies any later "must not print X"
+  assertion. An autouse fixture in `tests/conftest.py` resets them per test, guarded by two tests in
+  source order where the first leaks and the second passes only because the fixture undoes it. No
+  test was losing to this yet; the class is closed before it has a casualty.
+
 - **Every environment variable the platform reads now has a row.** The last 42 are documented —
   the three feature gates that are off unless set (`EXAMLOPS_SLO_GATE_ENABLED`,
   `EXAMLOPS_FAIRNESS_GATE_ENABLED`, `EXAMLOPS_SYNTHETIC_ONLY_GATE`, plus
