@@ -65,7 +65,16 @@ def test_control_plane_bundle_creates_and_verifies(platform_db, tmp_path):
     assert backup.verify_bundle(res.bundle_dir)["ok"] is True
 
 
-def test_heavy_tiers_skip_off_stack(platform_db, tmp_path):
+def test_heavy_tiers_skip_off_stack(platform_db, tmp_path, monkeypatch):
+    """Off-stack is *established*, not assumed.
+
+    This asserted that the object tier skips while doing nothing to make it skip — it passed only
+    because nothing was answering on the default endpoint. That default used to be a port this
+    project never serves, so the test could not fail; now that it points at the port the host
+    actually publishes, a developer with `make stack-up` running would exercise the success branch
+    and this would go red. Port 1 serves nothing, anywhere.
+    """
+    monkeypatch.setenv("MLFLOW_S3_ENDPOINT_URL", "http://127.0.0.1:1")
     from examlops import backup
 
     res = backup.create_bundle(

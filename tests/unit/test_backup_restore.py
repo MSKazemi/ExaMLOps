@@ -33,6 +33,11 @@ def db(tmp_path, monkeypatch):
     # Keep the pre-op auto-backup (fired by `exa backup restore`) hermetic — off the repo cwd.
     monkeypatch.setenv("EXAMLOPS_BACKUP_DIR", str(tmp_path / "auto"))
     monkeypatch.setenv("MLFLOW_SQLITE_DB", str(tmp_path / "no-mlflow.db"))
+    # The pre-op auto-backup runs the config tier, which tars the *operator's* ~/.config/examlops.
+    # Left unset, this test copied a real clusters.yaml — hostname, ssh user, key path — into its
+    # bundle, and its contents varied with whose machine it ran on.
+    monkeypatch.setenv("EXAMLOPS_CONFIG", str(tmp_path / "cfg" / "config.toml"))
+    (tmp_path / "cfg").mkdir(exist_ok=True)
     import examlops.platform_db as pdb
 
     pdb.init_db()

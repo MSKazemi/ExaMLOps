@@ -39,7 +39,7 @@ def _s3_client():  # noqa: ANN202 — returns a boto3 client or a test double
         raise TierUnavailable("boto3 not installed — pip install 'examlops[backup]'") from exc
     return boto3.client(
         "s3",
-        endpoint_url=os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000"),
+        endpoint_url=os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:19000"),
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin"),
     )

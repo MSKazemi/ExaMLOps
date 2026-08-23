@@ -58,6 +58,23 @@ Every SQLite snapshot is an **online, transactionally-consistent** copy via SQLi
 API — safe to take while the CLI, agent, bridge, and control plane are writing. A plain
 `cp platform.db` of a live WAL database can capture a torn state; **do not** use it.
 
+### Read the status line, not the tick
+
+A tier that cannot run is **skipped**, not fatal — that is the point of the degrade convention, and
+it is why the command reports what it actually did:
+
+| `overall_status` | What you see | Exit code |
+|---|---|---|
+| `ok` | green `✓ Bundle written` | 0 |
+| `partial` / `skipped` | yellow `⚠ Bundle written but incomplete`, then every tier that produced nothing, with its reason | 0 |
+| `failed` | red `✗ Bundle incomplete`, with the tier that broke | **1** |
+
+The incomplete and failed lines go to **stderr**, so `--quiet` cannot hide them. This matters most
+for the object tier: if `MLFLOW_S3_ENDPOINT_URL` is not exported, the tier cannot reach MinIO, and a
+bundle with no model artifacts in it is exactly the kind of backup you only discover at restore
+time. Use `--strict` in CI and in a DR drill to turn any unrunnable tier into a non-zero exit at
+the point it happens.
+
 ## Verifying & restoring
 
 ```bash

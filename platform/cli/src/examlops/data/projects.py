@@ -476,7 +476,7 @@ def refresh_project_usage(project: str) -> int:
     try:
         import boto3  # noqa: PLC0415  (lazy — MinIO/boto3 is optional)
 
-        endpoint = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000")
+        endpoint = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:19000")
         s3 = boto3.client(
             "s3",
             endpoint_url=endpoint,

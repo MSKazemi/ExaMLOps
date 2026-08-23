@@ -1018,7 +1018,7 @@ Snapshots and restores the platform. A bare `create` writes a single `platform.d
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa backup create` | Snapshots the platform: bare = one `platform.db`; `--bundle`/`--all`/`--with-*` = a tiered bundle; `--push` replicates off-site (S3). Under `EXAMLOPS_DB_BACKEND=postgres` a bare `create` **refuses** — platform state is in Postgres, so `--with-postgres`/`--all` is required. **(mutation)** | Take a point-in-time or full backup before an upgrade | `exa backup create --all --push` |
+| `exa backup create` | Snapshots the platform: bare = one `platform.db`; `--bundle`/`--all`/`--with-*` = a tiered bundle; `--push` replicates off-site (S3). Under `EXAMLOPS_DB_BACKEND=postgres` a bare `create` **refuses** — platform state is in Postgres, so `--with-postgres`/`--all` is required. A tier that produced nothing is reported on stderr (quiet mode cannot hide it) and only `status=ok` gets the green tick; `failed` exits **1**. **(mutation)** | Take a point-in-time or full backup before an upgrade | `exa backup create --all --push` |
 | `exa backup list` | Lists backups & bundles newest-first with manifest metadata; `--remote` lists off-site (S3). | See what backups exist locally or off-site | `exa backup list` |
 | `exa backup status` | Shows the latest bundle, per-tier health, retention count, and off-site reachability. | One-glance backup health check | `exa backup status` |
 | `exa backup verify` | Verifies a single backup `.db`: checksum vs manifest + SQLite integrity + audit chain (exit 1 if bad). | Confirm a `.db` snapshot is intact before restoring | `exa backup verify ./backups/platform-20260730.db` |

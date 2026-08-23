@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **`exa backup create` announced success whatever happened — including `status=failed`.** The
+  command printed a green tick and exited 0 for every outcome, and the per-tier lines that said why
+  a tier produced nothing went through `info()`, which `--quiet` suppresses while leaving the tick.
+  The reachable worst case is an operator running `exa backup create --quiet --all` on a host where
+  the object store cannot be reached, being told the backup succeeded, and finding out at restore
+  time that it holds no model artifacts. The headline now follows the status — green only for `ok`,
+  a yellow *incomplete* for `partial`/`skipped`, and a red failure with exit **1** for `failed` —
+  and every tier that produced nothing is reported on stderr, where quiet mode cannot hide it.
+  `--strict` is offered in the hint.
+- **The object store's default endpoint was a port this project serves nowhere.** `objects_tier.py`
+  and `data/projects.py` both fell back to `http://localhost:9000` when `MLFLOW_S3_ENDPOINT_URL` was
+  unset; the host publishes MinIO on **19000** and the compose network uses `minio:9000`, so the
+  fallback was wrong in both deployments. Its only visible effect was an object tier that could
+  never connect — reported, until now, as a successful backup. Two tests that asserted "the heavy
+  tiers skip off-stack" and "the bundle contains the config tree" were passing for the same kind of
+  ambient reason and now establish their preconditions instead.
+
 ### Added
 
 - **The same guard on the dashboard's backend suite, and two tests it caught immediately.** The

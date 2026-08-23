@@ -40,6 +40,11 @@ def _audit(action: str, target: str | None, details: dict) -> None:
         pass
 
 
+def _reason(tier: dict) -> str:
+    """The tier's own explanation, if it gave one."""
+    return f" — {tier['reason']}" if tier.get("reason") else ""
+
+
 @app.command("create", epilog=_EX_CREATE)
 def create(
     out: str = typer.Option("./backups", "--out", "-o", help="Directory to write the backup into"),
@@ -117,11 +122,40 @@ def create(
     if _output.json_mode:
         _output.print_json(res.manifest)
         return
-    _output.ok(f"Bundle written: {res.bundle_dir} (status={res.overall_status}).")
+    # A backup tool may not announce success for a backup that did not happen. This printed a
+    # green tick and exited 0 for every outcome, `status=failed` included, and the per-tier lines
+    # that would have said why went through `info()` — which `--quiet` suppresses while leaving
+    # the tick. So `exa backup create --quiet --all` could report a successful backup containing
+    # no artifacts at all. The headline now follows the status, and any tier that did not produce
+    # anything is reported on stderr, where quiet mode cannot hide it.
+    incomplete = [
+        (name, tier)
+        for name, tier in res.manifest["tiers"].items()
+        if name in tiers and tier["status"] != "ok"
+    ]
+    if res.overall_status == "ok":
+        _output.ok(f"Bundle written: {res.bundle_dir} (status=ok).")
+    elif res.overall_status == "failed":
+        for name, tier in incomplete:
+            _output.warning(f"  {name}: {tier['status']}{_reason(tier)}")
+        _output.error(
+            f"Bundle incomplete: {res.bundle_dir} (status=failed). A tier failed, so this bundle "
+            "does not contain everything it was asked for.",
+            hint="Re-run with --strict to stop at the first tier that cannot run.",
+        )
+        return
+    else:
+        _output.warning(
+            f"Bundle written but incomplete: {res.bundle_dir} (status={res.overall_status}). "
+            f"{len(incomplete)} of {len(tiers)} requested tiers produced nothing."
+        )
     for name, tier in res.manifest["tiers"].items():
-        if name in tiers:
-            reason = f" — {tier['reason']}" if tier.get("reason") else ""
-            _output.info(f"  {name}: {tier['status']}{reason}")
+        if name not in tiers:
+            continue
+        if tier["status"] == "ok":
+            _output.info(f"  {name}: ok")
+        else:
+            _output.warning(f"  {name}: {tier['status']}{_reason(tier)}")
 
 
 @app.command("list")
