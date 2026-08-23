@@ -59,8 +59,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   with `assert 400 < 400`. The previous test asserted only that the graph compiled, which the
   broken form also satisfies. The migration added one test and removed every
   `create_react_agent` deprecation warning: the agent suite is **241 passing with zero
-  `create_react_agent` warnings** (the two that remain are unrelated — pytest_asyncio's unset
-  `asyncio_default_fixture_loop_scope` and starlette's httpx notice).
+  `create_react_agent` warnings** (the one that remains is unrelated — starlette's
+  `httpx`-with-`TestClient` notice). Re-measured 2026-08-23 from both the repo root
+  (`.venv/bin/pytest platform/services/agent/tests`, the form `make skipper-test` uses) and from
+  the service directory: `241 passed, 1 warning` either way.
 
 ### Fixed
 
