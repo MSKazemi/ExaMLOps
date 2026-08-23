@@ -64,5 +64,5 @@ Shipped: EN + IT catalogs, `t`/`tp`, Intl + HPC formatters, TZ helpers, the swit
 plugin), a **pseudo-localization** overflow test (R5), full catalog coverage, and the F6 **facility-local
 TZ** toggle. Locale preference persistence graduates to F21 workspaces.
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#internationalization--localization-f19)
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#internationalization-localization-f19)
 for the design diagram.

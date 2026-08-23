@@ -28,6 +28,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Thirteen more dead links, and now the build catches the next one.** A link to a heading that
+  does not exist is as broken as a link to a file that does not exist, but mkdocs logs the first
+  at INFO and the second at WARNING, so only the second failed `--strict`. Eleven dashboard guides
+  pointed into `dashboard/architecture.md` with one hyphen too many — the heading's `&` is dropped
+  by the slugifier, not turned into a separator — and two more named headings that had been
+  renamed (`#user-management` → `#user-management-admin`, `#connections` → `#9-named-connections`).
+  All 13 fixed, and `validation.links.anchors: warn` in `mkdocs.yml` promotes the class into
+  `--strict`; proved by introducing a bad anchor and watching the build abort with exit 1.
+
+- **CI never built the documentation, so `--strict` guarded nobody.** The docs site now has a job
+  on both pipelines — `docs` on GitHub, `test:docs` on GitLab — running `mkdocs build --clean
+  --strict` and uploading the site. On GitLab it is a *blocking* check: it is in the `needs:` list
+  of both `deploy:lxp` and `release:gitlab`, because on that pipeline the `needs:` list is the gate
+  and a job left out of it turns the pipeline red while production deploys anyway. Mirrored locally
+  as step 15/16 of `make preflight`, which `tests/unit/test_ci_gate_coverage.py` required before it
+  would go green again.
+
 - **The documentation site shipped 21 dead links, and the build never said so.** Twenty
   `guides/dashboard-*.md` pages linked their design record as `../../design/adr/*.md` — a path
   outside `docs_dir` that is never published — and one tutorial linked `../../CLAUDE.md`. Each

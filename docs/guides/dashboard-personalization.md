@@ -53,5 +53,5 @@ This slice persists **locally** (localStorage). Deferred (tracked in the plan): 
 (exportable to the F20 NOC kiosk), watchlist **change notifications** over F8/F12, and per-persona
 flag-tied tours.
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#personalization-workspaces--onboarding-f21)
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#personalization-workspaces-onboarding-f21)
 for the design diagram.

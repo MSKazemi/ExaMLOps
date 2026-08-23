@@ -44,5 +44,5 @@ store graduating to cross-device sync, standalone **external share pages** that 
 approval **discussion threads** captured with the decision (extends the F14 approval gate), and **external
 push** to Notion / issue trackers behind a feature flag (F25).
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#collaboration--workflow-f22) for the
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#collaboration-workflow-f22) for the
 design diagram and [`docs/reference/api.md`](../reference/api.md) for endpoint shapes.

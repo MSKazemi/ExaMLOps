@@ -41,7 +41,7 @@ GET /api/v1/finops/overview     # viewer role; BFF-composed, partial-failure saf
 
 Returns `{cost, budget, carbon, unitEconomics}`. See
 [`docs/reference/api.md`](../reference/api.md) for the full shape and
-[`docs/dashboard/architecture.md`](../dashboard/architecture.md#finops--green-ai-f13) for the diagram.
+[`docs/dashboard/architecture.md`](../dashboard/architecture.md#finops-green-ai-f13) for the diagram.
 
 ## Honest estimation (R3)
 

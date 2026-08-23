@@ -54,7 +54,7 @@ Admins see every flag with its default, override, effective state, and targeting
 | `POST /api/v1/flags/{name}` | admin | Set an override (audited + published) |
 
 See [`docs/reference/api.md`](../reference/api.md) for shapes and
-[`docs/dashboard/architecture.md`](../dashboard/architecture.md#feature-flags--staged-rollout-f25) for
+[`docs/dashboard/architecture.md`](../dashboard/architecture.md#feature-flags-staged-rollout-f25) for
 the diagram.
 
 ## Notes & limits

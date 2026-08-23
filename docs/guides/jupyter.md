@@ -21,7 +21,7 @@ JupyterHub uses `NativeAuthenticator` — there is no pre-set password. On first
 3. Click **Login** — because `admin` is in `admin_users`, your account is auto-approved
 4. You are now inside your personal JupyterLab
 
-> **Note:** With `open_signup = False`, accounts created by non-admin users are not auto-approved. The admin must approve them via the admin panel (see [User Management](#user-management)).
+> **Note:** With `open_signup = False`, accounts created by non-admin users are not auto-approved. The admin must approve them via the admin panel (see [User Management](#user-management-admin)).
 
 ---
 

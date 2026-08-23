@@ -79,5 +79,5 @@ adoption. Deferred (tracked in the plan): row **virtualization** for very large 
 query execution against a BFF endpoint, **saved views** (R5), column show/hide + reorder, and Parquet
 export.
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#data-grid--bulk-operations-f17) for
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#data-grid-bulk-operations-f17) for
 the design diagram.

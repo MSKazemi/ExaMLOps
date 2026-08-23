@@ -55,5 +55,5 @@ the plan): a full **PWA** (installable, offline app shell + cached last-known da
 needs `vite-plugin-pwa`), touch/tablet density tuning, and richer pop-out panel wiring. Kiosk layouts
 will be curated via F21.
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#responsive-multi-device--noc-wall-f20)
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#responsive-multi-device-noc-wall-f20)
 for the design diagram.

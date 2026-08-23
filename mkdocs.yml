@@ -2,6 +2,15 @@ site_name: ExaMLOps Documentation
 site_description: End-to-end MLOps platform for HPC workload management in EU research projects
 docs_dir: docs
 
+# A link to a heading that does not exist is as broken as a link to a file that does not exist,
+# but mkdocs logs the first at INFO and the second at WARNING, so only the second fails --strict.
+# Thirteen of these had accumulated: eleven guides pointed at `dashboard/architecture.md` with one
+# hyphen too many (the heading's "&" is dropped by the slugifier, not turned into a separator),
+# and two named headings that had been renamed. Promote them so --strict catches the next one.
+validation:
+  links:
+    anchors: warn
+
 theme:
   name: material
   palette:

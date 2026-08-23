@@ -47,7 +47,7 @@ exa project storage climate-team --refresh           # re-probe used bytes from 
 exa project storage climate-team --bind-connection raw-s3   # point storage at a P2 S3 connection
 ```
 
-Binding a [Named Connection](projects-workspaces.md#connections) sets the project's bucket from that
+Binding a [Named Connection](projects-workspaces.md#9-named-connections) sets the project's bucket from that
 connection's config and records `connection_ref` — the **credentials stay in D7 secrets and are never
 copied** into `project_storage`. Use this when a project should live in a dedicated bucket rather than
 the shared `examlops-projects` one.

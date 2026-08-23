@@ -56,7 +56,7 @@ GET /api/v1/search?q=<query>&limit=20        # viewer role; BFF-composed, partia
 
 Returns `{search: {query, count, results[], groups{}}}`. See
 [`docs/reference/api.md`](../reference/api.md) for the full shape and
-[`docs/dashboard/architecture.md`](../dashboard/architecture.md#command-palette--global-search-f2)
+[`docs/dashboard/architecture.md`](../dashboard/architecture.md#command-palette-global-search-f2)
 for the component diagram.
 
 ## Notes & limits

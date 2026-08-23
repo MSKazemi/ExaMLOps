@@ -216,3 +216,33 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
+
+  docs:
+    name: docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The docs were never built by CI. Twenty-one dead links accumulated in the published
+      # site — twenty guides linking `design/adr/*.md`, which is outside docs_dir and never
+      # published — and nothing failed, because mkdocs only warns and no job ran it. The
+      # strict build is the whole point of this job: a broken link, a broken heading anchor
+      # or a page missing from the nav stops the build instead of reaching a reader.
+      - name: Install MkDocs
+        run: python -m pip install --quiet mkdocs-material mkdocs-minify-plugin
+
+      - name: Build (strict)
+        run: mkdocs build --clean --strict
+
+      # If it built, it is worth keeping: this is exactly what a Pages deploy would publish.
+      - name: Upload site
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: site/
+          if-no-files-found: error

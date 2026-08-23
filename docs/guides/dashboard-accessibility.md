@@ -59,5 +59,5 @@ reduced-motion, token contrast audit). Deferred (tracked in the plan): **axe-cor
 dependency; the token audit is the interim guard), a full **manual audit** with tracked issues (R1),
 and focus-trap adoption across every remaining dialog/drawer.
 
-See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#accessibility--wcag-22-aa-f18) for
+See [`docs/dashboard/architecture.md`](../dashboard/architecture.md#accessibility-wcag-22-aa-f18) for
 the design diagram.

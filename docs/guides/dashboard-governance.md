@@ -51,7 +51,7 @@ GET /api/v1/governance/overview     # viewer role; BFF-composed, partial-failure
 ```
 
 Returns `{posture, compliance, cards, audit}`. See [`docs/reference/api.md`](../reference/api.md) for
-the full shape and [`docs/dashboard/architecture.md`](../dashboard/architecture.md#governance--compliance-f14)
+the full shape and [`docs/dashboard/architecture.md`](../dashboard/architecture.md#governance-compliance-f14)
 for the diagram.
 
 ## Notes & limits

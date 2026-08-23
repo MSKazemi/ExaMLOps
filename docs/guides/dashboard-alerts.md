@@ -37,7 +37,7 @@ Click **Ack** on an alert. This calls `POST /api/v1/alerts/{id}/ack`, which:
 | `POST /api/v1/alerts/{id}/ack` | Acknowledge an alert (audited + published) |
 
 Both require the `viewer` role. See [`docs/reference/api.md`](../reference/api.md) for shapes and
-[`docs/dashboard/architecture.md`](../dashboard/architecture.md#alerting--incident-f12) for the diagram.
+[`docs/dashboard/architecture.md`](../dashboard/architecture.md#alerting-incident-f12) for the diagram.
 
 ## Notes & limits
 
