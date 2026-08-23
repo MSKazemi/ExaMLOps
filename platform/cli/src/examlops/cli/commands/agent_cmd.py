@@ -23,6 +23,7 @@ would make ``exa`` unusable wherever the agent is not installed — which is mos
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import shutil
@@ -215,11 +216,31 @@ def chat(
 
     kq = shutil.which("kq") or shutil.which("kq", path=os.path.dirname(sys.executable))
     if not kq:
-        _output.error(
-            "The kq terminal client is not installed.",
-            hint="Install it with: uv pip install 'examlops[chat]'   "
-            "(or `uv pip install kube-q` — exa chat launches it, it does not bundle it)",
-        )
+        # `uv pip install 'examlops[chat]'` is the right instruction only if *this* install
+        # declares the extra. A deploy whose source was synced without re-running the install
+        # keeps the .dist-info it was built with, and uv answers an extra that metadata has
+        # never heard of with "Checked 1 package" — no warning, nothing installed, and the
+        # operator runs it four times because the remedy looked like it worked. Measured on
+        # lxp-cpu01 2026-08-23: source v0.48.0, recorded metadata v0.46.0, no `chat` extra.
+        # So ask our own metadata before naming the extra.
+        try:
+            extras = importlib.metadata.distribution("examlops").metadata.get_all("Provides-Extra")
+            declared = "chat" in (extras or [])
+        except Exception:  # pragma: no cover - running from a source tree with no dist-info
+            declared = False
+        if declared:
+            hint = (
+                "Install it with: uv pip install 'examlops[chat]'   "
+                "(or `uv pip install kube-q` — exa chat launches it, it does not bundle it)"
+            )
+        else:
+            hint = (
+                "Install it with: uv pip install kube-q   "
+                "(this install's metadata does not declare the 'chat' extra, so "
+                "`uv pip install 'examlops[chat]'` would silently do nothing here — "
+                "re-run `uv pip install -e platform/cli` to refresh it)"
+            )
+        _output.error("The kq terminal client is not installed.", hint=hint)
         return
 
     cfg = load_config()

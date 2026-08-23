@@ -7,6 +7,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`exa chat` printed a remedy the machine printing it could not carry out.** The hint said
+  `uv pip install 'examlops[chat]'`; on `lxp-cpu01` the operator ran it four times and the client
+  was still missing each time. Cause: **uv answers an extra that the installed distribution does
+  not declare with "Checked 1 package" — no warning, no error, nothing installed.** The node's
+  recorded metadata is v0.46.0 while its source is v0.48.0, because a source sync copies files but
+  never re-records the install, so the `chat` extra added since simply does not exist there. The
+  command now consults its own metadata before naming the extra: where the extra is declared the
+  hint is unchanged, and where it is not the hint names `uv pip install kube-q`, says why the extra
+  form would do nothing, and gives the command that refreshes the metadata.
+
 - **`pip install examlops` produced an `exa` that could not start.** Installed into a clean
   venv, outside the source tree, the CLI died before printing anything:
   `ModuleNotFoundError: No module named 'click'`. Three modules import click directly to walk the
