@@ -106,10 +106,19 @@ helm install examlops platform/infra/helm/examlops -f my-values.yaml \
 > `helm lint` still reported `0 chart(s) failed`. The chart now fails at render time with the flag
 > to set, because that is the last point where the mistake is cheap.
 
-> **Images are not published yet.** Build the three tiers from
-> `platform/infra/docker-compose/Dockerfile.*`, tag them
-> `<your-registry>/examlops-{control-plane,dashboard,agent}:<appVersion>`, push, then install. A
-> published registry and a hosted chart repo are planned; until then the chart installs from a path.
+> **Images are not published yet — build them yourself.** `make images` builds all three tiers at
+> the platform version, and `IMAGE_PREFIX` tags them for your registry:
+>
+> ```bash
+> make images IMAGE_PREFIX=ghcr.io/<owner>/     # control-plane · dashboard · agent
+> docker push ghcr.io/<owner>/examlops-agent:<version>   # and the other two
+> ```
+>
+> The agent image is new: the chart deployed that tier for a while with no Dockerfile behind it
+> anywhere in the repository. It is built for the chart's pod posture — non-root uid 10001 and a
+> read-only root filesystem — so every path Skipper writes to (`AGENT_DB`, `AGENT_MEMORY_DB`,
+> `PLATFORM_DB`, `HOME`) defaults to `/tmp`, the one writable mount. Override them if you want
+> persistence.
 
 ### Building a chart repository
 

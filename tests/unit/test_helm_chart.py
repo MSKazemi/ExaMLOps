@@ -96,6 +96,34 @@ def test_every_rendered_image_carries_a_registry_host():
         )
 
 
+@needs_helm
+def test_every_workload_is_actually_readiness_gated():
+    """Each tier claims `maxUnavailable: 0` — "never drop below desired during upgrade".
+
+    That claim is only true with a readinessProbe: without one Kubernetes marks a pod Ready the
+    moment the container starts, so a rolling upgrade routes traffic to a replica that is not yet
+    serving. The agent tier carried the comment and no probe.
+    """
+    result = _render("--set", "global.imageRegistry=ghcr.io/example/")
+    assert result.returncode == 0, result.stderr
+
+    deployments = [
+        doc for doc in yaml.safe_load_all(result.stdout) if doc and doc.get("kind") == "Deployment"
+    ]
+    assert len(deployments) == 3, [d["metadata"]["name"] for d in deployments]
+
+    for dep in deployments:
+        name = dep["metadata"]["name"]
+        rolling = dep["spec"].get("strategy", {}).get("rollingUpdate", {})
+        for container in dep["spec"]["template"]["spec"]["containers"]:
+            if rolling.get("maxUnavailable") == 0:
+                assert "readinessProbe" in container, (
+                    f"{name} promises maxUnavailable=0 but {container['name']} has no "
+                    "readinessProbe, so every pod counts as ready the instant it starts"
+                )
+            assert "livenessProbe" in container, f"{name}/{container['name']} has no livenessProbe"
+
+
 def _images(doc: dict) -> list[str]:
     spec = doc.get("spec", {}).get("template", {}).get("spec", {})
     return [c["image"] for c in spec.get("containers", []) if "image" in c]

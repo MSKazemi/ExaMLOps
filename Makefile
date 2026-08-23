@@ -70,6 +70,7 @@ endif
 
 .DEFAULT_GOAL := help
 
+.PHONY: images helm-package
 .PHONY: help \
         full-up stop-all rebuild rebuild-all lxp-rebuild \
         stack-up stack-down stack-wipe stack-restart stack-logs stack-ps stack-shell \
@@ -622,6 +623,21 @@ HELM_VALIDATE_REGISTRY ?= ghcr.io/example/
 # Where the built chart repo will be served from. Baked into index.yaml, so it must match the
 # final host; override per publish target. No decision is implied by the default.
 HELM_REPO_URL ?= https://mskazemi.github.io/ExaMLOps
+
+# The three tiers the Helm chart deploys. Tag = the chart's appVersion, which the chart
+# defaults every image tag to, so these must agree; tests/unit/test_helm_chart.py holds
+# appVersion to the platform version and this reads the same source.
+IMAGE_TAG ?= $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+IMAGE_PREFIX ?=
+
+images: ## Build the three container images the Helm chart deploys (control-plane, dashboard, agent)
+	@printf "$(BOLD)Building ExaMLOps images at tag $(IMAGE_TAG)...$(RESET)\n"
+	docker build -f platform/services/control_plane/Dockerfile -t $(IMAGE_PREFIX)examlops-control-plane:$(IMAGE_TAG) .
+	docker build -f platform/infra/docker-compose/Dockerfile.dashboard -t $(IMAGE_PREFIX)examlops-dashboard:$(IMAGE_TAG) .
+	docker build -f platform/services/agent/Dockerfile -t $(IMAGE_PREFIX)examlops-agent:$(IMAGE_TAG) .
+	@printf "$(GREEN)Built 3 images at $(IMAGE_TAG).$(RESET)\n"
+	@printf "  Push with IMAGE_PREFIX=ghcr.io/<owner>/ make images && docker push ...\n"
+	@printf "  Then: helm install ... --set global.imageRegistry=ghcr.io/<owner>/\n"
 
 helm-package: helm-validate ## Build the chart tarball + index.yaml into dist/helm (a publishable Helm repo)
 	@rm -rf dist/helm && mkdir -p dist/helm

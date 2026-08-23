@@ -5,7 +5,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **A Dockerfile for the Skipper agent — the chart's third tier had none.** `templates/agent.yaml`
+  deployed an `examlops-agent` image while the repository held twelve Dockerfiles, not one of them
+  the agent's, and no compose service built one either; the tier was undeliverable and nothing
+  reported it, because neither `helm lint` nor `helm template` can see a missing image.
+
+  Built for the chart's own pod posture rather than for a laptop: non-root uid 10001 (matching
+  `podSecurityContext.runAsUser`, where a mismatch fails at admission) and a read-only root
+  filesystem, so `AGENT_DB`, `AGENT_MEMORY_DB`, `PLATFORM_DB` and `HOME` all default to `/tmp` —
+  each otherwise defaults to a CWD-relative path that works in dev and fails on first write in a
+  cluster. The layout is preserved deliberately: `skipper/tools/platform_ops.py` reaches
+  `parents[4]/cli/src` for `examlops.platform_db`, so the agent must sit at
+  `platform/services/agent` with `platform/cli` beside it.
+
+  Verified by running it, not just building it: as uid 10001 with a read-only root and only `/tmp`
+  writable, the container imports langgraph, examlops and `skipper.server`, serves the probe path
+  `/` with HTTP 200, and answers `/api/info` with an honest degraded backend when no credentials
+  are supplied.
+
+- **`make images`** builds all three tiers at the platform version, with `IMAGE_PREFIX` to tag them
+  for a registry.
+
 ### Fixed
+
+- **The agent tier promised readiness-gated rollouts and had no readinessProbe.** Its strategy set
+  `maxUnavailable: 0` — "never drop below desired during upgrade" — but Kubernetes marks a pod
+  Ready as soon as its container starts, so an upgrade could route traffic to an agent that was not
+  yet serving. The other two tiers had both probes. The agent now has both, on `/` (a static page)
+  rather than `/api/info`: that endpoint probes the LLM backend for real, so using it would take
+  every replica out of the Service during a provider outage instead of leaving an agent that can
+  still answer from tools and memory. Guarded by a test that ties the `maxUnavailable: 0` claim to
+  the presence of a readinessProbe.
+
 
 - **The Helm chart's default values asked for images that can never exist.** `values.yaml` set
   `global.imageRegistry: ""` with `repository: examlops-control-plane`, composing refs like

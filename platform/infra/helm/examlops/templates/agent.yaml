@@ -44,6 +44,21 @@ spec:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
+          # The rolling strategy above says "readiness-gated", and without a readinessProbe that
+          # was not true: Kubernetes marks a pod Ready as soon as the container starts, so an
+          # upgrade could route traffic to an agent that is not yet serving. Both probes hit `/`,
+          # which returns a static page and touches nothing else. Deliberately NOT /api/info:
+          # that probes the LLM backend for real (which is why `exa agent status` uses it), so a
+          # provider outage would take every replica out of the Service instead of leaving an
+          # agent that can still answer from tools and memory.
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
       volumes:
