@@ -28,17 +28,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
-- **`exa status` printed, beside every health verdict, an address that was not the address
-  checked.** The verdicts come from the control plane, which under compose probes its in-network
-  peers — `http://mlflow:5000`, `http://orchestrator:4200/api`, `http://ray-serving:8001`,
-  `http://dashboard:8099` — while the CLI rendered a hard-coded host port map (`:15000`, `:14200`,
-  `:18001`, `:18099`) that it had never contacted. On any deployment that is not a laptop the two
-  disagree, and an operator debugging an `✗ unreachable` opens the wrong URL, finds it healthy, and
-  distrusts the tool rather than the service. `/status` now reports the URL it used per service and
-  `exa status` shows it in a **Checked** column; where a deployment predates that field the column
-  says `?` rather than guessing, since guessing is what was wrong. The unused `_SERVICE_URLS` map is
-  gone. Guarded both ways in `tests/unit/test_cli_status.py` and
-  `platform/services/control_plane/tests/test_reliability.py`.
+- **The control plane explained itself and the explanation was thrown away.** Asked to retrain an
+  unknown dataset, `POST /retrain` answers `400` with *"Dataset 'NotADataset' not supported by
+  JPCP. Supported: ['PM100Dataset', 'FDataDataset']"* — the list needed to retry. `_raise_http`
+  read the error body but used it only for `409`, `422` and `5xx`; every other code, `400`
+  included, fell through to a bare `HTTP 400 from <url>`. So `exa retrain` and the agent's
+  `trigger_retrain` tool both reported a number instead of a reason, and an agent given only a
+  status code cannot correct itself. The fallback now prefers the server's `detail` and keeps the
+  code in the message; a body with nothing useful in it still falls back to the old text. Guarded
+  in `tests/unit/test_cli_client.py`, proved red on two of the four cases.
 
 - **Terminal messages silently deleted any bracketed word, including the install commands they
   were advertising.** `_output` renders through Rich, which reads `[chat]` as a style tag, so

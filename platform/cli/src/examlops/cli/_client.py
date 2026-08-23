@@ -161,6 +161,14 @@ def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:
             else f"Server error {code} from {url}. Check service logs: exa stack logs"
         )
         raise ClientError(message, status=code) from exc
+    # Everything not special-cased above — 400 most of all. The control plane answers an
+    # unknown model or dataset with `HTTPException(400, "... Supported: [...]")`, and that list
+    # is precisely what a caller needs in order to retry. Dropping it left an agent (and the
+    # operator reading its answer) with a number instead of a reason, so the body wins here too;
+    # the code stays in the message for anyone grepping for it.
+    detail = _extract_detail(body)
+    if detail:
+        raise ClientError(f"HTTP {code} from {url}: {detail}", status=code) from exc
     raise ClientError(f"HTTP {code} from {url}", status=code) from exc
 
 

@@ -63,3 +63,61 @@ def test_get_wraps_read_timeout_as_client_error():
     with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
         with pytest.raises(ClientError, match="Timed out"):
             get("http://localhost:9/slow")
+
+
+# ── the server's reason must survive the trip (T58 column 1) ────────────────────────────────
+#
+# `_raise_http` reads the error body and then uses it for 409, 422 and 5xx only. Every other
+# code fell through to a bare "HTTP {code} from {url}". 400 is the one that matters: the control
+# plane answers an unknown model or dataset with `HTTPException(400, "... Supported: [...]")`,
+# which is exactly the information needed to retry — and is exactly what was discarded. An agent
+# that is told only "HTTP 400" cannot self-correct, and the operator reading its answer is told
+# a number instead of a reason.
+
+
+def _http_error(code: int, body: str, url: str = "http://localhost:18002/retrain"):
+    import io
+    import urllib.error
+
+    return urllib.error.HTTPError(url, code, "err", {}, io.BytesIO(body.encode()))
+
+
+def test_a_400_carries_the_servers_explanation_not_just_the_number():
+    body = json.dumps(
+        {"detail": "Dataset 'NotADataset' not supported by JPCP. Supported: ['PM100Dataset']"}
+    )
+    with patch("urllib.request.urlopen", side_effect=_http_error(400, body)):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18002/retrain", {}, token="tok")
+    assert "not supported by JPCP" in str(exc.value)
+    assert "PM100Dataset" in str(exc.value)
+    assert exc.value.status == 400
+
+
+def test_an_unmapped_code_still_prefers_the_servers_message():
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=_http_error(418, json.dumps({"detail": "I am a teapot"})),
+    ):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18002/retrain", {}, token="tok")
+    assert "I am a teapot" in str(exc.value)
+
+
+def test_the_status_code_is_still_reported_alongside_the_reason():
+    # The reason replaces the bare number, it does not hide it: an operator grepping for the
+    # code, and any caller branching on it, must both still work.
+    with patch(
+        "urllib.request.urlopen", side_effect=_http_error(400, json.dumps({"detail": "nope"}))
+    ):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18002/retrain", {}, token="tok")
+    assert "400" in str(exc.value)
+    assert exc.value.status == 400
+
+
+def test_a_body_with_nothing_useful_falls_back_to_the_old_message():
+    with patch("urllib.request.urlopen", side_effect=_http_error(400, "<html>gateway</html>")):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18002/retrain", {}, token="tok")
+    assert str(exc.value) == "HTTP 400 from http://localhost:18002/retrain"

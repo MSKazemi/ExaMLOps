@@ -352,13 +352,21 @@ something downstream is broken:
 | **Policy** | Each call is checked against the `agent_write` policy. `require_approval` counts as *denied* for an agent: there is no human at the tool-call boundary. |
 | **Audit** | A successful write leaves an `audit_events` row (`source=mcp`). |
 | **Audit failure** | The tool still reports `ok: true` — the action happened, and saying otherwise would send the caller to retry something already done — but the reply carries an `audit_warning` so an unaudited governance write is never silent. |
+| **Refusal** | When the target service refuses, the tool returns `ok: false` with the *service's own reason*, not just a status code — an agent asked to retrain an unknown dataset is told which datasets exist, so it can correct itself instead of guessing. |
 
 ```json
 {"ok": true, "cluster": "lxp", "state": "ACTIVE",
  "audit_warning": "action succeeded but was not audited: audit chain unavailable"}
 ```
 
-`tests/unit/test_mcp_write_audit_contract.py` holds all four rows for every mutating tool.
+`tests/unit/test_mcp_write_audit_contract.py` holds the first four rows for every mutating
+tool; `tests/unit/test_cli_client.py` holds the fifth, which is shared with the `exa` CLI
+because both go through the same HTTP client.
+
+```json
+{"ok": false, "status": 400,
+ "error": "HTTP 400 from http://control-plane:8002/retrain: Dataset 'NotADataset' not supported by JPCP. Supported: ['PM100Dataset', 'FDataDataset']"}
+```
 
 
 ## Short-Term Memory (conversations)
