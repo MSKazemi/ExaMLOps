@@ -473,6 +473,100 @@ def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
     assert seen["input"] == 0  # no embedding ⇒ no input snapshot
 
 
+# ── the input-drift panels had nothing to draw ───────────────────────────────
+#
+# The bridge computed norm/mean/std on every inference to write `input_snapshots`, but never
+# exported them, so three Grafana panels queried metrics that no exporter published and drew
+# "No data" from the day they shipped — which looks like a calm system, not a missing metric.
+
+
+def _gauge(name: str, model: str) -> float | None:
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(name, {"model": model})
+
+
+def test_embedding_stats_are_exported_not_only_written_to_sqlite(monkeypatch):
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+    monkeypatch.setattr(bridge, "get_input_baseline", lambda *a, **k: None)
+    bridge._baseline_seen_at.clear()
+
+    bridge._persist_inference_telemetry("EMBX", "Production", 1.0, [3.0, 4.0], "job-3")
+
+    assert _gauge("seanerbus_embedding_norm", "EMBX") == 5.0
+    assert _gauge("seanerbus_embedding_mean", "EMBX") == 3.5
+    assert _gauge("seanerbus_embedding_std", "EMBX") == 0.5
+
+
+def test_baseline_gauges_are_published_from_the_recorded_baseline(monkeypatch):
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bridge,
+        "get_input_baseline",
+        lambda model: {"norm_mean": 7.0, "mean_mean": 0.25, "std_mean": 0.5, "n": 100.0},
+    )
+    bridge._baseline_seen_at.clear()
+
+    bridge._persist_inference_telemetry("EMBY", "Production", 1.0, [1.0, 1.0], "job-4")
+
+    assert _gauge("seanerbus_embedding_norm_baseline", "EMBY") == 7.0
+    assert _gauge("seanerbus_embedding_mean_baseline", "EMBY") == 0.25
+    assert _gauge("seanerbus_embedding_std_baseline", "EMBY") == 0.5
+
+
+def test_a_missing_baseline_leaves_the_gauge_unset_rather_than_zero(monkeypatch):
+    """Publishing 0.0 would draw a floor on the panel and read as a real measurement."""
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+    monkeypatch.setattr(bridge, "get_input_baseline", lambda model: None)
+    bridge._baseline_seen_at.clear()
+
+    bridge._persist_inference_telemetry("EMBZ", "Production", 1.0, [1.0, 1.0], "job-5")
+
+    assert _gauge("seanerbus_embedding_norm_baseline", "EMBZ") is None
+
+
+def test_the_baseline_is_not_read_from_sqlite_on_every_single_inference(monkeypatch):
+    """A baseline changes only when an operator sets one; re-reading it per request is waste."""
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+    reads = {"n": 0}
+
+    def _counting(model):
+        reads["n"] += 1
+        return {"norm_mean": 1.0, "mean_mean": 1.0, "std_mean": 1.0}
+
+    monkeypatch.setattr(bridge, "get_input_baseline", _counting)
+    bridge._baseline_seen_at.clear()
+
+    for _ in range(5):
+        bridge._persist_inference_telemetry("EMBW", "Production", 1.0, [1.0, 1.0], "job-6")
+
+    assert reads["n"] == 1
+
+
+def test_a_broken_baseline_read_never_breaks_the_inference_path(monkeypatch):
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+
+    def _boom(model):
+        raise RuntimeError("platform.db is locked")
+
+    monkeypatch.setattr(bridge, "get_input_baseline", _boom)
+    bridge._baseline_seen_at.clear()
+
+    bridge._persist_inference_telemetry("EMBV", "Production", 1.0, [3.0, 4.0], "job-7")
+
+    assert _gauge("seanerbus_embedding_norm", "EMBV") == 5.0
+
+
 # ── every door that can start a retrain must leave a trace ───────────────────
 #
 # A retrain is the platform's most consequential action — it can end in a production

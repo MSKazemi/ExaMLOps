@@ -64,7 +64,7 @@
       "title": "Total Inferences (24 h)",
       "gridPos": {"h": 3, "w": 4, "x": 4, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "increase(seanerbus_inferences_total[24h])", "legendFormat": "{{model_id}}", "refId": "A"}],
+      "targets": [{"expr": "increase(seanerbus_inferences_total[24h])", "legendFormat": "{{model}}", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -159,7 +159,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model_id}}", "refId": "A"}
+        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model}}", "refId": "A"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},
@@ -182,7 +182,7 @@
       "targets": [
         {
           "expr": "rate(seanerbus_inference_errors_total[2m]) / rate(seanerbus_inferences_total[2m]) * 100",
-          "legendFormat": "{{model_id}}",
+          "legendFormat": "{{model}}",
           "refId": "A"
         }
       ],
@@ -239,7 +239,7 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.99, sum by(le, model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
-          "legendFormat": "{{model_id}}",
+          "legendFormat": "{{model}}",
           "refId": "A"
         }
       ],

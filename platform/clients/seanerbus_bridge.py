@@ -54,12 +54,13 @@ sys.path.insert(0, os.path.abspath(_CLI_SRC))
 
 try:
     from examlops.platform_db import (
-        init_db as _init_platform_db,
-    )
-    from examlops.platform_db import (
+        get_input_baseline,
         write_audit_event,
         write_drift_snapshot,
         write_input_snapshot,
+    )
+    from examlops.platform_db import (
+        init_db as _init_platform_db,
     )
 
     _init_platform_db()
@@ -75,6 +76,9 @@ except Exception:
 
     def write_input_snapshot(*a, **k):
         pass  # type: ignore[misc]
+
+    def get_input_baseline(*a, **k):  # type: ignore[misc]
+        return None
 
 
 try:
@@ -208,6 +212,73 @@ _RETRAINS = Counter(
     "seanerbus_retrain_triggers_total",
     "Total drift-triggered retrains posted to the Control Plane",
 )
+
+# Input-embedding drift (phase 21). The bridge already computes norm/mean/std on every
+# inference to write `input_snapshots`; it just never exported them, so the three Grafana
+# panels built on these names rendered "No data" from the day they shipped — which reads as a
+# calm system, not as a missing exporter. Labelled `model`, like every other metric here.
+_EMB_NORM = Gauge(
+    "seanerbus_embedding_norm",
+    "L2 norm of the most recent input embedding, per model",
+    ["model"],
+)
+_EMB_MEAN = Gauge(
+    "seanerbus_embedding_mean",
+    "Mean of the most recent input embedding, per model",
+    ["model"],
+)
+_EMB_STD = Gauge(
+    "seanerbus_embedding_std",
+    "Standard deviation of the most recent input embedding, per model",
+    ["model"],
+)
+# The baselines are what the live values are *drift from*, so a panel without them shows a
+# line with nothing to judge it against.
+_EMB_NORM_BASELINE = Gauge(
+    "seanerbus_embedding_norm_baseline",
+    "Recorded baseline embedding norm, per model (exa drift input baseline)",
+    ["model"],
+)
+_EMB_MEAN_BASELINE = Gauge(
+    "seanerbus_embedding_mean_baseline",
+    "Recorded baseline embedding mean, per model (exa drift input baseline)",
+    ["model"],
+)
+_EMB_STD_BASELINE = Gauge(
+    "seanerbus_embedding_std_baseline",
+    "Recorded baseline embedding std, per model (exa drift input baseline)",
+    ["model"],
+)
+
+# A baseline changes only when someone runs `exa drift input baseline`, so re-reading it on
+# every inference would be a SQLite hit per request for a value that is near-constant.
+_BASELINE_TTL_SECONDS = 60.0
+_baseline_seen_at: dict[str, float] = {}
+
+
+def _publish_input_baseline(model_name: str) -> None:
+    """Refresh the baseline gauges for one model, at most once per TTL. Never raises."""
+    now = time.monotonic()
+    if now - _baseline_seen_at.get(model_name, float("-inf")) < _BASELINE_TTL_SECONDS:
+        return
+    _baseline_seen_at[model_name] = now
+    try:
+        stats = get_input_baseline(model_name)
+    except Exception:
+        return
+    if not stats:
+        # No baseline recorded yet. Leave the gauges unset rather than publishing a zero,
+        # which would draw a floor on the panel and read as a real measurement.
+        return
+    for key, gauge in (
+        ("norm_mean", _EMB_NORM_BASELINE),
+        ("mean_mean", _EMB_MEAN_BASELINE),
+        ("std_mean", _EMB_STD_BASELINE),
+    ):
+        value = stats.get(key)
+        if value is not None:
+            gauge.labels(model=model_name).set(float(value))
+
 
 # ── shared stats ───────────────────────────────────────────────────────────────
 
@@ -446,6 +517,10 @@ def _persist_inference_telemetry(
         emb_std = _math.sqrt(sum((v - emb_mean) ** 2 for v in vals) / n) if n > 1 else 0.0
         emb_norm = _math.sqrt(sum(v * v for v in vals))
         write_input_snapshot(model_name, alias, emb_norm, emb_mean, emb_std, job_id)
+        _EMB_NORM.labels(model=model_name).set(emb_norm)
+        _EMB_MEAN.labels(model=model_name).set(emb_mean)
+        _EMB_STD.labels(model=model_name).set(emb_std)
+        _publish_input_baseline(model_name)
     write_audit_event(
         "bridge", None, "inference_served", model_name, {"alias": alias, "job_id": job_id}
     )

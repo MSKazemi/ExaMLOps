@@ -288,6 +288,14 @@ sequenceDiagram
      seanerbus_inference_errors_total{model} — incremented on every inference error
      seanerbus_inference_latency_seconds{model} — histogram, end-to-end POST latency
      seanerbus_retrain_triggers_total  — incremented on each drift-triggered retrain
+     seanerbus_embedding_norm{model} / _mean{model} / _std{model}
+                                       — last observed input-embedding statistics (phase 21)
+     seanerbus_embedding_norm_baseline{model} / _mean_baseline / _std_baseline
+                                       — the recorded baseline those are drift *from*, read
+                                         from input_baselines and refreshed at most once a
+                                         minute per model; unset until `exa drift input
+                                         baseline` records one, so the panel shows no line
+                                         rather than a zero that looks like a measurement
    Prometheus scrapes all three targets → stores time series → Grafana queries
    → evaluates alert rules (alert_rules.yml) → fires to Alertmanager.
    Grafana auto-provisions the examlops_seanerbus.json dashboard (uid: examlops-seanerbus)

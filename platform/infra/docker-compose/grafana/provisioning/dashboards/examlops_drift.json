@@ -204,7 +204,7 @@
         },
         {
           "expr": "rate(seanerbus_inference_errors_total[5m]) / rate(seanerbus_inferences_total[5m]) * 100",
-          "legendFormat": "bus_error% {{model_id}}",
+          "legendFormat": "bus_error% {{model}}",
           "refId": "B"
         }
       ],
@@ -237,13 +237,13 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "seanerbus_embedding_norm_mean",
-          "legendFormat": "norm_mean {{model_id}}",
+          "expr": "seanerbus_embedding_norm",
+          "legendFormat": "norm_mean {{model}}",
           "refId": "A"
         },
         {
           "expr": "seanerbus_embedding_norm_baseline",
-          "legendFormat": "norm_baseline {{model_id}}",
+          "legendFormat": "norm_baseline {{model}}",
           "refId": "B"
         }
       ],
@@ -273,13 +273,13 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "seanerbus_embedding_mean_value",
-          "legendFormat": "mean {{model_id}}",
+          "expr": "seanerbus_embedding_mean",
+          "legendFormat": "mean {{model}}",
           "refId": "A"
         },
         {
           "expr": "seanerbus_embedding_mean_baseline",
-          "legendFormat": "baseline_mean {{model_id}}",
+          "legendFormat": "baseline_mean {{model}}",
           "refId": "B"
         }
       ],
@@ -309,13 +309,13 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "seanerbus_embedding_std_value",
-          "legendFormat": "std {{model_id}}",
+          "expr": "seanerbus_embedding_std",
+          "legendFormat": "std {{model}}",
           "refId": "A"
         },
         {
           "expr": "seanerbus_embedding_std_baseline",
-          "legendFormat": "baseline_std {{model_id}}",
+          "legendFormat": "baseline_std {{model}}",
           "refId": "B"
         }
       ],

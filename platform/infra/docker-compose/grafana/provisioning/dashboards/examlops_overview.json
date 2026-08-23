@@ -449,8 +449,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model_id}}", "refId": "A"},
-        {"expr": "rate(seanerbus_inference_errors_total[2m])", "legendFormat": "ERR {{model_id}}", "refId": "B"}
+        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model}}", "refId": "A"},
+        {"expr": "rate(seanerbus_inference_errors_total[2m])", "legendFormat": "ERR {{model}}", "refId": "B"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},
@@ -476,17 +476,17 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
-          "legendFormat": "p50 {{model_id}}",
+          "legendFormat": "p50 {{model}}",
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.95, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
-          "legendFormat": "p95 {{model_id}}",
+          "legendFormat": "p95 {{model}}",
           "refId": "B"
         },
         {
           "expr": "histogram_quantile(0.99, sum by(le,model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
-          "legendFormat": "p99 {{model_id}}",
+          "legendFormat": "p99 {{model}}",
           "refId": "C"
         }
       ],

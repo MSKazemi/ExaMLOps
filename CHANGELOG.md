@@ -28,6 +28,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Three Grafana panels had queried metrics that nothing emitted since the day they shipped.**
+  The input-embedding drift panels (`examlops_drift.json`) read `seanerbus_embedding_norm_mean`,
+  `…_mean_value`, `…_std_value` and their three baselines — six names no `Counter`, `Gauge` or
+  `Histogram` anywhere in the tree declared. Grafana renders "No data" for a metric that does not
+  exist exactly as it does for a quiet system, so a feature that shipped in phase 21 had a
+  dashboard that could never show anything while its data sat in `input_snapshots`, reachable
+  only through `exa drift input status`. The bridge already computed norm/mean/std on every
+  inference; it now exports them, plus the recorded baseline (read at most once a minute per
+  model, and left *unset* rather than zeroed when no baseline exists, since a zero would draw a
+  floor that reads as a measurement).
+- **Ten dashboard legends interpolated a label their series does not carry.** The bridge labels
+  its metrics `model`; the control plane uses `model_id`; the dashboards had mixed the two, so on
+  the overview and SeanerBUS boards every per-model line rendered without a name — the panel
+  still draws, it just stops being per-model, which is why nobody noticed.
+  `tests/unit/test_grafana_panels_can_show_data.py` now holds every provisioned panel to the
+  metrics and labels the code actually declares.
+
 - **Thirteen more dead links, and now the build catches the next one.** A link to a heading that
   does not exist is as broken as a link to a file that does not exist, but mkdocs logs the first
   at INFO and the second at WARNING, so only the second failed `--strict`. Eleven dashboard guides
