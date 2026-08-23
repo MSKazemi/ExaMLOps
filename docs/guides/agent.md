@@ -341,6 +341,26 @@ Type `y` or `yes` to proceed (accepted: `y/yes/ok/okay/approve/confirm/true/1`);
 
 The **14 write tools**: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `record_procedure` (durable memory write).
 
+### What a mutating tool guarantees
+
+Every mutating MCP tool follows one contract, and the part worth knowing is what happens when
+something downstream is broken:
+
+| | Guarantee |
+|---|---|
+| **Exposure** | Mutating tools are not registered at all unless `EXAMLOPS_MCP_ALLOW_WRITES` is truthy. With writes off the surface is read-only — 46 tools, none mutating. |
+| **Policy** | Each call is checked against the `agent_write` policy. `require_approval` counts as *denied* for an agent: there is no human at the tool-call boundary. |
+| **Audit** | A successful write leaves an `audit_events` row (`source=mcp`). |
+| **Audit failure** | The tool still reports `ok: true` — the action happened, and saying otherwise would send the caller to retry something already done — but the reply carries an `audit_warning` so an unaudited governance write is never silent. |
+
+```json
+{"ok": true, "cluster": "lxp", "state": "ACTIVE",
+ "audit_warning": "action succeeded but was not audited: audit chain unavailable"}
+```
+
+`tests/unit/test_mcp_write_audit_contract.py` holds all four rows for every mutating tool.
+
+
 ## Short-Term Memory (conversations)
 
 Conversations are stored in a SQLite database (`AGENT_DB`, default `./agent_memory.db`) using LangGraph's `SqliteSaver` checkpointer. Each session is identified by a `thread_id` (auto-generated as `cli-<8 hex chars>` on startup).

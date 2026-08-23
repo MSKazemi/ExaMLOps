@@ -697,25 +697,15 @@ def trigger_retrain(
     except _client.ClientError as exc:
         return _err(str(exc), status=getattr(exc, "status", None))
 
-    # Leave an audit trail for agent-initiated writes, mirroring `exa retrain`
-    # and the sibling `hpc_approve_cluster` tool. Best-effort: never fail the
-    # retrain because auditing is unavailable.
-    try:
-        from examlops.data import init_db
-        from examlops.data.audit import write_audit_event
-
-        init_db()
-        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
-        write_audit_event(
-            "mcp",
-            actor,
-            "retrain_triggered",
-            model_name,
-            {"dataset": dataset_name, "dummy": bool(dummy), "backend": backend_name, "via": "mcp"},
-        )
-    except Exception:  # noqa: BLE001 - auditing is best-effort
-        pass
-    return {"ok": True, **_as_dict(data)}
+    # The retrain is already running; auditing can no longer be allowed to fail it, but a
+    # retrain nobody can trace is still worth saying out loud. Same contract as every other
+    # mutating tool here.
+    return _with_audit(
+        {"ok": True, **_as_dict(data)},
+        "retrain_triggered",
+        model_name,
+        {"dataset": dataset_name, "dummy": bool(dummy), "backend": backend_name},
+    )
 
 
 def retrain_status(flow_run_id: str) -> dict[str, Any]:
@@ -830,7 +820,6 @@ def hpc_approve_cluster(name: str) -> dict[str, Any]:
     if gate is not None:
         return gate
     try:
-        from examlops.data.audit import write_audit_event
         from examlops.data.hpc import set_cluster_state
         from examlops.hpc_registry import get_merged
 
@@ -838,10 +827,16 @@ def hpc_approve_cluster(name: str) -> dict[str, Any]:
             return _err(f"unknown cluster: {name}")
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
         set_cluster_state(name, "ACTIVE", approved_by=actor)
-        write_audit_event("mcp", actor, "cluster_approved", name, {"via": "mcp"})
-        return {"ok": True, "cluster": name, "state": "ACTIVE"}
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
+    # The cluster is ACTIVE from here on — jobs can be scheduled on it. Auditing after the
+    # fact, outside that try, so a broken audit chain cannot report an approval that has
+    # already taken effect as a failure the operator will try again.
+    out: dict[str, Any] = {"ok": True, "cluster": name, "state": "ACTIVE"}
+    warning = _audit_write("cluster_approved", name, {})
+    if warning:
+        out["audit_warning"] = warning
+    return out
 
 
 # ── Projects & Workspaces tools (ADR 0086–0090) ───────────────────────────────
@@ -900,17 +895,19 @@ def project_assign_model(project: str, model: str) -> dict[str, Any]:
         return gate
     try:
         from examlops.data import init_db
-        from examlops.data.audit import write_audit_event
         from examlops.data.projects import assign_resource_to_project
 
         init_db()
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
         if not assign_resource_to_project(project, "model", model, added_by=actor):
             return _err(f"project not found: {project}")
-        write_audit_event("mcp", actor, "project_model_assigned", model, {"project": project})
-        return {"ok": True, "project": project, "model": model}
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
+    out: dict[str, Any] = {"ok": True, "project": project, "model": model}
+    warning = _audit_write("project_model_assigned", model, {"project": project})
+    if warning:
+        out["audit_warning"] = warning
+    return out
 
 
 def project_add_member(project: str, subject: str, role: str = "viewer") -> dict[str, Any]:
@@ -922,7 +919,6 @@ def project_add_member(project: str, subject: str, role: str = "viewer") -> dict
         return _err("role must be one of: owner, editor, viewer")
     try:
         from examlops.data import init_db
-        from examlops.data.audit import write_audit_event
         from examlops.data.projects import add_project_member, get_project
 
         init_db()
@@ -930,12 +926,13 @@ def project_add_member(project: str, subject: str, role: str = "viewer") -> dict
             return _err(f"project not found: {project}")
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
         add_project_member(project, subject, role, actor=actor)
-        write_audit_event(
-            "mcp", actor, "project_member_added", subject, {"project": project, "role": role}
-        )
-        return {"ok": True, "project": project, "subject": subject, "role": role}
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
+    out: dict[str, Any] = {"ok": True, "project": project, "subject": subject, "role": role}
+    warning = _audit_write("project_member_added", subject, {"project": project, "role": role})
+    if warning:
+        out["audit_warning"] = warning
+    return out
 
 
 # Recognised lifecycle use cases a tool serves. Drives the capabilities catalogue
@@ -958,8 +955,25 @@ TIERS: tuple[str, ...] = ("read", "A", "B", "C")
 # ── mutating tools: configuration writes (Phase 5, ADR 0102) ──────────────────
 
 
-def _audit_write(action: str, target: str, details: dict[str, Any]) -> None:
-    """Best-effort audit of an agent-initiated config write."""
+def _with_audit(
+    out: dict[str, Any], action: str, target: str, details: dict[str, Any]
+) -> dict[str, Any]:
+    """Audit a write that has already happened, attaching a warning if it could not be."""
+    warning = _audit_write(action, target, details)
+    if warning:
+        out["audit_warning"] = warning
+    return out
+
+
+def _audit_write(action: str, target: str, details: dict[str, Any]) -> str | None:
+    """Audit an agent-initiated write. Never raises; returns why it failed, or ``None``.
+
+    Two things must both be true and they pull in opposite directions: an audit failure must
+    not fail an action that has *already happened* (reporting a completed write as an error
+    is a lie, and the caller will retry it), and an unaudited governance write must not be
+    reported as a plain success either. So this never raises, and hands the reason back for
+    the caller to surface as a warning alongside ``ok: True``.
+    """
     try:
         from examlops.data import init_db
         from examlops.data.audit import write_audit_event
@@ -967,8 +981,9 @@ def _audit_write(action: str, target: str, details: dict[str, Any]) -> None:
         init_db()
         actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
         write_audit_event("mcp", actor, action, target, {**details, "via": "mcp"})
-    except Exception:  # noqa: BLE001 - auditing never fails the write
-        pass
+    except Exception as exc:  # noqa: BLE001 - auditing never fails the write
+        return f"action succeeded but was not audited: {exc}"
+    return None
 
 
 def set_traffic_split(model: str, production: int, canary: int = 0) -> dict[str, Any]:
@@ -986,8 +1001,12 @@ def set_traffic_split(model: str, production: int, canary: int = 0) -> dict[str,
         )
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
-    _audit_write("traffic_split_set", model, {"production": production, "canary": canary})
-    return {"ok": True, "model": model, "production": production, "canary": canary}
+    return _with_audit(
+        {"ok": True, "model": model, "production": production, "canary": canary},
+        "traffic_split_set",
+        model,
+        {"production": production, "canary": canary},
+    )
 
 
 def set_drift_autoretrain(
@@ -1003,8 +1022,12 @@ def set_drift_autoretrain(
         set_drift_auto_retrain(model, enabled, min_z_score=min_z, dataset_name=dataset)
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
-    _audit_write("drift_autoretrain_set", model, {"dataset": dataset, "enabled": enabled})
-    return {"ok": True, "model": model, "enabled": enabled, "dataset": dataset}
+    return _with_audit(
+        {"ok": True, "model": model, "enabled": enabled, "dataset": dataset},
+        "drift_autoretrain_set",
+        model,
+        {"dataset": dataset, "enabled": enabled},
+    )
 
 
 def set_promotion_rule(model: str, metric: str, operator: str, threshold: float) -> dict[str, Any]:
@@ -1020,10 +1043,12 @@ def set_promotion_rule(model: str, metric: str, operator: str, threshold: float)
         _set(model, metric, operator, float(threshold))
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
-    _audit_write(
-        "promotion_rule_set", model, {"metric": metric, "op": operator, "threshold": threshold}
+    return _with_audit(
+        {"ok": True, "model": model, "rule": f"{metric} {operator} {threshold}"},
+        "promotion_rule_set",
+        model,
+        {"metric": metric, "op": operator, "threshold": threshold},
     )
-    return {"ok": True, "model": model, "rule": f"{metric} {operator} {threshold}"}
 
 
 def disable_challenger(model: str) -> dict[str, Any]:
@@ -1037,8 +1062,9 @@ def disable_challenger(model: str) -> dict[str, Any]:
         _disable(model, updated_by="mcp-agent")
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
-    _audit_write("challenger_disabled", model, {})
-    return {"ok": True, "model": model, "challenger": "disabled"}
+    return _with_audit(
+        {"ok": True, "model": model, "challenger": "disabled"}, "challenger_disabled", model, {}
+    )
 
 
 def grant_access(subject: str, relation: str, obj: str) -> dict[str, Any]:
@@ -1059,8 +1085,12 @@ def grant_access(subject: str, relation: str, obj: str) -> dict[str, Any]:
         grant_relation(subject, relation, obj, actor=actor)
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
-    _audit_write("access_granted", obj, {"subject": subject, "relation": relation})
-    return {"ok": True, "subject": subject, "relation": relation, "object": obj}
+    return _with_audit(
+        {"ok": True, "subject": subject, "relation": relation, "object": obj},
+        "access_granted",
+        obj,
+        {"subject": subject, "relation": relation},
+    )
 
 
 @dataclass(frozen=True)

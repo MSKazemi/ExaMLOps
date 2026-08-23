@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three agent write tools could change the platform and then report that they had not.**
+  `hpc_approve_cluster`, `project_assign_model` and `project_add_member` wrapped their audit write
+  inside the same `try` as the action, so a broken audit chain produced `{"ok": false}` *after the
+  action had already taken effect*. Measured, not theorised: with the audit chain unavailable,
+  `hpc_approve_cluster` left the cluster **ACTIVE** — jobs schedulable on it — while telling the
+  caller the approval failed, and left no audit row to show it had happened. An operator reading
+  that reply retries, or believes nothing changed. All nine mutating tools now share one contract:
+  the action's failure and the audit's failure are separate outcomes, a completed action always
+  reports `ok: true`, and an audit that could not be written comes back as an `audit_warning` on the
+  reply rather than as silence or as a false error. `tests/unit/test_mcp_write_audit_contract.py`
+  pins all four rows of that contract for every tool, and asserts the case list still covers the
+  registry so a new mutating tool cannot quietly opt out. Documented in `docs/guides/agent.md`.
+
 ### Added
 
 - **`--help` examples are now held to the command tree too.** The curated "Common tasks" block on
@@ -42,6 +57,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   14/15 of `make preflight`, which fails loudly rather than silently skipping when helm is absent.
 
 ### Fixed
+
+- **The UI told readers a promote was protected by MFA. Nothing was.** The frontend's capability
+  module described `STEP_UP` as the actions that "require step-up/MFA before the BFF permits them".
+  The BFF permits them on the capability check alone: `requires_step_up` has no caller on any
+  request path, `requiresStepUp` is exported and read by no component, and no audit event carries
+  a step-up field. The backend's own comment was honest about deferral but justified keeping the
+  flag on grounds that are not true either — that the UI prompts and the audit trail records it.
+
+  Both now describe the set as a *designation* — which actions are high-risk enough to warrant a
+  second factor — and say plainly that nothing consults it yet. The set itself is worth keeping;
+  the claim around it was not.
+
+  Also guarded: the capability model spans two languages with no build-time link between the
+  halves, so the UI and the BFF could disagree about which actions are high-risk without anyone
+  noticing, and a capability the UI names but the BFF has never defined would be a permanently
+  dead control explained as a role problem. 3 guards, each proved red — by designating a third
+  capability on one side only, by naming a capability the backend does not define, and (the
+  opposite direction) by adding a real caller and watching the guard demand the wording change
+  back.
+
 
 - **The chart version was frozen at `0.1.0`, so no republish would ever reach a consumer.**
   `helm repo index` keys entries on the chart version: shipping changed contents under a version
