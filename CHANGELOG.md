@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`exa chat` now reads as ExaMLOps, and refuses to open against an agent that is not running.**
+  `kq` is adopted unforked, so out of the box it greeted an ExaMLOps operator as Kube-Q, *"your AI
+  co-pilot for Kubernetes"*, and answered a refused connection with an offline REPL that retries
+  three times per message — an agent that was simply never started cost a banner, a question and
+  four timeouts. The launcher now probes `/api/info` first and names `make skipper-server` if the
+  agent is down, passes `--no-banner --agent-name Skipper`, and prints its own header with the
+  agent URL and the **backend that actually answered**. Anything after `--` still wins.
+
 - **The suite reports when the tree changed under it.** `pytest` reads `tests/conftest.py` once at
   startup and each test module once at collection, so a file saved seconds into a long run yields a
   result that belongs to no version of the tree. The terminal summary now names every `.py` written

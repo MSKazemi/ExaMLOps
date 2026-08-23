@@ -152,6 +152,10 @@ def test_chat_execs_kq_against_the_configured_agent_url(monkeypatch):
     monkeypatch.setattr(agent_cmd, "load_config", _config.load_config)
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
 
+    # `exa chat` probes the agent before handing the terminal to kq, so these launcher tests
+    # have to say the agent is up — otherwise they measure the probe, not the launch.
+    _reply(monkeypatch, {"backend": "ollama", "ok": True})
+
     seen = {}
     monkeypatch.setattr(subprocess, "call", lambda argv: seen.setdefault("argv", argv) and 0)
 
@@ -168,6 +172,10 @@ def test_chat_forwards_the_api_key_only_when_one_is_set(monkeypatch):
 
     monkeypatch.setattr(shutil, "which", lambda name, path=None: "/usr/bin/kq")
     monkeypatch.setenv("AGENT_API_KEY", "s3cret")
+
+    # `exa chat` probes the agent before handing the terminal to kq, so these launcher tests
+    # have to say the agent is up — otherwise they measure the probe, not the launch.
+    _reply(monkeypatch, {"backend": "ollama", "ok": True})
     seen = {}
     monkeypatch.setattr(subprocess, "call", lambda argv: seen.setdefault("argv", argv) and 0)
 

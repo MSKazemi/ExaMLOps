@@ -27,9 +27,28 @@ REPO = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
 
-def _isolate(monkeypatch, tmp_path):
+def _isolate(monkeypatch, tmp_path, *, reachable=True):
+    """Isolate the config **and the agent**.
+
+    Every launch test here passed for months against whatever happened to be listening on
+    :18004 — a real agent on the developer's laptop made them green, and its absence would have
+    made them red for a reason that has nothing to do with the launcher. Stub the probe.
+    """
     monkeypatch.setenv("EXAMLOPS_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    from examlops.cli import _client
+
+    def fake_get(url, token=""):
+        if not reachable:
+            raise _client.ClientError("Connection refused")
+        return {
+            "backend": "ollama",
+            "model": "llama3.1:8b",
+            "ok": True,
+            "memory": {"enabled": True, "active": True},
+        }
+
+    monkeypatch.setattr(_client, "get", fake_get)
 
 
 def test_missing_client_names_an_install_command(monkeypatch, tmp_path):
@@ -98,3 +117,58 @@ def test_json_mode_refuses_instead_of_opening_a_repl(monkeypatch, tmp_path):
     result = runner.invoke(app, ["--json", "chat"])
     assert not called, "json mode launched an interactive client"
     assert "interactive" in result.output
+
+
+def test_an_agent_that_is_not_running_is_named_before_the_repl_opens(monkeypatch, tmp_path):
+    """kq answers a refused connection with an offline REPL and three retries per message.
+
+    Mohsen ran `exa chat` against an agent that was never started, met a Kubernetes banner,
+    typed one question and waited out four timeouts before learning nothing was listening. The
+    launcher knows which agent it meant, so it says so first and does not open the client.
+    """
+    _isolate(monkeypatch, tmp_path, reachable=False)
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: "/fake/kq")
+    launched = []
+    monkeypatch.setattr("subprocess.call", lambda argv: launched.append(argv) or 0)
+
+    result = runner.invoke(app, ["chat"])
+
+    assert not launched, "opened a chat client against an agent that is not there"
+    assert "Could not reach the Skipper agent" in result.output
+    assert "make skipper-server" in result.output
+    assert result.exit_code != 0
+
+
+def test_the_client_is_dressed_as_examlops_not_as_a_kubernetes_copilot(monkeypatch, tmp_path):
+    """kq is adopted unforked and greets you as "your AI co-pilot for Kubernetes".
+
+    Correct for the client, wrong for an operator asking Skipper about drift and HPC jobs. The
+    launcher supplies the identity instead of forking the client.
+    """
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: "/fake/kq")
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr("subprocess.call", lambda argv: seen.setdefault("argv", argv) and 0)
+
+    result = runner.invoke(app, ["chat"])
+
+    argv = seen["argv"]
+    assert argv[argv.index("--agent-name") + 1] == "Skipper"
+    assert "--no-banner" in argv
+    # and the launcher says what kq's banner cannot: which backend actually answered
+    assert "Skipper" in result.output
+    assert "llama3.1:8b" in result.output
+
+
+def test_the_caller_can_override_the_identity(monkeypatch, tmp_path):
+    """Anything after `--` wins; the defaults must not be appended twice."""
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: "/fake/kq")
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr("subprocess.call", lambda argv: seen.setdefault("argv", argv) and 0)
+
+    runner.invoke(app, ["chat", "--", "--agent-name", "Bob"])
+
+    argv = seen["argv"]
+    assert argv.count("--agent-name") == 1
+    assert argv[argv.index("--agent-name") + 1] == "Bob"

@@ -579,7 +579,7 @@ editing a profile or exporting a variable.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa chat` | Launches `kq` against the agent URL resolved from your active context, forwarding `AGENT_API_KEY` when set. Anything after `--` is passed straight through to `kq`. Needs the client: `uv pip install 'examlops[chat]'` (included in `[dev]`). | A back-and-forth investigation where each answer changes the next question — as opposed to `exa ask`, which is one shot. | `exa chat`<br>`exa -c lxp chat`<br>`exa chat -- --resume last` |
+| `exa chat` | Launches `kq` against the agent URL resolved from your active context, forwarding `AGENT_API_KEY` when set. Probes the agent first and names the start command if it is down, rather than dropping you into `kq`'s offline REPL; passes `--no-banner --agent-name Skipper` so the client reads as ExaMLOps, and prints the backend that answered. Anything after `--` is passed straight through to `kq` and overrides those defaults. Needs the client: `uv pip install 'examlops[chat]'` (included in `[dev]`). | A back-and-forth investigation where each answer changes the next question — as opposed to `exa ask`, which is one shot. | `exa chat`<br>`exa -c lxp chat`<br>`exa chat -- --resume last` |
 
 ### `exa agent` — is the agent up, and which brain is it using?
 

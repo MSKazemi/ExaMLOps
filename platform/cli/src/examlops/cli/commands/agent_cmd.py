@@ -182,6 +182,32 @@ def _memory_line(enabled: bool, active: bool, tick: str, cross: str) -> str:
     return f"{cross} enabled but NOT attached — short-term only"
 
 
+def _greet(url: str, info: object) -> None:
+    """Say who is answering, and on what — the header kq's own banner cannot know.
+
+    A banner that names the product is decoration; one that names the *backend actually
+    resolved* is the thing an operator needs before trusting an answer. The Azure key behind
+    Skipper once expired and the agent kept replying with empty strings, which read as a bad
+    model rather than a rejected credential. ``/api/info`` has already been fetched to prove
+    the agent is up, so this costs nothing.
+    """
+    if _output.quiet_mode:
+        return
+    facts = info if isinstance(info, dict) else {}
+    brain = " · ".join(str(v) for v in (facts.get("backend"), facts.get("model")) if v)
+    memory = (facts.get("memory") or {}) if isinstance(facts.get("memory"), dict) else {}
+    _output.console.print("[bold]Skipper[/bold] [dim]— the ExaMLOps agent[/dim]")
+    _output.console.print(f"[dim]  agent   {url}[/dim]")
+    if brain:
+        warn = "" if facts.get("ok") else "  [yellow](backend unusable)[/yellow]"
+        _output.console.print(f"[dim]  brain   {brain}[/dim]{warn}")
+    if memory:
+        state = (
+            "active" if memory.get("active") else ("enabled" if memory.get("enabled") else "off")
+        )
+        _output.console.print(f"[dim]  memory  {state}[/dim]")
+
+
 def chat(
     ctx: typer.Context,
     kq_args: list[str] = typer.Argument(
@@ -244,13 +270,41 @@ def chat(
         return
 
     cfg = load_config()
-    argv = [kq, "--url", cfg.agent_url.rstrip("/")]
+    base = cfg.agent_url.rstrip("/")
     token = os.getenv("AGENT_API_KEY", "")
+
+    # Ask the agent whether it is there before handing the terminal over. kq answers a refused
+    # connection by opening its REPL in offline mode and retrying three times per message, so an
+    # agent that was simply never started costs the operator a banner, a question, four timeouts
+    # and a guess. The launcher knows which agent it meant; it can say so in one line.
+    try:
+        info = _client.get(f"{base}/api/info", token=token)
+    except _client.ClientError as exc:
+        _output.error(
+            f"Could not reach the Skipper agent at {cfg.agent_url}: {exc}",
+            hint="Start it with: make skipper-server   (or set AGENT_URL, or "
+            "exa config set agent <url>). To open the client offline anyway, run kq directly.",
+        )
+        return
+
+    argv = [kq, "--url", base]
     if token:
         argv += ["--api-key", token]
-    argv += list(kq_args or []) + list(ctx.args)
+    passthrough = list(kq_args or []) + list(ctx.args)
 
-    _output.detail(f"Connecting to the Skipper agent at {cfg.agent_url} …")
+    # kq is adopted **unforked**, and out of the box it introduces itself as Kube-Q, "your AI
+    # co-pilot for Kubernetes", over an ASCII banner. That is the right default for the client
+    # and the wrong greeting for an ExaMLOps operator, who is talking to Skipper about models,
+    # drift and HPC jobs. The identity is supplied by the launcher rather than by forking the
+    # client — which is the same bargain the rest of this command makes. Anything the caller
+    # passes after ``--`` wins, so `exa chat -- --agent-name X` still does what it says.
+    if not any(a.startswith("--agent-name") for a in passthrough):
+        argv += ["--agent-name", "Skipper"]
+    if not any(a in {"--banner", "--no-banner"} for a in passthrough):
+        argv += ["--no-banner"]
+    argv += passthrough
+
+    _greet(cfg.agent_url, info)
     try:
         raise typer.Exit(subprocess.call(argv))
     except FileNotFoundError:  # pragma: no cover - shutil.which just found it

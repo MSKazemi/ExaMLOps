@@ -491,6 +491,20 @@ arrive for the cost of resolving one URL. What it adds over `make skipper-chat` 
 configuration: context, agent URL, and `AGENT_API_KEY` forwarding. It launches `kq`; it does not
 bundle it, and if the client is absent it says which command installs it.
 
+Two things the launcher does that `kq` on its own cannot:
+
+- **It checks the agent is there first.** `kq` answers a refused connection by opening its REPL in
+  offline mode and retrying three times per message, so an agent that was never started costs you a
+  banner, a question and four timeouts before you learn nothing is listening. `exa chat` probes
+  `/api/info` and, if the agent is down, names it and the command that starts it instead of opening
+  the client.
+- **It dresses the client as ExaMLOps.** Unforked, `kq` introduces itself as Kube-Q, *"your AI
+  co-pilot for Kubernetes"* — right for the client, wrong for an operator asking Skipper about
+  drift and HPC jobs. The launcher passes `--no-banner --agent-name Skipper` and prints its own
+  header naming the agent URL and the **backend that actually answered**, which is the fact worth
+  seeing before you trust a reply. Anything you pass after `--` wins, so
+  `exa chat -- --agent-name X` still does what it says.
+
 HITL: write tools trip a LangGraph `interrupt()`; `kq` shows an approval panel and
 switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph as
 `Command(resume=…)`. Set `AGENT_API_KEY` on the server to require a bearer token
