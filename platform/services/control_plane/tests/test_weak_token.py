@@ -25,7 +25,27 @@ def _reload_with_token(monkeypatch, tmp_path, token: str):
     return cp_app
 
 
-@pytest.mark.parametrize("weak", ["changeme", "CHANGEME", "change-me", "placeholder", "todo", ""])
+@pytest.mark.parametrize(
+    "weak",
+    [
+        "changeme",
+        "CHANGEME",
+        "change-me",
+        "placeholder",
+        "todo",
+        "",
+        # Decorated placeholders — how a shipped default actually looks in an example file.
+        # `.env.example` offered exactly the first of these until 2026-08-23, and the
+        # exact-match guard accepted it, so /health reported auth_configured: true for a
+        # token published in the repository.
+        "change-me-control-plane-token",
+        "CHANGE-ME-CONTROL-PLANE-TOKEN",
+        "my-changeme-token",
+        "placeholder-token-here",
+        "your-token-here-please",
+        "replace-me-with-a-secret",
+    ],
+)
 def test_weak_or_unset_token_is_unusable(monkeypatch, tmp_path, weak):
     cp = _reload_with_token(monkeypatch, tmp_path, weak)
     assert cp._token_is_usable() is False

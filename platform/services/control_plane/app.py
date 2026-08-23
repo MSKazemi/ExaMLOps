@@ -176,10 +176,29 @@ _WEAK_TOKENS = frozenset(
 )
 
 
+# The same placeholders as they appear *decorated* in real example files. `.env.example` ships
+# `change-me-control-plane-token`, which an exact-match list never catches — and a shipped default
+# that passes the guard is worse than no guard, because /health then reports auth_configured: true.
+# Every marker here is long enough not to occur by accident inside a random secret.
+_WEAK_MARKERS = (
+    "changeme",
+    "change-me",
+    "change_me",
+    "changethis",
+    "placeholder",
+    "your-token",
+    "yourtoken",
+    "replace-me",
+    "replaceme",
+)
+
+
 def _token_is_usable() -> bool:
     """True only when a real token is configured — not unset and not a known placeholder."""
-    t = CONTROL_PLANE_TOKEN.strip()
-    return bool(t) and t.lower() not in _WEAK_TOKENS
+    t = CONTROL_PLANE_TOKEN.strip().lower()
+    if not t or t in _WEAK_TOKENS:
+        return False
+    return not any(m in t for m in _WEAK_MARKERS)
 
 
 PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:4200/api").rstrip("/")

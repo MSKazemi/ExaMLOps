@@ -73,6 +73,29 @@ from routers import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    # A credential left at its `.env.example` value is refused by `check_password`, so the
+    # role simply stops logging in. Say why at startup, or that reads as "the password
+    # broke" rather than "the password was never set".
+    try:
+        import logging
+
+        from auth import is_placeholder
+        from settings import settings as _s
+
+        for _name, _val in (
+            ("DASHBOARD_VIEWER_PASSWORD", _s.dashboard_viewer_password),
+            ("DASHBOARD_ADMIN_PASSWORD", _s.dashboard_admin_password),
+        ):
+            if is_placeholder(_val):
+                logging.getLogger("dashboard").error(
+                    "%s is still the placeholder from .env.example — that role cannot log in. "
+                    "Set a real value: python3 -c 'import secrets; print(secrets.token_urlsafe(24))'",
+                    _name,
+                )
+    except Exception:  # never let a diagnostic stop the app from booting
+        pass
+
     try:
         from settings import settings
         from storage import ImageStorage

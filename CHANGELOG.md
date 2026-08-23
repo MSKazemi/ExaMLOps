@@ -66,6 +66,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The dashboard shipped a working admin password in `.env.example`, and the deployed node was
+  using it.** The control plane got a placeholder guard in Phase 0; the dashboard — the
+  human-facing admin boundary, with no user table and two shared passwords — never did.
+  `.env.example` offered `DASHBOARD_VIEWER_PASSWORD=change-me-viewer` and
+  `DASHBOARD_ADMIN_PASSWORD=change-me-admin` **uncommented**, so copying the example file gave a
+  working login on the documented path, and `Field(...)` only proved the variable was *set* — it
+  was set, to the published value. Checked on the lxp deploy: both dashboard passwords matched
+  those strings exactly (16 and 15 characters, both flagged by the marker list). The dashboard
+  binds `0.0.0.0:18099`, so anything routable to that host could log in as admin with a
+  credential published in the repo. It did not answer from this laptop, so the exposure is the
+  node's own network, not the open internet.
+
+  `auth.check_password` now runs both constant-time compares as before and then refuses a match
+  whose configured value carries a placeholder marker (`is_placeholder`, substring-matched so a
+  *decorated* example like `change-me-admin` is caught, not just the bare word `changeme`) — the
+  same list the control plane uses, duplicated because the two services share no import path.
+  Refusing at the compare rather than at startup was deliberate: a role whose password is a
+  placeholder stops logging in, the *other* role is unaffected, and the container still serves
+  instead of crash-looping on a node that is misconfigured right now. Startup logs an error
+  naming the variable, since otherwise this reads as "the password broke" rather than "the
+  password was never set". `.env.example` now ships the four secrets empty with a generator
+  command. `DASHBOARD_SECRET_KEY` needed no guard — its placeholder is not valid base64, so
+  `Fernet()` already rejected it at import.
+
+  Setting a real password on the node is the operator's action, not this change's.
+
+- **The guard against a shipped default token could not see the shipped default token.** The
+  control plane refuses well-known placeholders so a deploy that ships with an example secret is
+  not silently unauthenticated — but it compared for *equality* against a list of bare words
+  (`changeme`, `placeholder`, …), while `.env.example` offered
+  `CONTROL_PLANE_TOKEN=change-me-control-plane-token`. Uncommenting that line produced a control
+  plane reporting `auth_configured: true` and accepting a bearer token published in the
+  repository, which is worse than no guard at all because `/health` then looks correct. The check
+  now also rejects any token *containing* a placeholder marker (`changeme` / `change-me` /
+  `placeholder` / `your-token` / `replace-me` …), each long enough not to occur inside a random
+  secret, and `.env.example` no longer offers a value to paste — it prints the generator command
+  instead. Six decorated placeholders were accepted by the old guard and are refused by the new
+  one; they are now parametrized cases in `test_weak_token.py` (14 passing, control-plane suite
+  88 passing).
+
 - **The one CI gate `make preflight` does not mirror could quietly wreck the environment every
   other gate depends on.** `make ci-modelzoo` bootstraps poetry as
   `poetry || pipx install poetry || pip install poetry`. On a machine with neither poetry nor

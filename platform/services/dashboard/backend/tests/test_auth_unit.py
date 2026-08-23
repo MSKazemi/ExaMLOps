@@ -72,3 +72,56 @@ def test_role_gate_viewer_denied_on_admin_route():
     assert _role_at_least("admin", "admin") is True
     assert _role_at_least("admin", "viewer") is True
     assert _role_at_least("viewer", "viewer") is True
+
+
+# ── Placeholder credentials (the `.env.example` hole) ────────────────────────
+# `.env.example` used to ship working values (`change-me-admin`), and requiring
+# the variable to be *set* did not help: it was set, to the published value. The
+# deployed lxp node was found running both dashboard passwords at exactly those
+# strings. `check_password` now refuses a match against a placeholder.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "change-me-viewer",
+        "change-me-admin",
+        "CHANGE-ME-ADMIN",
+        "changeme",
+        "changeme123",
+        "placeholder",
+        "my-changeme-password",
+        "replace-me-please",
+        "your-token-here",
+    ],
+)
+def test_is_placeholder_catches_decorated_examples(value):
+    from auth import is_placeholder
+
+    assert is_placeholder(value) is True
+
+
+@pytest.mark.parametrize("value", ["test-viewer-pw", "test-admin-pw", "s3cr3t-r4nd0m-xyz"])
+def test_is_placeholder_passes_real_secrets(value):
+    from auth import is_placeholder
+
+    assert is_placeholder(value) is False
+
+
+def test_check_password_refuses_placeholder_admin(monkeypatch):
+    import auth
+    from settings import settings
+
+    monkeypatch.setattr(settings, "dashboard_admin_password", "change-me-admin")
+    assert auth.check_password("change-me-admin") is None
+    # the other role is untouched by its neighbour's misconfiguration
+    assert auth.check_password("test-viewer-pw") == "viewer"
+
+
+def test_check_password_refuses_placeholder_viewer(monkeypatch):
+    import auth
+    from settings import settings
+
+    monkeypatch.setattr(settings, "dashboard_viewer_password", "change-me-viewer")
+    assert auth.check_password("change-me-viewer") is None
+    assert auth.check_password("test-admin-pw") == "admin"

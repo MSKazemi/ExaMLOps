@@ -15,14 +15,51 @@ _ROLE_RANK: dict[str, int] = {"viewer": 1, "admin": 2}
 _bearer = HTTPBearer(auto_error=False)
 
 
+# Placeholder markers, matched as substrings so that a *decorated* example value
+# (`change-me-admin`, not the bare word `changeme`) is caught too. Same list as the
+# control plane's `_WEAK_MARKERS`; the two services share no import path, so it is
+# duplicated rather than imported. Every marker is long enough not to occur by
+# accident inside a generated secret.
+_WEAK_MARKERS = (
+    "changeme",
+    "change-me",
+    "change_me",
+    "changethis",
+    "placeholder",
+    "your-token",
+    "yourtoken",
+    "replace-me",
+    "replaceme",
+)
+
+
+def is_placeholder(value: str) -> bool:
+    """True when a configured credential is one of the shipped example values.
+
+    `.env.example` has to show *something* next to each variable, and whatever it
+    shows will be copied into a real `.env` by someone in a hurry. Requiring the
+    variable to be set is not enough — it was set, to the published value. So a
+    credential carrying a placeholder marker is treated as not configured.
+    """
+    return any(m in value.lower() for m in _WEAK_MARKERS)
+
+
 def check_password(plaintext: str) -> Role | None:
     """Return the matching role, or None on miss. Constant-time compare;
-    viewer checked first so no timing distinction between roles."""
+    viewer checked first so no timing distinction between roles.
+
+    A role whose configured password is a shipped placeholder can never be logged
+    into: the compare still runs (so the timing shape is unchanged), but a match
+    against a placeholder is refused. Which role is misconfigured is not a secret —
+    the password it would accept is published in `.env.example`.
+    """
     if not plaintext:
         return None
-    if secrets.compare_digest(plaintext, settings.dashboard_viewer_password):
+    viewer_ok = secrets.compare_digest(plaintext, settings.dashboard_viewer_password)
+    admin_ok = secrets.compare_digest(plaintext, settings.dashboard_admin_password)
+    if viewer_ok and not is_placeholder(settings.dashboard_viewer_password):
         return "viewer"
-    if secrets.compare_digest(plaintext, settings.dashboard_admin_password):
+    if admin_ok and not is_placeholder(settings.dashboard_admin_password):
         return "admin"
     return None
 
