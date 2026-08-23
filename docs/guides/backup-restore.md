@@ -91,6 +91,16 @@ EXAMLOPS_BACKUP_S3_URI=s3://examlops-backups/nightly \
 docker compose logs -f backup
 ```
 
+!!! warning "Kubernetes installs have no backup workload yet"
+
+    The Helm chart deploys the control plane, dashboard and agent, and nothing else — there is no
+    backup `CronJob`. It also sets `EXAMLOPS_DB_BACKEND=postgres`, so the platform state a bundle
+    would need lives in Postgres, not in a file any pod carries. Until the chart ships one, schedule
+    backups **outside** the cluster: run `exa backup create --all --push` from a host that can reach
+    the Postgres service and the object store, and set `EXAMLOPS_BACKUP_PG_DBS` to include the
+    platform database. Point `EXAMLOPS_DB_BACKEND=postgres` at that host too, or the sqlite tier
+    will happily archive an empty local `platform.db` and the bundle will look complete.
+
 For non-Docker installs, run it from a **host systemd timer** (or cron):
 
 ```ini

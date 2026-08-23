@@ -7,6 +7,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The env-var guard added last change could not see variables read through a helper.** It
+  matched literal `getenv("X")` calls only, so `_get("EXAMLOPS_BACKUP_TIERS", …)`, `pick(…)`,
+  `env.get(…)` and `{"env": "MLFLOW_SQLITE_DB"}` spec rows were invisible — including the variable
+  that decides *what a backup contains*. Broadened to a second scan over ExaMLOps-prefixed string
+  literals, which raises the measured surface from 239 variables to **293**; the previous count
+  understated the gap. Bare prefix strings (`"EXAMLOPS_"`, `"RAY_"`, used with `startswith`) are
+  excluded, and variables the platform *sets* for a child process rather than reads are listed in a
+  new `INJECTED` set instead of being documented as knobs.
+
+- **Backup and vLLM configuration is now published.** Neither family had a single row in
+  `docs/reference/env-vars.md`: 11 `EXAMLOPS_BACKUP_*` variables (tiers, retention, off-site target
+  and the credentials that let it be a different account from the platform's own object store,
+  plus the libpq variables `pg_dump` actually reads), and 11 `EXAMLOPS_VLLM_*` variables. Also
+  documented: the event-backbone broker URLs, the admission-control caps, the Postgres pool bounds
+  and the OIDC claim-name overrides. 59 variables remain undocumented, down from 155 under the same
+  broadened scan.
+
+- The backup reference now states what the default `EXAMLOPS_BACKUP_TIERS=sqlite,config` means on a
+  Postgres deployment: the sqlite tier deliberately skips `platform.db` there, so without the
+  `postgres` tier a bundle carries no platform state.
+
+### Fixed
+
+- **Found, not fixed — Kubernetes installs have no backup workload.** The Helm chart deploys the
+  control plane, dashboard and agent and nothing else; there is no backup `CronJob`, and the chart
+  hard-codes `EXAMLOPS_DB_BACKEND=postgres`, so the state a bundle would need is not in any file a
+  pod carries. `docs/guides/backup-restore.md` now says so and gives the out-of-cluster workaround
+  rather than leaving the reader to assume the Compose sidecar has a Kubernetes equivalent.
+
 - **Every multi-window burn-rate alert consulted one window.** `examlops.slo.generate_rules`
   built its two operands from the same string — `err_short` and `err_long` were both
   `1 - (sli_query)` — so each generated alert was `(X > t) and (X > t)`, which is `X > t`. The

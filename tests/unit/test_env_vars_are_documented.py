@@ -24,7 +24,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = ROOT / "docs" / "reference" / "env-vars.md"
 
-_READ = re.compile(r"""(?:getenv|environ\.get)\(\s*["']([A-Z][A-Z0-9_]{2,})["']""")
+# Two scans, because one is not enough. A literal `getenv("X")` is the obvious form; the platform
+# also reads variables through helpers (`_get("EXAMLOPS_BACKUP_TIERS", …)`, `pick(…)`, `env.get(…)`,
+# a `{"env": "MLFLOW_SQLITE_DB"}` spec row), and a getenv-only scan reports those as not existing.
+# That is how `EXAMLOPS_BACKUP_TIERS` — the variable deciding what a backup contains — stayed
+# invisible to the first version of this guard.
+_READ = re.compile(r"""(?:getenv|environ\.get|env\.get)\(\s*["']([A-Z][A-Z0-9_]{2,})["']""")
+_OURS = "EXAMLOPS|AGENT|DASHBOARD|CONTROL_PLANE|RAY|MLFLOW|PREFECT|SEANERBUS"
+# `_[A-Z0-9]…[A-Z0-9]` and not a trailing underscore: the code also carries bare prefix strings
+# (`"EXAMLOPS_"`, `"RAY_"`) used with startswith, and a looser pattern reads those as variables.
+_LITERAL = re.compile(rf"""["']((?:{_OURS})_[A-Z0-9][A-Z0-9_]*[A-Z0-9])["']""")
+
+# Set *by* the platform for a child process, not read from the operator's environment. Documented
+# where the thing that receives them is documented, not as knobs.
+INJECTED = {
+    "EXAMLOPS_VLLM_MODEL",
+    "EXAMLOPS_VLLM_ARGS",
+    "EXAMLOPS_MODEL",
+    "EXAMLOPS_PLATFORM_OPS",
+    "EXAMLOPS_PLATFORM_SOURCE",
+    "EXAMLOPS_ADMIN_SOURCE",
+}
 
 # Provided by the environment, not by ExaMLOps.
 _NOT_OURS = {
@@ -46,66 +66,56 @@ _NOT_OURS = {
     "COLUMNS",
 }
 
-# The backlog as measured on 2026-08-23. Shrink it; never add to it.
+# The backlog as measured on 2026-08-23, under the broadened scan. Shrink it; never add to it.
 UNDOCUMENTED = {
+    "AGENT_CHECKPOINT_BACKEND",
     "AGENT_CLAUDE_MD",
     "AGENT_GRAPH_TIMEOUT",
     "AGENT_MEMORY_REVIEW_DB",
+    "AGENT_MEMORY_REVIEW_QUEUE",
+    "AGENT_POSTGRES_DSN",
     "AGENT_SERVER_HOST",
     "AGENT_STREAM_IDLE_TIMEOUT",
     "APPROVAL_EXPIRY_HOURS",
     "CLIENT_SIM_DRIFT_COOLDOWN",
     "CLIENT_SIM_DRIFT_THRESHOLD",
     "CLIENT_SIM_DRIFT_WINDOW",
-    "EXAMLOPS_ADMIN_SOURCE",
-    "EXAMLOPS_BACKUP_BUCKETS",
-    "EXAMLOPS_BACKUP_DIR",
-    "EXAMLOPS_BACKUP_ON_PROMOTE",
-    "EXAMLOPS_BACKUP_PG_DBS",
-    "EXAMLOPS_BACKUP_S3_ACCESS_KEY",
-    "EXAMLOPS_BACKUP_S3_ENDPOINT",
+    "DASHBOARD_TOKEN",
     "EXAMLOPS_BACKUP_S3_SECRET",
-    "EXAMLOPS_BACKUP_S3_URI",
     "EXAMLOPS_CONFIG_DIR",
     "EXAMLOPS_FAIRNESS_GATE_ENABLED",
     "EXAMLOPS_GRID_INTENSITY_TOKEN",
     "EXAMLOPS_GRID_INTENSITY_URL",
     "EXAMLOPS_GRID_INTENSITY_ZONE",
+    "EXAMLOPS_HPC_CPUS",
+    "EXAMLOPS_HPC_MEM",
+    "EXAMLOPS_HPC_NODES",
+    "EXAMLOPS_HPC_TIME",
     "EXAMLOPS_KSERVE_GATEWAY_URL",
     "EXAMLOPS_KSERVE_LIVE_APPLY",
     "EXAMLOPS_LLM_COST_PROVIDER",
     "EXAMLOPS_LLM_LAUNCHER",
+    "EXAMLOPS_OIDC_SUBJECT_CLAIM",
     "EXAMLOPS_POLICY_BUNDLE_DIR",
     "EXAMLOPS_POLICY_ENGINE",
+    "EXAMLOPS_POSTGRES_POOL_MAX",
     "EXAMLOPS_REPO_ROOT",
+    "EXAMLOPS_SLO_GATE_ENABLED",
     "EXAMLOPS_SYNTHETIC_ONLY_GATE",
     "EXAMLOPS_TENANT",
     "EXAMLOPS_VAULT_TOKEN",
-    "EXAMLOPS_VLLM_API_KEY",
-    "EXAMLOPS_VLLM_BASE_URL",
-    "EXAMLOPS_VLLM_CONNECT_TIMEOUT",
-    "EXAMLOPS_VLLM_HOST_PORT",
-    "EXAMLOPS_VLLM_IMAGE",
-    "EXAMLOPS_VLLM_MODULES",
-    "EXAMLOPS_VLLM_PORT",
-    "EXAMLOPS_VLLM_RAY_PORT",
-    "EXAMLOPS_VLLM_TIMEOUT",
-    "EXAMLOPS_VLLM_WORK_DIR",
     "FEATURE_STORE_DIR",
     "IDEMPOTENCY_TTL_SECONDS",
     "LOG_FORMAT",
     "MINIO_ROOT_PASSWORD",
     "MINIO_ROOT_USER",
+    "MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR",
+    "MLFLOW_HTTP_REQUEST_MAX_RETRIES",
+    "MLFLOW_SQLITE_DB",
     "MODELS",
     "NOTIFICATION_WEBHOOK_URL",
     "OTEL_TRACES_SAMPLER",
     "OTEL_TRACES_SAMPLER_ARG",
-    "PGHOST",
-    "PGPASSWORD",
-    "PGPORT",
-    "PGUSER",
-    "POSTGRES_PASSWORD",
-    "POSTGRES_USER",
     "PREFECT_CB_FAIL_MAX",
     "PREFECT_CB_RESET_TIMEOUT",
     "RAY_MLFLOW_BACKOFF_FACTOR",
@@ -113,7 +123,10 @@ UNDOCUMENTED = {
     "RETRAIN_DATASET",
     "RETRAIN_DUMMY",
     "RETRAIN_RATE_LIMIT_PER_MIN",
+    "SEANERBUS_INFERENCE_UUID",
+    "SEANERBUS_JOB_TOPIC_UUID",
     "SEANERBUS_PUBLISH_RESULTS",
+    "SEANERBUS_RESULT_TOPIC_UUID",
 }
 
 
@@ -125,9 +138,12 @@ def _variables_read_in_code() -> set[str]:
     for name in files:
         if name.startswith("tests/") or "/tests/" in name:
             continue
-        found |= set(_READ.findall((ROOT / name).read_text(errors="ignore")))
+        text = (ROOT / name).read_text(errors="ignore")
+        found |= set(_READ.findall(text)) | set(_LITERAL.findall(text))
     # CI_* is injected by GitLab; documenting GitLab's own contract is not this file's job.
-    return {v for v in found if v not in _NOT_OURS and not v.startswith("CI_")}
+    return {
+        v for v in found if v not in _NOT_OURS and v not in INJECTED and not v.startswith("CI_")
+    }
 
 
 def _documented() -> set[str]:

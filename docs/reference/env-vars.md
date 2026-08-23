@@ -91,6 +91,82 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_LAKEFS_REF` | `main` | lakeFS ref revisions are recorded against. |
 | `EXAMLOPS_HPC_CAPACITY_TTL` | `30` | TTL (s) of the cached per-cluster fleet capacity rollup. |
 
+### Event backbone & admission control
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_EVENT_BROKER_URL` | unset | Broker URL for the selected `EXAMLOPS_EVENT_PUBLISHER`. Per-broker overrides: `EXAMLOPS_NATS_URL`, `EXAMLOPS_KAFKA_BROKERS`, `EXAMLOPS_REDIS_URL`. |
+| `EXAMLOPS_ADMISSION_MAX_RUNNING` | `4` | Global cap on concurrently running admitted jobs. |
+| `EXAMLOPS_ADMISSION_PER_TENANT` | `2` | Per-tenant fair-share cap. |
+
+### Postgres pool & OIDC claim names
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_POSTGRES_POOL_MIN` / `_MAX` | `1` / `10` | Pool size per `(dsn, schema)` per process. `EXAMLOPS_POSTGRES_POOL=0` opts out of pooling entirely. |
+| `EXAMLOPS_OIDC_JWKS` | unset | JWKS for RS256 validation — a URL, or inline JSON. |
+| `EXAMLOPS_OIDC_TENANT_CLAIM` / `_SUBJECT_CLAIM` | provider defaults | Which claim carries the tenant / the subject. |
+
+---
+
+## Backup & restore
+
+`exa backup` writes a **tiered bundle**: each tier is independent, and a tier whose tooling or
+endpoint is unavailable is recorded as `skipped` rather than failing the cycle. The Compose
+`backup` profile runs the same command as a sidecar (`docker compose --profile backup up -d backup`).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_BACKUP_TIERS` | `sqlite,config` | Which tiers a cycle runs. Full set: `sqlite,config,postgres,objects` — what `exa backup schedule --all` selects. **On a Postgres deployment the default is not enough**: the sqlite tier deliberately *skips* `platform.db` (its state is in Postgres), so without the `postgres` tier a bundle carries no platform state. |
+| `EXAMLOPS_BACKUP_DIR` | `./backups` | Where bundles are written (`/backups` in the sidecar). |
+| `EXAMLOPS_BACKUP_INTERVAL` | `3600` | Seconds between scheduled cycles. |
+| `EXAMLOPS_BACKUP_RETAIN` | `keep=14` | Retention spec — `keep=N`, `days=N`, or both comma-separated. |
+| `EXAMLOPS_BACKUP_ON_PROMOTE` | `false` | Take a bundle before a model promotion. |
+| `EXAMLOPS_BACKUP_PG_DBS` | `mlflow,prefect` | Databases the postgres tier dumps. Add the platform database here when the datastore is Postgres. |
+| `EXAMLOPS_BACKUP_BUCKETS` | unset | Comma-separated MinIO/S3 buckets for the objects tier. Unset ⇒ the tier is skipped. |
+
+Off-site replication (the bundle is tar+gzipped and uploaded):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_BACKUP_S3_URI` | unset | Off-site target, e.g. `s3://bucket/prefix`. **Setting it is enough** — the scheduler pushes whenever a URI is configured; `--push` only forces it. Unset ⇒ bundles never leave the host. |
+| `EXAMLOPS_BACKUP_S3_ENDPOINT` | falls back to `MLFLOW_S3_ENDPOINT_URL` | S3 endpoint for the off-site target. |
+| `EXAMLOPS_BACKUP_S3_ACCESS_KEY` / `_SECRET` | fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials for the off-site target, so it can be a different account from the platform's own object store. |
+
+The postgres tier shells out to `pg_dump`, so it reads the standard libpq variables rather than a
+DSN. These are **PostgreSQL's contract, not ExaMLOps's** — the defaults below are what the tier
+falls back to, not what libpq would do on its own:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PGHOST` / `PGPORT` | `localhost` / `5432` | Server the dump connects to. |
+| `PGUSER` / `PGPASSWORD` | `POSTGRES_USER` / `POSTGRES_PASSWORD`, then `mlops` | Credentials. The `POSTGRES_*` fallback exists so the sidecar can reuse the Compose stack's own values. |
+
+---
+
+## Local LLM serving (vLLM)
+
+`exa serve llm` starts an OpenAI-compatible vLLM server, either through Compose or on an HPC
+allocation. `EXAMLOPS_VLLM_MODEL` and `EXAMLOPS_VLLM_ARGS` are **set by the launcher** for the
+server process — you name the weights with `--hf-model`, not by exporting them (the raw
+`docker compose --profile vllm up vllm` path is the exception; see the
+[VLM serving guide](../guides/vlm-serving.md)).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_VLLM_BASE_URL` | unset | Point the client at an already-running server. Unset, and with no `engine.base_url` in the model YAML, the engine falls back to `EchoEngine` rather than failing. |
+| `EXAMLOPS_VLLM_PORT` | `8000` | Port the server listens on inside its container/allocation. |
+| `EXAMLOPS_VLLM_HOST_PORT` | `18011` | Port published on the host by the Compose launcher. |
+| `EXAMLOPS_VLLM_API_KEY` | empty | Bearer token the server requires, if any. |
+| `EXAMLOPS_VLLM_IMAGE` | `docker://vllm/vllm-openai:latest` | Image for the container/Apptainer launcher. |
+| `EXAMLOPS_VLLM_LAUNCHER` | auto | Force a launcher (`compose` / `hpc`) instead of detecting one. |
+| `EXAMLOPS_VLLM_WORK_DIR` | unset | Scratch directory for launcher state — read per call, so it can be changed without reloading the module. |
+| `EXAMLOPS_VLLM_MODULES` | unset | `module load` lines to emit into the HPC launch script. |
+| `EXAMLOPS_VLLM_RAY_PORT` | `6379` | Ray head port for multi-node tensor parallelism. |
+| `EXAMLOPS_VLLM_TIMEOUT` | `120` | Seconds to wait for the server to become ready. |
+| `EXAMLOPS_VLLM_CONNECT_TIMEOUT` | `10` | Per-request connect timeout. |
+
+
 ---
 
 ## CLI, agent surface & config contexts
