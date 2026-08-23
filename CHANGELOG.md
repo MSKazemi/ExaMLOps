@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`AGENT_API_KEY` gates one endpoint out of five, and the agent binds every interface by
+  default.** The token is checked on `POST /v1/chat/completions` and nowhere else: the WebSocket
+  chat at `/ws/chat/{thread_id}` — the interface that actually runs tools — plus `/api/threads` and
+  the per-thread history have no gate at all, and `AGENT_SERVER_HOST` defaults to `0.0.0.0`. An
+  operator who sets a key has every reason to believe the service is protected. The reference table
+  row was already precise about this; the agent guide's prose was not, and said "set `AGENT_API_KEY`
+  on the server to require a bearer token". Corrected, documented in a warning admonition, and the
+  server now prints the warning at startup whenever it binds a non-loopback address — including,
+  explicitly, when a key *is* set. Closing the gap properly is a behaviour change (a browser cannot
+  send a bearer header on a WebSocket) and is not done here.
+
+- 17 more environment variables documented: the Skipper server/checkpointing/review-queue family and
+  the control-plane safety limits (`RETRAIN_RATE_LIMIT_PER_MIN`, `APPROVAL_EXPIRY_HOURS`,
+  `IDEMPOTENCY_TTL_SECONDS` and the CI retrain knobs). 42 remain, from 59.
+
+- Reference rows that abbreviated a variable's siblings (`EXAMLOPS_POSTGRES_POOL_MIN` / `_MAX`)
+  now spell both names out. The shorthand reads fine and is invisible to anyone searching the page
+  for the full name — the same reason the guard scans for backticked names rather than prose.
+
 - **The env-var guard added last change could not see variables read through a helper.** It
   matched literal `getenv("X")` calls only, so `_get("EXAMLOPS_BACKUP_TIERS", …)`, `pick(…)`,
   `env.get(…)` and `{"env": "MLFLOW_SQLITE_DB"}` spec rows were invisible — including the variable

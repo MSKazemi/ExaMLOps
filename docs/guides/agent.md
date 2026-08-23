@@ -494,7 +494,9 @@ bundle it, and if the client is absent it says which command installs it.
 HITL: write tools trip a LangGraph `interrupt()`; `kq` shows an approval panel and
 switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph as
 `Command(resume=…)`. Set `AGENT_API_KEY` on the server to require a bearer token
-(pass it to `kq --api-key` / `KUBE_Q_API_KEY`). See
+**on `/v1/chat/completions`** (pass it to `kq --api-key` / `KUBE_Q_API_KEY`). It does not gate the
+WebSocket chat or the thread-history endpoints, and `AGENT_SERVER_HOST` defaults to `0.0.0.0` — so
+a key alone does not make the agent safe to expose; bind loopback and tunnel. See
 `platform/services/agent/kube-q/README.md` for the profile and full workflow.
 
 ## Environment Variables

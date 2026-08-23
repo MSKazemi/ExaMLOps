@@ -103,9 +103,9 @@ the usual cause of "it works from the CLI but not in the dashboard".
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_POSTGRES_POOL_MIN` / `_MAX` | `1` / `10` | Pool size per `(dsn, schema)` per process. `EXAMLOPS_POSTGRES_POOL=0` opts out of pooling entirely. |
+| `EXAMLOPS_POSTGRES_POOL_MIN` / `EXAMLOPS_POSTGRES_POOL_MAX` | `1` / `10` | Pool size per `(dsn, schema)` per process. `EXAMLOPS_POSTGRES_POOL=0` opts out of pooling entirely. |
 | `EXAMLOPS_OIDC_JWKS` | unset | JWKS for RS256 validation — a URL, or inline JSON. |
-| `EXAMLOPS_OIDC_TENANT_CLAIM` / `_SUBJECT_CLAIM` | provider defaults | Which claim carries the tenant / the subject. |
+| `EXAMLOPS_OIDC_TENANT_CLAIM` / `EXAMLOPS_OIDC_SUBJECT_CLAIM` | provider defaults | Which claim carries the tenant / the subject. |
 
 ---
 
@@ -131,7 +131,7 @@ Off-site replication (the bundle is tar+gzipped and uploaded):
 |---|---|---|
 | `EXAMLOPS_BACKUP_S3_URI` | unset | Off-site target, e.g. `s3://bucket/prefix`. **Setting it is enough** — the scheduler pushes whenever a URI is configured; `--push` only forces it. Unset ⇒ bundles never leave the host. |
 | `EXAMLOPS_BACKUP_S3_ENDPOINT` | falls back to `MLFLOW_S3_ENDPOINT_URL` | S3 endpoint for the off-site target. |
-| `EXAMLOPS_BACKUP_S3_ACCESS_KEY` / `_SECRET` | fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials for the off-site target, so it can be a different account from the platform's own object store. |
+| `EXAMLOPS_BACKUP_S3_ACCESS_KEY` / `EXAMLOPS_BACKUP_S3_SECRET` | fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials for the off-site target, so it can be a different account from the platform's own object store. |
 
 The postgres tier shells out to `pg_dump`, so it reads the standard libpq variables rather than a
 DSN. These are **PostgreSQL's contract, not ExaMLOps's** — the defaults below are what the tier
@@ -141,6 +141,44 @@ falls back to, not what libpq would do on its own:
 |---|---|---|
 | `PGHOST` / `PGPORT` | `localhost` / `5432` | Server the dump connects to. |
 | `PGUSER` / `PGPASSWORD` | `POSTGRES_USER` / `POSTGRES_PASSWORD`, then `mlops` | Credentials. The `POSTGRES_*` fallback exists so the sidecar can reuse the Compose stack's own values. |
+
+---
+
+## Control-plane safety limits
+
+Defaults are in the module header of `platform/services/control_plane/app.py`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RETRAIN_RATE_LIMIT_PER_MIN` | `20` | Token-bucket capacity for `POST /retrain`; the refill rate is this per minute. Exceeding it returns 429 with a retry hint. |
+| `APPROVAL_EXPIRY_HOURS` | `72` | Pending approvals older than this are swept to `expired`. `0` disables the sweep, leaving stale entries pending indefinitely. |
+| `IDEMPOTENCY_TTL_SECONDS` | `300` | How long a response is replayed for a repeated idempotency key. |
+| `NOTIFICATION_WEBHOOK_URL` | unset | Webhook the CI notifier posts model changes to. Unset ⇒ the notification is skipped, not failed. Set it as a **masked** CI variable. |
+| `RETRAIN_DATASET` | `FDataDataset` | Dataset the CI retrain-on-merge job passes. |
+| `RETRAIN_DUMMY` | `false` | `true` makes that job run a dummy (no real training). |
+
+---
+
+## Agent (Skipper) — server, checkpointing & review queue
+
+!!! warning "`AGENT_API_KEY` gates one endpoint, and the default bind is every interface"
+
+    The token is checked on `POST /v1/chat/completions` only. The WebSocket chat at
+    `/ws/chat/{thread_id}` — the interface that runs tools — and the thread-history endpoints have
+    no gate at all, and `AGENT_SERVER_HOST` defaults to `0.0.0.0`. Setting a key does not make the
+    agent safe to expose. Bind loopback and reach it through an SSH tunnel unless the host is
+    already on a trusted network; the server prints this warning at startup.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_SERVER_HOST` | `0.0.0.0` | Interface the agent server binds. See the warning above. |
+| `AGENT_CHECKPOINT_BACKEND` | `sqlite` | Conversation checkpoint store. `postgres` uses `AGENT_POSTGRES_DSN`, falling back to `DATABASE_URL`. |
+| `AGENT_POSTGRES_DSN` | falls back to `DATABASE_URL` | DSN for the Postgres checkpointer. |
+| `AGENT_GRAPH_TIMEOUT` | `300.0` | Seconds one LangGraph run may take before it is abandoned. |
+| `AGENT_STREAM_IDLE_TIMEOUT` | `120.0` | Seconds of silence on a streaming response before it is closed. |
+| `AGENT_CLAUDE_MD` | `<repo>/CLAUDE.md` | Project brief loaded into the agent's context. |
+| `AGENT_MEMORY_REVIEW_QUEUE` | `false` | Queue memory writes for human review instead of applying them. |
+| `AGENT_MEMORY_REVIEW_DB` | `./skipper_review.db` | Where that review queue lives — separate from `AGENT_MEMORY_DB`. |
 
 ---
 
