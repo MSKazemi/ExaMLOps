@@ -301,8 +301,20 @@ stack-logs: ## Tail live logs from all containers (Ctrl+C to stop)
 	@cd $(COMPOSE_DIR) && $(DC) logs -f
 
 stack-ps: ## Show current container status
-	@cd $(COMPOSE_DIR) && $(DC) ps 2>/dev/null \
-	  || printf "  $(DIM)(stack not running — run 'make stack-up')$(RESET)\n"
+	@# `2>/dev/null || (stack not running)` diagnosed *every* compose failure as a stopped
+	@# stack and still exited 0 — including the interpolation error that made `ps` itself
+	@# impossible. Show what compose actually said before guessing why.
+	@# SHELL carries -e, so `out=$$(cmd); rc=$$?` would abort before the handler ever runs.
+	@cd $(COMPOSE_DIR) && { out=$$($(DC) ps 2>&1) && rc=0 || rc=$$?; }; \
+	  if [ $$rc -eq 0 ]; then \
+	    printf '%s\n' "$$out"; \
+	    [ "$$(printf '%s\n' "$$out" | tail -n +2 | grep -c .)" -gt 0 ] || \
+	      printf "  $(DIM)(no containers running — run 'make stack-up')$(RESET)\n"; \
+	  else \
+	    printf "  $(RED)docker compose could not read the stack:$(RESET)\n"; \
+	    printf '%s\n' "$$out" | sed 's/^/    /'; \
+	    exit $$rc; \
+	  fi
 
 stack-shell: _guard-service ## Open a bash shell inside a container  SERVICE=<name>
 	@docker exec -it examlops-$(SERVICE) bash
@@ -564,17 +576,22 @@ test-postgres: install-dev ## Run the unit + dashboard suites against a throwawa
 	  -e POSTGRES_PASSWORD=examlops -e POSTGRES_USER=examlops -e POSTGRES_DB=examlops \
 	  -p $(PGTEST_PORT):5432 postgres:16-alpine >/dev/null
 	@until docker exec $(PGTEST_CONTAINER) pg_isready -U examlops >/dev/null 2>&1; do sleep 1; done
-	@EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
-	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ -q; \
-	 status=$$?; \
+	@# SHELL carries -e, so the original `pytest …; status=$$?` aborted on the FIRST failing
+	@# suite: the dashboard suite and the live integration test never ran, the summed exit
+	@# code was never computed, and `docker rm -f` — the last line — never fired, leaving the
+	@# throwaway Postgres up indefinitely. `|| status=$$?` keeps each failure local, and the
+	@# trap removes the container however the recipe ends, including on Ctrl-C.
+	@trap 'docker rm -f $(PGTEST_CONTAINER) >/dev/null 2>&1 || true' EXIT INT TERM; \
+	 status=0; dash=0; live=0; \
+	 EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
+	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ -q || status=$$?; \
 	 (cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
 	  EXAMLOPS_POSTGRES_SCHEMA=exa_test_dash \
 	  PYTHONPATH=$(CURDIR)/platform/cli/src \
-	  $(CURDIR)/$(VENV)/bin/pytest tests/ -q); \
-	 dash=$$?; \
-	 EXAMLOPS_POSTGRES_TEST_DSN='$(PGTEST_DSN)' $(VENV)/bin/pytest tests/integration/test_postgres_backend_live.py -q; \
-	 live=$$?; docker rm -f $(PGTEST_CONTAINER) >/dev/null; exit $$((status + dash + live))
+	  $(CURDIR)/$(VENV)/bin/pytest tests/ -q) || dash=$$?; \
+	 EXAMLOPS_POSTGRES_TEST_DSN='$(PGTEST_DSN)' $(VENV)/bin/pytest tests/integration/test_postgres_backend_live.py -q || live=$$?; \
+	 exit $$((status + dash + live))
 
 test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.html
 	@$(VENV)/bin/pytest tests/ \
@@ -682,9 +699,13 @@ dr-drill: install-dev ## Disaster-recovery drill — backup → wipe → restore
 
 ci-infra: ## Mirror GitHub 'infra' job — compose validation + slurm lint
 	@printf "$(BOLD)CI · infra (compose + slurm)$(RESET)\n"
-	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml config --quiet
-	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile monitoring config --quiet
-	@EXAMLOPS_VLLM_MODEL=$${EXAMLOPS_VLLM_MODEL:-ci-dummy-model} $(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile dev config --quiet
+	@# The EXAMLOPS_VLLM_MODEL=... prefix these lines carried was a workaround for a
+	@# required-variable expression on a profile-gated service; the compose file no
+	@# longer needs one, and leaving it here would hide a regression from the gate.
+	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml config --quiet
+	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile monitoring config --quiet
+	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile dev config --quiet
+	@$(DC) -f $(COMPOSE_DIR)/docker-compose.yml --profile vllm config --quiet
 	@$(MAKE) alerts-check
 	@if [ -x $(VENV)/bin/ruff ]; then $(VENV)/bin/ruff check platform/infra/slurm-adapter/; \
 	  else ruff check platform/infra/slurm-adapter/; fi

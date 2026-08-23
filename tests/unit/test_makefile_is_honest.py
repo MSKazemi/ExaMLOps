@@ -152,3 +152,32 @@ def test_the_generated_cli_reference_is_not_stale():
             "docs/reference/cli-generated.md no longer matches the live command tree. "
             "Regenerate it with `make docs-cli` and commit the result."
         )
+
+
+def test_no_recipe_captures_exit_status_in_a_way_the_shell_flags_defeat():
+    """`SHELL := /bin/bash -euo pipefail` makes the `cmd; rc=$?` idiom unreachable.
+
+    Under `-e` the shell exits on the failing command, so the line that reads `$?` never
+    runs — and neither does anything after it. `make test-postgres` was written that way:
+    a failure in the first of three suites skipped the other two, never computed the summed
+    exit code, and never reached the `docker rm -f` on the last line, leaving a throwaway
+    Postgres running (one had been up four hours when this was found). The failure is quiet
+    because make still reports an error — it just silently runs a third of the work.
+
+    The safe forms are `cmd || rc=$?` and a `trap` for cleanup.
+    """
+    text = MAKEFILE.read_text()
+    assert "-e" in re.search(r"^SHELL\s*:?=(.*)$", text, re.M).group(1), (
+        "this guard assumes an erroring shell; if SHELL no longer carries -e, revisit it"
+    )
+    # a capture of $? that is NOT guarded by `||` on the same command
+    offenders = []
+    for match in re.finditer(r"^\s*(\w+)=\$\$\?", text, re.M):
+        line_no = text[: match.start()].count("\n") + 1
+        previous = text.splitlines()[line_no - 2] if line_no > 1 else ""
+        if "||" not in previous and not previous.lstrip().startswith("#"):
+            offenders.append(f"line {line_no}: {match.group(0).strip()} after {previous.strip()!r}")
+    assert not offenders, (
+        "these capture $? on a line the erroring shell can never reach; use `cmd || rc=$?`:\n"
+        + "\n".join(offenders)
+    )

@@ -82,8 +82,15 @@ serving job must never enter it.
 
 ```bash
 exa serve llm start qwen-vl --launcher compose --hf-model Qwen/Qwen3-VL-8B-Instruct
-# equivalently: docker compose --profile vllm up -d vllm
+# equivalently, with the weights named explicitly:
+EXAMLOPS_VLLM_MODEL=Qwen/Qwen3-VL-8B-Instruct docker compose --profile vllm up -d vllm
 ```
+
+`EXAMLOPS_VLLM_MODEL` has no default. `exa serve llm start` sets it for you; the raw compose
+form needs it in the environment or in `.env`, and vLLM will report the variable by name if it
+is missing. It is deliberately **not** a compose required-variable (`:?`) — compose interpolates
+every service before it filters by profile, so that form aborted every compose command on the
+CPU machines this profile exists to protect.
 
 The `vllm` service sits behind a `vllm` **profile** — it is the only GPU service in the
 stack, so a plain `docker compose up` on a CPU box must not try to start it. It reserves

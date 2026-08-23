@@ -7,6 +7,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **A GPU service nobody asked for made every Docker Compose command impossible.** The `vllm`
+  service is behind a `vllm` profile precisely so a plain `docker compose up` on a CPU box does not
+  try to start it — but its `command:` carried `${EXAMLOPS_VLLM_MODEL:?…}`, and **compose
+  interpolates every service before it filters by profile**. So `ps`, `logs`, `up` and `down` all
+  aborted with a required-variable error on any machine that had not set a GPU variable: exactly the
+  machine the profile exists to protect. Replaced with a sentinel default that still names the
+  missing variable in vLLM's own error, and guarded — no profile-gated service may declare a
+  required variable (`tests/unit/test_compose_is_operable.py`). The four remaining `:?` expressions
+  are on the dashboard, a default-profile service that genuinely cannot run without its secrets,
+  which is what `:?` is for. The workarounds this needed in `make ci-infra` (three lines) and
+  `.gitlab-ci.yml` are removed, and the compose gate now covers the `vllm` profile too.
+
+- **`make stack-ps` diagnosed every compose failure as "stack not running", and exited 0.** It
+  discarded stderr and guessed the cause, so the interpolation error above surfaced as a stopped
+  stack. It now prints what compose actually said and propagates the failure; when compose is
+  healthy and no containers are up, it says that instead.
+
+- **`make test-postgres` ran a third of its work and leaked its database.** `SHELL` carries
+  `-euo pipefail`, so the `pytest …; status=$?` idiom is unreachable: the first failing suite
+  aborted the recipe, the dashboard suite and the live integration test never ran, the summed exit
+  code was never computed, and the `docker rm -f` on the last line never fired — leaving the
+  throwaway Postgres up (one had been running four hours when this was found). Each suite now
+  captures its status with `|| status=$?` and a `trap` removes the container however the recipe
+  ends, Ctrl-C included. Guarded against the idiom returning.
+
 - **`docs/reference/cli-generated.md` had gone stale, and nothing could have noticed.** Only
   `make docs-cli` writes it, no CI job runs that target, and no test compared it — so the committed
   machine-generated reference silently drifted from the CLI. It was missing the whole

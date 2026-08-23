@@ -631,12 +631,19 @@ services:
   # EXAMLOPS_VLLM_ARGS is rendered by engines.to_vllm_args() — the same renderer the
   # Slurm template and the KServe manifest use, so the engine block means one thing
   # everywhere. Do not hand-edit flags here.
+  #
+  # NB: EXAMLOPS_VLLM_MODEL must NOT use `:?`. Compose interpolates every service before
+  # it filters by profile, so a required-variable error here aborted *every* compose
+  # command — `up`, `down`, `ps`, `logs` — on any machine that had not set a GPU variable,
+  # which is every CPU node the profile exists to protect. The sentinel default keeps the
+  # message useful (vLLM reports the unset variable by name) while leaving the rest of the
+  # stack operable.
   vllm:
     profiles: ["vllm"]
     image: ${EXAMLOPS_VLLM_IMAGE_TAG:-vllm/vllm-openai:latest}
     container_name: examlops-vllm
     command: >
-      --model ${EXAMLOPS_VLLM_MODEL:?set EXAMLOPS_VLLM_MODEL to the weights to serve}
+      --model ${EXAMLOPS_VLLM_MODEL:-EXAMLOPS_VLLM_MODEL-is-not-set}
       --host 0.0.0.0
       --port ${EXAMLOPS_VLLM_PORT:-8000}
       ${EXAMLOPS_VLLM_ARGS:-}

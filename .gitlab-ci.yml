@@ -227,7 +227,6 @@ test:infra:compose:
     # `docker compose config` interpolates every service, including profile-gated ones, so a
     # `${VAR:?}` guard anywhere in the file makes the whole file unvalidatable without a value.
     # The vLLM service is GPU-only and never starts here; this is a placeholder, not a model.
-    EXAMLOPS_VLLM_MODEL: "ci-dummy-model"
   script:
     - touch platform/infra/docker-compose/.env
     - docker compose -f platform/infra/docker-compose/docker-compose.yml config --quiet
