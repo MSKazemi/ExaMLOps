@@ -48,8 +48,13 @@ PLATFORM_MANAGE = (
     "platform.manage"  # Platform Ops — cost/provider/knob writes via examlops.platform_admin
 )
 
-# Actions that additionally require step-up/MFA (F15 R6 / F16). Enforcement is deferred; the flag
-# is surfaced so the UI can prompt and the audit trail can record it.
+# Actions that additionally require step-up/MFA (F15 R6 / F16). **Nothing enforces this yet, and
+# nothing consumes it either** — the stated justification (the UI prompts, the audit trail records
+# it) is not true today: no component reads `requiresStepUp`, no request path calls
+# `requires_step_up`, and no audit event carries a step-up field. It is a placeholder for the
+# OIDC/OpenFGA migration, kept because the *set* is the decision worth recording — which actions
+# are high-risk enough to warrant a second factor. Keep it honest: do not describe it as enforced
+# anywhere, and keep it identical to the frontend's `STEP_UP` (guarded).
 STEP_UP_CAPABILITIES: frozenset[str] = frozenset({MODEL_PROMOTE, SECRET_REVEAL})
 
 _VIEWER_CAPS: frozenset[str] = frozenset({VIEW, SEARCH})
@@ -107,7 +112,11 @@ def deny_reason(role: str, capability: str) -> str:
 
 
 def requires_step_up(capability: str) -> bool:
-    """Whether a capability needs step-up/MFA before the BFF permits it (F15 R6)."""
+    """Whether a capability is *designated* as needing step-up/MFA (F15 R6).
+
+    A designation, not a gate: the BFF permits these actions today on the capability check alone.
+    Say "designated", never "required", until a request path actually calls this.
+    """
     return capability in STEP_UP_CAPABILITIES
 
 

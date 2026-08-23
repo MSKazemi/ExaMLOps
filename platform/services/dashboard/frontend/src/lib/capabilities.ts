@@ -29,7 +29,13 @@ export const CAP = {
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
 
-/** Actions that additionally require step-up/MFA before the BFF permits them (F15 R6 / F16). */
+// Actions *designated* as needing step-up/MFA (F15 R6 / F16). A designation, not a gate: this
+// previously claimed the BFF withheld them pending a second factor, which it does not — the BFF
+// permits them on the capability check alone, nothing here calls `requiresStepUp`, and no audit
+// event records a second factor. It is a placeholder for the OIDC/OpenFGA migration and must read
+// as one, because a reader deciding whether a promote is protected by MFA would otherwise be told
+// it is. Kept identical to the backend's `STEP_UP_CAPABILITIES`, which a test pins across the
+// language boundary.
 const STEP_UP: ReadonlySet<string> = new Set([CAP.MODEL_PROMOTE, CAP.SECRET_REVEAL])
 
 export function requiresStepUp(capability: string): boolean {

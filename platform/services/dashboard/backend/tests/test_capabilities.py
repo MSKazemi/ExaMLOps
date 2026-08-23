@@ -115,3 +115,90 @@ def test_require_capability_dependency():
     assert ei.value.status_code == 403
 
     assert guard(claims={"role": "admin"}) == {"role": "admin"}
+
+
+# ── the capability model spans two languages; keep the halves from drifting ───
+#
+# The UI and the BFF each hold their own copy of the step-up designation and of the capability
+# names. Nothing links them at build time, so a change on one side is silent on the other — and
+# the two halves disagreeing about *which* actions are high-risk is exactly the kind of
+# divergence nobody notices until it matters.
+
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_FRONTEND_CAPS = (
+    Path(__file__).resolve().parents[2] / "frontend" / "src" / "lib" / "capabilities.ts"
+)
+
+
+def _ts_source() -> str:
+    return _FRONTEND_CAPS.read_text()
+
+
+def _ts_step_up() -> set[str]:
+    """The capability values in the frontend's `STEP_UP` set."""
+    src = _ts_source()
+    m = re.search(r"const STEP_UP[^=]*=\s*new Set\(\[(.*?)\]\)", src, re.S)
+    assert m, "could not find the frontend STEP_UP set — the guard needs updating"
+    names = re.findall(r"CAP\.([A-Z_]+)", m.group(1))
+    catalogue = _ts_cap_catalogue()
+    return {catalogue[n] for n in names}
+
+
+def _ts_cap_catalogue() -> dict[str, str]:
+    """The frontend's `CAP` object as {NAME: 'value'}."""
+    src = _ts_source()
+    m = re.search(r"export const CAP = \{(.*?)\} as const", src, re.S)
+    assert m, "could not find the frontend CAP catalogue"
+    return dict(re.findall(r"([A-Z_]+):\s*'([^']+)'", m.group(1)))
+
+
+@pytest.mark.skipif(not _FRONTEND_CAPS.is_file(), reason="frontend not present")
+def test_step_up_designation_matches_across_the_language_boundary():
+    assert _ts_step_up() == set(cap.STEP_UP_CAPABILITIES), (
+        "the UI and the BFF disagree about which actions are designated step-up/MFA"
+    )
+
+
+@pytest.mark.skipif(not _FRONTEND_CAPS.is_file(), reason="frontend not present")
+def test_every_frontend_capability_exists_in_the_backend():
+    """A capability the UI names but the BFF has never heard of is a permanently dead control.
+
+    `deny_reason` would explain it as a role problem — "Your role ('admin') does not permit
+    'secrets.write'" — which sends the reader after the wrong thing entirely.
+    """
+    backend = set(cap.capabilities_for("admin")) | set(cap.capabilities_for("viewer"))
+    unknown = sorted(v for v in _ts_cap_catalogue().values() if v not in backend)
+    assert not unknown, f"frontend names capabilities the backend does not define: {unknown}"
+
+
+@pytest.mark.skipif(not _FRONTEND_CAPS.is_file(), reason="frontend not present")
+def test_step_up_is_not_described_as_enforced_while_nothing_enforces_it():
+    """Both directions: no "required/enforced" wording without a caller, and vice versa.
+
+    `requires_step_up` has no request-path caller and `requiresStepUp` has no component caller, so
+    the designation is a placeholder. Saying otherwise tells a reader a promote is protected by a
+    second factor when it is not.
+    """
+    backend_dir = Path(__file__).resolve().parents[1]
+    callers = [
+        p
+        for p in backend_dir.rglob("*.py")
+        if "tests" not in p.parts
+        and p.name != "capabilities.py"
+        and "requires_step_up" in p.read_text()
+    ]
+    ts = _ts_source()
+    claims_enforcement = "before the BFF permits" in ts or "require step-up" in ts
+
+    if not callers:
+        assert not claims_enforcement, (
+            "the frontend describes step-up as enforced by the BFF, but no request path calls "
+            "requires_step_up. Describe it as *designated*, not required."
+        )
+    else:
+        assert claims_enforcement, (
+            f"{[p.name for p in callers]} enforce step-up now — say so in the frontend comment "
+            "instead of calling it a placeholder."
+        )
