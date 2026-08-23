@@ -603,6 +603,37 @@ second session working the same checkout can land inside the run window. `tests/
 drives the hook with a stamp from the past and from the future, so a reporter that has quietly
 stopped firing fails the build instead of reading as "the tree was settled".
 
+### A unit test may not reach a running platform service
+
+The neighbouring accident is a test that passes because something happens to be listening. Two
+`exa chat` launcher tests were green for months on the developer's laptop only because a Skipper
+agent was answering on `:18004`; the same tests would have failed on a machine without it, and
+would have passed while proving nothing on a machine running a *different* agent.
+
+An autouse fixture in `tests/unit/conftest.py` refuses, for the duration of every unit test, a
+`connect`/`connect_ex` to **this host** on a port the platform's own services use — 14200 Prefect,
+15000 MLflow, 18001 Ray Serve, 18002 control plane, 18004 agent, 18099 dashboard:
+
+```
+AssertionError: this unit test connected to the Skipper agent at 127.0.0.1:18004. Whether that
+service is running is a property of this machine, not of the code under test — stub the client
+(see tests/unit/test_cli_chat.py::_isolate) or point at a port nothing serves.
+```
+
+The rule is deliberately narrow, because unit tests open sockets for good reasons:
+`test_vlm_serving_engine` starts its own `HTTPServer` on an ephemeral port, `test_datastore_reachability`
+probes a port it closed itself, and `test_cli_mcp` points at `127.0.0.1:1` precisely because nothing
+is there. None of those are affected — only the platform's well-known ports on the local host are.
+It is scoped to `tests/unit`, so integration tests keep their real connections. When a test genuinely
+needs to talk to one of those ports, stub the client, as `tests/unit/test_cli_chat.py::_isolate` does.
+
+Its first catch was the group of tests that assert every MCP read tool *degrades* rather than
+raising: they were calling the real endpoints, so a bare laptop exercised the error branch and a
+laptop with the stack up exercised the success branch. The `dead_services` fixture in the same
+conftest points every service URL at `127.0.0.1:1` — a refusal, instantly — so the degrade path is
+the one that runs everywhere. Request it from any test whose subject is what happens when a service
+is *not* there.
+
 ---
 
 ## GitHub Actions retirement

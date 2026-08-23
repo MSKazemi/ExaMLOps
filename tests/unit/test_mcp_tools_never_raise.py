@@ -41,7 +41,9 @@ READ_SPECS = [s for s in T.REGISTRY if not s.mutating]
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def db(tmp_path, monkeypatch, dead_services):
+    # ``dead_services``: the tools reach HTTP endpoints as well as the database, and the
+    # degrade path is what this module is about — see tests/unit/conftest.py.
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "never_raise.db"))
     from examlops.platform_db import init_db
 

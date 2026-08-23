@@ -48,7 +48,7 @@ def test_placement_sdk_and_mcp_agree(active_cluster):
     assert mcp_result["reason"] == sdk_result.reason
 
 
-def test_every_mcp_tool_speaks_the_result_envelope():
+def test_every_mcp_tool_speaks_the_result_envelope(dead_services):
     """Contract (item 4.6): every MCP tool returns a dict with a bool `ok` (+ `error` when False)."""
     import inspect
 

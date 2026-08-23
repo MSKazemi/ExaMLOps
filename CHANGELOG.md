@@ -7,6 +7,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **A unit test could pass because a service happened to be running on the developer's laptop.**
+  Two `exa chat` launcher tests were green for months only because a Skipper agent was answering on
+  `:18004`; on a machine without it they would have failed, and on a machine running a different
+  agent they would have passed while proving nothing. An autouse fixture in `tests/unit/conftest.py`
+  now refuses a connect to *this host* on a port the platform's own services use (14200 Prefect,
+  15000 MLflow, 18001 Ray Serve, 18002 control plane, 18004 agent, 18099 dashboard) and says which
+  service was reached and what to stub instead. Narrow on purpose: sockets a test opens itself, ports
+  nothing serves, and remote hosts are all untouched, and the rule is scoped to `tests/unit` so
+  integration tests keep their real connections. `tests/unit/test_live_service_guard.py` proves both
+  arms — with a real agent answering 200 on `:18004`, the unstubbed call is red.
+  The guard found its own first case on the way in: the eight tests that assert every MCP read tool
+  *degrades* rather than raising were calling the developer's real endpoints, so which branch they
+  exercised depended on which containers were up — the error path on a bare laptop, the success path
+  with the stack running, and neither is the claim. A `dead_services` fixture points them at
+  `127.0.0.1:1`, which refuses instantly: the degrade path now runs everywhere, and the two files
+  fell from connection timeouts to 11 s.
+
 - **The core CI gate could not fail on types, and `make preflight` mirrored the hole.**
   `test:examlops` is the job both `deploy:lxp` and `release:gitlab` name in `needs:` — the list the
   file itself calls the gate — and its mypy step ended in `|| true`, so the check every other gate
