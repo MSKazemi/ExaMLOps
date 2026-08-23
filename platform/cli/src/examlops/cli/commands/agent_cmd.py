@@ -23,10 +23,12 @@ would make ``exa`` unusable wherever the agent is not installed — which is mos
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import typer
 
@@ -234,3 +236,201 @@ def chat(
         _output.error(f"Could not execute {kq}.")
     except KeyboardInterrupt:
         raise typer.Exit(130) from None
+
+
+# ---------------------------------------------------------------------------
+# exa agent memory — the erasure surface ADR 0034 accepted
+# ---------------------------------------------------------------------------
+# ADR 0034 (Accepted) makes a governance promise: an operator can *enumerate, export and
+# erase* what the agent remembers, and it names `exa agent memory` as the surface. The
+# capability shipped — `skipper.memory_admin` does all three, with cascade and an audit
+# event — but only as `python -m skipper.memory_admin` run from inside the agent package.
+# A right-to-erasure control that requires knowing where the service's source tree lives
+# is not a control an operator has; the accepted decision was never actually delivered.
+#
+# It was not an oversight. This module's own docstring gives the reason: nothing here may
+# import `skipper`, because `exa` ships wherever the agent does not and a hard dependency
+# on langgraph would break the CLI everywhere else. That constraint is right, and it does
+# not require the command to be missing — only that the import happen *inside* the command
+# body, the same way `exa mcp` treats fastmcp. Absent the agent, this fails with a sentence
+# that says so; present, it is the surface the ADR described.
+
+_MEMORY_EXAMPLES = (
+    "Examples:\n\n"
+    "  [dim]# What does the agent remember, and how much of it?[/dim]\n"
+    "  exa agent memory stats\n\n"
+    "  [dim]# Enumerate one kind of memory[/dim]\n"
+    "  exa agent memory list pref\n\n"
+    "  [dim]# Everything one operator's name is attached to[/dim]\n"
+    "  exa agent memory list pref --scope alice\n\n"
+    "  [dim]# Export the whole store (subject access request)[/dim]\n"
+    "  exa agent memory export --out memories.json\n\n"
+    "  [dim]# Erase it, with cascade to derived memories (audited)[/dim]\n"
+    "  exa agent memory delete pref --scope alice"
+)
+
+memory_app = typer.Typer(
+    help="Enumerate, export and erase the agent's long-term memory (ADR 0034)",
+    no_args_is_help=True,
+    epilog=_MEMORY_EXAMPLES,
+    rich_markup_mode="rich",
+)
+
+
+def _memory_admin():
+    """Import the agent's memory admin, or explain precisely why it is unavailable.
+
+    Returns the module. Raises ``typer.Exit(1)`` after printing an actionable error, so
+    every caller here can treat a return value as usable.
+    """
+    import sys as _sys
+
+    agent_dir = os.getenv("EXAMLOPS_AGENT_DIR") or str(
+        Path(__file__).resolve().parents[6] / "platform" / "services" / "agent"
+    )
+    if agent_dir not in _sys.path:
+        _sys.path.insert(0, agent_dir)
+    try:
+        from skipper import memory_admin  # noqa: PLC0415 - deliberately lazy, see above
+
+        return memory_admin
+    except ImportError as exc:
+        _output.error(
+            f"The Skipper agent package is not importable from here ({exc}).",
+            hint=(
+                "This command reads the agent's own memory store, so it must run where the "
+                "agent is installed. Point at it with EXAMLOPS_AGENT_DIR=<repo>/platform/"
+                "services/agent, or install the agent's requirements."
+            ),
+        )
+        raise typer.Exit(1) from None
+
+
+def _store():
+    """Open the memory store and report which file was opened.
+
+    Naming the path is not decoration. The store is a local file (``AGENT_MEMORY_DB``) and
+    the agent usually runs somewhere else, so an operator who erases on the wrong host gets
+    a success message and keeps the data. Saying which file was touched makes that visible.
+    """
+    admin = _memory_admin()
+    try:
+        return admin, admin.open_store()
+    except Exception as exc:  # sqlite/langgraph both surface here
+        _output.error(
+            f"Could not open the agent memory store: {exc}",
+            hint="Check AGENT_MEMORY_DB (default ./skipper_memory.db) — it is a local file.",
+        )
+        raise typer.Exit(1) from None
+
+
+@memory_app.command("stats", epilog=_MEMORY_EXAMPLES)
+def memory_stats() -> None:
+    """Summarise what the agent remembers, by memory kind."""
+    admin, store = _store()
+    from skipper import config as _cfg  # noqa: PLC0415
+    from skipper import memory_types
+
+    data = memory_types.stats(store)
+    if _output.json_mode:
+        _output.print_json({"db": _cfg.AGENT_MEMORY_DB, **data})
+        return
+    rows = [[str(k), str(v)] for k, v in sorted(data.items())]
+    _output.print_table(f"Agent memory — {_cfg.AGENT_MEMORY_DB}", ["Kind", "Items"], rows)
+
+
+@memory_app.command("list", epilog=_MEMORY_EXAMPLES)
+def memory_list(
+    kind: str = typer.Argument(..., help="Memory kind: proc | episode | pref | kb"),
+    scope: str = typer.Option(None, "--scope", help="Task-class / model / operator scope"),
+    limit: int = typer.Option(50, "--limit", help="Maximum items to show"),
+) -> None:
+    """Enumerate stored memories of one kind."""
+    admin, store = _store()
+    from skipper import memory_types  # noqa: PLC0415
+
+    if kind not in memory_types.KINDS:
+        _output.error(
+            f"Unknown memory kind {kind!r}.", hint=f"Choose one of: {', '.join(memory_types.KINDS)}"
+        )
+        raise typer.Exit(1)
+    items = memory_types.list_kind(store, kind, scope=scope, limit=limit)
+    records = [{"key": it.key, "text": it.value.get("text", "")} for it in items]
+    if _output.json_mode:
+        _output.print_json(records)
+        return
+    if not records:
+        _output.detail(f"No {kind} memories" + (f" for scope {scope}" if scope else "") + ".")
+        return
+    _output.print_table(
+        f"{kind} memories" + (f" · scope {scope}" if scope else ""),
+        ["Key", "Text"],
+        [[r["key"], r["text"][:96]] for r in records],
+    )
+
+
+@memory_app.command("export", epilog=_MEMORY_EXAMPLES)
+def memory_export(
+    out: str = typer.Option(None, "--out", help="Write JSON here instead of stdout"),
+) -> None:
+    """Export every stored memory as JSON — the subject-access half of ADR 0034."""
+    admin, store = _store()
+    from skipper import memory_types  # noqa: PLC0415
+
+    data = memory_types.export_all(store)
+    # export_all is keyed by memory kind, so len(data) is the number of kinds, not of
+    # memories — count what the operator actually asked to see leave the building.
+    total = sum(len(v) for v in data.values()) if isinstance(data, dict) else len(data)
+    if out:
+        Path(out).write_text(json.dumps(data, indent=2, default=str))
+        _output.ok(f"Exported {total} memory item(s) to {out}")
+        return
+    _output.print_json(data)
+
+
+@memory_app.command("delete", epilog=_MEMORY_EXAMPLES)
+def memory_delete(
+    kind: str = typer.Argument(..., help="Memory kind to erase"),
+    scope: str = typer.Option(
+        None, "--scope", help="Limit erasure to one scope (e.g. an operator)"
+    ),
+    operator: str = typer.Option(
+        None, "--operator", help="Who is performing the erasure (audited)"
+    ),
+) -> None:
+    """Erase memories, cascading to derived ones. Audited to ``audit_events``.
+
+    The immutable audit log is a separate store and is deliberately *not* erased — ADR 0034
+    keeps the record that an erasure happened while removing what was remembered.
+    """
+    admin, store = _store()
+    from skipper import config as _cfg  # noqa: PLC0415
+    from skipper import memory_types
+
+    if kind not in memory_types.KINDS:
+        _output.error(
+            f"Unknown memory kind {kind!r}.", hint=f"Choose one of: {', '.join(memory_types.KINDS)}"
+        )
+        raise typer.Exit(1)
+    target = f"all {kind} memories" + (f" for scope {scope!r}" if scope else "")
+    # `_output.confirm` returns True under --json as well as --yes, which is right for the
+    # mutations it was written for: a script that asked to promote a model meant it. Erasure
+    # is the one case where that inference is unsafe — a monitoring script that adds --json to
+    # read the store would delete it instead. So here --json alone is not consent; --yes is.
+    if _output.json_mode and not _output.yes_mode:
+        _output.error(
+            "Refusing to erase without explicit consent.",
+            hint="Erasure is irreversible, so --json alone is not taken as a yes. Add --yes.",
+        )
+        raise typer.Exit(1)
+    if not _output.confirm(f"Erase {target} from {_cfg.AGENT_MEMORY_DB}? This cannot be undone."):
+        _output.detail("Nothing erased.")
+        return
+    n = memory_types.erase(store, kind, scope=scope, operator=operator or _cfg.AGENT_ACTOR)
+    if _output.json_mode:
+        _output.print_json({"erased": n, "kind": kind, "scope": scope, "db": _cfg.AGENT_MEMORY_DB})
+        return
+    _output.ok(f"Erased {n} {kind} memory item(s)" + (f" for {scope}" if scope else ""))
+
+
+app.add_typer(memory_app, name="memory")

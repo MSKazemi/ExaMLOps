@@ -417,11 +417,25 @@ Beyond per-conversation history, Skipper has **cross-session long-term memory** 
 - **Enumerate / export / erase** memory (GDPR) — deletions cascade and are audited; the immutable audit log is a separate store, untouched by erasure:
 
 ```bash
-make skipper-memory ARGS=stats                 # counts per kind
-make skipper-memory ARGS="list proc"           # list procedures
-make skipper-memory ARGS=export                 # dump all memory as JSON
-make skipper-memory ARGS="delete pref --scope alice"   # erase alice's preferences (audited)
-# equivalently, from platform/services/agent/:
+exa agent memory stats                          # counts per kind, and which store file
+exa agent memory list proc                      # list procedures
+exa agent memory list pref --scope alice        # everything attached to one operator
+exa agent memory export --out memory-backup.json
+exa agent memory delete pref --scope alice      # erase alice's preferences (audited)
+```
+
+`exa agent memory` is the surface ADR 0034 specified. It imports the agent package lazily,
+so it works wherever the agent is installed and says so plainly where it is not (set
+`EXAMLOPS_AGENT_DIR` if the agent lives outside this repo). Because erasure is
+irreversible, `--json` on its own is **not** taken as consent the way it is for other
+mutating commands — `exa --json agent memory delete` refuses unless you also pass `--yes`.
+
+The same operations are also reachable without the CLI, which is what the agent container
+uses:
+
+```bash
+make skipper-memory ARGS=stats
+# or, from platform/services/agent/:
 python -m skipper.memory_admin stats
 ```
 

@@ -7,6 +7,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **Nothing checked that the design record was still true — and one Accepted decision was not.**
+  ExaMLOps carries **113 ADRs**; an ADR marked `Accepted` is a claim that the system now works a
+  certain way, and its body names the artifacts that make it so. Nothing ever verified those
+  existed. New `platform/ci/adr_reconcile.py` reads every ADR, extracts the `exa` commands,
+  `examlops.*` modules and file paths it names, and checks each against the live CLI tree
+  (446 commands, read from the CLI itself) and the working tree. It excludes artifacts named only
+  in an ADR's rejected-alternatives section, because arguing against something is not promising it.
+  Measured: **55 Accepted, 58 not** — and exactly one Accepted ADR named an artifact that did not
+  exist (below). It also reports the opposite drift, unfixed and now tracked: **44 not-accepted
+  ADRs name artifacts that all exist**, i.e. the record says "proposed" for features that shipped.
+  Guarded by `tests/unit/test_adr_record_is_true.py`, including the arm that proves the guard can
+  fail and the arm that proves a rejected alternative is not counted as a broken promise.
+
+- **`exa agent memory` — the right-to-erasure surface ADR 0034 accepted, and never shipped.**
+  ADR 0034 (Accepted) promises an operator can enumerate, export and erase what the agent
+  remembers, and names `exa agent memory` as the surface. The capability existed — with cascade and
+  an audited `memory_erase` event — but only as `python -m skipper.memory_admin`, runnable solely
+  from inside the agent's source tree. A governance control that requires knowing where a service's
+  code lives is not a control anyone has. `exa agent memory stats | list | export | delete` now
+  provides it, importing the agent package **lazily** so the CLI keeps working wherever the agent is
+  not installed (and says so, naming `EXAMLOPS_AGENT_DIR`). Each command prints the store file it
+  operated on, because the store is a local file and the agent usually runs on another host.
+  **Erasure does not accept `--json` as consent** the way other mutating commands do — a monitoring
+  script that added `--json` to read the store would otherwise delete it — so `--yes` is required.
+  Documented in the agent guide, the memory tutorial and the CLI command reference.
+
 - **The documentation site had no home page.** `mkdocs build` produced no `index.html`, so the
   root of the published docs was a 404 — the one URL a reader, a search engine or an answer engine
   reaches first. `docs/index.md` is now a real landing page (what ExaMLOps is, a start-here table

@@ -594,6 +594,10 @@ answering, with empty strings, so it read as a weak model rather than a dead cre
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa agent status` | Reachability, LLM backend, model, and whether the long-term memory store actually attached. Prints the exact environment variable to repair when the backend is rejected. | First thing to run when the agent gives strange or empty answers — it separates "not running", "running with a dead key", and "running fine but with no long-term memory". | `exa agent status`<br>`exa --json agent status`<br>`exa -c lxp agent status` |
+| `exa agent memory stats` | How many memories the agent holds, by kind (`proc`, `episode`, `pref`, `kb`), and which store file was read. | Answering "what does this agent actually remember?" before you trust — or erase — anything. The path is printed because the store is a local file and the agent often runs on another host. | `exa agent memory stats`<br>`exa --json agent memory stats` |
+| `exa agent memory list` | Enumerate the stored memories of one kind, optionally narrowed to a scope (an operator, a model, a task class). | Reviewing what the agent learned about one person or one model — the enumerate half of the ADR 0034 governance promise. | `exa agent memory list pref`<br>`exa agent memory list pref --scope alice` |
+| `exa agent memory export` | Export every stored memory as JSON, to stdout or a file. | Answering a subject-access request, or taking a copy before an erasure. | `exa agent memory export --out memories.json` |
+| `exa agent memory delete` | Erase memories of one kind, cascading to derived memories, and write a `memory_erase` event to the audit chain. | The right-to-erasure control (ADR 0034). The audit record of the erasure survives; what was remembered does not. Irreversible, so `--json` alone is not consent — add `--yes`. | `exa agent memory delete pref --scope alice`<br>`exa --json --yes agent memory delete pref` |
 
 ### `exa ask` — natural-language front door to Skipper
 

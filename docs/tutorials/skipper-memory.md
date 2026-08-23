@@ -88,11 +88,12 @@ Enumerate, export, and erase memory (deletions cascade and are audited; the audi
 itself is a separate store and is preserved):
 
 ```bash
-make skipper-memory ARGS=stats                        # counts per kind
-make skipper-memory ARGS="list proc"                  # list procedures
-make skipper-memory ARGS=export > memory-backup.json  # GDPR export
-make skipper-memory ARGS="delete pref --scope alice"  # erase alice's preferences
-# or directly, from platform/services/agent/:
+exa agent memory stats                             # counts per kind
+exa agent memory list proc                         # list procedures
+exa agent memory export --out memory-backup.json   # GDPR export
+exa agent memory delete pref --scope alice         # erase alice's preferences
+# the same thing without the CLI, from platform/services/agent/:
+make skipper-memory ARGS=stats
 python -m skipper.memory_admin stats
 ```
 
