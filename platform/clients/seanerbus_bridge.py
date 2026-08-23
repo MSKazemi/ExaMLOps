@@ -341,6 +341,22 @@ class DriftTracker:
             log.info("Retrain triggered for %s → HTTP %d", model, r.status_code)
             _RETRAINS.inc()
             _bridge_stats["retrains_total"] += 1
+            # No human is present on this path — the bridge decides to retrain from live error
+            # rates — so it is the door that most needs a trace. The control plane cannot write
+            # it: it holds no platform.db. Off-loop, like every other SQLite write here.
+            await asyncio.to_thread(
+                write_audit_event,
+                "bridge",
+                None,
+                "retrain_triggered",
+                model,
+                {
+                    "reason": "drift",
+                    "error_rate": round(rate, 4),
+                    "dataset": "FDataDataset",
+                    "http_status": r.status_code,
+                },
+            )
         except httpx.HTTPError as exc:
             log.error("Retrain trigger failed for %s: %s", model, exc)
 
@@ -609,6 +625,20 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
         data = r.json()
         flow_run_id = data.get("flow_run_id") or ""
         log.info("Retrain accepted for %s → flow_run_id=%s", model, flow_run_id)
+        await asyncio.to_thread(
+            write_audit_event,
+            "bridge",
+            None,
+            "retrain_triggered",
+            model,
+            {
+                "reason": "bus_request",
+                "dataset": dataset,
+                "backend": backend,
+                "is_dummy": bool(req.is_dummy),
+                "flow_run_id": flow_run_id,
+            },
+        )
         return RetrainResV1(flow_run_id=flow_run_id)
     except httpx.HTTPError as exc:
         log.error("Retrain request failed for %s: %s", model, exc)

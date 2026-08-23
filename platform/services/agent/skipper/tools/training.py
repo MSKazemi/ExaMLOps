@@ -16,6 +16,38 @@ def list_pipeline_models() -> str:
     return "\n".join(f"- {m.get('model_name')}: {', '.join(m.get('datasets', []))}" for m in data)
 
 
+def _audit_retrain(
+    model_name: str, dataset_name: str, is_dummy: bool, backend_name: str, flow_run_id: str
+) -> None:
+    """Record an agent-initiated retrain in the platform audit log (best-effort).
+
+    The same action through the MCP surface writes an `mcp`/`retrain_triggered` event, and
+    `exa retrain` writes an `exa-retrain` one. Skipper wrote nothing, so whether the platform's
+    most consequential action left a trace depended on which door the agent came through. The
+    control plane, the one place every door passes through, cannot record it — it runs without
+    access to the shared platform.db. Never fails the command: an audit error must not turn a
+    successful retrain into a reported failure.
+    """
+    try:
+        from examlops.data.audit import write_audit_event
+
+        write_audit_event(
+            "skipper",
+            config.AGENT_ACTOR,
+            "retrain_triggered",
+            model_name,
+            {
+                "dataset": dataset_name,
+                "is_dummy": bool(is_dummy),
+                "backend": backend_name or None,
+                "flow_run_id": flow_run_id,
+                "via": "skipper-agent",
+            },
+        )
+    except Exception:  # noqa: BLE001 - auditing is best-effort, never fails the write
+        pass
+
+
 def _retrain_summary(model_name, dataset_name, is_dummy=False, backend_name=""):
     return f"Trigger retrain of {model_name} on {dataset_name} (dummy={is_dummy}, backend={backend_name or 'default'})"
 
@@ -48,6 +80,7 @@ def trigger_retrain(
     if err:
         return err
     fid = data.get("flow_run_id", "?")
+    _audit_retrain(model_name, dataset_name, is_dummy, backend_name, fid)
     return f"Retrain triggered. flow_run_id={fid}. Poll with get_retrain_status('{fid}')."
 
 

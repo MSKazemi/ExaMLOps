@@ -471,3 +471,85 @@ def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
 
     bridge._persist_inference_telemetry("JPCP", "Production", None, None, "job-2")
     assert seen["input"] == 0  # no embedding ⇒ no input snapshot
+
+
+# ── every door that can start a retrain must leave a trace ───────────────────
+#
+# A retrain is the platform's most consequential action — it can end in a production
+# promotion — and the bridge owns the two doors with no human on the other side: a drift
+# trigger fired from live error rates, and a retrain requested over the bus. Both were
+# silent. The control plane, the one place *every* caller passes through, cannot record it:
+# it runs without access to the shared platform.db (only `control_plane_data:/data`), so the
+# trace has to be written by the caller.
+
+
+@pytest.mark.asyncio
+async def test_drift_trigger_writes_an_audit_event(mock_http_client, monkeypatch):
+    seen: list[tuple] = []
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+
+    resp = MagicMock()
+    resp.status_code = 202
+    mock_http_client.post = AsyncMock(return_value=resp)
+    monkeypatch.setattr(bridge, "_RETRAINS", MagicMock())
+
+    tracker = bridge.DriftTracker.__new__(bridge.DriftTracker)
+    tracker._last_retrain = {}
+    tracker.cooldown = 0
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        await tracker._maybe_trigger("JPCP", 0.5)
+
+    assert len(seen) == 1, "a drift-driven retrain must be audited"
+    source, actor, action, target, details = seen[0]
+    assert (source, action, target) == ("bridge", "retrain_triggered", "JPCP")
+    assert details["reason"] == "drift"
+    assert details["error_rate"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_bus_retrain_request_writes_an_audit_event(mock_http_client, monkeypatch):
+    seen: list[tuple] = []
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+
+    resp = MagicMock()
+    resp.json.return_value = {"flow_run_id": "fr-77"}
+    resp.raise_for_status = MagicMock()
+    mock_http_client.post = AsyncMock(return_value=resp)
+
+    req = _RetrainReqV1()
+    req.model_name = "MACK"
+    req.dataset_name = "FDataDataset"
+    req.backend_name = "dataplane"
+    req.is_dummy = False
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._handle_retrain(req)
+
+    assert res.flow_run_id == "fr-77"
+    assert len(seen) == 1, "a bus-requested retrain must be audited"
+    source, actor, action, target, details = seen[0]
+    assert (source, action, target) == ("bridge", "retrain_triggered", "MACK")
+    assert details["reason"] == "bus_request"
+    assert details["flow_run_id"] == "fr-77"
+
+
+@pytest.mark.asyncio
+async def test_failed_retrain_is_not_audited_as_triggered(mock_http_client, monkeypatch):
+    """The other direction: a request that never reached the control plane is not a retrain."""
+    seen: list[tuple] = []
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+
+    mock_http_client.post = AsyncMock(side_effect=bridge.httpx.HTTPError("boom"))
+
+    req = _RetrainReqV1()
+    req.model_name = "MACK"
+    req.dataset_name = "FDataDataset"
+    req.backend_name = "dataplane"
+    req.is_dummy = False
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._handle_retrain(req)
+
+    assert getattr(res, "error_msg", "")
+    assert seen == [], "a failed trigger must not be recorded as a retrain"
