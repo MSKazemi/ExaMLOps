@@ -93,6 +93,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A control plane that cannot read its approval queue no longer reports an empty one.**
+  `/health` and `/status` answered an unreadable approval store with `pending_approvals: 0` —
+  the one value the platform encodes as *nothing is waiting*. `exa status` prints its approval
+  line only when the count is truthy, so the fabricated zero rendered as silence, byte-identical
+  to a genuinely clear queue; `exa production` reported the same zero from inside a
+  production-readiness check; the SDK's `or 0` turned it into a plain `int`. Both endpoints now
+  read through one helper that returns `None` for "could not read", `/health` reports `degraded`
+  when it does (so `exa production` fails instead of passing), `exa status` says the count is
+  unknown, and `PlatformStatus.pending_approvals` is `int | None`. Same correction `metrics.py`
+  already made for the Prometheus path, where a fallback age of `0` meant "none pending" and kept
+  `ApprovalsStale` silent exactly when it mattered.
+
 - **Two wrong facts in the environment-variable reference, both introduced by the documentation
   pass that was meant to make it trustworthy.** `EXAMLOPS_LLM_LAUNCHER` was published with the value
   set `external / compose / hpc / kserve`; there is no `hpc` launcher — the HPC one registers under

@@ -81,7 +81,7 @@ class PlatformStatus:
 
     reachable: bool
     services: dict[str, ServiceHealth]
-    pending_approvals: int
+    pending_approvals: int | None
     production_models: list[Any]
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -108,7 +108,11 @@ def status() -> PlatformStatus:
     return PlatformStatus(
         reachable=True,
         services=services,
-        pending_approvals=int(data.get("pending_approvals", 0) or 0),
+        # `or 0` would turn the control plane's "unknown" back into "none pending" — the
+        # exact fabrication the endpoint stopped making. None stays None.
+        pending_approvals=(
+            None if data.get("pending_approvals") is None else int(data["pending_approvals"])
+        ),
         production_models=list(data.get("production_models") or data.get("models") or []),
         raw=dict(data),
     )

@@ -1130,6 +1130,35 @@ def _retrain_key(model_name: str, dataset_name: str) -> str:
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
+def _pending_approvals_count() -> int | None:
+    """Pending approvals, or ``None`` when the store could not be read.
+
+    Both readers below used to answer an unreadable store with ``0`` — the one value this platform
+    encodes as "nothing is waiting". `exa status` prints its approval line only ``if
+    pending_count:``, so the fabricated zero is rendered as *silence*, the identical output a
+    genuinely empty queue produces; `exa production` reported the same zero inside a
+    production-readiness check. A broken approval store was therefore indistinguishable from a
+    clear one, at every surface, for as long as it stayed broken.
+
+    ``None`` is "unknown", which each caller can say out loud. This is the same correction
+    `metrics.py` already made for the Prometheus path, where a fallback age of 0 meant "none
+    pending" and kept `ApprovalsStale` silent exactly when it mattered.
+    """
+    conn = None
+    try:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read the approval store: %s", exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.get("/ready", include_in_schema=False)
 def ready() -> dict[str, str]:
     """Improvement 15: fast liveness probe — always 200 if the process is alive."""
@@ -1138,19 +1167,7 @@ def ready() -> dict[str, str]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    pending_count = 0
-    conn = None
-    try:
-        conn = _get_db()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
-        ).fetchone()
-        pending_count = row[0] if row else 0
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not query pending approvals count: %s", exc)
-    finally:
-        if conn:
-            conn.close()
+    pending_count = _pending_approvals_count()
 
     poller_enabled = MODELZOO_POLL_SECONDS > 0
     poller_info: dict[str, Any] = {"enabled": poller_enabled}
@@ -1169,6 +1186,12 @@ def health() -> dict[str, Any]:
         status = "starting"
     else:
         status = "ok" if all(v == "ok" for v in _startup_checks.values()) else "degraded"
+    # A store this process cannot read is a degraded control plane, whatever the startup checks
+    # concluded once at boot. Without this, `status` stayed "ok" beside a null count, and
+    # `exa production` — which gates on `status == "ok"` — passed a platform whose approval queue
+    # nobody could see.
+    if pending_count is None:
+        status = "degraded"
     return {
         "status": status,
         "prefect_api_url": PREFECT_API_URL,
@@ -1202,19 +1225,7 @@ def platform_status() -> dict[str, Any]:
         except Exception:
             return False, None
 
-    pending_count = 0
-    conn = None
-    try:
-        conn = _get_db()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
-        ).fetchone()
-        pending_count = row[0] if row else 0
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        if conn:
-            conn.close()
+    pending_count = _pending_approvals_count()
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         f_mlflow = pool.submit(_ping, f"{MLFLOW_URL}/health")

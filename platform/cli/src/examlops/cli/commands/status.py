@@ -106,7 +106,15 @@ def _render_status(cfg, watch: bool) -> None:
 
     # ── Pending approvals ──────────────────────────────────────────────────
     pending_count = data.get("pending_approvals", 0)
-    if pending_count:
+    if pending_count is None:
+        # Not the same as zero. The control plane could not read the approval store, and the line
+        # below prints nothing for a falsy count — so treating unknown as 0 renders a broken queue
+        # as the silence that means "nothing waiting".
+        _output.warning(
+            "pending approvals unknown — the control plane could not read the approval store; "
+            "run: exa doctor"
+        )
+    elif pending_count:
         _output.warning(
             f"{pending_count} pending approval{'s' if pending_count != 1 else ''} — run: exa approvals list"
         )
