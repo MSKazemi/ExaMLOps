@@ -7,6 +7,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`exa chat` — the conversation is reachable from the CLI, without a second chat client.**
+  `exa ask` is one-shot; nothing in `exa` held a back-and-forth. The obvious move would have
+  been to write a REPL, and it would have been wrong: ExaMLOps already decided this question
+  and wrote the decision down in `platform/services/agent/kube-q/README.md` — the terminal
+  client is [kube-q](https://github.com/MSKazemi/kube_q) (`kq`), used unforked from PyPI, and
+  the platform adapts *to it* through the OpenAI-compatible bridge, so one binary can drive
+  ExaMLOps, KubeIntellect, or any other agentic backend by URL.
+
+  So `exa chat` is a launcher. It resolves the agent URL from the CLI's own configuration,
+  forwards `AGENT_API_KEY` when set, and execs `kq`; anything after `--` passes straight
+  through. That inherits session history and resume, full-text search across past
+  conversations, branching, `/approve` and `/deny` for the HITL gate, token and cost
+  accounting, and Rich rendering — none of which a hand-rolled REPL would have had.
+
+  What it adds over the existing `make skipper-chat` is what a Makefile target cannot do:
+  context awareness. `exa -c lxp chat` reaches the agent in the *lxp* context without editing
+  a profile or exporting a variable.
+
+  It declines to auto-install `kq` (installing a package as a side effect of a chat command is
+  a surprise, not a service) and refuses `--json` outright rather than emitting something
+  unusable for an interactive session. 4 guards, two proved red by hardcoding the URL and by
+  dropping the JSON check.
+
 - **`exa agent status` — the agent can now be interrogated, not just talked to.** `exa ask`
   could send a question but nothing could ask the agent about *itself*, and that gap had a
   measurable cost: when Skipper's Azure key was rejected the agent kept answering every
@@ -142,6 +165,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `tests/unit/test_deploy_integrity.py`.
 
 ### Fixed
+
+- **The agent card also promised peers a task-history capability the MCP surface does not have.**
+  `capabilities.stateTransitionHistory` was hard-coded `True`. In A2A that flag tells a peer it may
+  ask for a task's status-transition history — which needs a task concept, and this surface has
+  none: no task id, no task store, no `tasks/get` anywhere in `examlops/mcp`. The string appeared
+  exactly once in the codebase, in the literal that publishes it. `audit_events` is not a
+  substitute; it records what the platform did, not the lifecycle of an A2A task.
+
+  Now `False`, with the reason inline so it is flipped back deliberately rather than by habit.
+  `streaming` and `pushNotifications` were already conservative and stay as they are —
+  under-claiming costs nothing, over-claiming is a promise a peer may act on. Both directions are
+  guarded in `tests/unit/test_agent_card_security_claim.py`: the history flag is tied to whether
+  task machinery actually exists, proved by dropping a `TaskStore` into `examlops/mcp` and watching
+  the guard demand `True` back. Live card verified after the change — 46 skills, all three
+  capability flags `False`.
 
 - **The A2A agent card told peers that OIDC tokens were verified. Nothing verifies them.**
   `examlops.oidc` implements RS256 validation against the issuer JWKS, and `config_validate` warns

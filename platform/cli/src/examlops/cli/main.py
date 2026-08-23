@@ -140,7 +140,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     # category simply had no name, which reads identically to absence.
     # `explain` deliberately stays in Getting Started: it introspects the Click tree and involves
     # no agent, so filing it here would make the panel a lie.
-    ("Agents & Automation", ["ask", "agent", "agentops", "autopilot", "mcp"]),
+    ("Agents & Automation", ["ask", "chat", "agent", "agentops", "autopilot", "mcp"]),
     ("Monitoring & Quality", ["drift", "eval", "slo", "fairness"]),
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
@@ -235,6 +235,15 @@ def main(
 
 
 app.add_typer(agent_cmd.app, name="agent", help="Skipper agent — health, backend and memory")
+# `chat` sits at the top level rather than under `agent`: it is the thing an operator reaches
+# for by name, and burying the conversation one level down behind a diagnostics group would be
+# the same discoverability mistake the Agents & Automation panel exists to correct.
+app.command(
+    "chat",
+    help="Interactive conversation with the Skipper agent (kq client)",
+    epilog=agent_cmd._CHAT_EXAMPLES,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)(agent_cmd.chat)
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
 app.add_typer(
     autopilot_cmd.app,

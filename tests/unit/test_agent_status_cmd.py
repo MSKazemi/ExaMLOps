@@ -129,3 +129,81 @@ def test_a_non_object_response_is_not_mistaken_for_an_agent(monkeypatch):
     result = runner.invoke(agent_cmd.app, ["status"])
     assert result.exit_code != 0
     assert "really the agent" in result.output
+
+
+# ── `exa chat` — a launcher, not a second chat client ────────────────────────────────
+# ExaMLOps already decided this: platform/services/agent/kube-q/README.md says the terminal
+# client is kube-q (`kq`), used unforked from PyPI, and the platform adapts to it via the
+# OpenAI-compatible bridge. These tests pin the properties that keep `exa chat` a launcher —
+# if it ever grows its own REPL, the session history, search, branching and /approve gate that
+# `kq` already provides would have to be rebuilt here, badly.
+
+
+def test_chat_execs_kq_against_the_configured_agent_url(monkeypatch):
+    import shutil
+    import subprocess
+
+    from examlops.cli import _config
+
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: "/usr/bin/kq")
+    monkeypatch.setattr(
+        _config, "load_config", lambda: _config.Config(agent_url="http://agent.test:18004")
+    )
+    monkeypatch.setattr(agent_cmd, "load_config", _config.load_config)
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+
+    seen = {}
+    monkeypatch.setattr(subprocess, "call", lambda argv: seen.setdefault("argv", argv) and 0)
+
+    app = _chat_app()
+    result = runner.invoke(app, [])
+
+    assert seen["argv"][:3] == ["/usr/bin/kq", "--url", "http://agent.test:18004"]
+    assert result.exit_code == 0
+
+
+def test_chat_forwards_the_api_key_only_when_one_is_set(monkeypatch):
+    import shutil
+    import subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: "/usr/bin/kq")
+    monkeypatch.setenv("AGENT_API_KEY", "s3cret")
+    seen = {}
+    monkeypatch.setattr(subprocess, "call", lambda argv: seen.setdefault("argv", argv) and 0)
+
+    runner.invoke(_chat_app(), [])
+
+    assert "--api-key" in seen["argv"]
+    assert "s3cret" in seen["argv"]
+
+
+def test_chat_does_not_install_kq_for_you(monkeypatch):
+    """Auto-installing a package as a side effect of a chat command is a surprise, not a service."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: None)
+    result = runner.invoke(_chat_app(), [])
+    assert result.exit_code != 0
+    assert "not installed" in result.output
+    assert "uv pip install kube-q" in result.output
+
+
+def test_chat_refuses_json_mode_rather_than_pretending(monkeypatch):
+    """An interactive REPL has no machine-readable form; say so instead of emitting junk."""
+    from examlops.cli import _output
+
+    monkeypatch.setattr(_output, "json_mode", True)
+    result = runner.invoke(_chat_app(), [])
+    assert result.exit_code != 0
+    assert "interactive" in result.output
+
+
+def _chat_app():
+    """Wrap the callback the way main.py registers it, so the test exercises the real shape."""
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        "chat", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+    )(agent_cmd.chat)
+    return app

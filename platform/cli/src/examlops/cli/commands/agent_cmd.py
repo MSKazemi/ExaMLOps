@@ -24,6 +24,9 @@ would make ``exa`` unusable wherever the agent is not installed — which is mos
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 
 import typer
 
@@ -39,7 +42,19 @@ _EXAMPLES = (
     "  [dim]# Point at an agent running elsewhere[/dim]\n"
     "  AGENT_URL=http://lxp-cpu01:18004 exa agent status\n\n"
     "  [dim]# Then talk to it[/dim]\n"
-    '  exa ask "which models are drifting?"'
+    '  exa ask "which models are drifting?"\n\n'
+    "  [dim]# Or hold a conversation[/dim]\n"
+    "  exa chat"
+)
+
+_CHAT_EXAMPLES = (
+    "Examples:\n\n"
+    "  [dim]# Interactive conversation with the agent[/dim]\n"
+    "  exa chat\n\n"
+    "  [dim]# Against the agent in another environment[/dim]\n"
+    "  exa -c lxp chat\n\n"
+    "  [dim]# Pass options straight through to kq[/dim]\n"
+    "  exa chat -- --resume last"
 )
 
 app = typer.Typer(
@@ -162,3 +177,60 @@ def _memory_line(enabled: bool, active: bool, tick: str, cross: str) -> str:
     if active:
         return f"{tick} long-term store attached"
     return f"{cross} enabled but NOT attached — short-term only"
+
+
+def chat(
+    ctx: typer.Context,
+    kq_args: list[str] = typer.Argument(
+        None,
+        help="Extra arguments passed straight through to kq (put them after --)",
+        metavar="[-- KQ_ARGS...]",
+    ),
+) -> None:
+    """Hold an interactive conversation with the Skipper agent.
+
+    A launcher, deliberately — not a chat client. ExaMLOps already decided this question and
+    wrote the answer down in ``platform/services/agent/kube-q/README.md``: the terminal client
+    is `kube-q <https://github.com/MSKazemi/kube_q>`_ (``kq``), used **unforked from PyPI**, and
+    the platform adapts *to it* by exposing an OpenAI-compatible bridge on the agent server. One
+    binary drives ExaMLOps, KubeIntellect, or any other agentic backend by URL.
+
+    Writing a second REPL here would contradict that and lose everything ``kq`` already has —
+    session history and resume, full-text search across past conversations, conversation
+    branching, ``/approve`` and ``/deny`` for the human-in-the-loop gate, token and cost
+    accounting, Rich rendering. All of that arrives for the cost of resolving one URL.
+
+    What this adds over ``make skipper-chat`` is the thing the Makefile cannot do: it honours
+    the CLI's own configuration, so ``exa -c lxp chat`` talks to the agent in the *lxp* context
+    without anyone editing a profile or exporting a variable.
+    """
+    if _output.json_mode:
+        _output.error(
+            "exa chat is interactive and has no machine-readable form.",
+            hint='Use: exa --json ask "<question>"   (or: exa --json agent status)',
+        )
+        return
+
+    kq = shutil.which("kq") or shutil.which("kq", path=os.path.dirname(sys.executable))
+    if not kq:
+        _output.error(
+            "The kq terminal client is not installed.",
+            hint="Install it with: uv pip install kube-q   "
+            "(exa chat deliberately does not install it for you)",
+        )
+        return
+
+    cfg = load_config()
+    argv = [kq, "--url", cfg.agent_url.rstrip("/")]
+    token = os.getenv("AGENT_API_KEY", "")
+    if token:
+        argv += ["--api-key", token]
+    argv += list(kq_args or []) + list(ctx.args)
+
+    _output.detail(f"Connecting to the Skipper agent at {cfg.agent_url} …")
+    try:
+        raise typer.Exit(subprocess.call(argv))
+    except FileNotFoundError:  # pragma: no cover - shutil.which just found it
+        _output.error(f"Could not execute {kq}.")
+    except KeyboardInterrupt:
+        raise typer.Exit(130) from None

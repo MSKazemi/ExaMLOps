@@ -126,6 +126,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Is the agent up, and on which backend?", "exa agent status"),
         ("As a health gate (exits 1 if unusable)", "exa --json agent status"),
         ("Check the agent in another environment", "exa -c lxp agent status"),
+        ("Hold a conversation with it", "exa chat"),
     ],
     # GenAI & LLMOps
     "genai": [

@@ -554,6 +554,25 @@ were previously spread across four other panels — correct and complete, but wi
 the category, which made the surface read as missing when it was not. `exa explain` deliberately
 stays under Getting Started: it introspects the command tree and calls no agent.
 
+### `exa chat` — hold a conversation with the agent
+
+A launcher, deliberately, not a second chat client. ExaMLOps settled this question already
+(`platform/services/agent/kube-q/README.md`): the terminal client is
+[kube-q](https://github.com/MSKazemi/kube_q) (`kq`), used **unforked from PyPI**, and the platform
+adapts *to it* by exposing an OpenAI-compatible bridge on the agent server — so one binary drives
+ExaMLOps, KubeIntellect, or any other agentic backend by URL. Everything `kq` already has arrives
+for free: session history and resume, full-text search over past conversations, conversation
+branching, `/approve` and `/deny` for the human-in-the-loop gate, token/cost accounting, and Rich
+rendering.
+
+What this adds over `make skipper-chat` is the thing a Makefile target cannot do: it honours the
+CLI's own configuration, so `exa -c lxp chat` reaches the agent in the *lxp* context without
+editing a profile or exporting a variable.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa chat` | Launches `kq` against the agent URL resolved from your active context, forwarding `AGENT_API_KEY` when set. Anything after `--` is passed straight through to `kq`. | A back-and-forth investigation where each answer changes the next question — as opposed to `exa ask`, which is one shot. | `exa chat`<br>`exa -c lxp chat`<br>`exa chat -- --resume last` |
+
 ### `exa agent` — is the agent up, and which brain is it using?
 
 Interrogates the running Skipper agent over the same HTTP surface `exa ask` uses, reporting what
