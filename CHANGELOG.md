@@ -57,8 +57,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `test_trim_middleware_shrinks_what_the_model_receives` asserts on the message list the model
   was actually handed, and was verified red-green — restoring the `before_model` form fails it
   with `assert 400 < 400`. The previous test asserted only that the graph compiled, which the
-  broken form also satisfies. Agent suite 206 → **207 passing, and the 24 deprecation warnings
-  per run are now zero**.
+  broken form also satisfies. The migration added one test and removed every
+  `create_react_agent` deprecation warning: the agent suite is **241 passing with zero
+  `create_react_agent` warnings** (the two that remain are unrelated — pytest_asyncio's unset
+  `asyncio_default_fixture_loop_scope` and starlette's httpx notice).
 
 ### Fixed
 
