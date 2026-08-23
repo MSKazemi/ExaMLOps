@@ -101,7 +101,10 @@ Installs the `seanergys-modelzoo` package with dev + ci extras from `modelzoo/`,
 
 **Integration test behaviour:**
 - `test_model_pipeline.py` — uses `is_dummy=True`, always runs fully offline.
-- `test_model_train.py` / `test_model_save_load.py` — use fixture files from `modelzoo/tests/fixtures/sample_data/`. They **auto-skip** when fixtures are absent (run `make sample-data` inside `modelzoo/` to generate them). `sample_pm100.parquet` ships in the repo so JPCP-based cases run without extra setup.
+- `test_model_train.py` / `test_model_save_load.py` — use fixture files from `modelzoo/tests/fixtures/sample_data/`. They **auto-skip** when fixtures are absent. Generate them with
+  `cd modelzoo && poetry run python scripts/create_sample_data.py`. (Several docstrings in that upstream
+  tree still point at a Makefile target for this; `modelzoo/Makefile` is empty, so the script is the
+  working route. modelzoo is read-only here, so the wording there is not ours to correct.) `sample_pm100.parquet` ships in the repo so JPCP-based cases run without extra setup.
 
 ### test:infra:compose
 **Image:** `docker:25` + `docker:25-dind` service

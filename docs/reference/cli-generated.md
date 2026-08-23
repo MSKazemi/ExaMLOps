@@ -27,6 +27,50 @@ Enqueue a work item (durable; drained under the global + per-tenant caps).
 - `--project` — Project attribution
 - `--priority` — Higher runs first within a tenant
 
+## `exa agent`
+
+Skipper agent — health, backend and memory
+
+### `exa agent memory`
+
+Enumerate, export and erase the agent's long-term memory (ADR 0034)
+
+#### `exa agent memory delete`
+
+Erase memories, cascading to derived ones. Audited to ``audit_events``.
+
+The immutable audit log is a separate store and is deliberately *not* erased — ADR 0034
+keeps the record that an erasure happened while removing what was remembered.
+
+- `--scope` — Limit erasure to one scope (e.g. an operator)
+- `--operator` — Who is performing the erasure (audited)
+
+#### `exa agent memory export`
+
+Export every stored memory as JSON — the subject-access half of ADR 0034.
+
+- `--out` — Write JSON here instead of stdout
+
+#### `exa agent memory list`
+
+Enumerate stored memories of one kind.
+
+- `--scope` — Task-class / model / operator scope
+- `--limit` — Maximum items to show
+
+#### `exa agent memory stats`
+
+Summarise what the agent remembers, by memory kind.
+
+### `exa agent status`
+
+Show the agent's reachability, LLM backend, model and memory tier.
+
+Exits non-zero when the agent is unreachable *or* when it is up but its backend is
+unusable. Both mean "do not trust an answer from this agent", which is the question a
+script is really asking, and collapsing them into one exit code is what makes this
+usable as a health gate.
+
 ## `exa agentops`
 
 AgentOps — agent trace & tool-call analytics
@@ -287,6 +331,10 @@ Build a structured model card from live data — gaps as 'not provided' (R3/R4).
 - `--tenant` — Tenant scope (D6)
 - `--out` — Write the card Markdown to this file
 - `--save` — Persist a versioned card
+
+## `exa chat`
+
+Interactive conversation with the Skipper agent (kq client)
 
 ## `exa compliance`
 
@@ -734,6 +782,20 @@ Configure the regression gate for a model.
 #### `exa eval gate show`
 
 Show the configured gate for a model.
+
+### `exa eval operator-qa`
+
+Ask the agent a fixed set of operator questions and report the pass rate.
+
+Measures whether the agent can answer what a new operator actually asks. Grading is
+deterministic (does the answer name the right command), so no judge model is involved and
+no judge calibration is required. Exits non-zero if the agent is unreachable, so an
+unanswerable run can never be mistaken for a bad score.
+
+- `--category` — Only questions in this category
+- `--out` — Write the answers as JSONL (feeds `exa eval run`)
+- `--agent-url` — Agent bridge base URL (default: configured agent_url)
+- `--timeout` — Per-question timeout in seconds
 
 ### `exa eval run`
 
@@ -2132,6 +2194,9 @@ Secrets management, rotation, and leak scanning
 ### `exa secrets get`
 
 Resolve a secret. Redacts by default; --reveal prints plaintext.
+
+Also reports the backend that served it (vault/local/env), and warns when a configured
+vault was unreachable — that fallback changes which store the value came from.
 
 - `--tenant` — Tenant scope
 - `--reveal` — Print the plaintext value (dangerous)

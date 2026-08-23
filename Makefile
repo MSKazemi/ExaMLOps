@@ -82,7 +82,10 @@ endif
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
-        agent \
+        agent agent-chat agent-server \
+        skipper skipper-chat skipper-server skipper-test skipper-memory \
+        finops-providers finops-plugin-example \
+        remote-rebuild selfheal smoke-check \
         test-postgres \
         venv install install-dev install-hooks clean \
         lint lint-fix typecheck test test-unit test-integration test-cov check \

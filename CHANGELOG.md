@@ -7,6 +7,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`docs/reference/cli-generated.md` had gone stale, and nothing could have noticed.** Only
+  `make docs-cli` writes it, no CI job runs that target, and no test compared it — so the committed
+  machine-generated reference silently drifted from the CLI. It was missing the whole
+  `exa agent memory` group: four commands including ADR 0034's right-to-erasure surface.
+  Regenerated, and guarded — the committed file must equal what `exa docs` produces now. A
+  generated file nobody regenerates is worse than no file, because a reader trusts it precisely
+  for looking machine-produced.
+
+- **The Makefile: 87 targets, and the three things it claims about itself now hold.** Twelve
+  targets were not `.PHONY` — the file already declared 78 of 87, so full coverage was clearly the
+  intent and the rest drifted out as targets were added. None collides with a real path today,
+  which is why it goes unnoticed: the day a `smoke-check` script or a `skipper` link appears at the
+  repo root, `make` answers *nothing to be done* and the target silently stops running. All 87 are
+  now declared, and `tests/unit/test_makefile_is_honest.py` holds three claims: every target is
+  `.PHONY`, every target appears in `make help` (the discovery surface — a target missing from it
+  does not exist for a new operator), and every `make <target>` named in the docs is a target that
+  exists. The last found one: `docs/guides/cicd.md` sent readers to `make sample-data` inside
+  `modelzoo/`, whose Makefile is **empty**; the working route is
+  `poetry run python scripts/create_sample_data.py`.
+
+- **The lint scope is now enforced to be the same in all five places it is written.** CLAUDE.md
+  names this as an invariant that "must agree" and nothing checked it. Disagreement fails silently
+  and in one direction — the local gate passes over a narrower tree than CI inspects, so the first
+  sign is a red pipeline after a push. The guard compares the scope in the Makefile, `.gitlab-ci.yml`
+  and the GitHub workflow, and refuses to pass when a file yields no scope at all (a scan that finds
+  nothing must fail, not report agreement).
+
 - **The CLI's own help printed four commands the CLI rejects.** The epilogs are the
   copy-paste surface — an operator types what the help shows — and nothing checked that what
   they show can be typed. `exa autopilot run --model JPCP` (three places, including this
