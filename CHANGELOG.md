@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The CLI reference now cannot drift from the CLI.** `docs/reference/cli-commands-guide.md`
+  opens by claiming to document every `exa` command — a claim that was true on the day it was
+  written and nowhere enforced since. A diff against the live Typer tree found `exa eval
+  operator-qa` documented nowhere, and two stale counts (the guide said v0.46.0, `CLAUDE.md` said
+  "~345 commands"; the tree has 365 leaves under 62 groups). The row is written and the counts are
+  corrected, but the fix is `tests/unit/test_cli_guide_coverage.py`: it walks the live tree and
+  fails when a command exists that the guide has never heard of, and fails the other way when the
+  guide sends an operator to a command that has been removed. Proved by deleting the new row and
+  watching it go red. The guide stays hand-written — it carries a use case and a chosen example,
+  which no generator produces; only the *completeness* claim is now machine-checked.
+
 - **The Helm chart is now gated by CI — on both mirrors — and by `make preflight`.** Nothing
   validated it before: `make helm-validate` appeared in no CI file at all, which is how four
   defects reached a published artifact, including a default that could never install and an

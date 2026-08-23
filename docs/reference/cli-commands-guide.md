@@ -10,7 +10,8 @@ organized by the twelve MLOps-lifecycle areas that `exa --help` groups commands 
 > same "what can I do here / show me" help this document gives is one keystroke away on the CLI.
 
 > **Conventions**
-> - Every example is grounded in the live CLI (`exa` v0.46.0). Run any command with `-h`/`--help`
+> - Every example is grounded in the live CLI (`exa` v0.48.0 — 365 leaf commands under 62 groups,
+>   held to the live tree by `tests/unit/test_cli_guide_coverage.py`). Run any command with `-h`/`--help`
 >   for its full options, or `exa explain <cmd>` for plain-language help.
 > - **Mutating / outward-facing** commands (training runs, deploys, promotions, approvals, secret
 >   writes, sends) are marked *(mutation)*. Where possible the example uses `--dry-run`/`--dummy`;
@@ -704,6 +705,7 @@ Runs deterministic eval suites, ingests delayed ground-truth labels to compute r
 | `exa eval feedback ingest` | **[mutation]** Ingest delayed ground-truth label(s), keyed by prediction `request_hash`. `--request-hash/-r`, `--label/-l`, `--source/-s` (manual), or `--from-csv`. | Feed observed outcomes back for accuracy scoring. | `exa eval feedback ingest --request-hash hash-1 --label 88.5` |
 | `exa eval feedback accuracy <model>` | Compute live accuracy (RMSE/MAE) from labelled predictions — real quality. `--alias/-a`, `--record` persists to `live_metrics`. | Report true production accuracy, not a proxy. | `exa eval feedback accuracy JPCP --alias Production` |
 | `exa eval feedback join <model>` | Show prediction/label pairs joined on `request_hash` (delayed-label join). `--alias/-a`. | Inspect which predictions have labels yet. | `exa eval feedback join JPCP --alias Production` |
+| `exa eval operator-qa` | Ask the agent a fixed set of operator questions and report the pass rate. Grading is **deterministic** (does the answer name the right command), so no judge model and no judge calibration are involved. Exits non-zero if the agent is unreachable, so an unanswerable run cannot be mistaken for a bad score. `--category`, `--out` (JSONL, feeds `exa eval run`), `--agent-url`, `--timeout`. | Measure whether the agent can answer what a new operator actually asks — before pointing anyone at it. | `exa eval operator-qa --category serving` |
 | `exa eval gate run <model> <candidate>` | Run the regression gate for a candidate version (exit 1 in block mode on failure) — CI-safe (R10). `--higher-is-better`/`--lower-is-better`. | Block promotion of a regressing candidate in CI. | `exa eval gate run JPCP 18` |
 | `exa eval gate set <model>` | **[mutation]** Configure the regression gate. Required `--suite`, `--metric metric[:min=X][:max_drop=Y]` (repeatable); `--baseline` (Production), `--mode block\|warn`. | Declare which metrics guard a model's promotions. | `exa eval gate set JPCP --suite smoke --metric rmse:max_drop=0.5 --mode block` |
 | `exa eval gate show <model>` | Show the configured regression gate for a model. | Verify gate config before a release. | `exa eval gate show JPCP` |
