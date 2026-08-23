@@ -661,10 +661,11 @@ release:gitlab:
     - |
       VERSION="${CI_COMMIT_TAG#v}"
       awk -v v="$VERSION" '
-        $0 ~ "^## \\[" v "\\]" { inside = 1; next }
-        inside && /^## \[/        { exit }
-        inside                     { print }
-      ' CHANGELOG.md > release-notes.md
+        BEGIN { gsub(/\./, "\\.", v) }              # 0.48.0 must not match 0X48Y0
+        $0 ~ "^## \\[v?" v "\\]" { inside = 1; next }  # headings use both [0.46.0] and [v0.48.0]
+        inside && /^## \[/          { inside = 0 }    # not `exit`: 0.37.0 already heads two
+        inside                       { print }         #   sections, and they are only both read
+      ' CHANGELOG.md > release-notes.md                #   today because rule 1 is evaluated first
       if [ ! -s release-notes.md ]; then
         echo "CHANGELOG.md has no '## [$VERSION]' section — tag $CI_COMMIT_TAG has nothing to describe." >&2
         exit 1

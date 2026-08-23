@@ -7,6 +7,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The job that publishes a release could not find the last two releases' notes.**
+  `release:gitlab` builds the GitLab Release description by awk-ing the tag's own section out of
+  this file, and exits 1 when the result is empty — deliberately, as the cheapest check that the
+  CHANGELOG was updated before tagging. That makes it a release blocker, and it was about to block:
+  the file carries two heading styles (`## [0.46.0]` and `## [v0.48.0]`), the job strips the leading
+  `v` from the tag before matching, so **v0.47.0 and v0.48.0 both extracted to nothing** and the
+  next tag in that style would have turned a tag pipeline red after every test job passed. The
+  match now accepts either style, escapes the dots in the version (`0.48.0` was a regex that also
+  matched `0X48Y0`), and collects *every* section a version heads rather than stopping at the first
+  following heading — `0.37.0` heads two, and they are both read today only because awk happens to
+  evaluate the heading rule before the exit rule. Guarded by
+  `tests/unit/test_release_notes_are_extractable.py`, which runs the **real awk program parsed out
+  of `.gitlab-ci.yml`** so the test cannot drift from what CI does, and which fails both ways: on a
+  tag whose section is missing, and on an exemption that has outlived its reason.
+  Known gap, recorded not fixed: **v0.29.0, v0.30.0 and v0.36.0 have no CHANGELOG section at all**
+  and predate this job; they are named in the guard so no new tag can join them silently.
+
 - **37 documentation pages were in no navigation at all.** `mkdocs build --strict` fails on a
   broken *link*; it says nothing about a page nothing points at. Such a page builds, deploys, and is
   reachable only by site search or by knowing its URL — so 17 shipped features looked undocumented
