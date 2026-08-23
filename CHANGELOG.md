@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The Grafana panel guard read build artifacts as if they were source.** Its metric inventory
+  walked the whole repo excluding only `node_modules` and `.venv`, so `platform/cli/build/lib/
+  examlops` — a gitignored, untracked duplicate of the CLI package — contributed 241 of the 1096
+  files it scanned. A metric declared only there was accepted as emitted (demonstrated with a
+  probe), which means the guard's verdict depended on whether anyone had run a build: a panel
+  querying a metric no source file declares could pass locally and fail in CI. Both scans now go
+  through one `_source_files()` helper that excludes copies of source and asserts it found files.
+  The new guard builds its own fixture tree rather than asserting against this repo, because
+  `build/` does not exist in CI and a check phrased against the real tree would pass there without
+  testing anything.
+
 - **Two tests named a behaviour they could not detect.** `test_quiet_suppresses_info_and_hint`
   called `info()` and `hint()` under quiet mode and asserted nothing, so it passed whether quiet
   suppressed the output, printed it, or the emitters printed in no mode at all;
