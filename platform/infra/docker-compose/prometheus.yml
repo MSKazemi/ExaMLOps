@@ -43,6 +43,14 @@ scrape_configs:
     static_configs:
       - targets: ['tempo:3200']
 
+  # Loki holds the platform's logs. It was the one monitoring component nothing scraped, which
+  # made `LokiDown` — and the generic `TargetDown` — permanently silent for it: `up{job="loki"}`
+  # is empty rather than 0 when no scrape config names the job.
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']
+    metrics_path: /metrics
+
   - job_name: seanerbus_bridge
     static_configs:
       - targets: ['seanerbus-bridge:8003']

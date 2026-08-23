@@ -61,6 +61,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   so step 4 of the first-time bootstrap ended in a connection refused. Host-facing references are
   now `18099`, in-network ones `8099`.
 
+- **Two alerts could never fire, and one of them was the only thing watching the log store.**
+  `make alerts-check` runs promtool, which proves the rules parse; nothing proved they could ever
+  match a series. `LokiDown` selects `up{job="loki"}` and **no scrape config named `loki`** — an
+  absent job makes that selector *empty*, not zero, so neither `LokiDown` nor the catch-all
+  `TargetDown` could fire for Loki: the platform's log store could stop and no alarm existed.
+  Prometheus now scrapes `loki:3100`. `SeanerBUSBridgeDown` tested `seanerbus_bridge_up == 0`, a
+  gauge the bridge sets to 1 while it runs and never sets to 0 — it cannot, being dead — so the
+  series went stale rather than to zero at exactly the moment the alert was for; it now uses
+  `up{job="seanerbus_bridge"}`. (That one had a fallback: the generic `TargetDown` still fired,
+  three minutes later and without the `service` label.) Separately, the monitoring guide told
+  readers Prometheus scraped *three* services and listed three, when the config had seven — the
+  table a reader consults before choosing a `job` label. `tests/unit/test_alert_rules_can_fire.py`
+  now holds the alerts, the scrape config and that table to each other, and rejects any alert that
+  detects downtime with a service-published liveness gauge.
+
+
 - **The control plane explained itself and the explanation was thrown away.** Asked to retrain an
   unknown dataset, `POST /retrain` answers `400` with *"Dataset 'NotADataset' not supported by
   JPCP. Supported: ['PM100Dataset', 'FDataDataset']"* — the list needed to retry. `_raise_http`
