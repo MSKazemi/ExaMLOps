@@ -41,6 +41,58 @@ Docker Compose memory ceilings (OOM isolation) are also env-overridable:
 
 ---
 
+## Platform datastore, coordination & governance
+
+The variables every process that touches platform state needs. They are read across the CLI, the
+dashboard, the control plane and the pipelines, so an inconsistent setting between two processes is
+the usual cause of "it works from the CLI but not in the dashboard".
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PLATFORM_DB` | `./platform.db` (`/repo/platform.db` inside the containers) | Path to the shared SQLite datastore — audit, drift, traffic, promotion, costs, projects and ~100 other tables. Override with a `tmp_path` in tests. |
+| `EXAMLOPS_DB_BACKEND` | `sqlite` | Datastore engine. `postgres` routes every `platform_db` helper through the translating connection in `examlops.storage.pg`. Must be set on **every** process that touches platform state, or that process silently keeps using `platform.db`. |
+| `EXAMLOPS_POSTGRES_DSN` | unset | Connection string used when the backend is `postgres`. |
+| `EXAMLOPS_POSTGRES_SCHEMA` | `public` | Scopes an instance to one schema — how the test suite isolates, and how two instances share one server. |
+| `EXAMLOPS_POSTGRES_POOL` | `1` (on) | Per-`(dsn, schema)` connection pooling. `0` opts out. |
+| `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` | `2.0` | Seconds to wait for the datastore before declaring it unreachable. Bounds one probe per process, before the pool is built, so a downed datastore costs a moment rather than the driver's 30 s default on every command. Unix-socket and multi-host DSNs skip the probe. |
+| `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | How long an "unreachable" verdict is cached, so one command probes once. It expires, so a long-lived process recovers when the server returns. |
+| `EXAMLOPS_COORDINATOR` | `db` | Cross-process coordination backend: `db` (via the datastore) or `redis` (cross-host HA). |
+| `EXAMLOPS_EVENT_PUBLISHER` | `log` | Event-backbone publisher: `log` (dependency-free), `nats`, `kafka`, `redis`. Drain the outbox with `exa events relay`. |
+| `EXAMLOPS_CONFIG` | `~/.config/examlops/config.toml` | Overrides the CLI config path so containers and CI can pin a config and tests run hermetically. |
+| `EXAMLOPS_USECASE_DIR` | `usecases/seanergy` | Selects the use-case pack (ADR 0094). The platform core names no concrete model or dataset; this is how it reaches content. |
+| `EXAMLOPS_AGENT_DIR` | derived from the repo | Where the Skipper agent package lives, for `exa agent memory …` when the agent is outside the repo. |
+| `EXAMLOPS_PROJECTS_BUCKET` | `examlops-projects` | MinIO bucket holding per-project `artifacts/`, `datasets/`, `cache/`. |
+
+### Governance & secrets
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_SECRETS_KEYS` | unset | Secrets KEK keyring, `key_id:fernet_key,…`. |
+| `EXAMLOPS_SECRETS_ACTIVE_KEY` | first key | Which key new writes are encrypted with. Rotate online with `exa secrets rewrap`; `DASHBOARD_SECRET_KEY` is a decrypt-only legacy fallback. |
+| `EXAMLOPS_ACTOR` | `$USER` | Actor stamped into every audit event. Set it in CI and in scripts, or the log records whichever account the runner happens to use. |
+| `EXAMLOPS_AUDIT_WORM_PATH` | unset | External append-only WORM anchor for audit checkpoints — a local file in dev, an S3 Object-Lock path or Rekor log in production. Verify with `exa audit verify-worm`. |
+| `EXAMLOPS_OIDC_ISSUER` | unset | OIDC issuer for RS256 access-token validation. Unset ⇒ SSO off (single-tenant). See also `EXAMLOPS_OIDC_AUDIENCE` / `_JWKS` / `_TENANT_CLAIM` / `_SUBJECT_CLAIM`. |
+| `CONTROL_PLANE_ALLOWED_HOSTS` | `*` | Comma-separated allow-list for the control plane's Host header. `*` is a development default. |
+| `EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS` | unset (off) | `1` opts into adding unknown SSH host keys. Off means `RejectPolicy` — an unknown host fails rather than being trusted. |
+
+### Autopilot
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_AUTOPILOT_ENABLED` | unset (disabled) | Master kill-switch for the self-driving loop. Falls back to the `autopilot_config` table when unset; `exa autopilot enable/disable` sets it persistently. |
+| `EXAMLOPS_AUTOPILOT_LEASE_TTL` | `900` | TTL (s) of the distributed cycle lease — only one cycle runs at a time, and a crashed holder's lease expires. |
+| `EXAMLOPS_AUTOPILOT_MAX_RETRAINS` | `1` | Per-cycle cap on retrains, so a storm of drift cannot become a storm of jobs. |
+
+### Data versioning & fleet
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_LAKEFS_REPO` | the dataset name | lakeFS repository backing dataset revisions. |
+| `EXAMLOPS_LAKEFS_REF` | `main` | lakeFS ref revisions are recorded against. |
+| `EXAMLOPS_HPC_CAPACITY_TTL` | `30` | TTL (s) of the cached per-cluster fleet capacity rollup. |
+
+---
+
 ## CLI, agent surface & config contexts
 
 Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config contexts).
@@ -423,8 +475,15 @@ EXAMLOPS_GITLAB_HOST_ENTRY=gitlab.internal.example.com:10.0.0.5
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `JUPYTERHUB_PORT` | `8888` | JupyterHub internal HTTP port (host-exposed as `18888`) |
 | `DOCKER_NETWORK_NAME` | `examlops_default` | Docker network that spawned user containers join — must match the Compose project network |
+| `JUPYTERHUB_PUBLIC_URL` | unset | Browser-facing Hub URL the dashboard links to. Unset ⇒ the Workbenches console shows no link. |
+| `JUPYTERHUB_API_URL` | unset | Hub REST endpoint the dashboard uses to read workbench state |
+| `JUPYTERHUB_DASHBOARD_TOKEN` | unset | Hub API token the dashboard authenticates with |
+| `JUPYTERHUB_WORKBENCH_USER` | unset | Hub user whose server a workbench is spawned as |
+
+There is no `JUPYTERHUB_PORT`. The Hub listens on **8000** inside the container and Compose maps
+`18888:8000`; change the published port in `docker-compose.yml`, not through an environment
+variable.
 
 ---
 

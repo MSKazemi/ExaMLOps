@@ -7,6 +7,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The published environment-variable reference was ~95 variables behind the code.**
+  `docs/reference/env-vars.md` is the public answer to "what can I set?", and nothing had ever
+  compared it to what the platform actually reads. Missing from it: `PLATFORM_DB` (the datastore
+  every process opens), `EXAMLOPS_USECASE_DIR` (how the platform reaches its content at all),
+  `EXAMLOPS_DB_BACKEND`/`EXAMLOPS_POSTGRES_DSN`, `EXAMLOPS_COORDINATOR`, the autopilot kill-switch,
+  the secrets keyring, the WORM anchor, OIDC — and `EXAMLOPS_ACTOR`, which stamps the actor into
+  every audit event and appeared only inside *another* row's default. All of those are documented
+  in the repository's own `CLAUDE.md`, which is the worst arrangement: the knowledge exists, so
+  nobody notices it is unpublished. 27 variables documented in a new
+  *Platform datastore, coordination & governance* section, every default read from source.
+
+- The reference also named `JUPYTERHUB_PORT`, with a default of `8888`. Nothing reads it; the Hub
+  listens on 8000 and Compose maps `18888:8000`. Replaced with the four `JUPYTERHUB_*` variables
+  the code does read. Case-insensitive search found this was the *only* documented-but-nonexistent
+  variable — pydantic-settings declares some as lowercase fields, so a case-sensitive audit
+  reports working variables as ghosts.
+
+- `tests/unit/test_env_vars_are_documented.py` — a ratchet: no *new* variable can be read in
+  non-test Python without a row in the reference. The 66 still-undocumented ones are a frozen
+  exemption list that may only shrink, and a second test fails when an entry stops being true, so
+  the list cannot outlive its reason.
+
 - **The CI/CD guide documented two jobs that do not exist and omitted a blocking one.**
   `docs/guides/cicd.md` is the only prose description of the pipeline, and nothing compared its
   job list to `.gitlab-ci.yml`. **`test:docs` had no section at all** — a job in both `deploy:lxp`'s
