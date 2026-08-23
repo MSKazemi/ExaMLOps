@@ -215,8 +215,8 @@ def chat(
     if not kq:
         _output.error(
             "The kq terminal client is not installed.",
-            hint="Install it with: uv pip install kube-q   "
-            "(exa chat deliberately does not install it for you)",
+            hint="Install it with: uv pip install 'examlops[chat]'   "
+            "(or `uv pip install kube-q` — exa chat launches it, it does not bundle it)",
         )
         return
 

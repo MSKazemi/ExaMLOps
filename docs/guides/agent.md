@@ -448,13 +448,26 @@ The `POST /v1/chat/completions` + `GET /healthz` bridge lets the general-purpose
 agent — bringing session history, full-text search, conversation branching,
 token/cost tracking, and HITL approvals to the terminal, **without forking**.
 
+`kq` is a declared dependency, not a suggestion: install it with the **`chat` extra**, which is
+also part of `[dev]`, so a development checkout has a working `exa chat` after `make install-dev`.
+
 ```bash
+uv pip install 'examlops[chat]'   # the kq client (kube-q, unforked from PyPI)
+
 make skipper-server          # run the agent + bridge (port 18004)
-make skipper-chat            # launch kq against it (installs kube-q if needed)
-# or directly:
-kq --url http://localhost:18004
+exa chat                     # ← the normal way in: resolves the agent URL from the CLI's config
+exa -c lxp chat              #   …so another environment needs no exported variable
+exa chat -- --resume last    #   anything after `--` goes straight through to kq
+
+make skipper-chat            # equivalent, but pinned to localhost
 kq --url http://localhost:18004 --query "which models are in production?" --output plain
 ```
+
+`exa chat` is a launcher, deliberately — ExaMLOps adapts *to* `kq` through the bridge rather than
+writing a second REPL, so session history, search, branching, HITL approval and cost accounting all
+arrive for the cost of resolving one URL. What it adds over `make skipper-chat` is the CLI's own
+configuration: context, agent URL, and `AGENT_API_KEY` forwarding. It launches `kq`; it does not
+bundle it, and if the client is absent it says which command installs it.
 
 HITL: write tools trip a LangGraph `interrupt()`; `kq` shows an approval panel and
 switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph as

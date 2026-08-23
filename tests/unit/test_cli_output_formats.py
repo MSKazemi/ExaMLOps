@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 
 from typer.testing import CliRunner  # noqa: E402
@@ -96,3 +98,53 @@ def test_format_resets_between_invocations():
 def test_invalid_output_format_rejected():
     result = runner.invoke(app, ["-o", "xml", "mcp", "tools"])
     assert result.exit_code != 0
+
+
+# ── Rich markup in plain prose ────────────────────────────────────────────────
+# Callers pass prose, and prose contains brackets: `examlops[chat]`, a TOML
+# `[project.entry-points]` header, a `[WARNING]` log line. Rich reads a bracketed word as a
+# style tag and *silently deletes it* — so `pip install examlops[chat]` reached the terminal
+# as `pip install examlops`, an instruction that installs the wrong thing without erroring.
+# `hint()` was escaped for exactly this reason; the rest of the family was not.
+
+
+@pytest.mark.parametrize(
+    "fn,capture",
+    [
+        ("ok", "out"),
+        ("warning", "err"),
+        ("info", "out"),
+        ("hint", "out"),
+    ],
+)
+def test_bracketed_text_survives_to_the_terminal(fn, capture, capsys, monkeypatch):
+    from examlops.cli import _output
+
+    monkeypatch.setattr(_output, "json_mode", False)
+    monkeypatch.setattr(_output, "quiet_mode", False)
+    getattr(_output, fn)("run: pip install examlops[chat]")
+    captured = capsys.readouterr()
+    assert "examlops[chat]" in (captured.out if capture == "out" else captured.err)
+
+
+def test_an_error_and_its_hint_both_survive(capsys, monkeypatch):
+    import typer
+
+    from examlops.cli import _output
+
+    monkeypatch.setattr(_output, "json_mode", False)
+    with pytest.raises(typer.Exit):
+        _output.error("psycopg missing [pgvector]", hint="pip install examlops[vector]")
+    err = capsys.readouterr().err
+    assert "[pgvector]" in err
+    assert "examlops[vector]" in err
+
+
+def test_detail_too(capsys, monkeypatch):
+    from examlops.cli import _output
+
+    monkeypatch.setattr(_output, "json_mode", False)
+    monkeypatch.setattr(_output, "quiet_mode", False)
+    monkeypatch.setattr(_output, "verbose_mode", True)
+    _output.detail("resolved [chat] extra")
+    assert "[chat]" in capsys.readouterr().out

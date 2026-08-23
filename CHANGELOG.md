@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **`exa chat` now installs.** The command existed, and the first thing it did on a clean checkout
+  was refuse: *"the kq terminal client is not installed"*. ExaMLOps adopts
+  [kube-q](https://github.com/MSKazemi/kube_q) unforked rather than writing a second REPL — but
+  adopting a client and telling people to go and install one are different things. `kube-q>=1.5` is
+  now the **`chat` extra** (`uv pip install 'examlops[chat]'`) and part of `[dev]`, so a development
+  checkout has a working `exa chat` after `make install-dev`. Verified end to end against the live
+  agent on `:18004`. New `tests/unit/test_cli_chat.py` pins what the launcher is for — the URL comes
+  from the CLI's own config, `AGENT_API_KEY` is forwarded, arguments after `--` reach `kq`, and
+  `--json` refuses rather than opening a REPL in a script — plus a packaging check that the extra
+  the error message advertises actually exists.
+
+### Fixed
+
+- **Terminal messages silently deleted any bracketed word, including the install commands they
+  were advertising.** `_output` renders through Rich, which reads `[chat]` as a style tag, so
+  `uv pip install 'examlops[chat]'` reached the terminal as `uv pip install 'examlops'` — an
+  instruction that installs the wrong thing without erroring. `hint()` had been escaped for exactly
+  this reason; `ok`, `error` (message *and* hint), `warning`, `info` and `detail` had not. Escaping
+  is now central to the family rather than per-call-site, since callers pass prose and prose
+  contains brackets: extras, TOML section headers, `[WARNING]` log lines. Guarded in
+  `tests/unit/test_cli_output_formats.py`, proved red on two of the functions.
+
 ### Fixed
 
 - **Three agent write tools could change the platform and then report that they had not.**

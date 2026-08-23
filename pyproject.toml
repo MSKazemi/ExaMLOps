@@ -64,6 +64,9 @@ dev = [
                         # formatted with, breaking the pipeline on every release).
     "mypy>=1.8",
     "pandas-stubs>=2.0",
+    "kube-q>=1.5",      # the `kq` terminal client behind `exa chat` (examlops[chat]). Here so a
+                        # dev checkout can actually run the command, and so the guard that
+                        # `exa chat` finds its client has something to find in CI.
     "paramiko>=3.5.0",  # SSH-transport tests (tests/unit/test_executor.py). The runtime
                         # dep lives in pipelines/pyproject.toml, but CI installs only the
                         # root workspace `.[dev]`, so without it here the executor tests

@@ -146,11 +146,18 @@ def _to_html(data: Any) -> str:
     return f"<pre>{esc(json.dumps(data, indent=2, default=str))}</pre>"
 
 
+# Every message below is Rich-escaped. Callers pass plain prose, and prose contains brackets:
+# `examlops[chat]`, a TOML `[project.entry-points]` header, a `[WARNING]` log line. Unescaped,
+# Rich reads those as style tags and *silently deletes them* — `pip install examlops[chat]`
+# renders as `pip install examlops`, an instruction that installs the wrong thing. A hint that
+# quietly lies is worse than no hint, so the escaping is central rather than per-call-site.
+
+
 def ok(message: str) -> None:
     if json_mode:
         print_json({"ok": True, "message": message})
     else:
-        console.print(f"[green]✓[/green] {message}")
+        console.print(f"[green]✓[/green] {escape(message)}")
 
 
 def error(message: str, exit_code: int = 1, hint: str | None = None) -> None:
@@ -160,9 +167,9 @@ def error(message: str, exit_code: int = 1, hint: str | None = None) -> None:
             payload["hint"] = hint
         print_json(payload)
     else:
-        err_console.print(f"[red]✗[/red] {message}")
+        err_console.print(f"[red]✗[/red] {escape(message)}")
         if hint:
-            err_console.print(f"[dim]  → {hint}[/dim]")
+            err_console.print(f"[dim]  → {escape(hint)}[/dim]")
     raise typer.Exit(exit_code)
 
 
@@ -171,14 +178,14 @@ def warning(message: str) -> None:
     if json_mode:
         print_json({"warning": message})
     else:
-        err_console.print(f"[yellow]⚠[/yellow] {message}")
+        err_console.print(f"[yellow]⚠[/yellow] {escape(message)}")
 
 
 def info(message: str) -> None:
     """Informational message — skipped in JSON or quiet mode."""
     if json_mode or quiet_mode:
         return
-    console.print(f"[dim]{message}[/dim]")
+    console.print(f"[dim]{escape(message)}[/dim]")
 
 
 def hint(message: str) -> None:
@@ -197,7 +204,7 @@ def detail(message: str) -> None:
     """Extra diagnostic detail — shown only under --verbose (never in JSON/quiet)."""
     if json_mode or quiet_mode or not verbose_mode:
         return
-    console.print(f"[dim]· {message}[/dim]")
+    console.print(f"[dim]· {escape(message)}[/dim]")
 
 
 # ── Structured output ─────────────────────────────────────────────────────────

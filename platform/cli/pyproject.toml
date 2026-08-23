@@ -71,6 +71,13 @@ postgres = [
     # unpooled connection per call — slower, still correct.
     "psycopg-pool>=3.3",
 ]
+# Terminal chat client for `exa chat`. ExaMLOps does not write a REPL — it adopts kube-q
+# (`kq`) unforked from PyPI and adapts to it, by exposing an OpenAI-compatible bridge on the
+# agent server (ADR: platform/services/agent/kube-q/README.md). Declaring it here is what makes
+# `exa chat` an installable feature rather than an instruction to go and install something.
+chat = [
+    "kube-q>=1.5",
+]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
 # keeps every subcommand — including the fidelity/privacy release gate — working offline.
