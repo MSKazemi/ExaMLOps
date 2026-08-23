@@ -277,6 +277,41 @@ test:infra:alert-rules:
   script:
     - /bin/promtool check rules platform/infra/docker-compose/alert_rules.yml
 
+# ── Infra: Helm chart ─────────────────────────────────────────────────────────
+#
+# The chart is a published artifact that strangers install, and until now nothing
+# gated it: four defects sat in it precisely because `make helm-validate` appeared
+# in no CI file. The kubectl schema step inside the target self-skips — it needs a
+# live apiserver — so what runs here is lint, the no-registry refusal check, the
+# render, the structural guards, and a package dry-run.
+
+test:infra:helm:
+  stage: test
+  image:
+    name: alpine/helm:3.16.3
+    entrypoint: [""]
+  interruptible: true
+  needs: [sanity:python-syntax, sanity:check-structure]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH   # main → full suite, gates deploy
+      when: on_success
+    - if: $CI_COMMIT_TAG                            # tags → release gate
+      when: on_success
+    - changes:
+        - platform/infra/helm/**/*
+        - tests/unit/test_helm_chart.py
+        - .gitlab-ci.yml
+      when: on_success
+    - when: never
+  script:
+    # `make` is the single source of truth for how the chart is validated; the image
+    # ships helm and sh only, so add make + python for the guards.
+    - apk add --no-cache make python3 py3-pip git
+    - python3 -m venv /tmp/venv && /tmp/venv/bin/pip install --quiet pytest pyyaml
+    - make helm-validate
+    - /tmp/venv/bin/python -m pytest tests/unit/test_helm_chart.py tests/unit/test_dockerfile_build_context.py -q
+    - make helm-package
+
 # ── ExaMLOps: lint + mypy + unit + dashboard backend ─────────────────────────
 #
 # This is the core quality gate. It runs on EVERY push (no change-filter) so
@@ -582,6 +617,7 @@ release:gitlab:
     - job: test:infra:compose
     - job: test:infra:slurm-lint
     - job: test:infra:alert-rules
+    - job: test:infra:helm
     - job: test:integration
     - job: test:agent
     - job: test:frontend
@@ -635,6 +671,7 @@ deploy:lxp:
     - job: test:infra:compose
     - job: test:infra:slurm-lint
     - job: test:infra:alert-rules
+    - job: test:infra:helm
     - job: test:integration
     - job: test:agent
     - job: test:frontend

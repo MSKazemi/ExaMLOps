@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The Helm chart is now gated by CI — on both mirrors — and by `make preflight`.** Nothing
+  validated it before: `make helm-validate` appeared in no CI file at all, which is how four
+  defects reached a published artifact, including a default that could never install and an
+  `appVersion` eleven releases behind the platform. New `helm` job on GitHub and
+  `test:infra:helm` on GitLab, both calling the Makefile target rather than inlining the
+  commands so the two cannot drift, plus the structural guards and a `helm package` dry run.
+  Added to `deploy:lxp` and `release:gitlab` `needs:` — `tests/unit/test_ci_gate_coverage.py`
+  caught the omission on the first run, which is what that guard is for — and mirrored as step
+  14/15 of `make preflight`, which fails loudly rather than silently skipping when helm is absent.
+
+### Fixed
+
+- **The chart version was frozen at `0.1.0`, so no republish would ever reach a consumer.**
+  `helm repo index` keys entries on the chart version: shipping changed contents under a version
+  someone already has is not an upgrade, it is a no-op they cannot detect — and the whole point of
+  `make helm-package` is a repository people subscribe to. Now in lockstep with the platform
+  version (`0.48.0`), held there by a guard, with the reasoning in `Chart.yaml` so the next person
+  does not "tidy" it back.
+
+### Added
+
 - **A guard that every Dockerfile can be built from the tree we publish.** The Helm chart tells
   strangers to run these images and points them at the public repository for the recipe, so a
   `COPY` whose source is private makes the published artifact unbuildable by its own audience —

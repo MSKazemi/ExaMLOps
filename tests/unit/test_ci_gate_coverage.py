@@ -47,6 +47,7 @@ _PREFLIGHT_MIRROR: dict[str, str | None] = {
     "test:infra:compose": "ci-infra",
     "test:infra:slurm-lint": "ci-infra",
     "test:infra:alert-rules": "ci-infra",
+    "test:infra:helm": "helm chart",
 }
 
 

@@ -713,43 +713,52 @@ ci-agent: install-dev ## Mirror the 'test:agent' job — the Skipper agent suite
 
 preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — run before pushing
 	@printf "$(BOLD)Preflight$(RESET)  (mirrors GitLab CI blocking gates)\n"
-	@printf "$(BOLD)1/14 sanity: python syntax$(RESET)\n"
+	@printf "$(BOLD)1/15 sanity: python syntax$(RESET)\n"
 	@find platform/ pipelines/ serving/ tests/ tools/ -name "*.py" \
 	  -not -path "*/node_modules/*" -not -path "*/.venv/*" -print0 \
 	  | xargs -0 -r $(VENV)/bin/python -m py_compile
-	@printf "$(BOLD)2/14 sanity: repo structure$(RESET)\n"
+	@printf "$(BOLD)2/15 sanity: repo structure$(RESET)\n"
 	@test -f pyproject.toml
 	@test -d platform/cli/src/examlops
 	@test -d platform/services/dashboard
 	@test -d platform/services/control_plane
 	@test -f platform/infra/docker-compose/docker-compose.yml
 	@test -d usecases/seanergy/models
-	@printf "$(BOLD)3/14 sanity: secret scan$(RESET)\n"
+	@printf "$(BOLD)3/15 sanity: secret scan$(RESET)\n"
 	@$(VENV)/bin/exa secrets scan platform/
 	@$(VENV)/bin/exa secrets scan pipelines/
-	@printf "$(BOLD)4/14 ruff check$(RESET)\n"
+	@printf "$(BOLD)4/15 ruff check$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)5/14 ruff format --check$(RESET)  (HARD failure in CI)\n"
+	@printf "$(BOLD)5/15 ruff format --check$(RESET)  (HARD failure in CI)\n"
 	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)6/14 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
+	@printf "$(BOLD)6/15 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
-	@printf "$(BOLD)7/14 unit tests$(RESET)\n"
+	@printf "$(BOLD)7/15 unit tests$(RESET)\n"
 	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
-	@printf "$(BOLD)8/14 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
+	@printf "$(BOLD)8/15 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
 	@$(VENV)/bin/pytest tests/integration/ --tb=short -q
-	@printf "$(BOLD)9/14 dashboard backend$(RESET)\n"
+	@printf "$(BOLD)9/15 dashboard backend$(RESET)\n"
 	@$(UV) pip install -q -r platform/services/dashboard/backend/requirements.txt
 	@cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DOCS_ROOT=$(CURDIR) $(CURDIR)/$(VENV)/bin/pytest tests/ --tb=short -q
-	@printf "$(BOLD)10/14 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
+	@printf "$(BOLD)10/15 skipper agent tests$(RESET)  (blocking in CI since the test:agent job)\n"
 	@$(MAKE) --no-print-directory skipper-test
-	@printf "$(BOLD)11/14 dashboard frontend$(RESET)  (blocking in CI since the test:frontend job)\n"
+	@printf "$(BOLD)11/15 dashboard frontend$(RESET)  (blocking in CI since the test:frontend job)\n"
 	@$(MAKE) --no-print-directory ci-frontend
-	@printf "$(BOLD)12/14 control plane$(RESET)  (blocking in CI since the test:control-plane job)\n"
+	@printf "$(BOLD)12/15 control plane$(RESET)  (blocking in CI since the test:control-plane job)\n"
 	@$(MAKE) --no-print-directory ci-control-plane
-	@printf "$(BOLD)13/14 infra$(RESET)  (compose + slurm-lint + alert-rules)\n"
+	@printf "$(BOLD)13/15 infra$(RESET)  (compose + slurm-lint + alert-rules)\n"
 	@$(MAKE) --no-print-directory ci-infra
-	@printf "$(BOLD)14/14 postgres backend$(RESET)  (the whole suite again on Postgres — slow; needs docker)\n"
+	@printf "$(BOLD)14/15 helm chart$(RESET)  (blocking in CI since the test:infra:helm job)\n"
+	@if command -v helm >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory helm-validate; \
+	  $(MAKE) --no-print-directory helm-package; \
+	else \
+	  printf "$(RED)helm is not installed — the blocking job test:infra:helm was NOT mirrored.$(RESET)\n"; \
+	  printf "$(RED)Install it (https://helm.sh/docs/intro/install/) so the chart gate runs here too.$(RESET)\n"; \
+	  exit 1; \
+	fi
+	@printf "$(BOLD)15/15 postgres backend$(RESET)  (the whole suite again on Postgres — slow; needs docker)\n"
 	@if [ -n "$(PREFLIGHT_SKIP_PG)" ]; then \
 	  printf "$(RED)SKIPPED by PREFLIGHT_SKIP_PG — the blocking job test:postgres was NOT mirrored.$(RESET)\n"; \
 	else \

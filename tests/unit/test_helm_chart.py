@@ -33,6 +33,15 @@ def _chart() -> dict:
     return yaml.safe_load((CHART / "Chart.yaml").read_text())
 
 
+def _platform_version() -> str:
+    pyproject = (REPO / "pyproject.toml").read_text()
+    return next(
+        line.split("=", 1)[1].strip().strip('"')
+        for line in pyproject.splitlines()
+        if line.startswith("version =")
+    )
+
+
 def _render(*extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [HELM, "template", "rel", str(CHART), *extra], capture_output=True, text=True
@@ -45,12 +54,7 @@ def test_app_version_tracks_the_platform_version():
     It said 0.37.0 while the platform was at 0.48.0 — eleven minor releases behind, and nothing
     anywhere compared the two.
     """
-    pyproject = (REPO / "pyproject.toml").read_text()
-    version = next(
-        line.split("=", 1)[1].strip().strip('"')
-        for line in pyproject.splitlines()
-        if line.startswith("version =")
-    )
+    version = _platform_version()
     assert _chart()["appVersion"] == version, (
         f"Chart appVersion {_chart()['appVersion']!r} != platform version {version!r} — "
         "the chart would deploy images tagged with the wrong release"
@@ -127,3 +131,17 @@ def test_every_workload_is_actually_readiness_gated():
 def _images(doc: dict) -> list[str]:
     spec = doc.get("spec", {}).get("template", {}).get("spec", {})
     return [c["image"] for c in spec.get("containers", []) if "image" in c]
+
+
+def test_chart_version_moves_with_the_platform():
+    """A frozen chart version makes every republish invisible to `helm repo update`.
+
+    `helm repo index` keys entries on the chart version, so shipping changed contents
+    under a version a consumer already has is not an upgrade -- it is a no-op they
+    cannot detect. The chart lives in the same repository as the code it deploys, so
+    the cheapest rule that cannot rot is lockstep with the platform version.
+    """
+    assert str(_chart()["version"]) == _platform_version(), (
+        f"Chart version {_chart()['version']} != platform {_platform_version()}; bump it, "
+        "or consumers of the published repo will never see this change."
+    )

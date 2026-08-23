@@ -8,7 +8,7 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The eleven check jobs run in parallel; deploy, smoke and
+Six stages arranged as a DAG. The twelve check jobs run in parallel; deploy, smoke and
 post-deploy fire only on `main`, and `release` fires only on a tag.
 
 ```
@@ -17,6 +17,7 @@ sanity:check-structure ─┤
 sanity:secret-scan     ─┼─►  test:infra:compose     ─┐
                         │    test:infra:slurm-lint   │   (tag only)
                         │    test:infra:alert-rules  ├─► release:gitlab
+                        │    test:infra:helm         │
                         └─►  test:examlops           │
                              test:postgres           ├─► deploy:lxp ─► smoke:lxp ─► post-deploy:lxp:notify-model-changes
                              test:integration        │                              └► post-deploy:lxp:retrain-push-models
@@ -73,7 +74,7 @@ set is the one the CLI ships rather than a separate CI-only list.
 **Blocking, and since 2026-08-20 actually blocking:** it is named in `deploy:lxp`'s and
 `release:gitlab`'s `needs:`. Before that it could go red while the same pipeline deployed to
 lxp-cpu01 and published a release — a credential-exposure gate that stopped nothing. Locally it
-is step 3/14 of `make preflight`.
+is step 3/15 of `make preflight`.
 
 ---
 
@@ -130,6 +131,22 @@ ruff check platform/infra/slurm-adapter/
 
 Validates all PromQL expressions and rule syntax for the six alert rules (RayServeHighErrorRate, RayServeHighLatencyP99, RayServeNoModelsLoaded, RayServeReloadFailures, ApprovalsStale, TargetDown).
 
+### test:infra:helm
+**Image:** `alpine/helm:3.16.3` (entrypoint cleared; `apk add make python3` for the guards)
+
+```bash
+make helm-validate     # lint · no-registry refusal check · render
+pytest tests/unit/test_helm_chart.py tests/unit/test_dockerfile_build_context.py
+make helm-package      # the same command a release would run, minus the copy
+```
+
+The chart is a published artifact strangers install, and until this job existed **nothing gated
+it** — which is how four defects reached it, including a default that could never install and an
+`appVersion` eleven releases behind. `make helm-validate` is called rather than inlined so CI and
+`make preflight` cannot drift apart. The `kubectl apply --dry-run=client` step inside the target
+self-skips here: it downloads the OpenAPI schema from a live apiserver, so it is not an offline
+check and a runner has no cluster. Structure is covered by the pytest guards instead.
+
 ### test:examlops
 **Image:** `python:3.12-slim` | **Toolchain:** uv
 
@@ -176,7 +193,7 @@ the Postgres engine *optional*, and installing a driver into every SQLite job wo
 **Runs on:** `main` and tags always; on branches/MRs only when `examlops/storage/`,
 `platform_db*.py`, the dashboard backend or `.gitlab-ci.yml` change. Locally: `make test-postgres`,
 which spins a throwaway container and runs the same three suites plus the live round-trip test —
-now also step 14/14 of `make preflight` (last, because it is the slow one, and gated on a docker
+now also step 15/15 of `make preflight` (last, because it is the slow one, and gated on a docker
 daemon rather than skipped silently).
 
 **Blocking, and since 2026-08-20 actually blocking.** It was omitted from `deploy:lxp`'s and
@@ -224,7 +241,7 @@ It declares **no cache**: the shared `uv-$CI_COMMIT_REF_SLUG` key holds the `.ve
 pulls, and pushing a langchain-laden one into it would slow them all down for nothing.
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-agent` (or `make skipper-test`),
-and it is step 10/14 of `make preflight`.
+and it is step 10/15 of `make preflight`.
 
 ### test:frontend
 
@@ -241,7 +258,7 @@ than the image build's `npm install --include=dev`, so CI is lockfile-exact. The
 roughly 70 s locally (`npm ci` 12 s · lint 16 s · vitest 29 s · build 15 s).
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-frontend`, and it is step
-11/14 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
+11/15 of `make preflight`. `make dashboard-check` runs the same four steps as part of `make check`.
 
 ### test:control-plane
 
@@ -262,7 +279,7 @@ its Dockerfile — so the job installs what `app.py`/`metrics.py`/`model_meta.py
 proved in a clean throwaway venv before being written here.
 
 `deploy:lxp` and `release:gitlab` both require it. Locally: `make ci-control-plane`, and it is
-step 12/14 of `make preflight`.
+step 12/15 of `make preflight`.
 
 > The image build still uses `npm install --include=dev`, which does not honour the lockfile.
 > Switching it to `npm ci` would make the deployed bundle reproducible; it is not done here
@@ -501,7 +518,7 @@ Note: `make ci` does not run the Ray Serve integration test — run it directly 
 
 ### `make preflight` mirrors the blocking jobs, and proves that it does
 
-`preflight` is fourteen steps covering every blocking `sanity`/`test` job. That claim used to
+`preflight` is fifteen steps covering every blocking `sanity`/`test` job. That claim used to
 rest on someone remembering to extend it; `tests/unit/test_ci_gate_coverage.py` now enumerates
 the blocking jobs out of `.gitlab-ci.yml` and fails if one has no recorded local mirror — so
 adding a CI check forces a decision about running it locally rather than leaving the sentence
