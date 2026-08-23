@@ -24,9 +24,21 @@ examlops.io/tenant: {{ .Values.global.tenant | quote }}
 {{- end -}}
 {{- end -}}
 
-{{/* Image ref: global.imageRegistry + repository + (tag|AppVersion). */}}
+{{/* Image ref: global.imageRegistry + repository + (tag|AppVersion).
+
+     The registry is REQUIRED, and that is a deliberate change from a silent default.
+     `global.imageRegistry: ""` composed refs like `examlops-agent:0.48.0` — an unqualified
+     name, which Kubernetes resolves to `docker.io/library/examlops-agent`. The `library/`
+     namespace holds Docker Official Images and nobody outside Docker can publish there, so
+     the chart's own defaults produced a reference that can never be satisfied, by us or by
+     anyone. It rendered and linted clean the whole time; the failure only appears in a
+     cluster, as ImagePullBackOff. Failing here says the same thing at the only point where
+     it is still cheap to fix. */}}
 {{- define "examlops.image" -}}
 {{- $reg := .root.Values.global.imageRegistry -}}
+{{- if not $reg -}}
+{{- fail "global.imageRegistry is required — without it image refs resolve to docker.io/library/, which only Docker can publish to. Set it to the registry holding the ExaMLOps images, e.g. --set global.imageRegistry=ghcr.io/<owner>/ (note the trailing slash)." -}}
+{{- end -}}
 {{- $tag := default .root.Chart.AppVersion .svc.image.tag -}}
 {{- printf "%s%s:%s" $reg .svc.image.repository $tag -}}
 {{- end -}}

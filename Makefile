@@ -615,12 +615,45 @@ alerts-check: ## Validate Prometheus alert rules + Alertmanager config
 	  prom/alertmanager:v0.27.0 check-config /tmp/am.yml
 	@printf "$(GREEN)Alert rules + Alertmanager config valid.$(RESET)\n"
 
+# A throwaway registry for validation only — it is never pulled from. The chart REQUIRES
+# global.imageRegistry (see templates/_helpers.tpl), so rendering without one is an error.
+HELM_VALIDATE_REGISTRY ?= ghcr.io/example/
+
+# Where the built chart repo will be served from. Baked into index.yaml, so it must match the
+# final host; override per publish target. No decision is implied by the default.
+HELM_REPO_URL ?= https://mskazemi.github.io/ExaMLOps
+
+helm-package: helm-validate ## Build the chart tarball + index.yaml into dist/helm (a publishable Helm repo)
+	@rm -rf dist/helm && mkdir -p dist/helm
+	@helm package platform/infra/helm/examlops -d dist/helm
+	@helm repo index dist/helm --url $(HELM_REPO_URL)
+	@printf "$(GREEN)Helm repo built in dist/helm.$(RESET)\n"
+	@printf "  Publishing = copying that directory to $(HELM_REPO_URL) (gh-pages or any static host).\n"
+	@printf "  Consumers then run:  helm repo add examlops $(HELM_REPO_URL)\n"
+	@printf "$(YELLOW)  Images must exist first — the chart requires global.imageRegistry.$(RESET)\n"
+
 helm-validate: ## Lint + render + schema-validate the enterprise Helm chart (item 1.1)
 	@printf "$(BOLD)helm lint...$(RESET)\n"
-	@helm lint platform/infra/helm/examlops
-	@printf "$(BOLD)helm template + kubectl schema check...$(RESET)\n"
-	@helm template rel platform/infra/helm/examlops | kubectl apply --dry-run=client -f - >/dev/null
-	@printf "$(GREEN)Helm chart valid (lint + render + kubectl dry-run).$(RESET)\n"
+	@helm lint platform/infra/helm/examlops --set global.imageRegistry=$(HELM_VALIDATE_REGISTRY)
+	@printf "$(BOLD)chart refuses to render without a registry...$(RESET)\n"
+	@if helm template rel platform/infra/helm/examlops >/dev/null 2>&1; then \
+		printf "$(RED)FAIL: the chart rendered with no global.imageRegistry — it would emit docker.io/library/ refs.$(RESET)\n"; \
+		exit 1; \
+	fi
+	@printf "$(BOLD)helm template...$(RESET)\n"
+	@helm template rel platform/infra/helm/examlops --set global.imageRegistry=$(HELM_VALIDATE_REGISTRY) >/dev/null
+	@if kubectl cluster-info --request-timeout=3s >/dev/null 2>&1; then \
+		printf "$(BOLD)kubectl schema check...$(RESET)\n"; \
+		helm template rel platform/infra/helm/examlops --set global.imageRegistry=$(HELM_VALIDATE_REGISTRY) \
+			| kubectl apply --dry-run=client -f - >/dev/null; \
+		printf "$(GREEN)Helm chart valid (lint + refusal check + render + kubectl dry-run).$(RESET)\n"; \
+	else \
+		printf "$(YELLOW)No cluster reachable - SKIPPED the kubectl schema check.$(RESET)\n"; \
+		printf "$(YELLOW)  'kubectl apply --dry-run=client' downloads the OpenAPI schema from a live$(RESET)\n"; \
+		printf "$(YELLOW)  apiserver, so it is not an offline check. Structure is covered by$(RESET)\n"; \
+		printf "$(YELLOW)  tests/unit/test_helm_chart.py; run this target against a cluster for schemas.$(RESET)\n"; \
+		printf "$(GREEN)Helm chart valid (lint + refusal check + render).$(RESET)\n"; \
+	fi
 
 dr-drill: install-dev ## Disaster-recovery drill — backup → wipe → restore round-trip (item 0.9)
 	@printf "$(BOLD)Running DR drill (single-DB + whole-platform bundle round-trip)...$(RESET)\n"

@@ -6,8 +6,10 @@ description: >-
   distributed MinIO (Phase 1 item 1.1). Compose remains dev-only; this chart is the production shape.
 type: application
 version: 0.1.0
-appVersion: "0.37.0"
+appVersion: "0.48.0"
 keywords: [mlops, hpc, kubernetes, ha]
 maintainers:
-  - name: ExaMLOps
+  - name: Mohsen Seyedkazemi Ardebili
+    email: mohsen.seyedkazemi@gmail.com
+    url: https://mskazemi.github.io
 home: https://github.com/MSKazemi/ExaMLOps

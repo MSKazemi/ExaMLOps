@@ -10,7 +10,7 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 | Install path | What it is | Status |
 |---|---|---|
 | **A — Single node (Docker Compose)** | `make bootstrap` → uv venv + `docker compose up` | **Production-in-use** (this is what runs on `lxp-cpu01`). Best path today for a new machine or single VM. |
-| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Renders, lints, dry-runs, enterprise pod-security — but covers only 3 tiers and assumes you bring your own Postgres/MinIO/Redis/NATS. |
+| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis/NATS, and **the container images are not published yet**, so you must build and push them to a registry you control first. |
 | **C — CI auto-deploy (GitLab → node)** | `deploy:lxp` SSHes to the node, `git pull`, rebuilds, smoke-gated auto-rollback | **Production-in-use, single-node.** Deploy-from-HEAD to one NFS host; no image registry, no canary. |
 
 **Bottom line:** for a *new computer or single server* you can be fully running in ~15 minutes via
@@ -94,9 +94,38 @@ kubectl create secret generic examlops-secrets \
   --from-literal=CONTROL_PLANE_TOKEN=...
 
 # 2. Validate then install
-make helm-validate                       # lint + template + kubectl --dry-run
-helm install examlops platform/infra/helm/examlops -f my-values.yaml
+make helm-validate                       # lint + refusal check + render (+ kubectl dry-run if a cluster is reachable)
+helm install examlops platform/infra/helm/examlops -f my-values.yaml \
+  --set global.imageRegistry=<your-registry>/          # REQUIRED — note the trailing slash
 ```
+
+> **`global.imageRegistry` is required, and the chart refuses to render without it.** It used to
+> default to empty, which composed references like `examlops-agent:0.48.0`. Kubernetes resolves an
+> unqualified name to `docker.io/library/examlops-agent` — the Docker Official Images namespace,
+> which only Docker can publish to — so the default asked for an image that can never exist, while
+> `helm lint` still reported `0 chart(s) failed`. The chart now fails at render time with the flag
+> to set, because that is the last point where the mistake is cheap.
+
+> **Images are not published yet.** Build the three tiers from
+> `platform/infra/docker-compose/Dockerfile.*`, tag them
+> `<your-registry>/examlops-{control-plane,dashboard,agent}:<appVersion>`, push, then install. A
+> published registry and a hosted chart repo are planned; until then the chart installs from a path.
+
+### Building a chart repository
+
+`make helm-package` produces a complete, publishable Helm repository in `dist/helm/` — the chart
+tarball plus an `index.yaml`. Publishing is then a copy of that directory to any static host:
+
+```bash
+make helm-package HELM_REPO_URL=https://<host>/<path>   # the URL is baked into index.yaml
+# then, for consumers:
+helm repo add examlops https://<host>/<path>
+helm search repo examlops
+helm install examlops examlops/examlops --set global.imageRegistry=<your-registry>/
+```
+
+The whole path — package → index → `helm repo add` → render through the repo — is verified offline
+against a local HTTP server; only the hosting step is outstanding.
 
 ### Day-0 enterprise configuration (the env seams to turn on)
 These are the flags that flip ExaMLOps from single-tenant dev to multi-tenant HA. They exist as

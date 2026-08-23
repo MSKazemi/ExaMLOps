@@ -5,7 +5,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Helm chart's default values asked for images that can never exist.** `values.yaml` set
+  `global.imageRegistry: ""` with `repository: examlops-control-plane`, composing refs like
+  `examlops-control-plane:0.37.0`. Kubernetes resolves an unqualified name to
+  `docker.io/library/…` — the Docker Official Images namespace, which nobody outside Docker can
+  publish to — so the chart could never install with its own defaults, for us or for anyone.
+  `helm lint` reported `0 chart(s) failed` throughout; the failure only surfaces in a cluster, as
+  `ImagePullBackOff`. The image helper now fails at render time naming the flag to set.
+
+  Two neighbouring defects found the same way: `appVersion` was `0.37.0` while the platform was at
+  **0.48.0**, and since `tag: ""` defaults to `appVersion` the chart pinned every image to a
+  release eleven versions old; and `maintainers` named the product rather than the author.
+
+  `make helm-validate` also could not run anywhere: `kubectl apply --dry-run=client` downloads the
+  OpenAPI schema from a live apiserver, so the documented "dry-runs" check needed a cluster that
+  neither CI nor a laptop has. It now runs lint + a refusal check + render offline and performs the
+  schema check only when a cluster is reachable, saying plainly what it skipped.
+
+  `tests/unit/test_helm_chart.py` guards all of it (appVersion tracks the platform version, the
+  maintainer is the author, rendering without a registry is refused, and every rendered image
+  carries a registry host); three were proved red against the previous chart.
+
 ### Added
+
+- **`make helm-package` builds a publishable Helm repository.** Chart tarball plus `index.yaml`
+  into `dist/helm/`, with the repo URL baked in via `HELM_REPO_URL`, so publishing becomes a copy
+  of one directory to any static host. The full path — package → index → `helm repo add` →
+  render through the repo — is verified offline against a local HTTP server.
 
 - **The public repositories now carry the `.env.example` the install guide tells you to
   copy.** `docs/guides/enterprise-installation.md` and `docs/dashboard/operations.md` both
