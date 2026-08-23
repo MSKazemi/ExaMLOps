@@ -74,6 +74,11 @@ nav:
       - Management Agent: guides/agent.md
       - CI/CD — GitLab Pipeline: guides/cicd.md
       - JupyterHub Notebooks: guides/jupyter.md
+      - Enterprise Installation & Configuration: guides/enterprise-installation.md
+      - Production Hardening Checklist: guides/production-hardening.md
+      - Backup, Restore & Disaster Recovery: guides/backup-restore.md
+      - HPC Fleet (discover · connect · schedule): guides/hpc-fleet.md
+      - HPC Training Workflow (run on a real cluster): guides/hpc-training-workflow.md
   - Tutorials:
       - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
       - Set up a Project from the Dashboard: tutorials/dashboard-project-setup.md
@@ -81,6 +86,10 @@ nav:
       - Anomaly Detection E2E: tutorials/demoanomaly-e2e-demo.md
   - Next-Gen 40:
       - Data & reproducibility:
+          - Data versioning: guides/data-versioning.md
+          - Data contracts & quality gates: guides/data-quality.md
+          - Synthetic data generation: guides/synthetic-data.md
+          - Dataset & model cards: guides/cards.md
           - Lineage & provenance: guides/lineage.md
           - Feature store: guides/feature-store.md
           - Asset-centric pipelines: guides/asset-pipelines.md
@@ -94,6 +103,7 @@ nav:
           - Fine-tuning: guides/fine-tuning.md
           - Structured output & reasoning: guides/structured-output-reasoning.md
       - Observability & evaluation:
+          - GenAI observability (OTel semconv): guides/genai-observability.md
           - AgentOps: guides/agentops.md
           - Evaluation & regression gates: guides/evaluation.md
           - Judge calibration (ADR 0111): guides/judge-calibration.md
@@ -102,6 +112,7 @@ nav:
           - Champion-challenger: guides/shadow-champion-challenger.md
           - Fairness: guides/fairness.md
       - Governance & security:
+          - RBAC & multi-tenancy: guides/rbac-multi-tenancy.md
           - Secrets: guides/secrets.md
           - Supply-chain security: guides/supply-chain-security.md
           - Immutable audit trail: guides/audit-trail.md
@@ -119,8 +130,14 @@ nav:
           - Distributed training: guides/distributed-training.md
           - Federated training: guides/federated-training.md
           - Heterogeneous hardware: guides/heterogeneous-hardware.md
+  - Extending ExaMLOps:
+      - Programmable MLOps (extend without forking): guides/programmable-mlops.md
+      - Pluggable carbon & FinOps providers: guides/finops-providers.md
+      - Authored providers (edit a formula from a notebook): guides/authored-providers.md
+      - Provider security & trust tiers: guides/provider-security-trust-tiers.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
+      - Control Plane — Retraining API: components/control-plane.md
       - Slurm Adapter — HPC: components/slurm-adapter.md
       - Ray Serve — Inference: components/ray-serve.md
       - ModelZoo — Models: components/modelzoo.md
@@ -134,6 +151,28 @@ nav:
       - Secrets: dashboard/secrets.md
       - Configuration: dashboard/configuration.md
       - Operations: dashboard/operations.md
+      - Consoles:
+          - MLOps: guides/dashboard-mlops-console.md
+          - LLMOps: guides/dashboard-llmops.md
+          - FinOps & Green-AI: guides/dashboard-finops.md
+          - Facility: guides/dashboard-facility-console.md
+          - Governance & compliance: guides/dashboard-governance.md
+          - Self-observability: guides/dashboard-self-observability.md
+          - Alerting & incidents: guides/dashboard-alerts.md
+      - Platform features:
+          - Command palette & global search: guides/dashboard-command-palette.md
+          - Data grid & bulk operations: guides/dashboard-data-grid.md
+          - Visualization system: guides/dashboard-visualization.md
+          - Embedded copilot: guides/dashboard-copilot.md
+          - Collaboration & workflow: guides/dashboard-collaboration.md
+          - Personalization & onboarding: guides/dashboard-personalization.md
+          - Feature flags & staged rollout: guides/dashboard-feature-flags.md
+          - Internationalization: guides/dashboard-i18n.md
+          - Accessibility (WCAG 2.2 AA): guides/dashboard-accessibility.md
+          - Responsive, multi-device & NOC wall: guides/dashboard-responsive-noc.md
+          - AuthZ & multi-tenancy: guides/dashboard-auth-tenancy.md
+          - Security hardening: guides/dashboard-security.md
+          - Frontend engineering baseline: guides/dashboard-frontend-engineering.md
   - Reference:
       - exa CLI — Command Guide (use cases + examples): reference/cli-commands-guide.md
       - exa CLI — Verified Examples: reference/cli-examples.md
@@ -142,3 +181,5 @@ nav:
       - Command Reference: reference/commands.md
       - API Reference: reference/api.md
       - Environment Variables: reference/env-vars.md
+  - Release Notes:
+      - v0.37.0 (project-centric control plane): releases/v0.37.0.md

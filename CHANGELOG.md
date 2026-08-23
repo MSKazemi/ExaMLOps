@@ -7,6 +7,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **37 documentation pages were in no navigation at all.** `mkdocs build --strict` fails on a
+  broken *link*; it says nothing about a page nothing points at. Such a page builds, deploys, and is
+  reachable only by site search or by knowing its URL — so 17 shipped features looked undocumented
+  from the menu, among them enterprise installation, backup/restore, the HPC fleet, RBAC &
+  multi-tenancy, synthetic data, and every one of the dashboard's consoles and platform features.
+  All 37 are now placed: a new **Extending ExaMLOps** section (programmable MLOps, the provider
+  plugin surfaces, trust tiers), **Consoles** and **Platform features** under Dashboard, the
+  operations guides under Guides, and the rest into the Next-Gen 40 subsections they belong to.
+  Guarded both ways by `tests/unit/test_docs_are_reachable.py` — no page outside the nav, and no nav
+  entry naming a page that does not exist (mkdocs only warns about the latter).
+
+- The site's one long-form release note, `v0.37.0`, now says so: it is eleven releases behind
+  `v0.48.0` and is kept for its account of the project-centric control plane, not as current
+  status. The per-release history remains `CHANGELOG.md`; the docs site publishes no changelog.
+
 - **A GPU service nobody asked for made every Docker Compose command impossible.** The `vllm`
   service is behind a `vllm` profile precisely so a plain `docker compose up` on a CPU box does not
   try to start it — but its `command:` carried `${EXAMLOPS_VLLM_MODEL:?…}`, and **compose
@@ -177,6 +192,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   the error message advertises actually exists.
 
 ### Fixed
+
+- **An artifact that could not be verified was loaded as if it had been.** `verify_before_load` is
+  the last gate before a model's bytes are served, and in `enforce` mode its only job is to refuse.
+  Its answer comes from two reads that can fail on their own account — the recorded signature from
+  the datastore, the digest from the artifact files — and when either raised, the exception escaped
+  to the KServe loader hook, whose `except Exception: return True` (written to keep Compose/dev
+  usable when the supply-chain module is absent) reported it to the loader as a clean verification.
+  An unreachable signature store therefore looked exactly like a verified artifact. Verification
+  that cannot run is now treated as verification that failed: `enforce` refuses, `warn` still
+  loads, and a new `model_verify_error` audit event records the reason. The loader hook now catches
+  only `ImportError` for the D3-absent case it was written for, and refuses in `enforce` on
+  anything else — proved by a test that the module-absent exemption still permits. Guarded by
+  `tests/unit/test_verification_failure_is_not_a_pass.py`.
 
 - **The deploy gate went red on a frontend test that was working.** `Config.test.tsx > shows Save
   button for admin` hit `Test timed out in 15000ms` inside `make check`, then passed in 7.9 s of
