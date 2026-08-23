@@ -81,6 +81,11 @@ async def test_list_returns_specs(client, platform_db):
     assert r.status_code == 200
     specs = {(s["model"], s["name"]): s for s in r.json()}
     assert specs[("MACK", "latency")]["target"] == 0.98
-    # Live status is best-effort; with no samples it is either null or a trivial (ok=True) rollup.
+    # Live status is best-effort, so it may be absent entirely. When present, an SLO with no
+    # samples must not claim to be meeting its target: this used to assert `ok is True` and
+    # called it "a trivial rollup", which is the defect — zero samples score a perfect SLI, so
+    # the console rendered a green "Meeting" pill for a target nobody had measured.
     st = specs[("MACK", "latency")]["status"]
-    assert st is None or st["ok"] is True
+    if st is not None:
+        assert st["measured"] is False
+        assert st["ok"] is None

@@ -540,13 +540,22 @@ def promote(
 
     if _slo_gate_enabled():
         from examlops.data.governance import list_slo_specs
-        from examlops.slo import budget_exhausted
+        from examlops.slo import budget_exhausted, unmeasured_gates
 
         exhausted = [
             s["name"]
             for s in list_slo_specs(model=model)
             if s["gate_promotion"] and budget_exhausted(model, s["name"], tenant=s["tenant"])
         ]
+        # A gate-flagged SLO with no samples cannot be evaluated, and passing it silently is
+        # indistinguishable from a gate that ran and found the budget intact. It is reported
+        # rather than enforced: no model can produce SLI samples before it serves, and none
+        # serves before it is promoted, so refusing here would deadlock every first promotion.
+        if unevaluated := unmeasured_gates(model):
+            _output.warning(
+                f"SLO gate could not evaluate {', '.join(unevaluated)} for {model}: no samples "
+                "recorded. The gate is enabled but is not gating on these."
+            )
         if exhausted:
             actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
             if not force:

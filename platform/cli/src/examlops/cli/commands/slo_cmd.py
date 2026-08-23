@@ -130,10 +130,16 @@ def status(
             [
                 s.name,
                 f"{s.target:.3f}",
-                f"{s.sli:.4f}",
-                f"{s.budget_remaining:.0%}",
-                f"{s.burn_rate:.2f}x" if s.burn_rate != float("inf") else "∞",
-                "OK" if s.ok else "BREACH",
+                f"{s.sli:.4f}" if s.measured else "—",
+                f"{s.budget_remaining:.0%}" if s.measured else "—",
+                (
+                    "—"
+                    if not s.measured
+                    else (f"{s.burn_rate:.2f}x" if s.burn_rate != float("inf") else "∞")
+                ),
+                # An unmeasured SLO used to print OK, which is the same word a met target
+                # prints — the operator could not tell a healthy SLO from an unwatched one.
+                ("NO DATA" if s.ok is None else ("OK" if s.ok else "BREACH")),
             ]
             for s in statuses
         ],

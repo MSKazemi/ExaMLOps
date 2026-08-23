@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **An SLO nobody had measured was published as an SLO that was being met.** `slo_status()`
+  computed `sli = (good / total) if total else 1.0`, so zero recorded samples scored as a perfect
+  ratio: a full error budget, `OK` in `exa slo status`, and a green *Meeting* pill on the dashboard
+  reading "SLI 100.00% · budget 100%". The reachable case is an operator flagging an SLO
+  `gate_promotion`, setting `EXAMLOPS_SLO_GATE_ENABLED`, and being shown a healthy gate that is
+  evaluating nothing — an SLI has no value before it has a denominator, and "no data" is not the
+  healthiest possible reading. `SLOStatus` now carries `measured: bool` and `ok: bool | None`, the
+  CLI prints `NO DATA` with `—` for the numbers, the dashboard shows an *Unmeasured* pill saying
+  "no samples recorded", and `budget_exhausted()` no longer treats an unmeasured budget as intact.
+  New `slo.unmeasured_gates()` names the gate-flagged SLOs that cannot be evaluated, and
+  `exa pipeline promote` reports them. It deliberately still promotes: no model can produce SLI
+  samples before it serves and none serves before it is promoted, so refusing would deadlock every
+  first promotion — the defect was the silence, not the outcome.
 - **`exa backup create` announced success whatever happened — including `status=failed`.** The
   command printed a green tick and exited 0 for every outcome, and the per-tier lines that said why
   a tier produced nothing went through `info()`, which `--quiet` suppresses while leaving the tick.

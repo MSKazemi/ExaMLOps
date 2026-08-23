@@ -79,6 +79,10 @@ async def list_slos(_=Depends(_viewer)) -> list[dict]:
                     "burnRate": (None if st.burn_rate == float("inf") else round(st.burn_rate, 3)),
                     "ok": st.ok,
                     "n": st.n,
+                    # Without this the console cannot tell an SLO meeting its target from one
+                    # nobody has measured: zero samples score a perfect SLI, so the row rendered
+                    # a green "Meeting" pill reading "SLI 100.00% · budget 100%".
+                    "measured": st.measured,
                 }
     except Exception:
         status_by_key = {}

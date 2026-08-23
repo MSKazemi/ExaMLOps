@@ -143,3 +143,48 @@ def test_promote_list_shows_saved_rules():
     assert result.exit_code == 0, result.output
     assert "JPCP" in result.output
     assert "rmse" in result.output
+
+
+# ── the SLO gate must not pass an SLO it never evaluated in silence (T87) ────────────────
+#
+# Setting EXAMLOPS_SLO_GATE_ENABLED and flagging an SLO `gate_promotion` reads as "promotion is
+# now gated on this". With no samples recorded it is gated on nothing: the ratio the gate reads
+# had no denominator. The command promotes either way — a model cannot produce SLI samples
+# before it serves, and does not serve before it is promoted, so refusing would deadlock every
+# first promotion — but it must say that the gate did not run.
+
+
+def _gate_flagged_slo_with_no_samples() -> None:
+    from examlops.data.governance import upsert_slo_spec
+
+    upsert_slo_spec("jpcp", "latency", target=0.99, gate_promotion=True)
+
+
+def test_promote_says_the_slo_gate_could_not_evaluate_a_zero_sample_slo(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_SLO_GATE_ENABLED", "1")
+    _gate_flagged_slo_with_no_samples()
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}),
+    ):
+        result = runner.invoke(app, ["--yes", "pipeline", "promote", "jpcp", "--if-rmse-lt", "5.0"])
+    assert result.exit_code == 0, result.output
+    assert "could not evaluate" in result.output.lower(), result.output
+    assert "latency" in result.output
+    # ...and it still promotes, rather than deadlocking a model that has never served.
+    assert "promoted" in result.output.lower()
+
+
+def test_promote_is_quiet_about_an_slo_that_was_never_asked_to_gate(monkeypatch):
+    """The control: an unmeasured SLO with `gate_promotion` unset is not a gate that failed."""
+    monkeypatch.setenv("EXAMLOPS_SLO_GATE_ENABLED", "1")
+    from examlops.data.governance import upsert_slo_spec
+
+    upsert_slo_spec("jpcp", "latency", target=0.99, gate_promotion=False)
+    with (
+        patch("examlops.cli.commands.pipeline._client.get", side_effect=_patched_get),
+        patch("examlops.cli.commands.pipeline._client.post", return_value={"ok": True}),
+    ):
+        result = runner.invoke(app, ["--yes", "pipeline", "promote", "jpcp", "--if-rmse-lt", "5.0"])
+    assert result.exit_code == 0, result.output
+    assert "could not evaluate" not in result.output.lower(), result.output

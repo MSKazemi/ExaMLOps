@@ -122,9 +122,15 @@ export function Slo() {
                   <td className="px-3 py-2">
                     {s.status ? (
                       <span className="inline-flex items-center gap-2 text-xs">
-                        <StatusPill status={s.status.ok ? 'ok' : 'critical'} label={s.status.ok ? 'Meeting' : 'Breaching'} />
+                        {s.status.measured === false ? (
+                          <StatusPill status="warn" label="Unmeasured" />
+                        ) : (
+                          <StatusPill status={s.status.ok ? 'ok' : 'critical'} label={s.status.ok ? 'Meeting' : 'Breaching'} />
+                        )}
                         <span className="text-muted-foreground">
-                          SLI {(s.status.sli * 100).toFixed(2)}% · budget {(s.status.budgetRemaining * 100).toFixed(0)}%
+                          {s.status.measured === false
+                            ? 'no samples recorded'
+                            : `SLI ${(s.status.sli * 100).toFixed(2)}% · budget ${(s.status.budgetRemaining * 100).toFixed(0)}%`}
                         </span>
                       </span>
                     ) : (

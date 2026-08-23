@@ -18,7 +18,7 @@ const SPECS: SloSpec[] = [
     version: 1,
     gate_promotion: true,
     updated_at: null,
-    status: { sli: 0.995, budgetRemaining: 0.5, burnRate: 0.5, ok: true, n: 100 },
+    status: { sli: 0.995, budgetRemaining: 0.5, burnRate: 0.5, ok: true, n: 100, measured: true },
   },
 ]
 
@@ -77,5 +77,24 @@ describe('SLOs console (BL-020)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Set SLO/i }))
     await waitFor(() => expect(screen.getByText(/Target must be in/)).toBeInTheDocument())
     expect(apiFetch.mock.calls.filter((c) => (c[1] as { method?: string })?.method === 'POST')).toHaveLength(0)
+  })
+})
+
+describe('an SLO nobody has measured', () => {
+  it('is not rendered as one meeting its target', async () => {
+    // Zero samples score a perfect SLI upstream, so this row used to show a green "Meeting"
+    // pill reading "SLI 100.00% · budget 100%" — a target nobody had measured, published as met.
+    apiFetch.mockImplementationOnce(() =>
+      Promise.resolve([
+        {
+          ...SPECS[0],
+          status: { sli: 1, budgetRemaining: 1, burnRate: 0, ok: null, n: 0, measured: false },
+        },
+      ]),
+    )
+    renderSlo()
+    expect(await screen.findByText('Unmeasured')).toBeTruthy()
+    expect(screen.queryByText('Meeting')).toBeNull()
+    expect(screen.getByText('no samples recorded')).toBeTruthy()
   })
 })

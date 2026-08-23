@@ -38,8 +38,9 @@ class SLOStatus:
     budget_total: float  # 1 - target (allowed error fraction)
     budget_remaining: float  # fraction of the error budget left (0..1); <0 => exhausted
     burn_rate: float  # current error rate / allowed error rate
-    ok: bool  # sli >= target
+    ok: bool | None  # sli >= target; None when nothing has been measured
     n: int
+    measured: bool  # n > 0 — whether any of the numbers above rest on evidence
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +54,7 @@ class SLOStatus:
             "burn_rate": self.burn_rate,
             "ok": self.ok,
             "n": self.n,
+            "measured": self.measured,
         }
 
 
@@ -175,6 +177,11 @@ def slo_status(model: str, name: str | None = None, *, tenant: str = "default") 
     out: list[SLOStatus] = []
     for spec in specs:
         good, total = platform_db.slo_sli_ratio(model, spec["name"], tenant=tenant)
+        # With no samples this ratio has no value to report. It is left at 1.0 so the numeric
+        # fields keep their shape for existing readers, but `measured` is what says whether any
+        # of them rest on evidence — without it, "we have not looked" and "it is perfect" are
+        # the same number, and every reader downstream published the second one.
+        measured = total > 0
         sli = (good / total) if total else 1.0
         target = float(spec["target"])
         budget_total = 1.0 - target
@@ -195,19 +202,48 @@ def slo_status(model: str, name: str | None = None, *, tenant: str = "default") 
                 budget_total=budget_total,
                 budget_remaining=budget_remaining,
                 burn_rate=burn_rate,
-                ok=sli >= target,
+                ok=(sli >= target) if measured else None,
                 n=int(total),
+                measured=measured,
             )
         )
     return out
 
 
 def budget_exhausted(model: str, slo: str, *, tenant: str = "default") -> bool:
-    """True if the SLO's error budget is spent — used by the C3 promotion gate (R6)."""
+    """True if the SLO's error budget is spent — used by the C3 promotion gate (R6).
+
+    An *unmeasured* SLO is not exhausted, which is literally true and is why this stays ``False``.
+    It is not evidence of health either, and a caller that reads ``False`` as "checked and fine"
+    is wrong about a gate-flagged SLO with no samples — see :func:`unmeasured_gates`, which the
+    promote path reports so that gap is visible rather than silent.
+    """
     statuses = slo_status(model, slo, tenant=tenant)
     if not statuses:
         return False
-    return statuses[0].budget_remaining <= 0.0
+    return statuses[0].measured and statuses[0].budget_remaining <= 0.0
+
+
+def unmeasured_gates(model: str, *, tenant: str = "default") -> list[str]:
+    """Gate-flagged SLOs for ``model`` that have no samples, so the gate cannot evaluate them.
+
+    The operator asked these specifically to block promotion on a spent error budget. With no
+    data the gate passes every time, and used to do so without saying anything — indistinguishable
+    from a gate that ran and found the budget intact.
+
+    They are reported, not enforced: a model cannot produce SLI samples before it serves and
+    cannot serve before it is promoted, so refusing here would deadlock every model's first
+    promotion.
+    """
+    return [
+        s.name
+        for s in slo_status(model, tenant=tenant)
+        if not s.measured
+        and any(
+            spec["name"] == s.name and spec["gate_promotion"]
+            for spec in platform_db.list_slo_specs(model=model, tenant=tenant)
+        )
+    ]
 
 
 def apply_spec(spec: dict[str, Any]) -> None:
@@ -244,6 +280,7 @@ __all__ = [
     "generate_rules",
     "slo_status",
     "budget_exhausted",
+    "unmeasured_gates",
     "apply_spec",
     "load_specs",
 ]

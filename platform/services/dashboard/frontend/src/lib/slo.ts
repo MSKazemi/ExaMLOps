@@ -8,8 +8,11 @@ export interface SloStatus {
   sli: number
   budgetRemaining: number
   burnRate: number | null
-  ok: boolean
+  // null when nothing has been measured. Zero samples score a perfect SLI, so without the
+  // distinction an unwatched SLO renders exactly like one meeting its target.
+  ok: boolean | null
   n: number
+  measured: boolean
 }
 
 export interface SloSpec {
