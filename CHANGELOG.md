@@ -7,6 +7,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`adr_reconcile.py --dates` — because an artifact older than its ADR proves nothing.** The
+  reconciler's second list (ADRs that are not Accepted but whose named artifacts all exist) reads
+  like a to-do list of status flips, and it is not one: ADR 0112 ("carbon signals are typed",
+  written 2026-08-19) names `finops/carbon.py`, which had existed since 2026-07-01. `--dates` now
+  dates both sides from git and splits the list — **9** ADRs whose artifacts appeared *after* the
+  decision (consistent with the ADR having driven the work, worth reading first) and **35** whose
+  artifacts all predate it (a name match and nothing more). CLI commands are dated by pickaxing the
+  *quoted* leaf, which is how Typer registers a command name; the bare word also matches every
+  docstring and dict key that contains it, and the difference is real — `lineage` dates to
+  2026-05-29 bare and 2026-07-16 quoted. The signal is coarse by design and is used only to order
+  the reading, never to change a status on its own.
+
 - **Nothing checked that the design record was still true — and one Accepted decision was not.**
   ExaMLOps carries **113 ADRs**; an ADR marked `Accepted` is a claim that the system now works a
   certain way, and its body names the artifacts that make it so. Nothing ever verified those

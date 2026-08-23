@@ -148,6 +148,75 @@ def commitments(text: str) -> str:
     return "\n".join(kept)
 
 
+# --- dating -----------------------------------------------------------------
+#
+# The second list this script prints — ADRs that are not Accepted but whose named
+# artifacts all exist — is easy to misread as "44 features shipped, go flip the status".
+# It is not. `exa serve` existing does not make ADR 0015 (KServe-native serving) true, and
+# ADR 0112 ("carbon signals are typed", written 2026-08-19) names `finops/carbon.py`, which
+# had existed since 2026-07-01. An artifact that predates the decision cannot be evidence
+# that the decision was carried out.
+#
+# So date both sides. An artifact that first appeared *after* the ADR is consistent with
+# the ADR having driven it; one that predates the ADR tells you nothing and the ADR needs a
+# human read. This is a coarse signal on purpose — for a CLI command it is the first commit
+# touching that word anywhere in the CLI source — and it is used only to *sort* the work,
+# never to flip a status on its own.
+
+_DATE_CACHE: dict[str, str] = {}
+
+
+def _git(args: list[str]) -> str:
+    for git_dir in (".git-private", ".git"):
+        if not (ROOT / git_dir).exists():
+            continue
+        out = subprocess.run(
+            ["git", f"--git-dir={ROOT / git_dir}", *args],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=120,
+        )
+        lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+        if lines:
+            return lines[-1].strip()  # oldest
+    return ""
+
+
+def first_seen(token: str, cmds: set[str]) -> str:
+    """Earliest date this artifact shows up in history, or '' if undatable."""
+    if token in _DATE_CACHE:
+        return _DATE_CACHE[token]
+    if CLI_RE.match(token):
+        leaf = re.split(r"[/|]", re.split(r"\s+(?:--|<|\[)", token)[0].strip())[0].split()[-1]
+        # Quote the leaf: Typer registers a command as `@app.command("vector")`, so the
+        # quoted form dates the *command*, while the bare word also matches every dict key
+        # and docstring that happens to contain it. Measured difference on `lineage`:
+        # 2026-05-29 bare (an unrelated mention) vs 2026-07-16 quoted (the command itself).
+        date = _git(
+            ["log", f'-S"{leaf}"', "--format=%ad", "--date=short", "--", "platform/cli/src"]
+        )
+    else:
+        target = None
+        if MODULE_RE.match(token):
+            hit = _find_module(token.replace(".", "/"))
+            target = str(hit.relative_to(ROOT)) if hit else None
+            if target is None:
+                for cut in range(len(token.split(".")), 1, -1):
+                    hit = _find_module("/".join(token.split(".")[:cut]))
+                    if hit:
+                        target = str(hit.relative_to(ROOT))
+                        break
+        else:
+            for cand in FILE_STRS:
+                if cand == token or cand.endswith("/" + token):
+                    target = cand
+                    break
+        date = _git(["log", "--format=%ad", "--date=short", "--", target]) if target else ""
+    _DATE_CACHE[token] = date
+    return date
+
+
 def status_of(text: str) -> str:
     for line in text.splitlines()[:8]:
         m = re.match(r"\s*-?\s*\*\*Status:?\*\*:?\s*(.+)", line)
@@ -189,6 +258,11 @@ def main() -> int:
     ap.add_argument(
         "--check", action="store_true", help="exit 1 if an Accepted ADR names a missing artifact"
     )
+    ap.add_argument(
+        "--dates",
+        action="store_true",
+        help="split the not-accepted list by whether its artifacts predate the ADR",
+    )
     args = ap.parse_args()
 
     cmds = cli_commands()
@@ -215,6 +289,26 @@ def main() -> int:
     print(f"Not-accepted ADRs whose named artifacts ALL exist: {len(shipped_but_proposed)}")
     for r in shipped_but_proposed:
         print(f"  {r['adr']:<58} {', '.join(r['present'][:3])}")
+
+    if args.dates:
+        print()
+        print("Dated (an artifact older than its ADR is not evidence the ADR was carried out):")
+        drove, predates = [], []
+        for r in shipped_but_proposed:
+            adr_date = _git(["log", "--format=%ad", "--date=short", "--", f"design/adr/{r['adr']}"])
+            dates = {a: first_seen(a, cmds) for a in r["present"]}
+            after = {a: d for a, d in dates.items() if d and adr_date and d > adr_date}
+            (drove if after else predates).append((r["adr"], adr_date, dates, after))
+        print()
+        print(f"  Artifacts appeared AFTER the ADR — worth reading first ({len(drove)}):")
+        for adr, adr_date, _dates, after in drove:
+            newest = ", ".join(f"{a} ({d})" for a, d in sorted(after.items())[:2])
+            print(f"    {adr:<58} adr {adr_date} → {newest}")
+        print()
+        print(f"  Every artifact PREDATES the ADR — name match only ({len(predates)}):")
+        for adr, adr_date, dates, _ in predates:
+            oldest = ", ".join(f"{a} ({d or '?'})" for a, d in sorted(dates.items())[:2])
+            print(f"    {adr:<58} adr {adr_date} → {oldest}")
 
     if args.check and lying:
         print()
