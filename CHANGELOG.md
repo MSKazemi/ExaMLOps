@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **`exa agent status` — the agent can now be interrogated, not just talked to.** `exa ask`
+  could send a question but nothing could ask the agent about *itself*, and that gap had a
+  measurable cost: when Skipper's Azure key was rejected the agent kept answering every
+  request with an empty string, so the outage read as a weak model rather than a dead
+  credential, and it stayed that way until a 30-question evaluation returned 0/30.
+
+  The command reports the four things that decide whether an answer can be trusted —
+  reachability, the resolved LLM backend, the model, and whether the long-term memory store
+  actually attached — and it reports them **from the server**, over the same HTTP surface
+  `exa ask` uses. It never reads the local environment or imports `skipper`: the agent
+  normally runs in a container or on the node with entirely different values, and coupling
+  the CLI to the agent package would make `exa` unusable wherever the agent is not installed.
+
+  It exits non-zero both when the agent is unreachable and when it is up with an unusable
+  backend, because both mean the same thing to a caller. Memory that is enabled but did not
+  attach is a warning, not a failure: the agent still works, its answers are just quietly
+  worse — which is exactly the kind of degradation that otherwise goes unnoticed.
+
+  `GET /api/info` on the agent now also passes through the `fix` hint and the list of backends
+  it rejected. `check_backend()` already worked both out; dropping them at the endpoint forced
+  every client to re-derive from nothing, and `exa agent status` runs on a different machine
+  from the agent so it cannot inspect the agent's environment to find out.
+
+  7 unit tests, the dead-backend and JSON-gate guards proved red by regressing the check.
+
 ### Changed
 
 - **`exa --help` now names the agentic surface: a twelfth panel, "Agents & Automation".** The
@@ -113,6 +140,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   cannot silently certify a target. Run read-only against the live node it reports
   `3 file(s) drifted out of 238 checked`, exit 1. Seven unit tests in
   `tests/unit/test_deploy_integrity.py`.
+
+### Fixed
+
+- **The A2A agent card told peers that OIDC tokens were verified. Nothing verifies them.**
+  `examlops.oidc` implements RS256 validation against the issuer JWKS, and `config_validate` warns
+  when `EXAMLOPS_OIDC_ISSUER` is set without a JWKS — so the configuration surface is real and
+  looks complete. But `oidc.verify_bearer` and `oidc.verify_token` have no caller anywhere outside
+  the test suite: no request path on any server checks an IdP-issued token. Meanwhile, setting the
+  issuer made the published Agent Card declare an `openIdConnect` scheme described as
+  *"RS256, verified against the issuer JWKS"* — a claim about this deployment, made to peers, for a
+  check that never runs.
+
+  The card now says what the token is *for* and states plainly that verification is not enforced
+  here. The wording is deliberately not softened elsewhere: the config validator, the env vars and
+  the module all stay as they are, because the fix for the underlying gap is to call the verifier,
+  not to delete the machinery.
+
+  `tests/unit/test_agent_card_security_claim.py` keeps the two halves in agreement in **both**
+  directions — it counts real (non-comment, non-test) callers of the verifier and fails if the card
+  understates enforcement that exists, or overstates enforcement that does not. Proved red by
+  adding a call and restoring: with a caller present the guard demands the stronger wording back.
 
 ### Fixed
 

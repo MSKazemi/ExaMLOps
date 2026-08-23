@@ -94,7 +94,15 @@ async def api_info():
         mem["active"] = getattr(_get_graph(), "store", None) is not None
     except Exception:  # noqa: BLE001 - never let a status field break the info endpoint
         mem["active"] = False
-    return {"backend": info["type"], "model": info["model"], "ok": info["ok"], "memory": mem}
+    payload = {"backend": info["type"], "model": info["model"], "ok": info["ok"], "memory": mem}
+    # `check_backend` already worked out *which* variable is wrong and which candidates it
+    # rejected on the way; dropping that here made every client re-derive it from nothing.
+    # `exa agent status` is the caller that needs it — it runs on a different machine from the
+    # agent, so it cannot inspect the agent's own environment to find out.
+    for key in ("fix", "skipped"):
+        if info.get(key):
+            payload[key] = info[key]
+    return payload
 
 
 @app.get("/api/threads")

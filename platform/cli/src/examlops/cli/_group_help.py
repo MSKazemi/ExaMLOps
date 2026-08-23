@@ -121,6 +121,12 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "rag": [
         ("List knowledge bases", "exa rag list"),
     ],
+    # Agents & Automation
+    "agent": [
+        ("Is the agent up, and on which backend?", "exa agent status"),
+        ("As a health gate (exits 1 if unusable)", "exa --json agent status"),
+        ("Check the agent in another environment", "exa -c lxp agent status"),
+    ],
     # GenAI & LLMOps
     "genai": [
         ("GenAI telemetry status", "exa genai check"),

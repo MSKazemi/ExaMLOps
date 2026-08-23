@@ -13,6 +13,7 @@ from examlops.cli._help import SuggestGroup, assign_panels, make_ordered_group
 from examlops.cli.commands import (
     ab_cmd,
     admission_cmd,
+    agent_cmd,
     agentops_cmd,
     approvals,
     ask_cmd,
@@ -139,7 +140,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     # category simply had no name, which reads identically to absence.
     # `explain` deliberately stays in Getting Started: it introspects the Click tree and involves
     # no agent, so filing it here would make the panel a lie.
-    ("Agents & Automation", ["ask", "agentops", "autopilot", "mcp"]),
+    ("Agents & Automation", ["ask", "agent", "agentops", "autopilot", "mcp"]),
     ("Monitoring & Quality", ["drift", "eval", "slo", "fairness"]),
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
@@ -233,6 +234,7 @@ def main(
             )
 
 
+app.add_typer(agent_cmd.app, name="agent", help="Skipper agent — health, backend and memory")
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
 app.add_typer(
     autopilot_cmd.app,

@@ -554,6 +554,20 @@ were previously spread across four other panels — correct and complete, but wi
 the category, which made the surface read as missing when it was not. `exa explain` deliberately
 stays under Getting Started: it introspects the command tree and calls no agent.
 
+### `exa agent` — is the agent up, and which brain is it using?
+
+Interrogates the running Skipper agent over the same HTTP surface `exa ask` uses, reporting what
+the **server** resolved — not what this machine's `.env` says, since the agent normally runs
+elsewhere. Exits non-zero when the agent is unreachable *or* when it is up but its LLM backend is
+unusable, so it works as a health gate: both states mean an answer cannot be trusted.
+
+This exists because a rejected Azure key once went unnoticed for a week — the agent kept
+answering, with empty strings, so it read as a weak model rather than a dead credential.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa agent status` | Reachability, LLM backend, model, and whether the long-term memory store actually attached. Prints the exact environment variable to repair when the backend is rejected. | First thing to run when the agent gives strange or empty answers — it separates "not running", "running with a dead key", and "running fine but with no long-term memory". | `exa agent status`<br>`exa --json agent status`<br>`exa -c lxp agent status` |
+
 ### `exa ask` — natural-language front door to Skipper
 
 Routes a plain-English question to the Skipper agent's OpenAI-compatible bridge. Great when you don't know which exact command to run.
