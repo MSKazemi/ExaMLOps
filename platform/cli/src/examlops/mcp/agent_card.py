@@ -60,10 +60,16 @@ def build_agent_card(
         ),
         "version": _version(),
         "provider": {"organization": "SEANERGYS", "url": "https://seanergys.eu"},
+        # A2A capability flags describe *this* agent's protocol support, and each one is a
+        # promise a peer may act on. `stateTransitionHistory` means a peer can ask for a
+        # task's status-transition history — which needs a task concept, and this surface
+        # has none: no task id, no task store, no `tasks/get`. It was hard-coded `True`.
+        # `audit_events` is not the same thing; it records what the *platform* did, not the
+        # lifecycle of an A2A task. Flip this the day a task store exists, not before.
         "capabilities": {
             "streaming": False,
             "pushNotifications": False,
-            "stateTransitionHistory": True,
+            "stateTransitionHistory": False,
         },
         "defaultInputModes": ["application/json", "text/plain"],
         "defaultOutputModes": ["application/json"],
@@ -107,7 +113,15 @@ def _security_schemes() -> dict[str, Any]:
     if issuer:
         scheme: dict[str, Any] = {
             "type": "openIdConnect",
-            "description": "IdP-issued OIDC access token (RS256, verified against the issuer JWKS).",
+            # Do not claim verification this platform does not perform. `examlops.oidc`
+            # implements RS256/JWKS validation, but nothing calls `verify_bearer` — no
+            # server currently checks an IdP token, so the card must say what the token
+            # is *for*, not that it is checked. Restore the stronger wording the day a
+            # request path actually calls the verifier.
+            "description": (
+                "IdP-issued OIDC access token, expected by the configured issuer. "
+                "NOTE: token verification is not yet enforced by this deployment."
+            ),
             "openIdConnectUrl": issuer.rstrip("/") + "/.well-known/openid-configuration",
         }
     else:
