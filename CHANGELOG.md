@@ -7,6 +7,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The public repositories now carry the `.env.example` the install guide tells you to
+  copy.** `docs/guides/enterprise-installation.md` and `docs/dashboard/operations.md` both
+  open with `cp .env.example .env`, and both are published — but the file was excluded from
+  the public tree, so the first instruction in the installation guide could not be followed
+  from a public clone. It was excluded for a good reason: it named an internal GitLab host,
+  its numeric project id and one site's node and tunnel hosts.
+
+  Rather than publish that, the template was made a template. Every site-specific value is
+  gone: the GitLab URL and project id are now empty with a pointer to where a reader finds
+  their own (the code and compose both already default to `https://gitlab.com`, so unset is
+  the correct template state); the Azure endpoint carries `<your-resource>`; the Ollama
+  section documents the two shapes — a local daemon on 11434, a forwarded port for a remote
+  GPU host — instead of one machine's name and its model inventory; the Docker bridge gateway
+  is the command that prints it rather than one run's address; and the SeanerBUS pointer now
+  goes to a published guide instead of a private runbook. No hostname, IP or project id
+  remains. The nested `platform/infra/docker-compose/.env.example` stays private and is still
+  refused by `git add`.
+
+### Fixed
+
+- **A control plane that had run no checks at all reported itself healthy.** `GET /health`
+  computed `all_ok = all(v == "ok" for v in _startup_checks.values())`, and `all()` over an
+  empty dict is vacuously true — so a process whose startup validation had not run published
+  `status: "ok"`, a machine-readable all-clear covering a database it had never opened, a
+  registry it had never loaded and a token it had never checked. Verified: with
+  `_startup_checks` empty the endpoint returned `status: "ok"` alongside
+  `auth_configured: false` and `startup_checks: {}`. Reachable with `uvicorn --lifespan off`
+  and in any harness that mounts the app without entering the lifespan.
+
+  Not-yet-checked is now `starting`, distinct from both `ok` and `degraded`, and still HTTP
+  200 — the container healthcheck reads only the status code and is unaffected. Guarded in
+  both directions: empty ⇒ `starting`, all-ok ⇒ `ok`, any failure ⇒ `degraded`, with the
+  first arm proved red against the old expression.
+
+### Added
+
+- **A guard on the two capability claims the platform publishes to machines.** Following the
+  two false claims found in the A2A agent card, the same question was put to the surfaces a
+  machine reads and acts on without re-checking:
+
+  `ToolSpec.mutating` decides whether an MCP tool is exposed at all when the server runs
+  read-only, and `tier` tells an autonomous caller how much confirmation an action needs — so
+  a mutating function registered as read-only is a privilege escalation, not a documentation
+  slip. Audited: all **55** registered tools, none of the 46 read tools reaches a write call
+  or an HTTP/SQL write verb, all 9 mutating tools consult `_agent_write_gate`, and `tier` and
+  `mutating` agree on every entry.
+
+  On the dashboard the `/me` capability list drives which affordances the UI renders while the
+  BFF stays the sole enforcement point (F15), so an unguarded mutating route is a control the
+  UI believes is admin-only and the server lets anyone call. Audited: all **76** mutating
+  routes across 33 of the 57 routers; 68 are admin- or capability-guarded and the remaining 8 are
+  viewer-writable by design (login/logout, comments and snapshots, alert acknowledgement,
+  copilot ask, `predict`, UI telemetry), now named in an allow-list with the reason.
+
+  Both claims were truthful; neither was pinned by a test. **58 guards** added, each failing
+  in both directions — proved by registering a write tool as read-only, by adding an unguarded
+  route, and by checking the allow-list rejects an entry that has since grown a guard.
+
+
 - **`exa chat` — the conversation is reachable from the CLI, without a second chat client.**
   `exa ask` is one-shot; nothing in `exa` held a back-and-forth. The obvious move would have
   been to write a REPL, and it would have been wrong: ExaMLOps already decided this question

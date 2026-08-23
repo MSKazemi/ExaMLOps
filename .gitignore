@@ -11,6 +11,8 @@
 # ── Secrets ────────────────────────────────────────────────────────────────
 .env
 .env.*
+# …except the root template: it is the file the install guide tells you to copy.
+!/.env.example
 *.local
 *.pem
 *.key
