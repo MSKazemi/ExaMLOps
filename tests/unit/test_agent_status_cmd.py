@@ -185,7 +185,11 @@ def test_chat_does_not_install_kq_for_you(monkeypatch):
     result = runner.invoke(_chat_app(), [])
     assert result.exit_code != 0
     assert "not installed" in result.output
-    assert "uv pip install kube-q" in result.output
+    # Rich wraps the hint at the console width, so the command can arrive split across a line
+    # (`uv pip install \nkube-q`). The claim is that the command is *offered*, not that it fits on
+    # one line, so collapse whitespace before looking for it.
+    flat = " ".join(result.output.split())
+    assert "uv pip install kube-q" in flat
 
 
 def test_chat_refuses_json_mode_rather_than_pretending(monkeypatch):
