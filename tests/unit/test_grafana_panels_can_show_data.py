@@ -15,6 +15,13 @@ import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
+# Directories that hold *copies* of source rather than source. `platform/cli/build/lib/examlops`
+# is a full duplicate of the CLI package, and it is gitignored — so scanning it makes this guard's
+# answer depend on whether anyone has run a build, and a metric deleted from the real tree stays
+# "emitted" as long as a stale copy survives. Demonstrated: a Counter declared only under `build/`
+# was accepted by the inventory. That is the same failure the module docstring is about, one level
+# up — a check that cannot fail is worth no more than a panel that cannot show data.
+_NOT_SOURCE = {"node_modules", ".venv", "build", "dist", "site-packages", ".git", "__pycache__"}
 _DASHBOARDS = (
     _ROOT / "platform" / "infra" / "docker-compose" / "grafana" / "provisioning" / "dashboards"
 )
@@ -29,12 +36,19 @@ _OURS = re.compile(r"\b((?:examlops|ray_examlops|seanerbus)_[a-z0-9_]+)")
 _DECLARED = re.compile(r'(?:Counter|Gauge|Histogram)\(\s*\n?\s*"([a-z][a-z0-9_]*)"')
 
 
-def _emitted() -> set[str]:
+def _source_files(root: Path) -> list[Path]:
+    """Every ``.py`` that is source, not a copy of source — and proof there was something to read."""
+    files = [p for p in root.rglob("*.py") if not _NOT_SOURCE & set(p.parts)]
+    assert files, (
+        f"scanned {root} and found no Python files — the path is stale, not the tree empty"
+    )
+    return files
+
+
+def _emitted(root: Path = _ROOT) -> set[str]:
     """Every metric name declared anywhere in the tree, plus the forms Prometheus derives."""
     names: set[str] = set()
-    for path in _ROOT.rglob("*.py"):
-        if "node_modules" in path.parts or ".venv" in path.parts:
-            continue
+    for path in _source_files(root):
         for name in _DECLARED.findall(path.read_text(errors="ignore")):
             names.add(name)
     derived = {_RAY_PREFIX + n for n in names}
@@ -92,9 +106,7 @@ _DECLARED_WITH_LABELS = re.compile(
 def _declared_labels() -> dict[str, set[str]]:
     """metric name → the label set its declaration gives it."""
     out: dict[str, set[str]] = {}
-    for path in _ROOT.rglob("*.py"):
-        if "node_modules" in path.parts or ".venv" in path.parts:
-            continue
+    for path in _source_files(_ROOT):
         for name, labels in _DECLARED_WITH_LABELS.findall(path.read_text(errors="ignore")):
             out[name] = set(re.findall(r'"([a-z_]+)"', labels))
     return out
@@ -123,3 +135,27 @@ def test_every_legend_names_a_label_the_metric_actually_carries():
                             f"{f.name}: legend {{{{{used}}}}} but {metric} has {sorted(labels)}"
                         )
     assert not problems, "\n".join(problems)
+
+
+def test_the_inventory_reads_source_and_not_copies_of_source(tmp_path):
+    """A metric declared only in a build artifact must not count as emitted.
+
+    Built as a fixture tree rather than asserted against this repo on purpose: ``build/`` is
+    gitignored, so on a machine that has never run a build — CI, for one — a check phrased against
+    the real tree would find nothing to exclude and pass without testing anything. That is the
+    failure this module is about, so the guard for it may not have the same shape.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "real.py").write_text('Counter("examlops_real_metric", "d")\n')
+    for copy_dir in ("build", "dist"):
+        d = tmp_path / copy_dir / "lib"
+        d.mkdir(parents=True)
+        (d / "stale.py").write_text(f'Counter("examlops_{copy_dir}_only_metric", "d")\n')
+
+    emitted = _emitted(tmp_path)
+
+    assert "examlops_real_metric" in emitted
+    assert "examlops_build_only_metric" not in emitted, (
+        "a metric surviving only in build/ keeps a dead panel looking healthy"
+    )
+    assert "examlops_dist_only_metric" not in emitted
