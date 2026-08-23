@@ -22,6 +22,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Two wrong facts in the environment-variable reference, both introduced by the documentation
+  pass that was meant to make it trustworthy.** `EXAMLOPS_LLM_LAUNCHER` was published with the value
+  set `external / compose / hpc / kserve`; there is no `hpc` launcher — the HPC one registers under
+  two scheduler names, `slurm` and `flux`, and `exa serve llm start --launcher` accepts exactly
+  those five. And the `AGENT_CHECKPOINT_BACKEND` row omitted that selecting `postgres` with no DSN
+  **silently falls back to `sqlite`** instead of failing. Both were caught by reading the registries
+  rather than the surrounding docstrings; a row that enumerates values has to be checked against the
+  place the values are enumerated.
+
+
 - **The env-var guard could not see a variable introduced in a new file.** It scanned
   `git ls-files`, so anything not yet committed was invisible — meaning it could never fail on the
   change that adds an undocumented knob, only on some later change, by which point the knob is
