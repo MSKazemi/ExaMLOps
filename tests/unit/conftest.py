@@ -43,7 +43,11 @@ _LOCAL = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
 
 @pytest.fixture(autouse=True)
-def _no_live_services(monkeypatch):
+def _no_live_services():
+    # Restores by hand rather than through `monkeypatch`: an autouse conftest fixture that requests
+    # `monkeypatch` pulls it earlier in setup order for every test, inverting teardown order against
+    # any fixture that assumed monkeypatch had already run. The dashboard's copy of this guard did
+    # exactly that and errored a settings test's teardown. A guard must not reorder its own suite.
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
 
@@ -68,8 +72,13 @@ def _no_live_services(monkeypatch):
         _check(address)
         return real_connect_ex(self, address, *a, **k)
 
-    monkeypatch.setattr(socket.socket, "connect", guard)
-    monkeypatch.setattr(socket.socket, "connect_ex", guard_ex)
+    socket.socket.connect = guard
+    socket.socket.connect_ex = guard_ex
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect
+        socket.socket.connect_ex = real_connect_ex
 
 
 @pytest.fixture

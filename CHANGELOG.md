@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The same guard on the dashboard's backend suite, and two tests it caught immediately.** The
+  port list is derived from `settings`, so a backing service added there is covered without editing
+  the guard (`database_url` excluded — the Postgres run connects for real). It found the defect in
+  both directions: `test_seanerbus_status_unreachable_when_bridge_down` asserted the bridge probe
+  *fails* while doing nothing to make it fail — green on a laptop with nothing on `:8003`, red on
+  any machine running `make seanerbus-up` and on the lxp node, where the bridge is a bare-metal
+  process — and `test_response_carries_security_headers`, a claim about middleware, fanned out to
+  nine live services and left the result in the health router's 30-second process-global cache.
+  Both preconditions are now established rather than assumed. The suite went from 137 s to 44 s.
+  Neither guard uses `monkeypatch`: an autouse conftest fixture that requests it reorders teardown
+  for every test in the suite, which is how it errored `test_settings.py` on its first run — that
+  fixture now restores the environment itself instead of relying on an ordering it never declared.
+
 - **A unit test could pass because a service happened to be running on the developer's laptop.**
   Two `exa chat` launcher tests were green for months only because a Skipper agent was answering on
   `:18004`; on a machine without it they would have failed, and on a machine running a different

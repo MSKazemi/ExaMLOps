@@ -1,6 +1,7 @@
 """Settings contract: new vars are required; legacy DASHBOARD_TOKEN is gone."""
 
 import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,23 @@ def _reload_settings():
 
 @pytest.fixture(autouse=True)
 def restore_settings_module():
-    """Tests in this file mutate env and reload `settings`. Without a
-    teardown reload, downstream tests get the polluted module. After each
-    test, force a clean reload using the conftest's env vars (which
-    monkeypatch has already restored at this point)."""
+    """Tests in this file mutate env and reload `settings`; without a teardown reload, downstream
+    tests get the polluted module.
+
+    The teardown restores the environment *itself* instead of waiting for ``monkeypatch`` to do it.
+    It used to reload with whatever env happened to be in place, which was clean only because
+    ``monkeypatch`` was torn down first — true only as long as no earlier fixture requested
+    ``monkeypatch``. The day one did (an autouse guard in the shared conftest), this fixture
+    reloaded ``settings`` with the required variables still deleted and errored the test that had
+    just passed. Snapshotting here needs no such assumption: at setup the env is still the
+    conftest's.
+    """
+    env = dict(os.environ)
+    cwd = os.getcwd()
     yield
+    os.environ.clear()
+    os.environ.update(env)
+    os.chdir(cwd)
     _reload_settings()
 
 

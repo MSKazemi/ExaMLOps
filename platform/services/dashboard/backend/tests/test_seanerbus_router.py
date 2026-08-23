@@ -51,8 +51,20 @@ async def test_seanerbus_config_viewer_can_read(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_seanerbus_status_unreachable_when_bridge_down(client: AsyncClient) -> None:
-    """GET /api/seanerbus/status returns reachable=False when bridge not running."""
+async def test_seanerbus_status_unreachable_when_bridge_down(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """GET /api/seanerbus/status returns reachable=False when bridge not running.
+
+    The precondition is *established*, not assumed. This test used to probe the router's default
+    ``localhost:8003`` and assert the probe failed — true only while no bridge is running on the
+    machine. ``make seanerbus-up`` is a documented target and the lxp node runs the bridge as a
+    bare-metal process, so the same code would fail there and pass here, which is a property of
+    the machine rather than of the handler. Port 1 serves nothing, anywhere.
+    """
+    from routers import seanerbus
+
+    monkeypatch.setattr(seanerbus, "_DEFAULT_BRIDGE_STATUS_URL", "http://127.0.0.1:1")
     await _login_viewer(client)
     resp = await client.get("/api/seanerbus/status")
     assert resp.status_code == 200

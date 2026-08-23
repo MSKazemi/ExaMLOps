@@ -122,3 +122,81 @@ def _isolate_postgres_state():
     from examlops.storage.testing import postgres_isolation
 
     yield from postgres_isolation()
+
+
+# --- a dashboard test may not talk to a running backing service --------------------------
+#
+# `test_seanerbus_status_unreachable_when_bridge_down` asserted the bridge probe fails while doing
+# nothing to make it fail: it passed here because nothing was on :8003, and would have failed on
+# any machine running `make seanerbus-up` or on the lxp node, where the bridge is a bare-metal
+# process. `test_response_carries_security_headers` — a claim about middleware — went the other
+# way and opened real connections to nine services, then left the result in the health router's
+# 30-second process-global cache.
+#
+# Both are the same defect: the outcome depends on what happens to be running on the developer's
+# machine rather than on the code under test. The ports come from `settings`, so a service added
+# there is covered without editing this list. `database_url` is deliberately excluded — the
+# Postgres backend run connects to it for real, and legitimately.
+
+_SERVICE_PORTS: dict[int, str] | None = None
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+def _service_ports() -> dict[int, str]:
+    global _SERVICE_PORTS
+    if _SERVICE_PORTS is None:
+        from urllib.parse import urlparse
+
+        from settings import settings
+
+        found: dict[int, str] = {}
+        for field, value in vars(settings).items():
+            if not field.endswith("_url") or field == "database_url" or not isinstance(value, str):
+                continue
+            parsed = urlparse(value)
+            if parsed.hostname in _LOCAL_HOSTS and parsed.port:
+                found.setdefault(parsed.port, field)
+        _SERVICE_PORTS = found
+    return _SERVICE_PORTS
+
+
+@pytest.fixture(autouse=True)
+def _no_live_backing_services():
+    # Restores by hand rather than through `monkeypatch`: an autouse conftest fixture that requests
+    # `monkeypatch` pulls it earlier in setup order for *every* test, which inverts teardown order
+    # against any fixture that quietly assumed monkeypatch had already undone its env. That is
+    # exactly what `tests/test_settings.py::restore_settings_module` assumed, and it errored the
+    # moment this fixture existed. A guard is not allowed to reorder the suite it guards.
+    import socket
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    ports = _service_ports()
+
+    def _check(address):
+        try:
+            host, port = address[0], address[1]
+        except (TypeError, IndexError, KeyError):
+            return
+        if port in ports and str(host) in _LOCAL_HOSTS:
+            raise AssertionError(
+                f"this test connected to {ports[port]} at {host}:{port}. Whether that service is "
+                "running is a property of this machine, not of the code under test — mock the "
+                "client (see tests/test_health.py) or point the setting at a port nothing serves."
+            )
+
+    def guard(self, address, *a, **k):
+        _check(address)
+        return real_connect(self, address, *a, **k)
+
+    def guard_ex(self, address, *a, **k):
+        _check(address)
+        return real_connect_ex(self, address, *a, **k)
+
+    socket.socket.connect = guard
+    socket.socket.connect_ex = guard_ex
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect
+        socket.socket.connect_ex = real_connect_ex

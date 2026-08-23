@@ -634,6 +634,21 @@ conftest points every service URL at `127.0.0.1:1` — a refusal, instantly — 
 the one that runs everywhere. Request it from any test whose subject is what happens when a service
 is *not* there.
 
+The dashboard's backend suite carries the same guard, in
+`platform/services/dashboard/backend/tests/conftest.py`. It reads its port list from `settings`
+rather than a hand-written constant, so a backing service added there is covered without touching
+the guard; `database_url` is excluded, because the Postgres run connects to it for real and should.
+It found the defect in both directions at once — one test asserted the SeanerBUS bridge probe
+*fails* while doing nothing to make it fail (green here, red on any machine running
+`make seanerbus-up`, and red on the lxp node where the bridge is a bare-metal process), and one
+asserted a response header while fanning out to nine live services and leaving the result in the
+health router's 30-second process-global cache.
+
+Neither guard uses `monkeypatch`. An autouse conftest fixture that requests it pulls it earlier in
+setup order for every test in the suite, which reverses teardown order against any fixture that
+assumed monkeypatch had already restored the environment — `test_settings.py` assumed exactly that,
+and errored the moment the guard existed. A guard must not reorder the suite it guards.
+
 ---
 
 ## GitHub Actions retirement

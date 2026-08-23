@@ -59,7 +59,28 @@ def test_rate_limiter_keys_are_independent():
 
 @pytest.mark.asyncio
 async def test_response_carries_security_headers(client):
-    r = await client.get("/api/health")
+    """The claim is about the middleware, so the route must not do real work.
+
+    ``/api/health`` fans out to ten backing services, so this header assertion was opening real
+    connections to MLflow, Prefect, Ray, Prometheus, Grafana, MinIO, Loki, the control plane and
+    the bridge — nine of them, bounded only by an 8-second timeout — and then leaving the result
+    in the router's 30-second process-global cache for whatever ran next. Nothing downstream reads
+    that cache today, but the middleware is route-independent and none of it was ever the subject.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    import routers.health as health_router
+
+    health_router._cache.clear()
+
+    with patch("routers.health.httpx.AsyncClient") as client_cls:
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=ctx)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        ctx.get = AsyncMock(return_value=AsyncMock(status_code=200))
+        client_cls.return_value = ctx
+        r = await client.get("/api/health")
+    health_router._cache.clear()
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert "frame-ancestors" in r.headers.get("Content-Security-Policy", "")
     assert "Strict-Transport-Security" in r.headers
