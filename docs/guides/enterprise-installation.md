@@ -120,6 +120,15 @@ helm install examlops platform/infra/helm/examlops -f my-values.yaml \
 > `PLATFORM_DB`, `HOME`) defaults to `/tmp`, the one writable mount. Override them if you want
 > persistence.
 
+> **One tier cannot be built from the public repository yet.** The control plane's Dockerfile bakes
+> in the default Seanergy use-case pack, and that pack puts `../../modelzoo` on `sys.path` and names
+> its framework classes there — but `modelzoo/` is upstream code that is not published, so
+> `COPY modelzoo /app/modelzoo` fails with `"/modelzoo": not found` on a clean clone. The dashboard
+> and agent images build fine. Until the public distribution ships without a baked-in default pack,
+> build the control plane from a checkout that has `modelzoo/` beside it, or point
+> `EXAMLOPS_USECASE_DIR` at a pack whose framework is public. `tests/unit/test_dockerfile_build_context.py`
+> pins this so no second tier drifts private without anyone noticing.
+
 ### Building a chart repository
 
 `make helm-package` produces a complete, publishable Helm repository in `dist/helm/` — the chart

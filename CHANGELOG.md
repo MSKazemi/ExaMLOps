@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **A guard that every Dockerfile can be built from the tree we publish.** The Helm chart tells
+  strangers to run these images and points them at the public repository for the recipe, so a
+  `COPY` whose source is private makes the published artifact unbuildable by its own audience —
+  and nothing catches it, because `helm lint`, `helm template` and `kubectl --dry-run` never
+  resolve a registry, and the maintainer's checkout has the private path sitting right there.
+  `tests/unit/test_dockerfile_build_context.py` parses every Dockerfile's context reads (skipping
+  `--from` stage copies and build-arg paths that name a sibling checkout, and resolving against
+  both the repo root and the Dockerfile's own directory, since not every image builds from the
+  root) and holds the known-gap set to exactly what is tracked: it fails if a new private path
+  appears, and it also fails if a tracked one is fixed, so the excuse is deleted with the bug.
+
+  It found one, reproduced by building a `git archive` of the public HEAD:
+  `platform/services/control_plane/Dockerfile` copies `modelzoo/`, which left the public tree on
+  2026-08-07, so the build stops at `"/modelzoo": not found`. It is not a stray line — the baked-in
+  default use-case pack puts `../../modelzoo` on `sys.path` and names its framework classes there,
+  so removing the copy means changing what the public image defaults to. Recorded, documented in
+  the installation guide, and left to that decision rather than patched over.
+
 - **A Dockerfile for the Skipper agent — the chart's third tier had none.** `templates/agent.yaml`
   deployed an `examlops-agent` image while the repository held twelve Dockerfiles, not one of them
   the agent's, and no compose service built one either; the tier was undeliverable and nothing
@@ -29,6 +47,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   for a registry.
 
 ### Fixed
+
+- **Three doors could start a retrain without leaving a trace, and none of them had a human
+  behind it.** A retrain is the platform's most consequential action — it can end in a
+  production promotion — and ten call sites can start one. Audited each: `exa retrain`,
+  `exa hpo`, `exa drift trigger`, `exa autopilot` and the MCP `trigger_retrain` tool all
+  record a `retrain_triggered` event; the SeanerBUS bridge's **drift trigger** (fired from
+  live inference error rates) and **bus retrain request**, and the **Skipper agent's**
+  `trigger_retrain`, recorded nothing. Whether the platform's most consequential action left
+  a trace depended on which door it came through — and the three silent ones are exactly the
+  ones with no operator watching.
+
+  The obvious fix — audit once in `POST /retrain`, the single point every caller passes
+  through — is not available: the control plane runs with only `control_plane_data:/data` and
+  no access to the shared `platform.db`, so it cannot write to the audit chain at all.
+  Recorded as a finding rather than worked around; the trace is written by the caller for now.
+  Bridge writes go through `asyncio.to_thread`, matching how every other SQLite write on that
+  path stays off the event loop, and degrade to a no-op when `platform.db` is unavailable. The
+  Skipper write is best-effort: an audit error must never turn a successful retrain into a
+  reported failure.
+
+  5 guards, each proved red by removing the call it protects, and each with an opposite arm: a
+  request that never reached the control plane, and a retrain the operator declined, must *not*
+  be recorded as having happened.
+
+  Two related observations left alone deliberately: `exa production deploy` records to
+  `platform/state/deployments/history.jsonl` rather than the tamper-evident audit chain, and the
+  CI `retrain_push_models.py` runs where the shared database is not the platform's. Both are
+  placement decisions, not omissions.
+
 
 - **The agent tier promised readiness-gated rollouts and had no readinessProbe.** Its strategy set
   `maxUnavailable: 0` — "never drop below desired during upgrade" — but Kubernetes marks a pod
