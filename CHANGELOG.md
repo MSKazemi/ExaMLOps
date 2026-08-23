@@ -25,6 +25,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   remains. The nested `platform/infra/docker-compose/.env.example` stays private and is still
   refused by `git add`.
 
+  Publishing it means `.gitignore` carries `!/.env.example`, so a plain `git add -A` now stages
+  it — a site value pasted back in would go out silently. `tests/unit/test_env_example_public.py`
+  is the reviewer for that: no IPv4 literal, no site hostname, no numeric project id, no secret
+  with a value, and the compose template still absent from the public git. Proved red against
+  the file as it stood before the scrub.
+
 ### Fixed
 
 - **A control plane that had run no checks at all reported itself healthy.** `GET /health`
