@@ -7,6 +7,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The suite reports when the tree changed under it.** `pytest` reads `tests/conftest.py` once at
+  startup and each test module once at collection, so a file saved seconds into a long run yields a
+  result that belongs to no version of the tree. The terminal summary now names every `.py` written
+  after the session started, and says the result may mix two versions. Reported, never enforced —
+  the exit status is untouched, because a mid-run edit does not make the result wrong, only
+  unreliable. `tests/unit/test_tree_change_reporter.py` keeps the reporter able to fire.
+
 - **The Grafana panel guard read build artifacts as if they were source.** Its metric inventory
   walked the whole repo excluding only `node_modules` and `.venv`, so `platform/cli/build/lib/
   examlops` — a gitignored, untracked duplicate of the CLI package — contributed 241 of the 1096

@@ -1,11 +1,14 @@
 """Shared pytest fixtures."""
 
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_STARTED: pytest.StashKey[float] = pytest.StashKey()
 sys.path.insert(0, str(REPO_ROOT / "platform" / "cli" / "src"))
 
 
@@ -45,3 +48,60 @@ def _reset_cli_output_modes():
     _output.yes_mode = False
     _output.output_format = "table"
     yield
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Stamp when the session started, so the summary can tell if the tree moved under it."""
+    config.stash[_STARTED] = time.time()
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config: pytest.Config) -> None:
+    """Say so when a source file changed while the suite was running.
+
+    A pytest run reads ``conftest.py`` once at startup and each test module once at collection, so
+    a file saved a few seconds into a twenty-minute run produces a result that belongs to no
+    version of the tree: part of the run saw the old file, the rest saw the new one. This repo has
+    a second writer in it often enough that the failure is not hypothetical — one run reported
+    ``test_the_next_test_starts_from_the_defaults_anyway`` red because the autouse fixture that
+    test exists to check was written into ``conftest.py`` three seconds after collection began.
+    Without this line the only way to find that out is to compare mtimes against the run window by
+    hand, long after the log has scrolled away.
+
+    Reported, never enforced: the run's own exit status is untouched, because a mid-run edit does
+    not make the result wrong, only unreliable.
+    """
+    started = config.stash.get(_STARTED, None)
+    if started is None:
+        return
+    try:
+        listing = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "*.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return
+    moved = []
+    for name in listing.split("\0"):
+        if not name:
+            continue
+        try:
+            if (REPO_ROOT / name).stat().st_mtime > started:
+                moved.append(name)
+        except OSError:
+            continue
+    if not moved:
+        return
+    terminalreporter.write_sep("=", "tree changed during this run", yellow=True)
+    for name in sorted(moved)[:10]:
+        terminalreporter.write_line(f"  {name}", yellow=True)
+    if len(moved) > 10:
+        terminalreporter.write_line(f"  … and {len(moved) - 10} more", yellow=True)
+    terminalreporter.write_line(
+        "These were written after collection started, so this result may mix two versions of the "
+        "tree. Re-run on a settled tree before trusting it.",
+        yellow=True,
+    )

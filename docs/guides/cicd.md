@@ -580,6 +580,29 @@ run: no `.venv/bin/pytest` (run `make install-dev`) or no `npm` on `PATH` exits 
 genuinely have no node on the host, run `make dashboard-check-backend` — it says in its own
 output that the frontend half did not run, so the omission cannot be mistaken for a pass.
 
+### The suite says when the tree moved under it
+
+`pytest` reads `tests/conftest.py` once at startup and each test module once during collection.
+A file saved a few seconds into a twenty-minute run therefore produces a result that belongs to
+no version of the tree: part of the run measured the old file, the rest measured the new one.
+
+`tests/conftest.py` stamps the session start and, in the terminal summary, names every tracked or
+untracked `.py` written after it:
+
+```
+========================= tree changed during this run =========================
+  tests/conftest.py
+These were written after collection started, so this result may mix two versions of the tree.
+Re-run on a settled tree before trusting it.
+```
+
+It **reports and never enforces** — the exit status is untouched, because a mid-run edit does not
+make the result wrong, only unreliable. In CI nothing writes to the checkout while the suite runs,
+so the section never appears. It exists for the local gate, where an editor save, a formatter, or a
+second session working the same checkout can land inside the run window. `tests/unit/test_tree_change_reporter.py`
+drives the hook with a stamp from the past and from the future, so a reporter that has quietly
+stopped firing fails the build instead of reading as "the tree was settled".
+
 ---
 
 ## GitHub Actions retirement
