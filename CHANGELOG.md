@@ -153,6 +153,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The deploy gate went red on a frontend test that was working.** `Config.test.tsx > shows Save
+  button for admin` hit `Test timed out in 15000ms` inside `make check`, then passed in 7.9 s of
+  test time on a re-run, with the whole suite green at 79 files / 373 tests. Measured where the
+  time goes rather than guessing again: the five slowest tests are each the *first* test in their
+  file, where that file's render and import cost lands, and one `getByRole('button', { name })`
+  scan on that page costs ~80 ms against ~17 ms without the `name` — recomputing accessible names
+  dominates, Testing Library repeats the scan every 50 ms while it waits, and the button needs ~1 s
+  of query loading to appear. 15 s was only ~2× the slowest honest test. Raised to 30 s, which
+  still catches a genuine hang, and the config comment now carries the measurement and the rule:
+  raise the test, not the ceiling, if a test's honest duration approaches half of it.
+
 - **Three alerts about a stalled approval queue could not fire while it was stalled.** Both gauges
   the control plane's `/metrics` publishes encode "nothing to worry about" as `0`, and both reached
   `0` by a route that had nothing to do with the queue being empty. `examlops_approvals_pending` was
