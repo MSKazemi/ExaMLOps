@@ -123,8 +123,25 @@ def verify_before_load(
     """Gate model loading on verification (spec R7).
 
     ``enforce`` → return False (refuse) on failure; ``warn`` → return True but record.
+
+    A verification that cannot *run* counts as a failure, not as a pass. Deciding this needs two
+    reads that can fail on their own account — the recorded signature comes from the datastore and
+    the digest comes from the artifact files on disk — and when either raises, the question "do
+    these bytes match their signature?" has no answer. Letting the exception escape pushed that
+    decision onto whichever caller was least equipped to make it: the KServe loader hook answered
+    it with ``return True``.
     """
-    result = verify_model(model, version, artifact_paths)
+    try:
+        result = verify_model(model, version, artifact_paths)
+    except Exception as exc:  # noqa: BLE001 - any failure to verify is a failure to verify
+        _audit(
+            "model_verify_error",
+            model,
+            version,
+            "serving",
+            {"reason": f"verification could not run: {exc}", "mode": mode},
+        )
+        return mode != "enforce"
     if result.ok:
         return True
     _audit(

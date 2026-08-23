@@ -44,6 +44,13 @@ for serving and CI:
 - **`warn`** — records a `model_verify_failed` audit event and returns `True`: the model
   may still load, but the failure is visible for triage.
 
+A verification that cannot **run** counts as a failure, not as a pass. Deciding the answer needs
+the recorded signature (a datastore read) and a digest of the artifact files (a disk read), and
+either can fail on its own account — an unreachable signature store, an unreadable path. When that
+happens the question has no answer, so `enforce` refuses and `warn` still loads, exactly as for a
+signature mismatch, and a `model_verify_error` audit event records why. Alert on that event: it
+means artifacts are being served without their signatures having been checked.
+
 ```python
 from examlops import supplychain
 

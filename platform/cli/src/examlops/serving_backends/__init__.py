@@ -180,11 +180,16 @@ class KServeK8s:
         """K8s loader hook — refuse to serve a tampered/unsigned artifact in enforce mode (R9)."""
         try:
             from examlops.supplychain import verify_before_load
-
-            return verify_before_load(model, version, artifact_paths, mode=mode)
-        except Exception:
+        except ImportError:
             # D3 unavailable → do not block Compose/dev; enforce only when D3 is present.
             return True
+        # Anything the verifier itself raises is *not* the D3-absent case. Catching it here too
+        # meant an unreachable signature store or an unreadable artifact was reported to the loader
+        # as a clean verification, in the mode whose only job is to refuse.
+        try:
+            return verify_before_load(model, version, artifact_paths, mode=mode)
+        except Exception:  # noqa: BLE001 - a verifier that cannot answer has not answered "yes"
+            return mode != "enforce"
 
 
 def _kubectl_apply(manifest: dict[str, Any]) -> str:  # pragma: no cover - needs a cluster
