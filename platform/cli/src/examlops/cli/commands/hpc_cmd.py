@@ -115,7 +115,7 @@ def detect(
             f"No known scheduler detected on {target} (scheduler={caps.get('scheduler')})"
         )
     else:
-        _output.ok(f"Detected [bold]{caps['scheduler']}[/bold] on {target}")
+        _output.ok(f"Detected {caps['scheduler']} on {target}")
     _output.print_record(
         {
             "Scheduler": caps.get("scheduler"),
@@ -333,13 +333,11 @@ def connect(
             {"cluster": cluster, "state": "PENDING", "host": host, "capabilities": caps}
         )
         return
-    _output.ok(f"Registered cluster [bold]{cluster}[/bold] (state: PENDING)")
+    _output.ok(f"Registered cluster {cluster} (state: PENDING)")
     _output.detail(
         f"  scheduler: {caps.get('scheduler')}  host: {host}  fingerprint: {fingerprint}"
     )
-    _output.info(
-        f"No jobs will run here until approved. Sysadmin: [bold]exa hpc approve {cluster}[/bold]"
-    )
+    _output.info(f"No jobs will run here until approved. Sysadmin: exa hpc approve {cluster}")
 
 
 @app.command(epilog=_CONNECT_EXAMPLES)
@@ -390,7 +388,7 @@ def approve(
             return
     set_cluster_state(name, "ACTIVE", approved_by=_actor())
     write_audit_event("exa-hpc", _actor(), "cluster_approved", name, {"host": merged.get("host")})
-    _output.ok(f"Cluster [bold]{name}[/bold] is now ACTIVE — jobs may be scheduled on it.")
+    _output.ok(f"Cluster {name} is now ACTIVE — jobs may be scheduled on it.")
 
 
 @app.command(epilog=_CONNECT_EXAMPLES)
@@ -409,7 +407,7 @@ def reject(
         return
     set_cluster_state(name, "REJECTED", approved_by=_actor(), reason=reason)
     write_audit_event("exa-hpc", _actor(), "cluster_rejected", name, {"reason": reason})
-    _output.ok(f"Cluster [bold]{name}[/bold] is now REJECTED — scheduling blocked.")
+    _output.ok(f"Cluster {name} is now REJECTED — scheduling blocked.")
 
 
 # ── placement, queue, preflight (Phase 35c) ───────────────────────────────────────

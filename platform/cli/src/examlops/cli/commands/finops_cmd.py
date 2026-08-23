@@ -110,7 +110,7 @@ def budget_set(
         project,
         {"gpu_hours": gpu_hours, "cost": cost, "period": period},
     )
-    _output.ok(f"Budget set for [bold]{project}[/bold] (period: {period}).")
+    _output.ok(f"Budget set for {project} (period: {period}).")
 
 
 def _status_row(project: str) -> list:
@@ -253,7 +253,7 @@ def carbon_record(
         },
     )
     _output.ok(
-        f"Recorded {est['kwh']:.3f} kWh / {est['co2e_g']:.1f} gCO2e for [bold]{model}[/bold] "
+        f"Recorded {est['kwh']:.3f} kWh / {est['co2e_g']:.1f} gCO2e for {model} "
         f"(provider: {est['provider']})."
     )
 

@@ -9,6 +9,12 @@ requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 dependencies = [
     "typer>=0.12",
+    # Imported directly at module load by cli/_help.py, cli/commands/explain_command.py and
+    # cli/commands/docs_cmd.py, which walk the click command tree that Typer builds. It used to
+    # arrive transitively through typer; typer 0.27 declares no click dependency at all, so a
+    # clean `pip install examlops` produced an `exa` that died on `import click` before printing
+    # anything. Declared here because this package imports it, transitive or not.
+    "click>=8.1",
     "pyyaml>=6.0",
     "tomli-w>=1.0",
     "prometheus-client>=0.20",
@@ -17,6 +23,15 @@ dependencies = [
     # Imported at module load by examlops.resilience (HTTP client + timeouts) — a hard
     # runtime dependency of the CLI, not optional.
     "httpx>=0.27",
+    # Imported directly at module load by cli/_output.py, which renders every table, panel
+    # and error the CLI prints. It currently arrives via typer, but so did click until typer
+    # 0.27 dropped it; a package that imports a module declares it.
+    "rich>=13.0",
+    # The local encrypted secret store (examlops.secrets) is the documented fallback that
+    # works with no running OpenBao, so Fernet is part of the default path, not an extra.
+    # Undeclared, `exa secrets set` failed with an error whose own remedy — "python -c 'from
+    # cryptography.fernet import Fernet ...'" — could not be run either.
+    "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]
@@ -82,6 +97,12 @@ chat = [
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
 # keeps every subcommand — including the fidelity/privacy release gate — working offline.
 synth = [
+    # `examlops.synth` imports pandas at module scope and the generators need numpy. They were
+    # missing from this extra, so `pip install 'examlops[synth]'` still could not run
+    # `exa data synth fit` — it died on a raw ModuleNotFoundError traceback. Neither belongs in
+    # the base CLI, which stays light enough to install on a login node.
+    "pandas>=2.0",
+    "numpy>=1.26",
     "sdv>=1.37",
 ]
 

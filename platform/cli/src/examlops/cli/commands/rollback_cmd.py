@@ -217,7 +217,7 @@ def rollback(
     )
 
     _output.ok(
-        f"Rolled back [bold]{model}[/bold] {alias}: "
+        f"Rolled back {model} {alias}: "
         f"v{current_version} -> v{version}" + (f" (reason: {reason})" if reason else "")
     )
 

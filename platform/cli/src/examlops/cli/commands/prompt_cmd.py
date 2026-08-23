@@ -67,7 +67,7 @@ def create(
             {"name": name, "version": version, "variables": variables, "label": label}
         )
         return
-    _output.ok(f"Created [bold]{name}[/bold] v{version} (vars: {', '.join(variables) or 'none'})")
+    _output.ok(f"Created {name} v{version} (vars: {', '.join(variables) or 'none'})")
     if label:
         _output.info(f"Label '{label}' → v{version}")
 
@@ -178,7 +178,7 @@ def label(
     write_audit_event(
         "exa-prompt", _actor(), "prompt_label", name, {"label": label_name, "version": version}
     )
-    _output.ok(f"[bold]{name}[/bold]@{label_name} → v{version}")
+    _output.ok(f"{name}@{label_name} → v{version}")
 
 
 @app.command("rollback", epilog=_EX_ROLLBACK)
@@ -198,4 +198,4 @@ def rollback(
         name,
         {"label": label_name, "to_version": to_version},
     )
-    _output.ok(f"Rolled back [bold]{name}[/bold]@{label_name} → v{to_version} (history intact)")
+    _output.ok(f"Rolled back {name}@{label_name} → v{to_version} (history intact)")

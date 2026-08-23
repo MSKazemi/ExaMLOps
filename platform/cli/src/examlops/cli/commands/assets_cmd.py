@@ -47,10 +47,7 @@ def declare(
 
     dep_list = [d.strip() for d in deps.split(",") if d.strip()]
     declare_asset(name, kind=kind, deps=dep_list, description=description)
-    _output.ok(
-        f"Declared {kind} asset [bold]{name}[/bold]"
-        + (f" ← {', '.join(dep_list)}" if dep_list else "")
-    )
+    _output.ok(f"Declared {kind} asset {name}" + (f" ← {', '.join(dep_list)}" if dep_list else ""))
 
 
 @app.command("list")

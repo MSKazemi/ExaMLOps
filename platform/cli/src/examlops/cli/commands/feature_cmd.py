@@ -54,10 +54,7 @@ def apply(
         dataset_revision=dataset_revision,
     )
     apply_view(view)
-    _output.ok(
-        f"Applied feature view [bold]{name}[/bold] on entity '{entity}' "
-        f"({len(view.features)} features)."
-    )
+    _output.ok(f"Applied feature view {name} on entity '{entity}' ({len(view.features)} features).")
 
 
 @app.command("list")

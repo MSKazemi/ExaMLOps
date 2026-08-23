@@ -20,10 +20,26 @@ _ALLOWED = {_CORE / "resilience" / "db.py"}
 _PATTERN = re.compile(r"\bsqlite3\.connect\s*\(")
 
 
+def _python_files(root: Path) -> list[Path]:
+    """Every ``.py`` under ``root`` — and proof that there was something to scan.
+
+    A guard that walks a hard-coded path is only as true as that path. If the tree moves (this
+    repo has moved it once already, into ``platform/``), ``rglob`` returns nothing, every
+    per-file assertion below runs zero times, and the guard reports green while enforcing
+    nothing at all. That failure looks exactly like compliance, so the scan asserts it found
+    files before anyone is allowed to conclude anything from what it did not find.
+    """
+    files = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
+    assert files, (
+        f"scanned {root} and found no Python files — the guard's path is stale, not the tree clean"
+    )
+    return files
+
+
 def test_core_package_has_no_bare_sqlite_connect():
     offenders: list[str] = []
-    for py in _CORE.rglob("*.py"):
-        if py in _ALLOWED or "__pycache__" in py.parts:
+    for py in _python_files(_CORE):
+        if py in _ALLOWED:
             continue
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), start=1):
             if _PATTERN.search(line):
@@ -43,8 +59,8 @@ def test_tests_reach_the_platform_db_through_the_seam():
     ``platform_db.get_db()`` makes the same assertion hold on whichever engine is configured.
     """
     offenders: list[str] = []
-    for py in _TESTS.rglob("*.py"):
-        if py == Path(__file__).resolve() or "__pycache__" in py.parts:
+    for py in _python_files(_TESTS):
+        if py == Path(__file__).resolve():
             continue
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), start=1):
             if _PATTERN.search(line):

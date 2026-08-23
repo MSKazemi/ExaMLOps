@@ -66,7 +66,7 @@ def plan(
         )
         return
     _output.info(
-        f"[bold]{model}[/bold]: {choice.mechanism} "
+        f"{model}: {choice.mechanism} "
         f"(isolation: {choice.isolation}) — {choice.allocated_fraction:.2f} GPU"
     )
     _output.info(f"  {choice.note}")

@@ -28,13 +28,17 @@ and records the blocked attempt for auditability (nothing is released).
 
 ## SDV optional, fallback always works
 
-The heavy generator library (**SDV** — Gaussian Copula / CTGAN / TVAE) is an **optional extra**:
+`exa data synth` needs the **`synth` extra** — the base CLI ships without pandas and numpy so
+it stays small enough for a login node, and the three synth commands say so plainly if it is
+missing rather than failing with a traceback:
 
 ```bash
-pip install "examlops[synth]"     # enables SDV-backed synthesizers
+pip install "examlops[synth]"     # pandas + numpy (required) + SDV (optional layer)
 ```
 
-Without it, a dependency-free **Gaussian-copula fallback** is used automatically: empirical
+Inside that extra, the heavy generator library (**SDV** — Gaussian Copula / CTGAN / TVAE) is
+itself optional. Without SDV, a **Gaussian-copula fallback** with no extra dependencies is used
+automatically: empirical
 marginals + a rank-correlation copula for numeric columns, empirical frequencies for categoricals,
 and bootstrap resampling for list/embedding columns. This keeps every subcommand — **including the
 fidelity/privacy release gate** — fully functional offline (laptop, CI, tests), the same

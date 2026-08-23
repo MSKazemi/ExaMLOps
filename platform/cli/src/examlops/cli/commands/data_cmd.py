@@ -114,10 +114,10 @@ def snapshot(
         return
     if not rev.is_known:
         _output.warning(
-            f"Could not resolve concrete data for [bold]{dataset}[/bold] — recorded 'unknown'. "
+            f"Could not resolve concrete data for {dataset} — recorded 'unknown'. "
             "Pass --path to a materialised parquet file/dir, or configure lakeFS."
         )
-    _output.ok(f"Snapshot recorded: [bold]{dataset}[/bold] @ [cyan]{rev.revision_id}[/cyan]")
+    _output.ok(f"Snapshot recorded: {dataset} @ {rev.revision_id}")
 
 
 @app.command("list", epilog=_EX_LIST)
@@ -132,7 +132,7 @@ def list_revisions(
         _output.print_json(rows)
         return
     if not rows:
-        _output.info(f"No recorded revisions for [bold]{dataset}[/bold].")
+        _output.info(f"No recorded revisions for {dataset}.")
         return
     _output.print_table(
         f"Dataset revisions — {dataset}",
@@ -155,7 +155,7 @@ def list_revisions(
 def _require_rev(dataset: str, revision_id: str) -> dict[str, Any]:
     row = get_dataset_revision(dataset, revision_id)
     if row is None:
-        _output.error(f"Revision [bold]{revision_id}[/bold] not found for {dataset}.")
+        _output.error(f"Revision {revision_id} not found for {dataset}.")
     return row  # type: ignore[return-value]
 
 
@@ -216,7 +216,7 @@ def checkout(
     row = _require_rev(dataset, revision_id)
     if row["kind"] == "lakefs":
         # lakeFS checkout is operator infrastructure; report the pinned URI to use.
-        _output.ok(f"lakeFS revision [cyan]{revision_id}[/cyan] → {row['uri'] or 'lakefs://'}")
+        _output.ok(f"lakeFS revision {revision_id} → {row['uri'] or 'lakefs://'}")
         return
     if not path:
         _output.error(
@@ -235,7 +235,7 @@ def checkout(
             f"Data at {path} does not match revision {revision_id} (computed {_short(actual)}).",
             exit_code=1,
         )
-    _output.ok(f"Verified: {path} matches [cyan]{revision_id}[/cyan]")
+    _output.ok(f"Verified: {path} matches {revision_id}")
 
 
 @app.command("validate", epilog=_EX_VALIDATE)
@@ -256,7 +256,7 @@ def validate(
     contract = load_contract(dataset)
     if contract is None:
         _output.error(
-            f"No data contract found for [bold]{dataset}[/bold] "
+            f"No data contract found for {dataset} "
             f"(expected pipelines/contracts/{dataset.lower()}.py)."
         )
         return

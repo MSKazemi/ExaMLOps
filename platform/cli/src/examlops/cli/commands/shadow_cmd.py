@@ -72,9 +72,7 @@ def shadow_enable(
         target=model,
         details={"shadow_alias": shadow_alias},
     )
-    _output.ok(
-        f"Shadow deployment enabled for [bold]{model}[/bold] → alias [cyan]{shadow_alias}[/cyan]"
-    )
+    _output.ok(f"Shadow deployment enabled for {model} → alias {shadow_alias}")
 
 
 @app.command("disable", epilog=_EXAMPLES_DISABLE)
@@ -96,7 +94,7 @@ def shadow_disable(
         target=model,
         details=None,
     )
-    _output.ok(f"Shadow deployment disabled for [bold]{model}[/bold]")
+    _output.ok(f"Shadow deployment disabled for {model}")
 
 
 @app.command("status", epilog=_EXAMPLES_STATUS)
@@ -148,7 +146,7 @@ def shadow_log(
         ).fetchall()
 
     if not rows:
-        _output.info(f"No shadow results found for model [bold]{model}[/bold].")
+        _output.info(f"No shadow results found for model {model}.")
         return
 
     table_rows = [

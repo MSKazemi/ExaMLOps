@@ -744,7 +744,7 @@ def add_model(
         _output.error(
             f"Model class not found: expected a file matching "
             f"modelzoo/seanergys_modelzoo/models/tasks/**/{name.lower()}_model.py\n"
-            f"  → Use [bold]exa scaffold {name}[/bold] to create a new model from scratch."
+            f"  → Use exa scaffold {name} to create a new model from scratch."
         )
         raise typer.Exit(1)
 

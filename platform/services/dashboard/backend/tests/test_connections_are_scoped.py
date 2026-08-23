@@ -76,12 +76,19 @@ def _connect_sites(tree: ast.AST) -> list[tuple[int, str]]:
 
 def _scan() -> dict[str, list[tuple[int, str]]]:
     out: dict[str, list[tuple[int, str]]] = {}
+    scanned = 0
     for py in sorted(_BACKEND.rglob("*.py")):
         if "__pycache__" in py.parts or "tests" in py.parts or py.name == "dbconn.py":
             continue
+        scanned += 1
         sites = _connect_sites(ast.parse(py.read_text(), filename=str(py)))
         if sites:
             out[str(py.relative_to(_BACKEND))] = sites
+    # Both tests below conclude something from an *absence*: no unreleased connection, no growth
+    # in unprotected closes. An absence is only evidence if the search happened. Move the backend
+    # and this walk returns nothing, both assertions hold trivially, and the guard reports green
+    # while enforcing nothing — which reads exactly like a clean tree.
+    assert scanned, f"scanned {_BACKEND} and found no Python files — the guard's path is stale"
     return out
 
 

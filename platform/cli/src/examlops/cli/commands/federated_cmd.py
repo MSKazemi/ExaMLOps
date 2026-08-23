@@ -67,7 +67,7 @@ def init(
             }
         )
         return
-    _output.ok(f"Federated run [bold]{run.run_id}[/bold] · {run.strategy} · {len(run.sites)} sites")
+    _output.ok(f"Federated run {run.run_id} · {run.strategy} · {len(run.sites)} sites")
     if run.dp_enabled:
         _output.info(f"  DP on: ε/round={epsilon_per_round}, δ={delta}")
     if run.secure_agg:

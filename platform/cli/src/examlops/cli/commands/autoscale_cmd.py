@@ -60,10 +60,7 @@ def set_cmd(
         gpu_fraction=gpu_fraction,
     )
     stz = f", scale-to-zero after {scale_to_zero_after}s" if scale_to_zero_after else ""
-    _output.ok(
-        f"Autoscale set for [bold]{model}[/bold]: {min_}–{max_} replicas, "
-        f"target {metric}={target}{stz}"
-    )
+    _output.ok(f"Autoscale set for {model}: {min_}–{max_} replicas, target {metric}={target}{stz}")
 
 
 @app.command("simulate")
@@ -97,7 +94,7 @@ def simulate(
         return
     arrow = "→" if decision.changed else "="
     _output.info(
-        f"[bold]{model}[/bold]: {decision.current_replicas} {arrow} "
+        f"{model}: {decision.current_replicas} {arrow} "
         f"{decision.desired_replicas} replicas — {decision.reason}"
     )
     if decision.blocked_by:
@@ -156,7 +153,7 @@ def savings(
         _output.print_json(s)
         return
     _output.info(
-        f"[bold]{model}[/bold]: {s['scale_to_zero_events']} scale-to-zero event(s) → "
+        f"{model}: {s['scale_to_zero_events']} scale-to-zero event(s) → "
         f"{s['saved_gpu_hours']} GPU-hours saved (${s['saved_cost']})."
     )
 

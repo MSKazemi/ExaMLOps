@@ -71,6 +71,26 @@ def _read_frame(path: str) -> Any:
     return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
 
+def _require_synth() -> None:
+    """Fail with a sentence, not a traceback, when the synth extra is not installed.
+
+    `examlops.synth` imports pandas at module scope and the generators import numpy. Neither
+    belongs in the CLI's base dependencies — `exa` is deliberately light enough to install on a
+    login node — so they are the `synth` extra. Without this check a clean `pip install examlops`
+    answered `exa data synth fit` with a raw ModuleNotFoundError traceback, which tells the
+    operator that something is broken rather than that something is missing.
+    """
+    try:
+        import pandas  # noqa: F401, PLC0415
+    except ImportError:
+        _output.error(
+            "Synthetic data generation needs pandas and numpy, which the base CLI does not "
+            "install.",
+            hint="Install them with: uv pip install 'examlops[synth]'",
+            exit_code=1,
+        )
+
+
 def _validate_method(method: str) -> None:
     from examlops.synth import METHODS  # noqa: PLC0415
 
@@ -90,6 +110,7 @@ def fit(
     seed: int = typer.Option(0, "--seed", help="Deterministic seed"),
 ) -> None:
     """Fit a generator to real data and report what it learned (spec R1 smoke-check)."""
+    _require_synth()
     init_db()
     _validate_method(method)
     from examlops.synth import synth_fit  # noqa: PLC0415
@@ -109,8 +130,7 @@ def fit(
         _output.print_json(payload)
         return
     _output.ok(
-        f"Fitted [bold]{method}[/bold] on [bold]{dataset}[/bold] "
-        f"([cyan]{synth.backend}[/cyan] backend, {len(synth.columns)} columns)."
+        f"Fitted {method} on {dataset} ({synth.backend} backend, {len(synth.columns)} columns)."
     )
     if synth.backend == "fallback":
         _output.info("SDV not installed — using the pure-python copula fallback.")
@@ -135,6 +155,7 @@ def generate(
     ),
 ) -> None:
     """Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4)."""
+    _require_synth()
     init_db()
     if rows <= 0:
         _output.error("--rows must be positive.", exit_code=1)
@@ -249,7 +270,7 @@ def generate(
         )
         return
     _output.ok(
-        f"Synthetic [bold]{dataset}[/bold] @ [cyan]{result.revision_id[:12]}…[/cyan] "
+        f"Synthetic {dataset} @ {result.revision_id[:12]}… "
         f"({result.n_rows} rows, flagged synthetic)."
     )
     _output.info(
@@ -274,6 +295,7 @@ def evaluate(
     min_privacy: float = typer.Option(0.5, "--min-privacy", help="Privacy release floor"),
 ) -> None:
     """Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3)."""
+    _require_synth()
     init_db()
     from examlops.synth import GateThresholds, synth_evaluate  # noqa: PLC0415
 

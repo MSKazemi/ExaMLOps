@@ -107,7 +107,7 @@ def retrain(
 
     _record_audit(model, dataset_name, dummy, backend_name, result, reason)
 
-    _output.ok(f"Retrain scheduled for [bold]{model}[/bold] (dataset: {dataset_name})")
+    _output.ok(f"Retrain scheduled for {model} (dataset: {dataset_name})")
     _output.print_record(
         {
             "flow_run_id": result.get("flow_run_id", "—"),

@@ -85,8 +85,8 @@ def report(
     s = rep.summary
     _output.info(
         f"NIST AI RMF coverage v{rep.version} — "
-        f"[green]{s['satisfied']} satisfied[/green], "
-        f"[yellow]{s['partial']} partial[/yellow], [red]{s['gap']} gap[/red]"
+        f"{s['satisfied']} satisfied, "
+        f"{s['partial']} partial, {s['gap']} gap"
     )
     _output.print_table(
         "Control Coverage",

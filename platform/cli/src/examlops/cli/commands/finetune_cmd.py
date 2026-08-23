@@ -75,7 +75,7 @@ def finetune(
         )
         return
     _output.ok(
-        f"Registered adapter [bold]{adapter.adapter_id}[/bold] "
+        f"Registered adapter {adapter.adapter_id} "
         f"({adapter.method}, rank {adapter.rank}) on base {base}"
     )
     if not adapter.signed:

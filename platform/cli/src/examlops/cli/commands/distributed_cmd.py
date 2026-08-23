@@ -73,7 +73,7 @@ def launch(
         )
         return
     _output.ok(
-        f"Launched [bold]{handle.run_id}[/bold] — {nodes}×{gpus_per_node} GPUs, {strategy}, "
+        f"Launched {handle.run_id} — {nodes}×{gpus_per_node} GPUs, {strategy}, "
         f"rdzv {handle.spec.rdzv_endpoint}"
     )
     _output.info("  " + " ".join(handle.spec.torchrun_command()))

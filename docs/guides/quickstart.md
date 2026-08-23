@@ -13,6 +13,38 @@ Install `uv` if needed:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+## 0. Just the CLI
+
+The full stack below is what you want on a workstation. If all you need is to *talk* to an
+ExaMLOps platform that already runs somewhere — a login node, a laptop, a CI job — install
+the CLI on its own. It has no Docker, no MLflow and no GPU dependency:
+
+```bash
+uv pip install examlops        # or: pip install examlops
+exa --version
+exa status                     # points at the URLs in your active context
+```
+
+Heavier capabilities are **extras**, so the base install stays small enough for a login
+node. Each one is lazily imported, and a command that needs a missing extra says which to
+install rather than failing with a traceback:
+
+| Extra | What it adds |
+|---|---|
+| `examlops[analysis]` | Statistical A/B analysis — `exa serve ab analyze` |
+| `examlops[backup]` | Object-store and off-site backup tiers — `exa backup` |
+| `examlops[chat]` | The `kq` terminal client behind `exa chat` |
+| `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
+| `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
+| `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |
+| `examlops[postgres]` | Talk to a Postgres datastore instead of SQLite |
+| `examlops[serving-sglang]` | In-process SGLang engine (GPU host) |
+| `examlops[serving-vllm]` | In-process vLLM engine for offline batch scoring (GPU host) |
+| `examlops[synth]` | Synthetic data generation and its release gate — `exa data synth` |
+
+Combine them as usual — `uv pip install 'examlops[mcp,analysis]'`. `[dev]` on the repository
+root pulls the whole development environment including the test dependencies.
+
 ## 1. Start the full stack
 
 ```bash

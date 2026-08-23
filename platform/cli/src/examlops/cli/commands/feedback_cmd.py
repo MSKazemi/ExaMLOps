@@ -83,7 +83,7 @@ def feedback_ingest(
         target=None,
         details={"n": n, "from_csv": str(from_csv) if from_csv else None},
     )
-    _output.ok(f"Ingested [bold]{n}[/bold] ground-truth label(s).")
+    _output.ok(f"Ingested {n} ground-truth label(s).")
 
 
 @app.command("join", epilog=_EXAMPLES_JOIN)
@@ -95,7 +95,7 @@ def feedback_join(
     init_db()
     rows = join_predictions_with_truth(model, alias=alias)
     if not rows:
-        _output.info(f"No labelled predictions yet for [bold]{model}[/bold].")
+        _output.info(f"No labelled predictions yet for {model}.")
         return
     table_rows = [
         [r["request_hash"], r["alias"], f"{r['prediction']:.4g}", f"{r['label']:.4g}", r["source"]]
@@ -132,7 +132,7 @@ def feedback_accuracy(
     metrics = _accuracy_metrics(pairs)
     if not metrics:
         _output.info(
-            f"No labelled predictions for [bold]{model}[/bold]"
+            f"No labelled predictions for {model}"
             + (f" (alias {alias})" if alias else "")
             + " — ingest ground truth first."
         )

@@ -58,7 +58,7 @@ def config(
         {"slice_attrs": list(attr), "threshold": threshold, "gate": gate},
     )
     _output.ok(
-        f"Fairness config for [bold]{model}[/bold]: slices={', '.join(attr)} "
+        f"Fairness config for {model}: slices={', '.join(attr)} "
         f"threshold={threshold}{' (gates promotion)' if gate else ''}"
     )
 
@@ -117,7 +117,7 @@ def report(
         )
         return
     for res in results:
-        _output.info(f"[bold]{res.slice_attr}[/bold] — {len(res.slices)} slice(s)")
+        _output.info(f"{res.slice_attr} — {len(res.slices)} slice(s)")
         _print_disparities(res)
 
 

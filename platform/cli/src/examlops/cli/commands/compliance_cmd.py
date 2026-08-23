@@ -53,7 +53,7 @@ def classify(
     except ValueError as e:
         _output.error(str(e))
         return
-    _output.ok(f"{model} classified as [bold]{risk_tier}[/bold] risk ({purpose})")
+    _output.ok(f"{model} classified as {risk_tier} risk ({purpose})")
     _disclaimer()
 
 
@@ -174,7 +174,7 @@ def declare(
     except ValueError as e:
         _output.error(str(e))
         return
-    _output.ok(f"{model} conformity state → [bold]{state}[/bold]")
+    _output.ok(f"{model} conformity state → {state}")
     _disclaimer()
 
 

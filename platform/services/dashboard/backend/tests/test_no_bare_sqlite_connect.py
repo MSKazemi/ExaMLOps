@@ -26,10 +26,25 @@ _ALLOWED = {_BACKEND / "dbconn.py", Path(__file__).resolve()}
 _PATTERN = re.compile(r"\bsqlite3\.connect\s*\(")
 
 
+def _python_files(root: Path) -> list[Path]:
+    """Every ``.py`` under ``root`` — and proof that there was something to scan.
+
+    A guard that walks a hard-coded path is only as true as that path. Move the backend and
+    ``rglob`` returns nothing, the loop below runs zero times, and this reports green while
+    enforcing nothing — a failure indistinguishable from compliance. So the scan proves it had
+    something to look at before anyone concludes anything from what it did not find.
+    """
+    files = [p for p in root.rglob("*.py") if "__pycache__" not in p.parts]
+    assert files, (
+        f"scanned {root} and found no Python files — the guard's path is stale, not the tree clean"
+    )
+    return files
+
+
 def test_backend_has_no_bare_sqlite_connect():
     offenders: list[str] = []
-    for py in _BACKEND.rglob("*.py"):
-        if py in _ALLOWED or "__pycache__" in py.parts:
+    for py in _python_files(_BACKEND):
+        if py in _ALLOWED:
             continue
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), start=1):
             if _PATTERN.search(line):

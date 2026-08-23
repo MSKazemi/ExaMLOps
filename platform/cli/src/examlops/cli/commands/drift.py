@@ -777,7 +777,7 @@ def concept(
         )
         return
     color = {"OK": "green", "WARN": "yellow", "CRITICAL": "red"}.get(res.severity, "white")
-    _output.info(f"Concept drift for [bold]{model}[/bold]: [{color}]{res.severity}[/{color}]")
+    _output.info(f"Concept drift for {model}: [{color}]{res.severity}[/{color}]")
     if res.score is not None:
         _output.info(f"  z-score: {res.score:.2f}")
     if "recent_error" in res.detail:
@@ -808,7 +808,7 @@ def estimate(
         _output.info(f"No predictions recorded for {model} — nothing to estimate.")
         return
     _output.info(
-        f"Estimated {res['metric']} for [bold]{model}[/bold]: "
+        f"Estimated {res['metric']} for {model}: "
         f"{res['estimated']:.4f} ({res['method']}, n={res['n']})"
     )
     if res.get("realized") is not None:
@@ -860,7 +860,7 @@ def profile(
         return
     color = {"OK": "green", "WARN": "yellow", "CRITICAL": "red"}.get(prof.severity, "white")
     _output.info(
-        f"Data-quality profile for [bold]{model}[/bold]: [{color}]{prof.severity}[/{color}] "
+        f"Data-quality profile for {model}: [{color}]{prof.severity}[/{color}] "
         f"(n={prof.n}, null_fraction={prof.null_fraction:.2%})"
     )
     if prof.fields:

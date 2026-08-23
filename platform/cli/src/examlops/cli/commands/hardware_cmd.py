@@ -63,8 +63,7 @@ def add_pool(
         supports_fractions=supports_fractions,
     )
     _output.ok(
-        f"Pool [bold]{name}[/bold]: {count}× {accelerator} on {target}"
-        + (f" ({region})" if region else "")
+        f"Pool {name}: {count}× {accelerator} on {target}" + (f" ({region})" if region else "")
     )
 
 
@@ -130,10 +129,7 @@ def place_cmd(
         return
     if isinstance(result, Placement):
         tag = " [yellow](fallback)[/yellow]" if result.fallback else ""
-        _output.ok(
-            f"{name} → pool [bold]{result.pool}[/bold] · {result.accelerator} on "
-            f"{result.target}{tag}"
-        )
+        _output.ok(f"{name} → pool {result.pool} · {result.accelerator} on {result.target}{tag}")
         if result.region:
             _output.info(
                 f"  region={result.region} · ${result.cost_per_hour:.2f}/hr · "
@@ -188,7 +184,7 @@ def burst_cmd(
         _output.print_json(result.__dict__)
         return
     if isinstance(result, Placement):
-        _output.ok(f"{name} burst → cloud pool [bold]{result.pool}[/bold] ({result.region})")
+        _output.ok(f"{name} burst → cloud pool {result.pool} ({result.region})")
     else:
         _output.warning(f"Burst blocked: {result.reason}")
 

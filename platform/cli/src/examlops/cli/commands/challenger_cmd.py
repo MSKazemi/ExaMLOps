@@ -55,7 +55,7 @@ def enable(
         actor=actor,
     )
     _output.ok(
-        f"Challenger v{version} enabled for [bold]{model}[/bold] "
+        f"Challenger v{version} enabled for {model} "
         f"(mirror {mirror}%, α={alpha}, N≥{min_samples}"
         f"{', auto-promote' if auto_promote else ''})"
     )

@@ -125,7 +125,7 @@ def contexts():
 def use(name: str = typer.Argument(..., help="Context name to activate")):
     """Switch the active context (environment)."""
     set_active_context(name)
-    _output.ok(f"Active context is now [bold]{name}[/bold]")
+    _output.ok(f"Active context is now {name}")
     _output.hint("Verify effective settings with: exa env")
 
 

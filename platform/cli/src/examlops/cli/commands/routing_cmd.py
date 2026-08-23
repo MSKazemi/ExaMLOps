@@ -49,7 +49,7 @@ def set_cmd(
         decode_pool=decode_pool,
     )
     stz = " + disaggregated" if disaggregate else ""
-    _output.ok(f"Routing for [bold]{model}[/bold]: {mode}{stz}")
+    _output.ok(f"Routing for {model}: {mode}{stz}")
 
 
 @app.command("simulate")
@@ -83,8 +83,7 @@ def simulate(
         _output.print_json(result)
         return
     _output.info(
-        f"[bold]{model}[/bold] over {shared_prefix_requests} shared-prefix requests, "
-        f"{replicas} replicas:"
+        f"{model} over {shared_prefix_requests} shared-prefix requests, {replicas} replicas:"
     )
     _output.ok(f"  cache-aware hit rate: {ca_hit:.1%}")
     _output.info(f"  round-robin hit rate: {rr_hit:.1%}")

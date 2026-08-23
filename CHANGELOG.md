@@ -7,6 +7,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`pip install examlops` produced an `exa` that could not start.** Installed into a clean
+  venv, outside the source tree, the CLI died before printing anything:
+  `ModuleNotFoundError: No module named 'click'`. Three modules import click directly to walk the
+  command tree Typer builds; it had always arrived transitively through typer, and **typer 0.27
+  declares no click dependency at all**. Nothing in the repository declared it either — it was
+  present in the development venv only because mlflow and prefect pull it. Two more of the same
+  class found by the same clean-install walk: `rich` is imported at module load by every table,
+  panel and error the CLI prints and was likewise undeclared, and `cryptography` — needed by the
+  *default* local secret store — was missing, so `exa secrets set` failed with a hint
+  (`python -c 'from cryptography.fernet import Fernet …'`) that could not be run either. All three
+  are now declared. Verified from a clean venv: `exa --version`, all **62** top-level groups' help,
+  and a full `exa secrets set`/`get` round trip.
+
+- **`exa data synth` answered a clean install with a raw traceback.** `examlops.synth` imports
+  pandas at module scope and its generators need numpy; the `synth` extra declared only the
+  *optional* SDV layer, so even `pip install 'examlops[synth]'` could not run
+  `exa data synth fit`. pandas and numpy joined the extra, and the three synth commands now check
+  first and name the extra in a sentence, matching the platform's own graceful-degradation rule.
+
+- **59 CLI messages printed their own markup at the operator.** `_output.ok/error/warning/info/
+  hint/detail` escape their message — correctly, because an unescaped `examlops[chat]` renders as
+  `examlops`, an instruction that installs the wrong thing. But 59 call sites across 29 files still
+  passed `[bold]…[/bold]`, so `exa secrets set` greeted you with
+  `✓ Stored [bold]demo/key[/bold] (tenant default, v1)`. 132 style tags removed from those call
+  sites; the escaping stays. Guarded by `tests/unit/test_output_markup_is_not_escaped_away.py`,
+  which also pins that the CLI declares what it imports and that every declared extra appears on
+  the install page.
+
+- **An install page.** `docs/guides/quickstart.md` opens with a *Just the CLI* step — the path a
+  stranger actually takes first, and the one that was broken — plus a table of all ten extras and
+  what each adds. Kept honest by the guard above.
+
 - **`adr_reconcile.py --dates` — because an artifact older than its ADR proves nothing.** The
   reconciler's second list (ADRs that are not Accepted but whose named artifacts all exist) reads
   like a to-do list of status flips, and it is not one: ADR 0112 ("carbon signals are typed",
@@ -65,6 +97,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   the error message advertises actually exists.
 
 ### Fixed
+
+- **A guard's verdict depended on whether anyone had run a build.** The agent-card SSO check greps
+  the tree for callers of the OIDC verifier and excludes the module that *defines* it — but it
+  excluded it by the path `src/examlops/oidc.py`, so the copy of that same module under
+  `platform/cli/build/lib/` (gitignored build output, recreated by any packaging run and possibly
+  weeks stale) was read as a caller and failed the test. Generated trees — `build/`, `dist/`,
+  `.eggs/`, `__pycache__/`, `site-packages/` — are now excluded, and the self-exclusion matches the
+  module rather than one copy of its path. Verified in both directions: a real caller planted in
+  `src/` still trips the guard.
+
+- **Three CI guards passed by finding nothing.** The ban on bare `sqlite3.connect` (core and
+  dashboard) and the dashboard's unreleased-connection check each walk a hard-coded path and
+  conclude from an *absence*: no offenders, no leak, no growth. None of them checked that the walk
+  had found any files, so pointing the root at a directory that does not exist left all three
+  green — verified against the committed versions, which passed a scan of a nonexistent tree. This
+  repo has moved that tree once already (the 4-area restructure), and the failure would have looked
+  exactly like compliance. Each scan now asserts it had something to read before anything is
+  concluded from what it did not find. The other seven tree-scanning guards were checked and
+  already do this (or fail loudly rather than silently).
 
 - **Three Grafana panels had queried metrics that nothing emitted since the day they shipped.**
   The input-embedding drift panels (`examlops_drift.json`) read `seanerbus_embedding_norm_mean`,

@@ -57,7 +57,13 @@ def _verifier_callers() -> list[str]:
     ).stdout
     keep = []
     for ln in out.splitlines():
-        if "/tests/" in ln or re.search(r"src/examlops/oidc\.py", ln):
+        if "/tests/" in ln or re.search(r"examlops/oidc\.py", ln):
+            continue
+        # Generated trees are not the source of truth. `platform/cli/build/lib/` is a build
+        # artifact (gitignored, and recreated by any packaging run), so a copy of a module can
+        # appear there hours or weeks out of date. Counting it makes this test's verdict depend
+        # on whether someone happened to run a build, which is not a property of the code.
+        if re.search(r"/(build|dist|\.eggs|__pycache__|site-packages)/", ln):
             continue
         # `grep -n` yields "<path>:<lineno>:<code>". Prose mentioning the verifier — this
         # module's own explanatory comments among it — is not a caller.

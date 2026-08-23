@@ -108,7 +108,7 @@ def replay(
         return
     s = trace["session"]
     _output.info(
-        f"Session [bold]{session_id}[/bold] — {s['status']} · {s['steps']} steps · "
+        f"Session {session_id} — {s['status']} · {s['steps']} steps · "
         f"${s['cost_usd']:.4f} · tenant {s['tenant']}"
     )
     table = [

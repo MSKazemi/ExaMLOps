@@ -48,7 +48,7 @@ def register(
     if _output.json_mode:
         _output.print_json({"encoder_id": eid, "name": name, "version": version, "dim": dim})
         return
-    _output.ok(f"Registered encoder [bold]{eid}[/bold] ({name} {version}, dim {dim}, {metric})")
+    _output.ok(f"Registered encoder {eid} ({name} {version}, dim {dim}, {metric})")
 
 
 @app.command("list")

@@ -46,7 +46,7 @@ def set_cmd(
             hint="Generate a key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'",
         )
         return
-    _output.ok(f"Stored [bold]{path}[/bold] (tenant {tenant}, v{version})")
+    _output.ok(f"Stored {path} (tenant {tenant}, v{version})")
 
 
 @app.command("get", epilog=_EX_GET)
@@ -101,7 +101,7 @@ def rotate_cmd(
     except SecretNotFound as exc:
         _output.error(str(exc))
         return
-    _output.ok(f"Rotated [bold]{path}[/bold] → v{version} (value re-generated, audited)")
+    _output.ok(f"Rotated {path} → v{version} (value re-generated, audited)")
 
 
 @app.command("rewrap")

@@ -506,7 +506,7 @@ def add_member(
     write_audit_event(
         "cli", _actor(), "project_member_added", subject, {"project": project, "role": role}
     )
-    _output.ok(f"Added [bold]{subject}[/bold] as '{role}' on project '{project}'")
+    _output.ok(f"Added {subject} as '{role}' on project '{project}'")
 
 
 @app.command("remove-member")
@@ -555,7 +555,7 @@ def current() -> None:
         _output.print_json({"active_project": proj})
         return
     if proj:
-        _output.info(f"Active project: [bold]{proj}[/bold]")
+        _output.info(f"Active project: {proj}")
     else:
         _output.info("No active project. Set one: exa project use <name>")
 
@@ -796,7 +796,7 @@ def grant(
     if relation not in {"owner", "editor", "viewer"}:
         _output.error("relation must be one of: owner, editor, viewer")
     authz_grant(subject, relation, obj, actor=_actor())
-    _output.ok(f"Granted [bold]{subject}[/bold] '{relation}' on {obj}")
+    _output.ok(f"Granted {subject} '{relation}' on {obj}")
 
 
 @app.command(
