@@ -22,9 +22,9 @@ app = typer.Typer(
 
 _EXAMPLES_CARD = (
     "Examples:\n\n"
-    "  exa models card JPCP\n\n"
-    "  exa models card JPCP --output /tmp/jpcp-card.md\n\n"
-    "  exa models card JPCP --output ./cards/jpcp.md"
+    "  exa models card generate JPCP\n\n"
+    "  exa models card generate JPCP --output /tmp/jpcp-card.md\n\n"
+    "  exa models card generate JPCP --output ./cards/jpcp.md"
 )
 
 _EXAMPLES_HISTORY = (

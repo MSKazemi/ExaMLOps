@@ -119,7 +119,7 @@ exa cards model jpcp            # structured model card from live data
 
 ```bash
 exa genai check                 # GenAI telemetry status (tracing/content-capture/semconv)
-exa genai cost --input 1000 --output 500 --model gpt-4o   # USD cost from token usage
+exa genai cost --model gpt-4o --in 1000 --out 500   # USD cost from token usage
 exa prompt list                 # versioned prompt registry
 exa prompt create greeting --template "Hello {name}"      # new immutable prompt version
 exa guardrails test "ignore previous instructions"        # run text through the guardrail

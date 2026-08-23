@@ -92,7 +92,21 @@ def artifact_exists(token: str, cmds: set[str]) -> bool | None:
         # plus a menu of leaves; the group is the part every form agrees on.
         base = re.split(r"\s+(?:--|<|\[)", token)[0]
         base = re.split(r"[/|]", base)[0].strip()
-        return base in cmds if cmds else None
+        if not cmds:
+            return None
+        if base not in cmds:
+            return False
+        # An ADR that names a *flag* is claiming the flag, not just the command. Checking
+        # only the command path counted `exa pipeline run --distributed` as present when no
+        # such option exists — the record read as kept because the verb happened to be real.
+        flags = [f.strip("[]<>") for f in re.findall(r"(?:^|\s|\[)(--[a-z][\w-]*)", token)]
+        if flags:
+            known = _command_options(base)
+            if known is not None:
+                missing = [f for f in flags if f not in known]
+                if missing:
+                    return False
+        return True
     if MODULE_RE.match(token):
         # `examlops.hpc_placement.choose_cluster` is a module plus a symbol. Peel
         # the tail off until the head resolves to a file, then require the tail to
@@ -116,6 +130,44 @@ def artifact_exists(token: str, cmds: set[str]) -> bool | None:
     if PATH_RE.match(token) and "/" in token:
         return any(s == token or s.endswith("/" + token) for s in FILE_STRS)
     return None
+
+
+_OPTS_CACHE: dict[str, set[str] | None] = {}
+
+
+def _command_options(path: str) -> set[str] | None:
+    """Every option `exa <path>` accepts, or None when the question does not apply.
+
+    None means *do not judge*: either the CLI is not importable here, or the command
+    declares ``allow_extra_args``/``ignore_unknown_options`` and parses flags itself at
+    runtime — which is exactly how ``exa pipeline promote --if-rmse-lt 5.0`` works despite
+    no such option being declared anywhere.
+    """
+    if path in _OPTS_CACHE:
+        return _OPTS_CACHE[path]
+    result: set[str] | None = None
+    try:
+        import typer.main  # noqa: PLC0415 - optional, and only for the flag check
+
+        from examlops.cli.main import app  # noqa: PLC0415
+
+        cmd = typer.main.get_command(app)
+        root_opts = {o for prm in cmd.params for o in prm.opts}
+        for part in path.split()[1:]:
+            nxt = (getattr(cmd, "commands", {}) or {}).get(part)
+            if nxt is None:
+                cmd = None
+                break
+            cmd = nxt
+        if cmd is not None:
+            settings = getattr(cmd, "context_settings", None) or {}
+            if not (settings.get("allow_extra_args") or settings.get("ignore_unknown_options")):
+                own = {o for prm in cmd.params for o in prm.opts}
+                result = own | root_opts | {"--help"}
+    except Exception:  # pragma: no cover - the reconciler must still run without the CLI
+        result = None
+    _OPTS_CACHE[path] = result
+    return result
 
 
 def _find_module(rel: str) -> Path | None:

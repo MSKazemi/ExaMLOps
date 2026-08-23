@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The CLI's own help printed four commands the CLI rejects.** The epilogs are the
+  copy-paste surface — an operator types what the help shows — and nothing checked that what
+  they show can be typed. `exa autopilot run --model JPCP` (three places, including this
+  repository's own reference table and ADR 0085) fails with *No such option: --model*, because
+  the model is a positional argument; three `exa models card JPCP` lines omit the `generate`
+  leaf and fail with *No such command 'JPCP'*. All corrected to the forms that run, and the
+  claim is now guarded: `tests/unit/test_help_examples_actually_run.py` walks all **451** nodes
+  of the live command tree, extracts every `exa …` line from every epilog and docstring
+  (**788** of them), and resolves each one the way click would. Two exemptions are deliberate —
+  a line carrying a `<placeholder>` is a shape rather than a command, and a command declaring
+  `allow_extra_args` parses its own flags at runtime, which is what makes
+  `exa pipeline promote --if-rmse-lt 5.0` real despite no such option being declared.
+
+- **The same sweep over the published docs: 656 examples, one wrong.** `docs/reference/cli-examples.md`
+  offered `exa genai cost --input 1000 --output 500` for a command whose options are `--in`/`--out`.
+  Fixed, and the docs are held to the same guard, with a floor assertion so a scan that finds
+  nothing fails instead of reporting success.
+
 - **`exa chat` printed a remedy the machine printing it could not carry out.** The hint said
   `uv pip install 'examlops[chat]'`; on `lxp-cpu01` the operator ran it four times and the client
   was still missing each time. Cause: **uv answers an extra that the installed distribution does
@@ -107,6 +125,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   the error message advertises actually exists.
 
 ### Fixed
+
+- **Three alerts about a stalled approval queue could not fire while it was stalled.** Both gauges
+  the control plane's `/metrics` publishes encode "nothing to worry about" as `0`, and both reached
+  `0` by a route that had nothing to do with the queue being empty. `examlops_approvals_pending` was
+  written only by the create/approve/reject handlers, so a control plane that restarted with a full
+  queue published `0` until somebody filed the next approval — and a queue nobody is touching is the
+  entire condition `PendingApprovalQueueLarge` exists to detect. `examlops_approval_age_oldest_seconds`
+  was set to `0` in the `except` branch of the scrape handler, so a store that could not be read was
+  indistinguishable, to `ApprovalsStale` and `ApprovalsStaleUrgent`, from a store with nothing in it.
+  The scrape now derives both values from the store (one `COUNT(*), MIN(requested_at)` read), and on
+  failure leaves them at their last known-true values and increments a new
+  `examlops_metrics_scrape_errors_total`, which the new `ApprovalMetricsUnreadable` alert selects —
+  a stale gauge is at least honest about being stale, a fabricated zero is not. Guarded by
+  `platform/services/control_plane/tests/test_metrics_cannot_lie.py`.
 
 - **A guard's verdict depended on whether anyone had run a build.** The agent-card SSO check greps
   the tree for callers of the OIDC verifier and excludes the module that *defines* it — but it

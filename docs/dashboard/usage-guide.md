@@ -256,7 +256,7 @@ default.
 |---|---|---|---|---|
 | View autopilot runs | Recent autopilot cycle history + current on/off state | See what the loop has done | Sidebar → Autopilot | `exa autopilot status` |
 | Enable/disable autopilot **(admin)** | Flips the kill-switch (also honored via `EXAMLOPS_AUTOPILOT_ENABLED`) | Turn closed-loop self-driving on/off | Autopilot → **Enable / Disable** | `exa autopilot enable` / `exa autopilot disable` |
-| (run a cycle) | Not a dashboard action — cycles run from CLI/schedule | Trigger one detect→retrain→promote cycle | — | `exa autopilot run [--dry-run] [--model M]` |
+| (run a cycle) | Not a dashboard action — cycles run from CLI/schedule | Trigger one detect→retrain→promote cycle | — | `exa autopilot run [--dry-run] [MODEL]` |
 
 ## SLOs  <!-- (role: viewer / admin) -->
 

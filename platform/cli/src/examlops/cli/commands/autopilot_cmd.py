@@ -51,7 +51,7 @@ _EXAMPLES_RUN = (
     "Examples:\n\n"
     "  exa autopilot run               # one cycle for all models\n\n"
     "  exa autopilot run --dry-run     # preview what would happen\n\n"
-    "  exa autopilot run --model JPCP  # restrict to one model"
+    "  exa autopilot run JPCP          # restrict to one model"
 )
 _EXAMPLES_STATUS = (
     "Examples:\n\n"
