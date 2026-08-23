@@ -86,7 +86,8 @@ def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
 
     - a recording rule for the SLI ratio,
     - a recording rule for the error budget (``1 - sli``),
-    - one burn-rate alert per multi-window pair (fast burn pages; slow burn tickets).
+    - one burn-rate alert per multi-window pair (fast burn pages; slow burn tickets), each
+      requiring the recorded error ratio to exceed the threshold over *both* windows.
     """
     model = slo_spec["model"]
     name = slo_spec["name"]
@@ -120,14 +121,22 @@ def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
         ],
     }
 
+    # Burn-rate alerts range over the *recorded* error ratio, not over ``sli_query`` itself.
+    # PromQL can only subscript a selector, so a range over an arbitrary ratio expression is not
+    # expressible — which is how both windows once ended up as the same string, leaving every
+    # alert as ``(X > t) and (X > t)``: a single-window alert with a two-window name and a
+    # two-window annotation. The recording rule above publishes the ratio as a series precisely
+    # so both windows can be taken from it.
+    error_series = f"{prefix}:error_ratio"
+
     alert_rules = []
     for short_w, long_w, factor, severity, for_dur in BURN_RATE_WINDOWS:
-        # Burn-rate alert: error rate over BOTH windows exceeds factor * budget.
-        err_short = f"1 - ({sli_query})"
-        err_long = f"1 - ({sli_query})"
+        # Burn-rate alert: error rate over BOTH windows exceeds factor * budget. The short window
+        # makes it responsive; the long one is what stops a momentary spike from paging.
+        threshold = round(factor * budget, 6)
         expr = (
-            f"({err_short} > {round(factor * budget, 6)}) "
-            f"and ({err_long} > {round(factor * budget, 6)})"
+            f"(avg_over_time({error_series}[{short_w}]) > {threshold}) "
+            f"and (avg_over_time({error_series}[{long_w}]) > {threshold})"
         )
         alert_rules.append(
             {

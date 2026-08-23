@@ -60,7 +60,16 @@ def test_gwt1_generate_rules_yaml_parses():
 
 @pytest.mark.skipif(shutil.which("promtool") is None, reason="promtool not installed")
 def test_gwt1_promtool_validates(tmp_path):
-    """GWT-1: promtool validates the generated rules when available."""
+    """GWT-1: promtool validates the generated rules when available.
+
+    "When available" has so far meant *never*: promtool is not on the developer machines, the
+    GitHub `examlops` job never installs it, and GitLab's `test:infra:alert-rules` job runs
+    promtool against the static `alert_rules.yml` — a different artifact from these generated
+    rules. Run by hand it passes, and it also passed while every alert's two windows were the
+    same expression, because that is valid PromQL. Syntax is all this can speak to; what the
+    alerts *mean* is guarded by `test_burn_rate_alerts_use_two_windows.py`, which needs no
+    external binary and therefore runs everywhere.
+    """
     from examlops.slo import generate_rules
 
     rules = generate_rules({"model": "M", "name": "s", "target": 0.99})

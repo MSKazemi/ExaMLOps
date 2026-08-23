@@ -70,8 +70,17 @@ The generated file contains:
   | 2h / 1d | 3× | warning (ticket) | 1h |
   | 6h / 3d | 1× | warning (ticket) | 3h |
 
-  A **fast burn pages**; a single-sample blip does not (the `and`-of-two-windows +
-  `for` duration suppresses noise).
+  A **fast burn pages**; a single-sample blip does not, because each alert requires the
+  *recorded* error ratio to exceed its threshold over **both** windows:
+
+  ```promql
+  (avg_over_time(examlops:slo:JPCP:latency_p99:error_ratio[5m]) > 0.144)
+  and (avg_over_time(examlops:slo:JPCP:latency_p99:error_ratio[1h]) > 0.144)
+  ```
+
+  The long window is what makes the short one safe to page on. The alerts range over the
+  recorded `:error_ratio` series rather than over your `sli_query` directly because PromQL
+  can only subscript a selector — that is what the recording rules are for.
 
 ## Tracking the budget
 
