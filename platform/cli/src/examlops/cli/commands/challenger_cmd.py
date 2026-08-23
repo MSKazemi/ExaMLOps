@@ -88,7 +88,9 @@ def status(
             "delta (champ-chall)": f"{st.delta:.4f}" if st.delta is not None else "—",
             "p_value": f"{st.p_value:.4f}" if st.p_value is not None else "—",
             "significant": "yes" if st.significant else "no",
-            "slo_ok": "yes" if st.slo_ok else "no",
+            # The bare yes/no cannot distinguish "budgets are healthy" from "nothing was
+            # measured" from "the check failed"; the reason is what makes it readable.
+            "slo_ok": f"{'yes' if st.slo_ok else 'no'} ({st.slo_reason})",
             "policy_met": "yes" if st.policy_met else "no",
         }
     )

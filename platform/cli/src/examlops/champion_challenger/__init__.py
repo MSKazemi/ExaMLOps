@@ -18,6 +18,7 @@ if SciPy/NumPy (used by `ab_stats`) is unavailable.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from collections.abc import Callable
@@ -25,6 +26,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from examlops import data as platform_db
+
+logger = logging.getLogger(__name__)
 
 _shadow_local = threading.local()
 
@@ -152,6 +155,7 @@ class ChallengerStatus:
     p_value: float | None
     significant: bool
     slo_ok: bool
+    slo_reason: str
     policy_met: bool
 
     def as_dict(self) -> dict[str, Any]:
@@ -165,18 +169,51 @@ class ChallengerStatus:
             "p_value": self.p_value,
             "significant": self.significant,
             "slo_ok": self.slo_ok,
+            "slo_reason": self.slo_reason,
             "policy_met": self.policy_met,
         }
 
 
-def _slo_ok(model: str, tenant: str) -> bool:
-    """No C6 SLO budget exhaustion => safe to promote (R6). Fail-open if C6 absent."""
+def _slo_verdict(model: str, tenant: str) -> tuple[bool, str]:
+    """Whether C6 says it is safe to promote, and the phrase that says why.
+
+    The caller writes this phrase into an audit event. It used to be the fixed string ``SLO OK``,
+    appended whenever this function returned ``True`` — and this function returned ``True`` for
+    every way of not knowing: C6 not installed, the store unreadable, the query raising, no SLO
+    configured, an SLO configured but never measured. A promotion could therefore be recorded,
+    permanently, as having cleared an SLO check that never ran.
+
+    Absent and broken are now different answers. The original docstring licensed fail-open for
+    "C6 absent" — an optional feature nobody installed — and that is kept, as is the permissive
+    answer when there is no SLO to consult or no data yet. A check that ran and *failed* is not
+    absence: it is an unknown about the thing being gated, and promotion is the risky direction,
+    so it blocks. Either way the returned phrase states what was actually established.
+    """
     try:
         from examlops.slo import slo_status
+    except ImportError:
+        return True, "SLO checks unavailable (C6 not installed)"
+    try:
+        statuses = slo_status(model, tenant=tenant)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "SLO check failed for %s; refusing to treat that as no regression: %s", model, exc
+        )
+        return False, f"SLO check failed: {exc}"
 
-        return all(s.budget_remaining > 0 for s in slo_status(model, tenant=tenant))
-    except Exception:
-        return True
+    if not statuses:
+        return True, "no SLO configured"
+    exhausted = [s.name for s in statuses if s.n > 0 and s.budget_remaining <= 0]
+    if exhausted:
+        return False, f"SLO budget exhausted: {', '.join(exhausted)}"
+    # An SLO with no samples scores a perfect SLI (`good/total` with total 0 falls back to 1.0),
+    # so it would otherwise arrive here indistinguishable from one measured and meeting target.
+    measured = [s for s in statuses if s.n > 0]
+    if not measured:
+        return True, "SLO configured but not yet measured"
+    if len(measured) < len(statuses):
+        return True, f"{len(measured)}/{len(statuses)} SLO budgets within target, rest unmeasured"
+    return True, "SLO budgets within target"
 
 
 def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatus | None:
@@ -200,7 +237,7 @@ def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatu
         res = _welch(champ_err, chall_err)
         p_value = res["p_value"]
         significant = p_value < cfg["alpha"]
-    slo_ok = _slo_ok(model, tenant)
+    slo_ok, slo_reason = _slo_verdict(model, tenant)
     policy_met = (
         delta is not None
         and delta >= cfg["min_delta"]
@@ -218,6 +255,7 @@ def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatu
         p_value=p_value,
         significant=significant,
         slo_ok=slo_ok,
+        slo_reason=slo_reason,
         policy_met=policy_met,
     )
 
@@ -250,7 +288,7 @@ def maybe_promote(
         auto=bool(cfg and cfg["auto_promote"]),
         reason=(
             f"challenger beats champion by Δ={status.delta:.4f} error "
-            f"(p={status.p_value:.4f}, n={status.n}), SLO OK"
+            f"(p={status.p_value:.4f}, n={status.n}); {status.slo_reason}"
         ),
     )
     platform_db.write_audit_event(

@@ -125,13 +125,23 @@ def test_gwt5_promote_on_win_no_slo_regression():
 def test_gwt5_slo_regression_blocks_promotion(monkeypatch):
     """GWT-5: an SLO regression blocks the promotion proposal (R6)."""
     from examlops import platform_db
-    from examlops.champion_challenger import enable_shadow, maybe_promote
+    from examlops.champion_challenger import challenger_status, enable_shadow, maybe_promote
 
     enable_shadow("JPCP", "18", 100, min_samples=10, alpha=0.05, min_delta=0.05)
     for i in range(30):
+        # Spread on both arms. With constant predictions both samples have zero variance, Welch
+        # is degenerate (p = 1.0), `significant` is False, and the proposal is None before the
+        # SLO term is ever read — so this test passed with the SLO gate deleted entirely.
         platform_db.record_challenger_sample(
-            "JPCP", request_hash=f"h{i}", champion_pred=2.0, challenger_pred=1.0, label=1.0
+            "JPCP",
+            request_hash=f"h{i}",
+            champion_pred=2.0 + (i % 5) * 0.1,
+            challenger_pred=1.0 + (i % 5) * 0.01,
+            label=1.0,
         )
+    # The challenger must be promotable *but for* the SLO, or this proves nothing.
+    assert challenger_status("JPCP").significant is True
+
     # Exhaust an SLO budget for the model (C6).
     from examlops.slo import apply_spec
 

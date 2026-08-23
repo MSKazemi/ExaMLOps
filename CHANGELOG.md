@@ -106,6 +106,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A promotion could be recorded as having cleared an SLO check that never ran.**
+  `maybe_promote()` writes an audit event whose `reason` ended in the literal words `SLO OK`, and
+  that claim came from `_slo_ok`, which answered every way of *not knowing* with `True`: C6 not
+  installed, the store unreadable, the query raising, no SLO configured, or an SLO configured but
+  never measured — the last of these because `sli = (good/total) if total else 1.0` scores zero
+  samples as a perfect SLI. A safety check that cannot return a negative verdict is not a safety
+  check, and here the fabrication was written into the audit log rather than merely displayed.
+  `_slo_verdict()` now separates *absent* from *broken*: fail-open is kept for C6 being absent,
+  for no SLO configured and for no data yet (all stated as such), while a check that ran and
+  crashed blocks the promotion. It returns the phrase that goes into the audit record, so the
+  event says what was actually established — `no SLO configured`,
+  `SLO configured but not yet measured`, `SLO budgets within target`, `SLO check failed: …`.
+  `ChallengerStatus` carries `slo_reason` and `exa serve challenger status` shows it, since a bare
+  yes/no cannot distinguish healthy from unmeasured.
+
+- **The test guarding that gate could not detect its removal.**
+  `test_gwt5_slo_regression_blocks_promotion` fed both arms constant predictions, which gives them
+  zero variance; Welch is then degenerate at `p = 1.0`, `significant` is `False`, and the proposal
+  is `None` before the SLO term is read at all. It asserted `proposal is None` and would have
+  passed with the SLO gate deleted entirely — verified by running its own data with no SLO
+  configured. It now uses predictions with spread, asserts `significant is True` before the SLO is
+  introduced so the premise cannot silently regress, and was confirmed to go red against a
+  neutered gate.
+
 - **A control plane that cannot read its approval queue no longer reports an empty one.**
   `/health` and `/status` answered an unreadable approval store with `pending_approvals: 0` —
   the one value the platform encodes as *nothing is waiting*. `exa status` prints its approval
