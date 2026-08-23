@@ -2,7 +2,7 @@
 
 The `exa` CLI is the primary operator interface for ExaMLOps. This guide documents **every
 command** — what it does, *when and why* you'd reach for it, and a copy-paste example —
-organized by the eleven MLOps-lifecycle areas that `exa --help` groups commands into.
+organized by the twelve MLOps-lifecycle areas that `exa --help` groups commands into.
 
 > **In the terminal, too.** Running a bare group — e.g. `exa serve` — prints its subcommands in
 > titled panels plus a **Common tasks** block (copy-paste examples) and a **Learn more** footer
@@ -44,17 +44,6 @@ Runs a self-check over configuration, connectivity, and database health so you c
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa doctor` | Diagnoses config, service connectivity, and platform DB health, reporting each check. | When `exa status` looks wrong or a command errors and you need to know whether it's your config, the network, or the DB. | `exa doctor`<br>`exa --json doctor` |
-
-### `exa ask` — natural-language front door to Skipper
-
-Routes a plain-English question to the Skipper agent's OpenAI-compatible bridge. Great when you don't know which exact command to run.
-
-The answer **streams** at a terminal: tokens appear as the agent produces them, and each tool it calls is announced on its own dim line. That matters because the agent's tool loop runs before it writes anything, so without streaming a slow answer is silence followed by a wall of text — indistinguishable from a hang. Piped or `--json` output does not stream, because there the point is one parseable object; `--no-stream` forces that behaviour at a terminal too.
-
-| Command | What it does | Use case | Example |
-|---|---|---|---|
-| `exa ask "<question>"` | Sends a natural-language question to the Skipper agent and prints its answer as it arrives; `--session` keeps context across turns. | When you want an answer or an action described conversationally instead of hunting for the precise CLI command. | `exa ask "which models are drifting and why?"`<br>`exa ask "now retrain the worst one" --session mysession` |
-| `exa ask "<question>" --no-stream` | Waits for the complete answer and prints it in one go. | Logging a transcript, or any context where interleaved output is awkward. | `exa ask "summarise last week" --no-stream` |
 
 ### `exa explain` — plain-language command help
 
@@ -557,6 +546,25 @@ Runs text and agent tool calls through the guardrail engine (prompt-injection, P
 | `exa guardrails check-tool` | Checks whether an agent's requested tool call is on the per-tenant allow-list (R7). Requires the tool arg + `--allow` (repeatable); `--mode`, `--tenant`. | Gate which tools an agent may call under enforce mode. | `exa guardrails check-tool delete_model --allow list_models --allow get_status --mode enforce` |
 | `exa guardrails stats` | Shows guardrail action counts (allow/redact/block), optionally filtered by `--tenant`. | Report how often guardrails fired, for governance/tuning. | `exa guardrails stats --tenant acme` |
 
+## Agents & Automation
+
+The agentic surface: the conversational front door, the closed loop that acts on its own, the
+tools other agents call, and the analytics that say whether any of it is working. These commands
+were previously spread across four other panels — correct and complete, but with no title naming
+the category, which made the surface read as missing when it was not. `exa explain` deliberately
+stays under Getting Started: it introspects the command tree and calls no agent.
+
+### `exa ask` — natural-language front door to Skipper
+
+Routes a plain-English question to the Skipper agent's OpenAI-compatible bridge. Great when you don't know which exact command to run.
+
+The answer **streams** at a terminal: tokens appear as the agent produces them, and each tool it calls is announced on its own dim line. That matters because the agent's tool loop runs before it writes anything, so without streaming a slow answer is silence followed by a wall of text — indistinguishable from a hang. Piped or `--json` output does not stream, because there the point is one parseable object; `--no-stream` forces that behaviour at a terminal too.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa ask "<question>"` | Sends a natural-language question to the Skipper agent and prints its answer as it arrives; `--session` keeps context across turns. | When you want an answer or an action described conversationally instead of hunting for the precise CLI command. | `exa ask "which models are drifting and why?"`<br>`exa ask "now retrain the worst one" --session mysession` |
+| `exa ask "<question>" --no-stream` | Waits for the complete answer and prints it in one go. | Logging a transcript, or any context where interleaved output is awkward. | `exa ask "summarise last week" --no-stream` |
+
 ### `exa agentops` — agent trace & tool-call analytics
 
 Analytics over recorded agent sessions: per-tool reliability, a session index, timeline replay, and anomaly detection (reasoning loops, step blowups, cost overruns). All reads; tenant-filterable.
@@ -567,6 +575,38 @@ Analytics over recorded agent sessions: per-tool reliability, a session index, t
 | `exa agentops sessions` | Lists recent agent sessions with steps, cost, and status (R6 index). Options: `--tenant`, `--status ok\|anomaly\|error`, `--limit` (default 50). | Triage recent agent runs, e.g. only the ones that errored. | `exa agentops sessions --status anomaly --limit 20` |
 | `exa agentops replay` | Reconstructs a session's tool-call timeline (R6, GWT-5). Requires the session id. | Step through exactly what an agent did in one session while debugging. | `exa agentops replay sess-42` |
 | `exa agentops anomalies` | Detects reasoning loops, step blowups, and cost overruns in a session (R4, GWT-3/4). Requires the session id; `--cost-budget` USD threshold (default 1.0). | Flag a runaway or over-budget agent run for review. | `exa agentops anomalies sess-42 --cost-budget 2.0` |
+
+### `exa autopilot` — self-driving MLOps closed loop
+
+Runs the policy-governed loop that detects drift, retrains, checks metrics, and promotes — all
+gated by a persistent kill-switch (disabled by default; `EXAMLOPS_AUTOPILOT_ENABLED` also
+applies). See ADR 0085.
+
+**`--dry-run` is not gated by the kill-switch.** A preview takes no lease, triggers no retrain and
+promotes nothing, so `exa autopilot run --dry-run` works while the switch is off — you inspect the
+loop *before* arming it, not after. The preview says the switch is off, and the run is recorded
+with `enabled_state="disabled"` so history never implies the loop was live. A real
+`exa autopilot run` is still refused until you `exa autopilot enable`.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa autopilot enable` | **[mutation]** Enable the autopilot kill-switch (persisted in `platform.db`). | Turn on hands-off closed-loop MLOps. | `exa autopilot enable` |
+| `exa autopilot disable` | **[mutation]** Disable the autopilot kill-switch (persisted in `platform.db`). | Emergency stop for all autopilot activity. | `exa autopilot disable` |
+| `exa autopilot run [model]` | **[mutation]** Run one cycle: drift scan → policy → retrain → metrics → policy → promote. `--dry-run`, optional `model` to restrict. | Manually drive (or preview) one autopilot pass. | `exa autopilot run --dry-run` |
+| `exa autopilot status` | Show recent autopilot run history. `--last` (10). | Audit what the loop did and when. | `exa autopilot status --last 20` |
+
+### `exa mcp` — MCP server + Agent-to-Agent (A2A) surface
+
+Exposes ExaMLOps platform capabilities as agent-callable MCP tools/resources/prompts and an A2A Agent Card. Writes are off by default; enable mutating tools with `--allow-writes` or `EXAMLOPS_MCP_ALLOW_WRITES`.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa mcp tools` | Lists the tools exposed to agents over MCP; `--all` includes write tools even when writes are disabled. | Discover the agent-callable API surface | `exa mcp tools --all` |
+| `exa mcp capabilities` | Shows what the agent can do, **grouped by lifecycle use case** (management, monitoring, help, incident, finops, governance) with a write-tier badge (A=autopilot-OK, B=confirm-required, C=human-only); `--all` includes write tools. Derived from the same registry as `exa mcp tools` and the A2A card, so it can never drift. | Understand agent capabilities by use case | `exa mcp capabilities` |
+| `exa mcp resources` | Lists the MCP resources (readable context, e.g. `examlops://status`). | See what context agents can read | `exa mcp resources` |
+| `exa mcp prompts` | Lists the MCP prompts (reusable agent workflows, e.g. `diagnose_drift`). | Discover packaged agent workflows | `exa mcp prompts` |
+| `exa mcp agent-card` | Prints the A2A Agent Card describing this platform's agent skills; `--url` sets the public base URL, `--all` advertises mutating tools. | Publish an A2A discovery card | `exa mcp agent-card --url https://exa.example.com` |
+| `exa mcp serve` | Runs the MCP server so agents can drive ExaMLOps; `--transport`, `--host`, `--port`, `--allow-writes`. **(mutation, long-running, outward)** | Host the platform as an agent-callable server | `exa mcp serve --transport stdio` |
 
 ## Monitoring & Quality
 
@@ -663,25 +703,6 @@ so you can catch (and gate on) subgroup quality gaps.
 | `exa fairness config <model>` | **[mutation]** Declare slicing attributes + disparity threshold (R1). Required `--attr` (repeatable); `--threshold` (0.1), `--min-samples` (30), `--gate`, `--tenant`. | Set up fairness monitoring/gating for a model. | `exa fairness config JPCP --attr region --attr tier --threshold 0.1 --gate` |
 | `exa fairness slice <model> <attr>` | Per-slice performance for one slicing attribute (R2). `--tenant`. | Drill into how one attribute's groups compare. | `exa fairness slice JPCP region` |
 | `exa fairness report <model>` | Full fairness report across all declared slice attributes (R5). `--tenant`. | Whole-model fairness summary for review. | `exa fairness report JPCP` |
-
-### `exa autopilot` — self-driving MLOps closed loop
-
-Runs the policy-governed loop that detects drift, retrains, checks metrics, and promotes — all
-gated by a persistent kill-switch (disabled by default; `EXAMLOPS_AUTOPILOT_ENABLED` also
-applies). See ADR 0085.
-
-**`--dry-run` is not gated by the kill-switch.** A preview takes no lease, triggers no retrain and
-promotes nothing, so `exa autopilot run --dry-run` works while the switch is off — you inspect the
-loop *before* arming it, not after. The preview says the switch is off, and the run is recorded
-with `enabled_state="disabled"` so history never implies the loop was live. A real
-`exa autopilot run` is still refused until you `exa autopilot enable`.
-
-| Command | What it does | Use case | Example |
-|---|---|---|---|
-| `exa autopilot enable` | **[mutation]** Enable the autopilot kill-switch (persisted in `platform.db`). | Turn on hands-off closed-loop MLOps. | `exa autopilot enable` |
-| `exa autopilot disable` | **[mutation]** Disable the autopilot kill-switch (persisted in `platform.db`). | Emergency stop for all autopilot activity. | `exa autopilot disable` |
-| `exa autopilot run [model]` | **[mutation]** Run one cycle: drift scan → policy → retrain → metrics → policy → promote. `--dry-run`, optional `model` to restrict. | Manually drive (or preview) one autopilot pass. | `exa autopilot run --dry-run` |
-| `exa autopilot status` | Show recent autopilot run history. `--last` (10). | Audit what the loop did and when. | `exa autopilot status --last 20` |
 
 ## HPC, Fleet & FinOps
 
@@ -1002,16 +1023,3 @@ Manages the per-model SeanerBUS UUIDs the bridge uses to register one req/res ha
 | `exa seanerbus status` | Probes the SeanerBUS bridge health + runtime stats endpoints. | Check the bridge is reachable and serving | `exa seanerbus status` |
 | `exa seanerbus init-uuids` | Assigns a UUID to every model missing one (idempotent). **(mutation)** | Backfill UUIDs on existing models, then commit | `exa seanerbus init-uuids` |
 | `exa seanerbus regen-uuid` | Regenerates one model's SeanerBUS UUID (notify HPC teams of the change). **(mutation, outward impact)** | Rotate a compromised/duplicated UUID | `exa seanerbus regen-uuid JPCP` |
-
-### `exa mcp` — MCP server + Agent-to-Agent (A2A) surface
-
-Exposes ExaMLOps platform capabilities as agent-callable MCP tools/resources/prompts and an A2A Agent Card. Writes are off by default; enable mutating tools with `--allow-writes` or `EXAMLOPS_MCP_ALLOW_WRITES`.
-
-| Command | What it does | Use case | Example |
-|---|---|---|---|
-| `exa mcp tools` | Lists the tools exposed to agents over MCP; `--all` includes write tools even when writes are disabled. | Discover the agent-callable API surface | `exa mcp tools --all` |
-| `exa mcp capabilities` | Shows what the agent can do, **grouped by lifecycle use case** (management, monitoring, help, incident, finops, governance) with a write-tier badge (A=autopilot-OK, B=confirm-required, C=human-only); `--all` includes write tools. Derived from the same registry as `exa mcp tools` and the A2A card, so it can never drift. | Understand agent capabilities by use case | `exa mcp capabilities` |
-| `exa mcp resources` | Lists the MCP resources (readable context, e.g. `examlops://status`). | See what context agents can read | `exa mcp resources` |
-| `exa mcp prompts` | Lists the MCP prompts (reusable agent workflows, e.g. `diagnose_drift`). | Discover packaged agent workflows | `exa mcp prompts` |
-| `exa mcp agent-card` | Prints the A2A Agent Card describing this platform's agent skills; `--url` sets the public base URL, `--all` advertises mutating tools. | Publish an A2A discovery card | `exa mcp agent-card --url https://exa.example.com` |
-| `exa mcp serve` | Runs the MCP server so agents can drive ExaMLOps; `--transport`, `--host`, `--port`, `--allow-writes`. **(mutation, long-running, outward)** | Host the platform as an agent-callable server | `exa mcp serve --transport stdio` |

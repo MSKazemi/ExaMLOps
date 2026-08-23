@@ -126,13 +126,21 @@ _QUICK_START = (
 # Add a new top-level command's name to the right panel here — the help-panel test guard
 # fails if any registered command is left out.
 _ROOT_PANELS: list[tuple[str, list[str]]] = [
-    ("Getting Started", ["status", "doctor", "ask", "explain", "env", "docs", "config", "plugins"]),
+    ("Getting Started", ["status", "doctor", "explain", "env", "docs", "config", "plugins"]),
     ("Training & Pipelines", ["pipeline", "retrain", "scaffold", "finetune", "reproduce"]),
     ("Data & Features", ["data", "feature", "features", "assets", "cards"]),
     ("Models & Registry", ["models", "modelzoo", "embedding"]),
     ("Serving & Inference", ["serve", "predict", "production", "gateway", "vector", "rag"]),
-    ("GenAI & LLMOps", ["genai", "prompt", "guardrails", "agentops"]),
-    ("Monitoring & Quality", ["drift", "eval", "slo", "fairness", "autopilot"]),
+    ("GenAI & LLMOps", ["genai", "prompt", "guardrails"]),
+    # The agentic surface was the platform's differentiator and the one thing a reader could not
+    # find in `exa --help`: its 15 commands were correct and complete but scattered across four
+    # panels — `ask` under Getting Started, `agentops` under GenAI, `autopilot` under Monitoring,
+    # `mcp` under Platform — and no panel title contained the word. Nothing was missing; the
+    # category simply had no name, which reads identically to absence.
+    # `explain` deliberately stays in Getting Started: it introspects the Click tree and involves
+    # no agent, so filing it here would make the panel a lie.
+    ("Agents & Automation", ["ask", "agentops", "autopilot", "mcp"]),
+    ("Monitoring & Quality", ["drift", "eval", "slo", "fairness"]),
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
         "Governance & Security",
@@ -141,7 +149,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("Projects & Workspaces", ["project", "namespace", "connection", "workbench"]),
     (
         "Platform & Integrations",
-        ["stack", "backup", "events", "admission", "exchange", "seanerbus", "mcp"],
+        ["stack", "backup", "events", "admission", "exchange", "seanerbus"],
     ),
 ]
 

@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Changed
 
+- **`exa --help` now names the agentic surface: a twelfth panel, "Agents & Automation".** The
+  operator's report was that the CLI showed "nothing about the agentic parts". Measuring the
+  live command tree against the panel spec showed the opposite of a gap: 363 leaf commands
+  under 60 top-level groups, every command in exactly one panel and every panel entry a real
+  command — no drift in either direction. The agentic commands were all present and all
+  correct. They were simply filed under four titles that never used the word: `ask` under
+  Getting Started, `agentops` under GenAI & LLMOps, `autopilot` under Monitoring & Quality,
+  `mcp` under Platform & Integrations. A category with no name reads exactly like a category
+  that does not exist, which is what happened.
+
+  Those four now sit under **Agents & Automation**, rendered between GenAI & LLMOps and
+  Monitoring & Quality. `exa explain` deliberately stays in Getting Started: it introspects
+  the Click tree and calls no agent, so filing it under the agent panel would make the title
+  untrue and would send someone debugging an unreachable agent to a command that never needed
+  one. `docs/reference/cli-commands-guide.md` gains the matching section, moving the same four
+  command blocks with their content unchanged.
+
+  Help-display-only — command resolution, `exa --json docs`, and scripting are unaffected.
+  Two guards in `tests/unit/test_cli_help_panels.py` pin the panel and the `explain` exception;
+  both were proved red by restoring the old four-panel spread.
+
 - **Skipper's default Azure deployment is now `gpt-5.5`, and the reasoning-token trap that
   comes with it is documented.** The agent ran on `gpt-5.4-mini`; the Foundry resource also
   carries `gpt-5.5`, and the operator's standing preference is the strongest available model.
@@ -64,6 +85,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   (`.venv/bin/pytest platform/services/agent/tests`, the form `make skipper-test` uses) and from
   the service directory: `241 passed, 1 warning` either way.
 
+### Added
+
+- **A deploy can now prove the target matches the source — `platform/ci/verify_deploy_integrity.py`.**
+  An additive rsync (no `--delete`) can leave a tree where every file is individually plausible and
+  the combination does not import. That is what happened to the lxp node: it held the Aug-19
+  `platform_db.py`, whose line 1737 is a re-export barrel naming twenty symbols from
+  `examlops.data.serving`, alongside a `serving.py` predating half of them. A barrel import fails
+  whole and `examlops.cli.main` pulls it in transitively, so every `exa` command died before Typer
+  was reached. Nothing reported it, because the source machine's suite was green and the source
+  machine was not the broken one.
+
+  No source-side test can catch that — the defect is a property of the target. The checker writes a
+  digest manifest from the source tree and verifies it against the target, exiting 1 on drift so it
+  can gate a deploy:
+
+  ```
+  scp platform/ci/verify_deploy_integrity.py <host>:/tmp/exa_integrity.py
+  python3 platform/ci/verify_deploy_integrity.py manifest platform/cli/src/examlops \
+    | ssh <host> 'python3 /tmp/exa_integrity.py verify /path/to/examlops -'
+  ```
+
+  It compares **content**, not just presence: an `exa -h` smoke test would have caught `serving.py`
+  but not `data_assets.py`, which differed without breaking any import. Files the target has and the
+  source does not are reported and never fatal, because that node holds hundreds that exist nowhere
+  else. An empty manifest is refused rather than treated as a match, so a broken manifest step
+  cannot silently certify a target. Run read-only against the live node it reports
+  `3 file(s) drifted out of 238 checked`, exit 1. Seven unit tests in
+  `tests/unit/test_deploy_integrity.py`.
+
 ### Fixed
 
 - **The dashboard shipped a working admin password in `.env.example`, and the deployed node was
@@ -86,9 +136,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   placeholder stops logging in, the *other* role is unaffected, and the container still serves
   instead of crash-looping on a node that is misconfigured right now. Startup logs an error
   naming the variable, since otherwise this reads as "the password broke" rather than "the
-  password was never set". `.env.example` now ships the four secrets empty with a generator
-  command. `DASHBOARD_SECRET_KEY` needed no guard — its placeholder is not valid base64, so
-  `Fernet()` already rejected it at import.
+  password was never set". Both `.env.example` files — repo root and
+  `platform/infra/docker-compose/` — now carry the four secrets empty with a generator command.
+  `DASHBOARD_SECRET_KEY` needed no guard — its placeholder is not valid base64, so `Fernet()`
+  already rejected it at import.
+
+  One caveat on where those examples reach. `.gitignore`'s `.env.*` rule matches `.env.example`
+  too, and the public leak firewall excludes it deliberately, so the **public** repositories carry
+  no example file at all — while `docs/guides/enterprise-installation.md` tells a reader of those
+  repositories to `cp .env.example .env`. A scrubbed public copy (variable names and generator
+  commands, no host, IP or project id) is tracked separately.
 
   Setting a real password on the node is the operator's action, not this change's.
 
@@ -102,7 +159,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   now also rejects any token *containing* a placeholder marker (`changeme` / `change-me` /
   `placeholder` / `your-token` / `replace-me` …), each long enough not to occur inside a random
   secret, and `.env.example` no longer offers a value to paste — it prints the generator command
-  instead. Six decorated placeholders were accepted by the old guard and are refused by the new
+  instead (on disk: that file is gitignored, see the entry above). Six decorated placeholders were accepted by the old guard and are refused by the new
   one; they are now parametrized cases in `test_weak_token.py` (14 passing, control-plane suite
   88 passing).
 
