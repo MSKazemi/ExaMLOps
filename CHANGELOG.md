@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The Helm chart's own README published three install commands, and none of them worked.**
+  `global.imageRegistry` is required — the chart refuses to render without it, on purpose, because
+  an unqualified image name resolves to `docker.io/library/`, which only Docker can publish to. The
+  README's *Install / validate* section omitted the flag from all three of its commands: the
+  `helm template` and `helm upgrade --install` lines exit 1, and the `helm lint` line exits **0**
+  while printing the failure three times — false reassurance, the worst of the three, and the same
+  `helm lint` blind spot `docs/guides/enterprise-installation.md` already warns about a few pages
+  away. `make helm-validate` passes the registry, so the gate stayed green over documentation that
+  could not be followed. Fixed, and `docs/guides/production-hardening.md`'s rollback command with
+  it: `helm upgrade` without `--reuse-values` falls back to chart defaults, so the documented
+  rollback would have hit the same refusal. Guarded by a new test in `tests/unit/test_helm_chart.py`
+  that joins backslash-continued lines before judging — reading only a command's first line is how
+  a checker "finds" a flag missing that is set three lines down.
+
+- The chart's post-install `NOTES.txt` now names the prerequisite Secret. Every Deployment
+  references `examlops-secrets` with a **non-optional** `envFrom.secretRef`, so without it the pods
+  never start — `CreateContainerConfigError`, not a crash loop, which looks like nothing happening
+  at all. The README always documented it; the surface the installer actually reads did not.
+
 - **The job that publishes a release could not find the last two releases' notes.**
   `release:gitlab` builds the GitLab Release description by awk-ing the tag's own section out of
   this file, and exits 1 when the result is empty — deliberately, as the cheapest check that the

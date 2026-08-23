@@ -55,7 +55,9 @@ probes, so a new version only takes traffic once its pods are `Ready`, and old p
 the new ones are up — no capacity dip during an upgrade. Rollback is one command:
 
 ```bash
-helm upgrade examlops platform/infra/helm/examlops --set controlPlane.image.tag=0.38.0
+# --reuse-values keeps global.imageRegistry from the installed release; without it helm falls
+# back to chart defaults, and the chart refuses to render with no registry set.
+helm upgrade examlops platform/infra/helm/examlops --reuse-values --set controlPlane.image.tag=0.38.0
 kubectl rollout status deploy/examlops-examlops-control-plane -n examlops   # gate on readiness
 helm rollback examlops                                                       # instant, reversible
 ```

@@ -11,6 +11,12 @@ Reach it at: https://{{ .Values.ingress.host }}/
 No ingress enabled — port-forward a Service to reach it.
 {{- end }}
 
+Prerequisite — the Secret `{{ .Values.existingSecret }}` must exist in this namespace. Every
+Deployment references it with a non-optional envFrom.secretRef, so until it is there the pods
+will not start (CreateContainerConfigError, not CrashLoop). The chart README has the
+`kubectl create secret generic` line and the full key list. Check with:
+  kubectl get secret {{ .Values.existingSecret }} -n {{ .Release.Namespace }}
+
 State (managed OUT of this chart — see the chart README):
   Postgres : {{ .Values.postgres.host }} (recommend CloudNativePG, 3 instances)
   MinIO    : {{ .Values.minio.endpoint }} (recommend distributed mode, erasure-coded)

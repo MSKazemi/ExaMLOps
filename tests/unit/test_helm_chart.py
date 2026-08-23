@@ -15,6 +15,7 @@ who is not the author — are plain YAML.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -144,4 +145,64 @@ def test_chart_version_moves_with_the_platform():
     assert str(_chart()["version"]) == _platform_version(), (
         f"Chart version {_chart()['version']} != platform {_platform_version()}; bump it, "
         "or consumers of the published repo will never see this change."
+    )
+
+
+# ── every published command for this chart must be one that works ──────────────────────────────
+# The chart requires `global.imageRegistry` and refuses to render without it (above). Its own
+# README's "Install / validate" section published three commands that all omitted the flag: the
+# `helm template` and `helm upgrade` lines exited 1, and the `helm lint` line exited **0** while
+# printing the failure three times — false reassurance, which is the worst of the three. Meanwhile
+# `make helm-validate` passes the registry, so the gate stayed green over documentation that could
+# not be followed.
+
+_HELM_START = re.compile(r"^\s*helm\s+(lint|template|install|upgrade)\b")
+_DOC_ROOTS = ("docs", "platform/infra/helm", "design")
+
+
+def _published_helm_commands() -> list[tuple[Path, str]]:
+    """Every `helm` command in the docs that targets this chart, backslash-joined.
+
+    A shell command split over continuation lines is one command; reading only its first line
+    is how a checker "finds" a missing flag that is set three lines down.
+    """
+    found: list[tuple[Path, str]] = []
+    for root in _DOC_ROOTS:
+        base = REPO / root
+        if not base.is_dir():
+            continue
+        for md in base.rglob("*.md"):
+            lines = md.read_text().splitlines()
+            index = 0
+            while index < len(lines):
+                if not _HELM_START.match(lines[index]):
+                    index += 1
+                    continue
+                parts = [lines[index]]
+                while parts[-1].rstrip().endswith("\\") and index + 1 < len(lines):
+                    index += 1
+                    parts.append(lines[index])
+                index += 1
+                command = " ".join(" ".join(parts).replace("\\", " ").split())
+                if "platform/infra/helm/examlops" in command:
+                    found.append((md.relative_to(REPO), command))
+    return found
+
+
+def test_there_are_published_helm_commands_to_check():
+    """Otherwise the assertion below passes by inspecting nothing."""
+    assert len(_published_helm_commands()) >= 4, _published_helm_commands()
+
+
+def test_every_published_helm_command_sets_the_required_registry():
+    offenders = [
+        f"{path}: {command}"
+        for path, command in _published_helm_commands()
+        # `--reuse-values` carries the registry over from the installed release, which is the
+        # right form for an upgrade/rollback and the only exemption that makes sense here.
+        if "global.imageRegistry" not in command and "--reuse-values" not in command
+    ]
+    assert not offenders, (
+        "these published commands omit the registry the chart requires, so they fail (or, for "
+        "`helm lint`, pass while printing the failure):\n  " + "\n  ".join(offenders)
     )

@@ -56,12 +56,25 @@ kubectl create secret generic examlops-secrets \
 
 ## Install / validate
 
+`global.imageRegistry` is **required** and every command below needs it — the chart refuses to
+render without one, because an unqualified image name resolves to `docker.io/library/`, which only
+Docker can publish to. Note the trailing slash. `helm lint` is the exception that misleads: it
+prints the failure and still reports `0 chart(s) failed`, so never read a bare lint as a pass.
+
 ```bash
-helm lint platform/infra/helm/examlops
-helm template rel platform/infra/helm/examlops | kubectl apply --dry-run=client -f -   # schema check
+REG=ghcr.io/<owner>/          # the registry holding the ExaMLOps images — trailing slash
+
+helm lint platform/infra/helm/examlops --set global.imageRegistry=$REG
+helm template rel platform/infra/helm/examlops --set global.imageRegistry=$REG \
+  | kubectl apply --dry-run=client -f -                                  # schema check
 helm upgrade --install examlops platform/infra/helm/examlops \
   -n examlops --create-namespace \
+  --set global.imageRegistry=$REG \
   --set ingress.host=examlops.example.org --set global.cluster=prod
 ```
 
-`make helm-validate` runs the lint + render + dry-run gate.
+Create the `examlops-secrets` Secret **before** installing (above): the Deployments reference it
+with a non-optional `envFrom.secretRef`, so without it the pods never start.
+
+`make helm-validate` runs the lint + render + dry-run gate, and it passes the registry — which is
+why it stayed green while the commands in this section did not work.
