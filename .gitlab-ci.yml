@@ -364,7 +364,7 @@ test:examlops:
   script:
     - .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
     - .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-    - .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+    - .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
     - .venv/bin/pytest tests/unit/ -v --tb=short
         --junit-xml=reports/examlops-unit.xml
         --cov=platform/cli/src/examlops --cov=pipelines --cov=serving

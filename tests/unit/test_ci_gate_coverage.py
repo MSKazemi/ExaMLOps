@@ -16,6 +16,7 @@ Both tests fail when a *new* CI job is added, which is the point: adding a check
 decision about what it gates and how it is mirrored, rather than leaving it decorative.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -135,3 +136,77 @@ def test_preflight_runs_or_names_every_blocking_check():
                 f"preflight has no step matching {job!r} (expected the banner to contain "
                 f"{marker!r}). Its docstring claims to mirror every blocking CI job."
             )
+
+
+# A third claim, of the same shape as the two above. The `needs:` list proves a job is *asked*
+# for a verdict; nothing proved the job is still able to give a negative one. A step ending in
+# `|| true` reports success no matter what it found, so the check keeps its place in every gate
+# and its name in the pipeline while having no remaining way to say no — and the first failure
+# it was put there to catch ships green.
+#
+# Limit, stated rather than implied: this matches the explicit idioms below. It is not a shell
+# semantics analyser, and a step can still discard an exit status in ways no regex sees
+# (a pipeline whose last element always succeeds, a wrapper script that swallows internally).
+# It closes the idiom that is actually used, and says so.
+_SWALLOWS_EXIT = re.compile(r"\|\|\s*(?:true|:|exit\s+0|echo\b)|(?:^|;|\s)set\s+\+e\b")
+
+_STEP_KEYS = ("before_script", "script", "after_script")
+
+
+def _steps(job: dict) -> list[str]:
+    return [s for key in _STEP_KEYS for s in job.get(key) or [] if isinstance(s, str)]
+
+
+def _swallowed(job: dict) -> list[str]:
+    return [
+        line.strip()
+        for step in _steps(job)
+        for line in step.splitlines()
+        if _SWALLOWS_EXIT.search(line.strip())
+    ]
+
+
+def test_no_blocking_check_has_a_step_that_cannot_fail():
+    jobs = _jobs()
+    blocking = _blocking_checks(jobs)
+    assert blocking, "no blocking check jobs parsed — the guard's stage names are stale"
+    scanned = sum(len(_steps(jobs[name])) for name in blocking)
+    assert scanned > len(blocking), (
+        f"parsed {len(blocking)} blocking jobs but only {scanned} steps — the scan is reading "
+        "nothing, and finding no offender in nothing is not the same as finding none"
+    )
+    offenders = [f"{name}: {hit}" for name in sorted(blocking) for hit in _swallowed(jobs[name])]
+    assert not offenders, (
+        "A blocking CI check has a step that reports success whatever it finds. It gates the "
+        "deploy on paper and cannot fail on that step:\n" + "\n".join(offenders)
+    )
+
+
+def test_the_scan_can_tell_a_swallowed_step_from_a_real_one():
+    """The assertion above is only worth its green when this is true of the matcher."""
+    assert _swallowed({"script": ["mypy . --ignore-missing-imports || true"]})
+    assert _swallowed({"script": ["ruff check . || :"]})
+    assert _swallowed({"script": ["pytest -q || exit 0"]})
+    assert _swallowed({"before_script": ["set +e", "pip install -e ."]})
+    assert _swallowed({"script": ["helm lint charts/ || echo 'warn: skipped'"]})
+    assert not _swallowed({"script": ["pytest -q", "ruff check ."], "before_script": ["pip -q"]})
+    assert not _swallowed({})
+
+
+def test_the_local_mirror_does_not_swallow_what_ci_enforces():
+    """`preflight` exists so a red pipeline is discovered before the push, not after.
+
+    It mirrored the CI mypy step *including* its ``|| true``, and said so in its own banner. That
+    is faithful mirroring of a hole: both sides agreed, and neither could report a type error.
+    With CI now hard, a swallowed step here is worse than useless — preflight would pass and the
+    pipeline it promises to predict would fail.
+    """
+    recipe = _preflight_recipe()
+    assert recipe, "preflight recipe not found — this guard is reading the wrong Makefile"
+    offenders = [
+        line.strip() for line in recipe.splitlines() if _SWALLOWS_EXIT.search(line.strip())
+    ]
+    assert not offenders, (
+        "`make preflight` has a step that cannot fail, so it cannot predict the pipeline:\n"
+        + "\n".join(offenders)
+    )

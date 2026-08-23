@@ -755,8 +755,8 @@ preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — 
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(BOLD)5/16 ruff format --check$(RESET)  (HARD failure in CI)\n"
 	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
-	@printf "$(BOLD)6/16 mypy$(RESET)  (non-blocking, mirrors CI '|| true')\n"
-	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports || true
+	@printf "$(BOLD)6/16 mypy$(RESET)  (HARD failure in CI)\n"
+	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
 	@printf "$(BOLD)7/16 unit tests$(RESET)\n"
 	@$(VENV)/bin/pytest tests/unit/ --tb=short -q
 	@printf "$(BOLD)8/16 integration tests$(RESET)  (the suite that masked the v0.24.0 regression)\n"
