@@ -27,7 +27,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   happily while both windows were identical, because that is valid PromQL. Its docstring now says
   so, and points at the semantic guard that runs everywhere.
 
-- **The published environment-variable reference was ~95 variables behind the code.**
+- **The published environment-variable reference was 93 variables behind the code.**
   `docs/reference/env-vars.md` is the public answer to "what can I set?", and nothing had ever
   compared it to what the platform actually reads. Missing from it: `PLATFORM_DB` (the datastore
   every process opens), `EXAMLOPS_USECASE_DIR` (how the platform reaches its content at all),
