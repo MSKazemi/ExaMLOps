@@ -10,9 +10,14 @@ so nobody notices it is not published.
 It also named `JUPYTERHUB_PORT`, which nothing reads — the Hub listens on 8000 and Compose maps
 `18888:8000`.
 
-This is a **ratchet**. `UNDOCUMENTED` freezes the backlog that existed when the guard was written,
-so no *new* variable can be added without a row, and the list can only shrink. A second test fails
-if an entry stops being true, so the exemption cannot outlive its reason.
+This started as a **ratchet** over a 155-variable backlog. That backlog is now empty: every
+variable the platform reads has a row, so the rule is absolute — a new variable is documented in the
+change that introduces it. A second test fails if an exemption stops being true, which is what keeps
+`UNDOCUMENTED` from quietly filling up again.
+
+The scan is deliberately two-pronged. A literal `getenv("X")` is the obvious form, but the platform
+also reads through helpers, and the getenv-only first version of this guard was blind to
+`EXAMLOPS_BACKUP_TIERS` — the variable that decides what a backup contains.
 """
 
 from __future__ import annotations
@@ -66,56 +71,22 @@ _NOT_OURS = {
     "COLUMNS",
 }
 
-# The backlog as measured on 2026-08-23, under the broadened scan. Shrink it; never add to it.
-UNDOCUMENTED = {
-    "CLIENT_SIM_DRIFT_COOLDOWN",
-    "CLIENT_SIM_DRIFT_THRESHOLD",
-    "CLIENT_SIM_DRIFT_WINDOW",
-    "DASHBOARD_TOKEN",
-    "EXAMLOPS_CONFIG_DIR",
-    "EXAMLOPS_FAIRNESS_GATE_ENABLED",
-    "EXAMLOPS_GRID_INTENSITY_TOKEN",
-    "EXAMLOPS_GRID_INTENSITY_URL",
-    "EXAMLOPS_GRID_INTENSITY_ZONE",
-    "EXAMLOPS_HPC_CPUS",
-    "EXAMLOPS_HPC_MEM",
-    "EXAMLOPS_HPC_NODES",
-    "EXAMLOPS_HPC_TIME",
-    "EXAMLOPS_KSERVE_GATEWAY_URL",
-    "EXAMLOPS_KSERVE_LIVE_APPLY",
-    "EXAMLOPS_LLM_COST_PROVIDER",
-    "EXAMLOPS_LLM_LAUNCHER",
-    "EXAMLOPS_POLICY_BUNDLE_DIR",
-    "EXAMLOPS_POLICY_ENGINE",
-    "EXAMLOPS_REPO_ROOT",
-    "EXAMLOPS_SLO_GATE_ENABLED",
-    "EXAMLOPS_SYNTHETIC_ONLY_GATE",
-    "EXAMLOPS_TENANT",
-    "EXAMLOPS_VAULT_TOKEN",
-    "FEATURE_STORE_DIR",
-    "LOG_FORMAT",
-    "MINIO_ROOT_PASSWORD",
-    "MINIO_ROOT_USER",
-    "MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR",
-    "MLFLOW_HTTP_REQUEST_MAX_RETRIES",
-    "MLFLOW_SQLITE_DB",
-    "MODELS",
-    "OTEL_TRACES_SAMPLER",
-    "OTEL_TRACES_SAMPLER_ARG",
-    "PREFECT_CB_FAIL_MAX",
-    "PREFECT_CB_RESET_TIMEOUT",
-    "RAY_MLFLOW_BACKOFF_FACTOR",
-    "RAY_WORKER_ID",
-    "SEANERBUS_INFERENCE_UUID",
-    "SEANERBUS_JOB_TOPIC_UUID",
-    "SEANERBUS_PUBLISH_RESULTS",
-    "SEANERBUS_RESULT_TOPIC_UUID",
-}
+# Empty as of 2026-08-23: every variable the platform reads has a row. This is no longer a
+# backlog but a hard rule — a new variable needs documentation in the same change. Re-adding an
+# entry here is a deliberate decision to publish an undocumented knob, and needs a reason next to it.
+UNDOCUMENTED: set[str] = set()
 
 
 def _variables_read_in_code() -> set[str]:
+    # `--others --exclude-standard` includes files that are new and not yet committed. Without it
+    # the guard cannot fail on the change that introduces a variable — only on some later one, by
+    # which point the undocumented knob is already released.
     files = subprocess.run(
-        ["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True, check=True
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     found: set[str] = set()
     for name in files:
@@ -143,8 +114,8 @@ def test_no_new_environment_variable_goes_undocumented():
     missing = sorted(_variables_read_in_code() - _documented() - UNDOCUMENTED)
     assert not missing, (
         "these environment variables are read in code and appear nowhere in "
-        "docs/reference/env-vars.md:\n  " + "\n  ".join(missing) + "\nAdd a row for each. "
-        "(UNDOCUMENTED is a frozen backlog — it may shrink, never grow.)"
+        "docs/reference/env-vars.md:\n  " + "\n  ".join(missing) + "\nAdd a row for each — "
+        "the backlog is empty, so this is a variable introduced without documentation."
     )
 
 

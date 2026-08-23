@@ -294,7 +294,11 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_QOS` | unset | QoS/queue (`--qos` for Slurm, `--queue` for Flux) |
 | `EXAMLOPS_HPC_CONSTRAINT` | unset | Node constraint (`--constraint` / `--requires`) |
 | `EXAMLOPS_HPC_NTASKS` | `1` | Tasks per job |
-| `EXAMLOPS_HPC_PARTITION` / `_TIME` / `_NODES` / `_MEM` / `_CPUS` | fall back to `EXAMLOPS_SLURM_*` | Scheduler-neutral resource mirrors |
+| `EXAMLOPS_HPC_PARTITION` | falls back to `EXAMLOPS_SLURM_PARTITION` | Partition / queue to submit into. |
+| `EXAMLOPS_HPC_TIME` | `2:00:00` (or `EXAMLOPS_SLURM_TIME`) | Wall-clock limit per job. |
+| `EXAMLOPS_HPC_NODES` | `1` (or `EXAMLOPS_SLURM_NODES`) | Nodes per job. |
+| `EXAMLOPS_HPC_MEM` | `16G` (or `EXAMLOPS_SLURM_MEM`) | Memory per job. |
+| `EXAMLOPS_HPC_CPUS` | `4` (or `EXAMLOPS_SLURM_CPUS`) | CPUs per task. |
 | `EXAMLOPS_HPC_REGISTRY` | `~/.config/examlops/clusters.yaml` | HPC Fleet cluster-definition registry file (Phase 36) |
 | `EXAMLOPS_HPC_CLUSTER` | unset | Default fleet cluster for commands taking `--cluster` (Phase 36) |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | MLflow server endpoint for logging and model loading |
@@ -403,6 +407,9 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 | `SEANERBUS_VECTOR_UUID` | unset | Optional: req/res UUID for `VectorReqV1 → VectorResV1` |
 | `SEANERBUS_DEFAULT_MODEL` | `JPCP` | Fallback model name when `HpcJobV1.modelName` is empty |
 | `SEANERBUS_DEFAULT_ALIAS` | `Production` | Fallback MLflow alias when `HpcJobV1.alias` is empty |
+| `SEANERBUS_PUBLISH_RESULTS` | `true` | Publish inference results back onto the bus. `false` makes the bridge consume-only. |
+| `SEANERBUS_INFERENCE_UUID` | unset | **Legacy** global req/res UUID, used only when no per-model `seanerbus_uuid` is present in any model YAML. Prefer `exa seanerbus init-uuids`. |
+| `SEANERBUS_JOB_TOPIC_UUID` / `SEANERBUS_RESULT_TOPIC_UUID` | unset | Pub/sub topic UUIDs for the job and result streams. |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve URL used by the bridge to forward inference requests |
 | `MODELS_YAML_DIR` | unset | Directory of per-model YAMLs for `ModelSchemaRegistry`; defaults to `pipelines/models/` |
 | `DRIFT_WINDOW` | `50` | Rolling-window length for the bridge drift tracker |
@@ -632,9 +639,74 @@ OpenTelemetry distributed tracing, exported to Grafana Tempo. Off by default; en
 | `OTEL_SDK_DISABLED` | `true` (in compose) | Master switch; `true` makes all instrumentation a no-op. Set `false` to enable tracing |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://tempo:4317` | OTLP gRPC collector endpoint (Tempo) |
 | `OTEL_SERVICE_NAME` | per service | Span service name (`control-plane` / `dashboard` / `ray-serving`) |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Sampler. The parent-based default keeps a trace whole once it is sampled. |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.05` | Sampled fraction. Bounded to 5% deliberately: an unsampled tracer on a busy inference path costs more than the traces are worth. |
 
 The control plane and dashboard are auto-instrumented via the `opentelemetry-instrument` launcher
 (no app code changes); the Ray Serve inference pipeline uses the `examlops.observability` helper.
+
+---
+
+## Feature gates
+
+Every gate here is **off unless set**, and a gate that is off gates nothing — none of them will
+appear in a log or a CI summary until you switch it on.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_SLO_GATE_ENABLED` | off | Make `exa slo` failures block a promotion instead of reporting. |
+| `EXAMLOPS_FAIRNESS_GATE_ENABLED` | off | Make subgroup-fairness failures block. |
+| `EXAMLOPS_SYNTHETIC_ONLY_GATE` | off | Refuse to train on anything but synthetic data — for a use case that may not touch real records yet. |
+| `EXAMLOPS_KSERVE_LIVE_APPLY` | off | Actually apply generated KServe manifests to the cluster. Off ⇒ the manifest is produced and the endpoint stays `PENDING`. |
+
+Accepted truthy values are `1`, `true`, `yes`, `on` (case-insensitive); anything else is off.
+
+---
+
+## Carbon intensity signal
+
+Unset ⇒ the carbon provider uses its static coefficient rather than a live grid signal.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_GRID_INTENSITY_URL` | unset | Endpoint returning current grid carbon intensity. |
+| `EXAMLOPS_GRID_INTENSITY_ZONE` | unset | Zone/region appended to that URL. |
+| `EXAMLOPS_GRID_INTENSITY_TOKEN` | unset | Bearer token for the signal provider. |
+
+---
+
+## Paths, identity & misc
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_CONFIG_DIR` | `~/.config/examlops` | Directory holding `config.toml`, `providers.yaml`, `finops.yaml`, `policy.yaml`. `EXAMLOPS_CONFIG` overrides the config *file* specifically. |
+| `EXAMLOPS_REPO_ROOT` | auto-detected | Repository root, when the platform runs from somewhere the walk-up cannot find it. |
+| `EXAMLOPS_TENANT` | `default` | Tenant recorded on writes when multi-tenancy is on. |
+| `EXAMLOPS_VAULT_TOKEN` | unset | Token for the OpenBao/Vault secrets backend. Unset ⇒ the backend degrades to Fernet, then to env. |
+| `EXAMLOPS_POLICY_ENGINE` | built-in | `opa` uses Rego via a local OPA binary, **if it is available** — otherwise the built-in engine stays in use, silently. |
+| `EXAMLOPS_POLICY_BUNDLE_DIR` | `~/.config/examlops/bundle` | Where Rego bundles are read from. |
+| `EXAMLOPS_LLM_LAUNCHER` | `external` | How `exa serve llm` starts a server (`external` / `compose` / `hpc` / `kserve`). |
+| `EXAMLOPS_LLM_COST_PROVIDER` | from `finops.yaml` | Provider for LLM token cost. |
+| `EXAMLOPS_KSERVE_GATEWAY_URL` | unset | Gateway the generated KServe endpoint is reachable on; recorded on the endpoint. |
+| `FEATURE_STORE_DIR` | `.feature_store` beside the platform datastore | On-disk feature store root. |
+| `MLFLOW_SQLITE_DB` | `./mlflow.db` | MLflow's own SQLite file, when it is not on Postgres — the backup sqlite tier looks for it here. |
+| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO credentials. Compose passes these to JupyterHub as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. **Change both before exposing the stack.** |
+| `DASHBOARD_TOKEN` | unset | Dashboard API token used by CLI/agent callers, stored as a CLI config field. |
+| `LOG_FORMAT` | `text` | `json` switches structured logging on. |
+| `MODELS` | `JPCP MACK MCBound` | Space-separated model list used by the batch/simulator entrypoints. |
+| `RAY_WORKER_ID` | `default` | **Set by Ray**, read by the serving replica to label itself. Not an operator knob. |
+
+---
+
+## Simulator & retry tuning
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DRIFT_THRESHOLD` / `DRIFT_WINDOW` / `DRIFT_COOLDOWN` | `0.5` / `50` / `300` | Simulator drift trigger, sample window, and seconds between triggers. `CLIENT_SIM_DRIFT_THRESHOLD`, `CLIENT_SIM_DRIFT_WINDOW` and `CLIENT_SIM_DRIFT_COOLDOWN` are the older names, read only when the short ones are unset. |
+| `MLFLOW_HTTP_REQUEST_MAX_RETRIES` | `3` (or `RAY_MLFLOW_MAX_RETRIES`) | Retries on MLflow HTTP calls. Set with `setdefault`, so an explicit value always wins. |
+| `MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR` | `1` (or `RAY_MLFLOW_BACKOFF_FACTOR`) | Backoff factor for those retries. |
+| `PREFECT_CB_FAIL_MAX` | `5` | Consecutive Prefect failures before the circuit breaker opens. |
+| `PREFECT_CB_RESET_TIMEOUT` | `30.0` | Seconds before it half-opens again. |
 
 ---
 

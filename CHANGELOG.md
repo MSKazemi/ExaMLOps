@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **Every environment variable the platform reads now has a row.** The last 42 are documented —
+  the three feature gates that are off unless set (`EXAMLOPS_SLO_GATE_ENABLED`,
+  `EXAMLOPS_FAIRNESS_GATE_ENABLED`, `EXAMLOPS_SYNTHETIC_ONLY_GATE`, plus
+  `EXAMLOPS_KSERVE_LIVE_APPLY`), the grid-intensity carbon signal, the policy engine and bundle
+  directory, the LLM launcher, the OTel sampler and its 5% bound, the Prefect circuit breaker, the
+  MLflow HTTP retries, the SeanerBUS publish switch and legacy topic UUIDs, and the paths and
+  identity knobs. `UNDOCUMENTED` is empty, so the guard is no longer a ratchet over a backlog but a
+  hard rule: a new variable is documented in the change that introduces it.
+
+- The HPC resource row abbreviated five variables as `_TIME` / `_NODES` / `_MEM` / `_CPUS` and gave
+  no defaults at all — it now names each one and states what it actually is (`2:00:00`, `1`, `16G`,
+  `4`), rather than "falls back to `EXAMLOPS_SLURM_*`".
+
+### Fixed
+
+- **The env-var guard could not see a variable introduced in a new file.** It scanned
+  `git ls-files`, so anything not yet committed was invisible — meaning it could never fail on the
+  change that adds an undocumented knob, only on some later change, by which point the knob is
+  released. Now scans `--cached --others --exclude-standard`. Found by planting a new variable in a
+  new file and watching the suite stay green.
+
 - **`AGENT_API_KEY` gates one endpoint out of five, and the agent binds every interface by
   default.** The token is checked on `POST /v1/chat/completions` and nowhere else: the WebSocket
   chat at `/ws/chat/{thread_id}` — the interface that actually runs tools — plus `/api/threads` and
