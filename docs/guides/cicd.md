@@ -150,6 +150,17 @@ it** — which is how four defects reached it, including a default that could ne
 self-skips here: it downloads the OpenAPI schema from a live apiserver, so it is not an offline
 check and a runner has no cluster. Structure is covered by the pytest guards instead.
 
+### test:docs
+**Image:** `python:3.12-slim` | **Runs on:** `main`, tags, and any change to `docs/**`, `mkdocs.yml` or `.gitlab-ci.yml`
+
+`mkdocs build --clean --strict`, so a broken link or a heading anchor that no longer exists fails
+the build instead of reaching a reader. It is in both `deploy:lxp`'s and `release:gitlab`'s
+`needs:`, which makes it a blocking gate — documentation cannot be broken on `main` and still ship.
+
+`--strict` fails on a broken *link*. It says nothing about a page in no navigation; that is
+`tests/unit/test_docs_are_reachable.py`, inside `test:examlops`. Locally: `make docs-build`, step
+15/16 of `make preflight`.
+
 ### test:examlops
 **Image:** `python:3.12-slim` | **Toolchain:** uv
 
@@ -296,8 +307,18 @@ nothing linked a version to what changed in it. This job turns each tag into a R
 description is that version's own `CHANGELOG.md` section — extracted with `awk`, so there are no
 hand-written notes to keep in sync.
 
-If `CHANGELOG.md` has no `## [X.Y.Z]` section for the tag, the job **fails**. That is deliberate:
-it is the cheapest possible check that the changelog was updated before tagging.
+If `CHANGELOG.md` has no section for the tag, the job **fails**. That is deliberate: it is the
+cheapest possible check that the changelog was updated before tagging. It also makes the extractor
+a release blocker, so it has to be right about a section that *is* there — and for two releases it
+was not. The file carries both `## [0.46.0]` and `## [v0.48.0]` heading styles while the job strips
+the leading `v` from the tag, so `v0.47.0` and `v0.48.0` extracted to nothing and would have failed
+the tag pipeline after every job in the `needs:` list above had passed. The match now takes either
+style, escapes the dots in the version, and collects every section a version heads.
+`tests/unit/test_release_notes_are_extractable.py` runs the **real awk program parsed out of
+`.gitlab-ci.yml`** against every tag, so the test cannot drift from the job.
+
+`v0.29.0`, `v0.30.0` and `v0.36.0` have no CHANGELOG section at all; they predate this job and are
+named as exemptions in that test, so no new tag can join them silently.
 
 ---
 
@@ -368,9 +389,10 @@ by hand.
 
 ## Stage: post-deploy
 
-Both jobs run in parallel after `deploy:lxp`.
+The two `post-deploy:lxp:*` jobs run in parallel after `deploy:lxp`. `notify:failure` shares the
+stage but is not one of them — it fires only when something upstream failed.
 
-### post-deploy:notify-model-changes
+### post-deploy:lxp:notify-model-changes
 Calls `platform/ci/notify_model_changes.py` to detect which model files changed in this push and POST them to `Control Plane /api/changes` as pending approvals.
 
 GitLab CI variables used (equivalent to GitHub's `event.before` / `sha` / `head_commit.message`):
@@ -383,8 +405,15 @@ GitLab CI variables used (equivalent to GitHub's `event.before` / `sha` / `head_
 
 Fails silently (`|| true`) if the Control Plane is unreachable — never blocks post-deploy.
 
-### post-deploy:retrain-push-models
+### post-deploy:lxp:retrain-push-models
 POSTs to `Control Plane /retrain` for each registered model (JPCP, MACK, MCBound) with dataset `FDataDataset`. Requires `CONTROL_PLANE_URL` and `CONTROL_PLANE_TOKEN` to be set; skips gracefully if either is absent. Exits non-zero if any model trigger fails.
+
+### notify:failure
+**Image:** `python:3.12-slim` | **Runs on:** `main` only, `when: on_failure`, and only if `NOTIFICATION_WEBHOOK_URL` is set
+
+Runs `platform/ci/notify_failure.py` when something upstream in a `main` pipeline fails. Without
+the variable the rule does not match and the job never appears — so an unset webhook is silence,
+not an error.
 
 ---
 

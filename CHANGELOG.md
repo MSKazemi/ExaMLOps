@@ -7,6 +7,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The CI/CD guide documented two jobs that do not exist and omitted a blocking one.**
+  `docs/guides/cicd.md` is the only prose description of the pipeline, and nothing compared its
+  job list to `.gitlab-ci.yml`. **`test:docs` had no section at all** — a job in both `deploy:lxp`'s
+  and `release:gitlab`'s `needs:`, so the guide described the gate with the documentation gate
+  missing from it. `notify:failure` was likewise absent. And two headings named
+  `post-deploy:notify-model-changes` / `post-deploy:retrain-push-models`, where the real jobs carry
+  an `lxp:` segment — the worse direction, because searching the pipeline for a documented name
+  finds nothing and reads as a job that was removed. All four fixed, and the post-deploy stage no
+  longer claims "both jobs" when three sit in it. Guarded both ways by
+  `tests/unit/test_cicd_guide_matches_the_pipeline.py`.
+
+- The guide's `release:gitlab` section now records what pass 151 found: the extractor is a release
+  blocker, and for `v0.47.0` and `v0.48.0` it could not find sections that were present. The three
+  tags with no section at all are named there too.
+
 - **The Helm chart's own README published three install commands, and none of them worked.**
   `global.imageRegistry` is required — the chart refuses to render without it, on purpose, because
   an unqualified image name resolves to `docker.io/library/`, which only Docker can publish to. The
