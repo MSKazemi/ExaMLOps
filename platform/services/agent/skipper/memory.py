@@ -128,6 +128,25 @@ def build_embeddings() -> Callable[[list[str]], list[list[float]]] | None:
         return None
 
 
+def status(db_path: str | None = None) -> dict:
+    """What long-term memory is *configured* to be — cheap, and never probes a backend.
+
+    Whether the store actually built is a different question, answered by the compiled graph
+    (``graph.store is not None``). This exists because the only signal today is a log line at
+    startup: a reachable-embeddings failure silently drops Skipper to short-term memory, and an
+    operator asking "does it remember anything?" has nowhere to look.
+    """
+    path = os.path.abspath(db_path or config.AGENT_MEMORY_DB)
+    return {
+        "enabled": bool(config.AGENT_MEMORY_ENABLED),
+        "backend": config.AGENT_EMBED_BACKEND,
+        "model": config.AGENT_EMBED_MODEL,
+        "dims": config.AGENT_EMBED_DIMS,
+        "db": path,
+        "db_exists": os.path.isfile(path),
+    }
+
+
 def build_store(db_path: str | None = None):
     """Build the long-term (cross-thread) memory store, or ``None`` if unavailable.
 
@@ -170,28 +189,41 @@ def build_store(db_path: str | None = None):
         return None
 
 
-def build_summarization_hook():
-    """A ``pre_model_hook`` that trims long threads to a token budget.
+def trim_to_budget(messages):
+    """Trim a message list to ``AGENT_MAX_CONTEXT_TOKENS``.
 
-    Returns ``llm_input_messages`` so only the *model input* shrinks; the durable
-    checkpoint history in graph state is untouched. Uses langchain-core's
-    ``trim_messages`` (keeps valid human/tool boundaries so the ReAct tool loop is
-    not broken). A full LangMem running-summary is a follow-up phase.
+    Uses langchain-core's ``trim_messages`` (keeps valid human/tool boundaries so the
+    ReAct tool loop is not broken). Pure computation — no model call, no cost.
+    A full LangMem running-summary is a follow-up phase.
     """
     from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 
-    max_tokens = config.AGENT_MAX_CONTEXT_TOKENS
+    return trim_messages(
+        messages,
+        strategy="last",
+        token_counter=count_tokens_approximately,
+        max_tokens=config.AGENT_MAX_CONTEXT_TOKENS,
+        start_on="human",
+        end_on=("human", "tool"),
+    )
 
-    def _hook(state: dict) -> dict:
-        messages = state.get("messages", [])
-        trimmed = trim_messages(
-            messages,
-            strategy="last",
-            token_counter=count_tokens_approximately,
-            max_tokens=max_tokens,
-            start_on="human",
-            end_on=("human", "tool"),
-        )
-        return {"llm_input_messages": trimmed}
 
-    return _hook
+def build_trim_middleware():
+    """Middleware that shrinks *model input* only; graph state is untouched.
+
+    Replaces the ``pre_model_hook`` that ``create_react_agent`` took before it was
+    superseded by ``langchain.agents.create_agent``.
+
+    ⛔ Must use ``wrap_model_call``, NOT ``before_model``. A ``before_model`` hook
+    returning ``{"llm_input_messages": ...}`` — the old hook's contract — is accepted
+    and **silently ignored**: no error, no warning, and trimming just stops, so the
+    context grows unbounded until requests fail on token limits. Measured, not assumed;
+    see ``.claude/plans/langgraph-create-agent-migration.md``.
+    """
+    from langchain.agents.middleware import AgentMiddleware
+
+    class _TrimMiddleware(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(request.override(messages=trim_to_budget(request.messages)))
+
+    return _TrimMiddleware()

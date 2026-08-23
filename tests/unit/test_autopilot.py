@@ -602,3 +602,95 @@ class TestRunCycleJudgeEligibility:
             with patch.object(autopilot_cmd, "_do_promote") as mock_promote:
                 autopilot_cmd.run_cycle()
         mock_promote.assert_called_once()
+
+
+# ── the gate itself, unmocked ─────────────────────────────────────────────────
+#
+# Every policy test above patches `_policy_decide`, so its body never ran in the suite. It read
+# `decision.action` — a field `Decision` has never had — so the AttributeError landed in its own
+# `except` and returned "allow" for everything. Both autopilot gates were dead, fail-open, and
+# green. These call the real function.
+
+
+class TestPolicyDecideItself:
+    """`_policy_decide` against real `Decision` objects — no patching of the thing under test."""
+
+    def _with_rules(self, monkeypatch, rules):
+        import examlops.policy as policy
+
+        monkeypatch.setattr(policy, "_load_policies", lambda path=None: rules)
+
+    def test_a_deny_rule_is_reported_as_deny(self, monkeypatch):
+        self._with_rules(
+            monkeypatch, [{"name": "no-auto", "action": "autopilot_trigger", "effect": "deny"}]
+        )
+        effect, reason = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
+        assert effect == "deny"
+        assert "no-auto" in reason
+
+    def test_require_approval_survives_the_round_trip(self, monkeypatch):
+        """The HITL hold on the one component that acts without a human."""
+        self._with_rules(
+            monkeypatch,
+            [{"name": "humans", "action": "autopilot_promote", "effect": "require_approval"}],
+        )
+        effect, _ = autopilot_cmd._policy_decide("autopilot_promote", {"model": JPCP})
+        assert effect == "require_approval"
+
+    def test_no_policy_still_allows(self, monkeypatch):
+        self._with_rules(monkeypatch, [])
+        effect, _ = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
+        assert effect == "allow"
+
+    def test_the_effect_it_returns_is_one_the_cycle_acts_on(self, monkeypatch):
+        """A typo'd field name returned a string the cycle simply never compares against.
+
+        `run_cycle` branches on the literals "deny" and "require_approval"; anything else means
+        allow. So a wrong-but-truthy return value fails open *and* silently — pin the vocabulary.
+        """
+        for effect in ("deny", "require_approval", "allow"):
+            self._with_rules(
+                monkeypatch, [{"name": "r", "action": "autopilot_trigger", "effect": effect}]
+            )
+            got, _ = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
+            assert got == effect
+
+    def test_a_broken_policy_layer_fails_open_but_says_why(self, monkeypatch):
+        """Fail-open is the design (ADR 0079) — silence is what let this bug live."""
+        import examlops.policy as policy
+
+        def boom(*a, **k):
+            raise RuntimeError("policy exploded")
+
+        monkeypatch.setattr(policy, "decide", boom)
+        effect, reason = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
+        assert effect == "allow"
+        assert "policy exploded" in reason
+
+
+class TestPolicyReachesTheRealCycle:
+    """End-to-end: a deny rule in the policy layer must stop a drifting model's retrain."""
+
+    def setup_method(self):
+        set_autopilot_config("enabled", "1")
+        set_drift_auto_retrain(
+            JPCP, enabled=True, min_z_score=2.0, dataset_name="PM100Dataset", cooldown_s=0
+        )
+        set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
+        for _ in range(10):
+            write_drift_snapshot(JPCP, "Production", 5.0, None)
+
+    def test_a_real_deny_rule_blocks_the_cycle(self, monkeypatch):
+        import examlops.policy as policy
+
+        monkeypatch.setattr(
+            policy,
+            "_load_policies",
+            lambda path=None: [
+                {"name": "no-auto", "action": "autopilot_trigger", "effect": "deny"}
+            ],
+        )
+        result = autopilot_cmd.run_cycle(dry_run=True)
+        assert result["retrains"] == [] or len(result["retrains"]) == 0
+        assert len(result["policy_blocks"]) == 1
+        assert result["policy_blocks"][0]["gate"] == "autopilot_trigger"

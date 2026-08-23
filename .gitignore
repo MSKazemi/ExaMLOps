@@ -88,6 +88,10 @@ skipper_memory.db
 approvals.db
 mlflow.db
 *.db
+# SQLite WAL sidecars — '*.db' does not match them, so they show up as untracked noise
+*.db-wal
+*.db-shm
+*.db-journal
 .data_cache/
 slurm_jobs/
 flux_jobs/
@@ -117,13 +121,6 @@ design/superpowers/
 #    design/vision/library/papers/manifest-*.tsv
 design/vision/library/papers/*.pdf
 design/vision/library/papers/FAILED.tsv
-
-# ── Legacy p2p / reposync local state (superseded by dual-git) ─────────────
-.p2p.toml
-.p2p-manifest.json
-.p2p-history.jsonl
-.p2p-baseline.json
-.p2p-undo/
 
 # ── Docs build output ──────────────────────────────────────────────────────
 site/

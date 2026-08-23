@@ -2,7 +2,7 @@
 
 Builds a single LangGraph ``StateGraph`` whose entry point routes each turn (via the deterministic
 :mod:`skipper.router`) to one of the specialist sub-agents defined in :mod:`skipper.skills`. Each
-specialist is a ``create_react_agent`` bound to a **scoped** tool pack, so a local model only ever
+specialist is a ``create_agent`` bound to a **scoped** tool pack, so a local model only ever
 sees the ~10–20 tools relevant to the turn instead of the full ~50.
 
 Why a single parent graph (not N independent agents behind a facade): one checkpointer + one
@@ -41,9 +41,9 @@ def build_supervisor(llm, checkpointer, *, store=None, inrepo_tools, extra_tools
         extra_tools: cross-cutting tools (store-backed memory) appended to every pack.
     """
     try:
+        from langchain.agents import create_agent
         from langgraph.graph import END, START, StateGraph
         from langgraph.graph.message import MessagesState
-        from langgraph.prebuilt import create_react_agent
     except Exception as exc:  # noqa: BLE001 - very old langgraph
         log.warning("supervisor unavailable (%s) — using single agent", exc)
         return None
@@ -59,8 +59,8 @@ def build_supervisor(llm, checkpointer, *, store=None, inrepo_tools, extra_tools
             pack = packs.get(spec.name) or []
             kwargs = {"store": store} if store is not None else {}
             # Sub-agents carry NO checkpointer — the parent owns per-thread persistence.
-            agents[spec.name] = create_react_agent(
-                llm, tools=pack, prompt=_specialist_prompt(spec.playbook), **kwargs
+            agents[spec.name] = create_agent(
+                llm, tools=pack, system_prompt=_specialist_prompt(spec.playbook), **kwargs
             )
 
         builder = StateGraph(MessagesState)

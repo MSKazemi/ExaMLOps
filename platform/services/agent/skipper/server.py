@@ -59,13 +59,42 @@ def _extract_text(content) -> str:
     return ""
 
 
+def stream_messages(graph, inp, cfg):
+    """Yield ``(message, metadata)`` for one turn, including messages produced inside sub-agents.
+
+    ``stream_mode="messages"`` on its own stops at the top-level graph. Since the supervisor
+    topology (ADR 0099) moved the work into specialist **subgraphs**, the assistant's own tokens
+    are all produced one level down: a turn streams its ``ToolMessage``s and **not a single**
+    ``AIMessageChunk``, so a caller collecting streamed text ends up with an empty answer while the
+    finished reply sits in the checkpointed state. Measured 2026-08-23 on one question: 0 AI chunks
+    without ``subgraphs=True``, 503 (417 carrying text) with it.
+
+    With ``subgraphs=True`` an item is ``(namespace, (message, metadata))`` instead of
+    ``(message, metadata)``; both shapes are unwrapped here so callers see one shape.
+    """
+    for item in graph.stream(inp, cfg, stream_mode="messages", subgraphs=True):
+        payload = item[-1] if isinstance(item, tuple) and isinstance(item[-1], tuple) else item
+        if isinstance(payload, tuple) and len(payload) == 2:
+            yield payload
+
+
 # ── REST endpoints ────────────────────────────────────────────────────────────
 
 
 @app.get("/api/info")
 async def api_info():
     info = check_backend()
-    return {"backend": info["type"], "model": info["model"], "ok": info["ok"]}
+    # `active` is the honest answer to "does this agent remember anything across threads?" — the
+    # compiled graph either got a store or it did not. The rest is what was *asked* for, so a
+    # mismatch (enabled but not active) points straight at the embedding backend.
+    from skipper import memory as _memory
+
+    mem = _memory.status()
+    try:
+        mem["active"] = getattr(_get_graph(), "store", None) is not None
+    except Exception:  # noqa: BLE001 - never let a status field break the info endpoint
+        mem["active"] = False
+    return {"backend": info["type"], "model": info["model"], "ok": info["ok"], "memory": mem}
 
 
 @app.get("/api/threads")
@@ -139,14 +168,13 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
     instr = instrument.start(thread_id)
+    call_args = instrument.ToolCallArgs()
 
     def _run() -> None:
         try:
-            for item in graph.stream(inp, cfg, stream_mode="messages"):
-                if not isinstance(item, tuple) or len(item) != 2:
-                    continue
-                msg, _meta = item
+            for msg, _meta in stream_messages(graph, inp, cfg):
                 if isinstance(msg, AIMessageChunk):
+                    call_args.observe_ai(msg)
                     text = _extract_text(msg.content)
                     if text:
                         loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "text": text})
@@ -158,7 +186,9 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
                 elif isinstance(msg, ToolMessage):
                     loop.call_soon_threadsafe(queue.put_nowait, {"type": "tool", "name": msg.name})
                     ok, err = instrument.tool_status(msg)
-                    if instr.observe(msg.name or "tool", ok=ok, error=err):
+                    if instr.observe(
+                        msg.name or "tool", args=call_args.args_for(msg), ok=ok, error=err
+                    ):
                         loop.call_soon_threadsafe(
                             queue.put_nowait, {"type": "error", "message": instr.abort_message}
                         )

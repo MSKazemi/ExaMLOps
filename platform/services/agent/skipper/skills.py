@@ -2,7 +2,7 @@
 
 Each :class:`Specialist` is a scoped view of the platform's capabilities — a subset of tools plus
 a focused playbook and trigger keywords the deterministic router matches against. The supervisor
-(``skipper/supervisor.py``) compiles one ``create_react_agent`` per specialist so a small local
+(``skipper/supervisor.py``) compiles one ``create_agent`` per specialist so a small local
 model only ever sees ~10–20 relevant tools per turn instead of the full ~50 — the single biggest
 lever on tool-selection accuracy.
 
@@ -201,7 +201,15 @@ GENERAL = Specialist(
     triggers=(),
     playbook=(
         "You are the ExaMLOps platform assistant. Identify what the request needs, call tools "
-        "proactively, cross-reference sources, and give clear, actionable answers."
+        "proactively, cross-reference sources, and give clear, actionable answers. "
+        # This generalist holds search_knowledge but used to be given no reason to reach for it, so
+        # a question that reached it by falling through the router was answered from the model's
+        # priors — confidently, and sometimes contrary to a rule the platform actually enforces.
+        "The documentation is AUTHORITATIVE: before answering anything about what the platform "
+        "supports, how it works, or whether something is allowed, call search_knowledge and ground "
+        "the answer in what it returns, citing the source paths. Your own knowledge of MLOps is not "
+        "a substitute — ExaMLOps has rules a general practitioner would not guess. If the search "
+        "returns nothing, say the docs do not cover it rather than answering from memory."
     ),
 )
 

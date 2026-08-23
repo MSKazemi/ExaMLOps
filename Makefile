@@ -595,11 +595,15 @@ selfheal: ## Run the container self-healer once against the local stack
 ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + smoke
 	@printf "$(BOLD)CI · modelzoo (poetry)$(RESET)\n"
 	@cd $(MODELZOO_DIR) && \
-	  (command -v poetry >/dev/null 2>&1 || pipx install poetry >/dev/null 2>&1 || pip install --quiet poetry) && \
-	  { poetry env use "$(CURDIR)/$(PYTHON)" >/dev/null 2>&1 || poetry env use python3.12 >/dev/null 2>&1 || true; } && \
-	  poetry install --no-interaction --with dev,ci -q && \
-	  poetry run ruff check seanergys_modelzoo ci tests && \
-	  poetry run pytest tests/unit/ tests/smoke/ -v --tb=short
+	  (command -v poetry >/dev/null 2>&1 \
+	    || uv tool install poetry >/dev/null 2>&1 \
+	    || pipx install poetry >/dev/null 2>&1 \
+	    || pip install --quiet poetry) && \
+	  P="env -u VIRTUAL_ENV poetry" && \
+	  { $$P env use "$(CURDIR)/$(PYTHON)" >/dev/null 2>&1 || $$P env use python3.12 >/dev/null 2>&1 || true; } && \
+	  $$P install --no-interaction --with dev,ci -q && \
+	  $$P run ruff check seanergys_modelzoo ci tests && \
+	  $$P run pytest tests/unit/ tests/smoke/ -v --tb=short
 	@printf "$(GREEN)CI · modelzoo passed.$(RESET)\n"
 
 alerts-check: ## Validate Prometheus alert rules + Alertmanager config

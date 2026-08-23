@@ -605,10 +605,14 @@ def explain_command(command: str = "") -> dict[str, Any]:
         from examlops.cli.commands.explain_command import (
             _clean,
             _extract_examples,
+            _normalize,
             _resolve,
         )
 
-        path = [p for p in command.split() if p]
+        # Normalize before labelling as well as before resolving, or the echoed `command` comes
+        # back as "exa exa status" — the same class of mismatch that made this tool reject its
+        # own output.
+        path = _normalize(command.split())
         node = _resolve(path)
         if node is None:
             return _err(f"unknown command: {command!r}")

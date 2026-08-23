@@ -18,6 +18,7 @@ Design notes (ADR 0085):
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from typing import Any
@@ -66,6 +67,9 @@ _SNAPSHOT_WINDOW = 50  # same as drift.py
 # Safety cap: the most retrains one cycle will fire, so a fleet-wide drift event (or a bug) can
 # never launch an unbounded retrain storm. Overridable via EXAMLOPS_AUTOPILOT_MAX_RETRAINS.
 _DEFAULT_MAX_RETRAINS_PER_CYCLE = 10
+
+
+log = logging.getLogger(__name__)
 
 
 def _max_retrains_per_cycle() -> int:
@@ -118,14 +122,24 @@ def _compute_z(preds: list[float], baseline: dict[str, float] | None) -> tuple[f
 
 
 def _policy_decide(action: str, context: dict[str, Any]) -> tuple[str, str]:
-    """Return (outcome, reason) from policy.decide, defaulting to ('allow', 'no-policy')."""
+    """Return ``(effect, reason)`` from ``policy.decide``, defaulting to ``("allow", …)``.
+
+    Read ``decision.effect``. This used to read ``decision.action``, which :class:`Decision` has
+    never had — so every call raised ``AttributeError`` into the ``except`` below and returned
+    ``allow``. That silently disabled **both** autopilot gates: a `deny` on ``autopilot_trigger``
+    or ``autopilot_promote`` was ignored, and so was ``require_approval`` — the human-in-the-loop
+    hold on the one component that acts without a human. Fail-open is the deliberate design
+    (ADR 0079: a broken policy file must not wedge a mutation path), but it must not swallow a
+    *bug*, so the fallback now says which action it could not decide.
+    """
     try:
         from examlops.policy import decide
 
         decision = decide(action, context)
-        return decision.action, decision.reason or ""
-    except Exception:
-        return "allow", "policy-unavailable"
+        return decision.effect, decision.reason or ""
+    except Exception as exc:  # noqa: BLE001 — fail-open, but never silently
+        log.warning("policy check for %r unavailable (%s) — defaulting to allow", action, exc)
+        return "allow", f"policy-unavailable: {exc}"
 
 
 # ── injectable helpers (monkeypatched in tests) ─────────────────────────────

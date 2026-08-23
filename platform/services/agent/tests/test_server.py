@@ -190,3 +190,22 @@ def test_websocket_emits_tool_event(client):
 
     tool_events = [e for e in events if e["type"] == "tool"]
     assert any(e["name"] == "get_drift_status" for e in tool_events)
+
+
+def test_api_info_says_whether_long_term_memory_is_actually_on(monkeypatch):
+    """The endpoint must distinguish 'configured' from 'active' — that gap is the failure mode."""
+    from fastapi.testclient import TestClient
+    from skipper import server
+
+    monkeypatch.setattr(
+        server, "check_backend", lambda: {"type": "azure", "model": "m", "ok": True}
+    )
+    monkeypatch.setattr(server, "_get_graph", lambda: type("G", (), {"store": None})())
+
+    body = TestClient(server.app).get("/api/info").json()
+    assert body["memory"]["active"] is False
+    for field in ("enabled", "backend", "model", "dims", "db", "db_exists"):
+        assert field in body["memory"]
+
+    monkeypatch.setattr(server, "_get_graph", lambda: type("G", (), {"store": object()})())
+    assert TestClient(server.app).get("/api/info").json()["memory"]["active"] is True

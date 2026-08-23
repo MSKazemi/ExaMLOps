@@ -1,5 +1,5 @@
 """SM1 substrate tests — long-term memory store, embeddings degradation, and the
-context-trimming pre_model_hook. See design/vision/specs/SM1-skipper-memory-substrate.md."""
+context-trimming middleware. See design/vision/specs/SM1-skipper-memory-substrate.md."""
 
 from __future__ import annotations
 
@@ -57,23 +57,56 @@ def test_build_store_isolated_to_its_own_file(tmp_path, monkeypatch):
     assert path.exists()
 
 
-def test_summarization_hook_trims_long_thread():
-    # GWT-4: a thread over budget yields a shorter llm_input_messages (state untouched).
+def _long_thread(n=200):
     from langchain_core.messages import AIMessage, HumanMessage
 
-    hook = memory.build_summarization_hook()
     msgs = []
-    for i in range(200):
+    for i in range(n):
         msgs.append(HumanMessage(content=f"question {i} " * 40))
         msgs.append(AIMessage(content=f"answer {i} " * 40))
-
-    out = hook({"messages": msgs})
-    assert "llm_input_messages" in out
-    assert 0 < len(out["llm_input_messages"]) < len(msgs)
+    return msgs
 
 
-def test_build_graph_binds_store_and_hook(tmp_path, monkeypatch):
-    # The graph compiles with a store + hook wired in (no LLM/embedding call made).
+def test_trim_to_budget_shortens_long_thread():
+    # GWT-4: a thread over budget is trimmed to fit.
+    msgs = _long_thread()
+    assert 0 < len(memory.trim_to_budget(msgs)) < len(msgs)
+
+
+def test_trim_middleware_shrinks_what_the_model_receives():
+    """The middleware must trim the *model input* and leave graph state alone.
+
+    Asserting only that the agent compiles/returns is not enough: a middleware hooked
+    on ``before_model`` (the old ``pre_model_hook`` contract) is silently ignored, so a
+    weaker test passes while trimming has actually stopped. This asserts on the message
+    list the model was handed.
+    """
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    seen = []
+
+    class _Recorder(GenericFakeChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kw):
+            seen.append(list(messages))
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kw)
+
+    msgs = _long_thread()
+    agent = create_agent(
+        _Recorder(messages=iter([AIMessage(content="ok")] * 5)),
+        tools=[],
+        middleware=[memory.build_trim_middleware()],
+    )
+    out = agent.invoke({"messages": msgs})
+
+    assert seen, "the model was never called"
+    assert len(seen[0]) < len(msgs), "model input was NOT trimmed — middleware is a no-op"
+    assert len(out["messages"]) > len(seen[0]), "graph state must keep the full history"
+
+
+def test_build_graph_binds_store_and_middleware(tmp_path, monkeypatch):
+    # The graph compiles with a store + trim middleware wired in (no LLM/embedding call made).
     from skipper import graph
 
     monkeypatch.setattr(config, "AGENT_DB", str(tmp_path / "g.db"))
@@ -84,3 +117,48 @@ def test_build_graph_binds_store_and_hook(tmp_path, monkeypatch):
 
     g = graph.build_graph(model="llama3.1:8b")
     assert g is not None
+
+
+# ── is long-term memory on? nothing could answer that before ────────────────────────────────
+#
+# A missing embedding backend drops Skipper to short-term memory with a single log line at
+# startup. Every operator-QA run on this laptop happened that way and nobody could tell.
+
+
+def test_status_reports_what_memory_is_configured_to_be(tmp_path, monkeypatch):
+    from skipper import config, memory
+
+    monkeypatch.setattr(config, "AGENT_MEMORY_ENABLED", True)
+    monkeypatch.setattr(config, "AGENT_EMBED_BACKEND", "sentence-transformers")
+    monkeypatch.setattr(config, "AGENT_EMBED_MODEL", "all-MiniLM-L6-v2")
+    monkeypatch.setattr(config, "AGENT_EMBED_DIMS", 384)
+    monkeypatch.setattr(config, "AGENT_MEMORY_DB", str(tmp_path / "m.db"))
+
+    st = memory.status()
+    assert st["enabled"] is True
+    assert st["backend"] == "sentence-transformers"
+    assert st["model"] == "all-MiniLM-L6-v2"
+    assert st["dims"] == 384
+    assert st["db_exists"] is False  # never created — which is the whole point
+
+    (tmp_path / "m.db").write_text("")
+    assert memory.status()["db_exists"] is True
+
+
+def test_status_never_probes_the_embedding_backend(monkeypatch):
+    """It must stay cheap enough for a status endpoint — no model load, no HTTP, no download."""
+    from skipper import config, memory
+
+    def explode(*a, **k):
+        raise AssertionError("status() must not build embeddings")
+
+    monkeypatch.setattr(memory, "build_embeddings", explode)
+    monkeypatch.setattr(config, "AGENT_MEMORY_ENABLED", True)
+    assert memory.status()["enabled"] is True
+
+
+def test_status_reports_disabled_when_the_switch_is_off(monkeypatch):
+    from skipper import config, memory
+
+    monkeypatch.setattr(config, "AGENT_MEMORY_ENABLED", False)
+    assert memory.status()["enabled"] is False

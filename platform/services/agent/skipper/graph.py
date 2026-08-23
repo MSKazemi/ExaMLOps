@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from skipper import config, supervisor
 from skipper.llm import build_llm
-from skipper.memory import build_checkpointer, build_store, build_summarization_hook
+from skipper.memory import build_checkpointer, build_store, build_trim_middleware
 from skipper.prompts import SYSTEM_PROMPT
 from skipper.tools import TOOLS
 from skipper.tools import memory as memory_tools
@@ -18,7 +18,7 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     Always binds the base tools, the system prompt, and the SQLite checkpointer
     (short-term, per-thread memory). When a long-term memory store is available,
     also binds the store + the store-backed memory tools (recall/remember/record);
-    and, if enabled, a context-trimming ``pre_model_hook``. All long-term additions
+    and, if enabled, a context-trimming middleware. All long-term additions
     degrade gracefully — the agent keeps working with short-term memory and the base
     tools only — so no LLM/embedding call is required to compile the graph.
     """
@@ -51,7 +51,7 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
             return graph
 
     if config.AGENT_SUMMARIZE_ENABLED:
-        kwargs["pre_model_hook"] = build_summarization_hook()
-    return create_react_agent(
-        llm, tools=tools, prompt=SYSTEM_PROMPT, checkpointer=checkpointer, **kwargs
+        kwargs["middleware"] = [build_trim_middleware()]
+    return create_agent(
+        llm, tools=tools, system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer, **kwargs
     )

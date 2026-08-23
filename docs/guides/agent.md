@@ -51,7 +51,7 @@ policy / `platform.db` / hosted model, the agent still works.
 
 | Order | Backend | Trigger vars | Default model | Notes |
 |---|---|---|---|---|
-| 1 | **Azure OpenAI / AI Foundry** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | `gpt-5.4-mini` (`AZURE_OPENAI_DEPLOYMENT`) | Driven via `langchain-openai` `ChatOpenAI` against the OpenAI-compatible Foundry **v1** endpoint (`base_url` + `api_key`, deployment name as model id). Temperature left unset — gpt-5.x reasoning models reject overrides. |
+| 1 | **Azure OpenAI / AI Foundry** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | `gpt-5.5` (`AZURE_OPENAI_DEPLOYMENT`) | Driven via `langchain-openai` `ChatOpenAI` against the OpenAI-compatible Foundry **v1** endpoint (`base_url` + `api_key`, deployment name as model id). Temperature left unset — gpt-5.x reasoning models reject overrides. |
 | 2 | **Claude API** | `ANTHROPIC_API_KEY` | `claude-opus-4-8` (`ANTHROPIC_MODEL`) | `ChatAnthropic` with **adaptive thinking** (`thinking={"type": "adaptive"}`), `max_tokens=16000`. |
 | 3 | **Ollama** (fallback) | none required | `llama3.1:8b` (`AGENT_MODEL`) | `ChatOllama` at `AGENT_OLLAMA_URL`, `temperature=0`, with `keep_alive` / `reasoning` tuning for CPU-only servers. |
 
@@ -306,7 +306,7 @@ The agent exposes **45 tools across 10 groups**. The LLM selects the appropriate
 | **modelzoo** | `modelzoo_status`, `modelzoo_events`, `modelzoo_get_config`, `modelzoo_sync`, `modelzoo_set_config` | Inspect ModelZoo freshness badges and push-event history; read or update the runtime config (auto-retrain flag, poll interval, watch branch). `modelzoo_sync` and `modelzoo_set_config` are write tools requiring confirmation. |
 | **services** | `list_services`, `service_logs`, `start_service`, `stop_service`, `restart_service` | List running platform services with their status; tail container logs; start, stop, or restart a service via the dashboard's Docker-socket controls. Start/stop/restart are write tools requiring confirmation. |
 | **pipelines** | `list_deployments`, `list_runs`, `scaffold_preview`, `scaffold_create` | List Prefect deployments and recent flow runs; preview or create a new model scaffold (`exa scaffold` equivalent). `scaffold_create` is a write tool requiring confirmation; use `scaffold_preview` first. |
-| **docs/knowledge** | `search_docs`, `read_doc`, `list_docs`, `get_howto` | Search the repo's `docs/` directory by keyword, read a specific doc file, list all available docs, or look up a how-to answer grounded in the documentation. |
+| **docs/knowledge** | `search_docs`, `read_doc`, `list_docs`, `get_howto` | Search the repo's `docs/` directory, read a specific doc file, list all available docs, or look up a how-to answer grounded in the documentation. `search_docs` takes a whole question: the literal phrase is tried first, and on a miss the query degrades to its terms (stop-words dropped, hyphenated compounds split), ranked by how many distinct terms each file matches. |
 | **platform_ops** | `compare_model_versions`, `get_model_lineage`, `get_drift_status`, `get_input_drift_status`, `query_audit_log`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `validate_model_serving`, `get_platform_summary`, `diagnose_platform` | Operational observability and lifecycle control (Phase 19/21/22). Compare metric/param deltas between versions; trace the pipeline→dataset→model lineage; read prediction-drift and input-embedding-drift status (CRITICAL/WARNING/OK); query the platform audit log; set per-alias traffic percentages; metric-gate a promotion; fire drift-based auto-retrains (cooldown-aware); smoke-test a model against a latency SLA; and produce a quick `get_platform_summary` or a full prioritized `diagnose_platform` report. `set_traffic_split`, `promote_model`, and `trigger_auto_retrain` are write tools requiring confirmation. |
 
 ## Slash Commands
@@ -350,6 +350,8 @@ Conversations are stored in a SQLite database (`AGENT_DB`, default `./agent_memo
 - Start fresh: `/new` (old sessions remain on disk)
 
 ## Long-Term Memory (Phase 25)
+
+> **Check before you rely on it:** `curl -s localhost:18004/api/info | jq .memory` — `active: false` means no long-term memory is in play. The default `AGENT_EMBED_BACKEND=ollama` needs a reachable Ollama; the offline alternative is `AGENT_EMBED_BACKEND=sentence-transformers` with `AGENT_EMBED_MODEL=all-MiniLM-L6-v2` and `AGENT_EMBED_DIMS=384` — all three together, because the dims must match the model or the store refuses to build.
 
 Beyond per-conversation history, Skipper has **cross-session long-term memory** — it learns operational procedures, remembers past incidents, and retains operator preferences. It is LangGraph-native, fully self-hosted, and **additive**: if the store or the embedding backend is unavailable, the agent simply runs with short-term memory only. See ADR 0033 / 0034 and `design/architecture-skipper-memory.md`.
 
@@ -410,7 +412,7 @@ uvicorn skipper.server:app --port 18004
 | Surface | Path | Description |
 |---|---|---|
 | Web chat UI | `GET /` | Embedded HTML chat interface (`chat_html.py`). |
-| Backend info | `GET /api/info` | Live backend `{ok, type, model}` from `check_backend()`. |
+| Backend info | `GET /api/info` | Live backend `{ok, type, model}` from `check_backend()`, plus `memory` — the configured embedding backend/model/dims/db **and `active`**, read from the compiled graph's store. `enabled: true` with `active: false` means the embedding backend is unreachable and the agent is running on short-term memory only. |
 | Thread list | `GET /api/threads` | All saved thread IDs in the checkpoint store. |
 | Thread history | `GET /api/threads/{thread_id}/history` | Messages for a given thread. |
 | Streaming chat | `WS /ws/chat/{thread_id}` | WebSocket chat. Server streams `{"type": "token"}` chunks, `{"type": "tool", "name": ...}` events, `{"type": "interrupt", "payload": ...}` for the write-confirmation gate, and `{"type": "done"}` to end a turn. |
@@ -446,7 +448,7 @@ switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph 
 |---|---|---|
 | `AZURE_OPENAI_API_KEY` | unset | API key for the Azure OpenAI / AI Foundry backend. When set together with `AZURE_OPENAI_ENDPOINT`, this backend is preferred over Claude and Ollama. |
 | `AZURE_OPENAI_ENDPOINT` | unset | Foundry **v1** project endpoint base URL, e.g. `https://<resource>.services.ai.azure.com/openai/v1/` (OpenAI-compatible). |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4-mini` | Deployment name shown in Foundry, used as the model id. |
+| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.5` | Deployment name shown in Foundry, used as the model id. |
 | `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when Azure is not configured. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking enabled, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback backend). Must support tool/function calling. Set in `.env`. |

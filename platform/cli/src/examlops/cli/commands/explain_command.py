@@ -37,9 +37,25 @@ def _root_group() -> click.Command:
     return typer.main.get_command(app)
 
 
+def _normalize(path: list[str]) -> list[str]:
+    """Accept the command the way a person actually writes it.
+
+    ``exa explain exa status`` and ``explain_command("exa status")`` used to answer *"unknown
+    command"* about a command that plainly exists — the leading ``exa`` was matched as if it were
+    a subcommand name. The MCP tool made it worse by echoing the canonical form back as
+    ``"command": "exa status"``: the string it prints was the string it rejects, so an agent
+    following its own output got an error. Options are dropped for the same reason — ``--help``
+    is not a command name, so ``exa --help`` means "list the top-level commands".
+    """
+    parts = [p for p in path if p and not p.startswith("-")]
+    if parts and parts[0] == "exa":
+        parts = parts[1:]
+    return parts
+
+
 def _resolve(path: list[str]) -> click.Command | None:
     node: click.Command | None = _root_group()
-    for part in path:
+    for part in _normalize(path):
         commands = getattr(node, "commands", None)
         if not commands or part not in commands:
             return None
@@ -57,7 +73,7 @@ def explain(
     ),
 ) -> None:
     """Explain what a command does, in plain language, with examples."""
-    path = list(command or [])
+    path = _normalize(list(command or []))
     node = _resolve(path)
 
     if node is None:

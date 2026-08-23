@@ -194,3 +194,46 @@ def test_auth_gate_accepts_with_key(make_client):
             headers={"Authorization": "Bearer secret"},
         )
     assert resp.status_code == 200
+
+
+# ── streaming must reach into sub-agents ─────────────────────────────────────
+
+
+def test_stream_messages_asks_for_subgraph_messages():
+    """The specialists are subgraphs, so a top-level-only stream carries no assistant tokens.
+
+    Measured 2026-08-23 against the live graph: 0 ``AIMessageChunk``s without ``subgraphs=True``
+    and 503 with it, which is why every bridge answer came back empty while the finished reply sat
+    in the checkpoint.
+    """
+    from skipper.server import stream_messages
+
+    graph = _fake_graph()
+    list(stream_messages(graph, {"messages": []}, {"configurable": {"thread_id": "t"}}))
+    assert graph.stream.call_args.kwargs["subgraphs"] is True
+    assert graph.stream.call_args.kwargs["stream_mode"] == "messages"
+
+
+def test_stream_messages_unwraps_both_item_shapes():
+    from skipper.server import stream_messages
+
+    flat = (AIMessageChunk(content="top"), {})
+    nested = (("specialist:1",), (AIMessageChunk(content="inner"), {}))
+    graph = _fake_graph(stream_items=[flat, nested])
+    out = list(stream_messages(graph, {}, {}))
+    assert [m.content for m, _meta in out] == ["top", "inner"]
+
+
+def test_collector_falls_back_to_the_answer_in_state():
+    """A turn that streams no text must not report an empty answer when the state has one."""
+    from skipper import oai_compat
+
+    graph = _fake_graph(stream_items=[(ToolMessage(content="{}", tool_call_id="c1", name="t"), {})])
+    graph.get_state.return_value.values = {"messages": [AIMessageChunk(content="run `exa status`")]}
+    answer, _tools, _usage, _intr = oai_compat._run_graph_collect(
+        graph,
+        {"configurable": {"thread_id": "sess-fallback"}},
+        {"messages": []},
+        lambda c: c if isinstance(c, str) else "",
+    )
+    assert "exa status" in answer

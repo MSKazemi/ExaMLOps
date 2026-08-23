@@ -121,6 +121,13 @@ def _graph_and_extract():
     return _get_graph(), _extract_text
 
 
+def stream_messages(graph, inp, cfg):
+    """One turn's ``(message, metadata)`` pairs, sub-agents included (see ``server``)."""
+    from skipper.server import stream_messages as _stream
+
+    return _stream(graph, inp, cfg)
+
+
 def _pending_interrupt(graph, cfg) -> Any | None:
     try:
         tasks = graph.get_state(cfg).tasks or []
@@ -143,12 +150,11 @@ def _run_graph_collect(graph, cfg, inp, extract_text):
     usage: dict | None = None
     session_id = cfg.get("configurable", {}).get("thread_id", "kq")
     instr = instrument.start(session_id)
+    call_args = instrument.ToolCallArgs()
     try:
-        for item in graph.stream(inp, cfg, stream_mode="messages"):
-            if not isinstance(item, tuple) or len(item) != 2:
-                continue
-            msg, _meta = item
+        for msg, _meta in stream_messages(graph, inp, cfg):
             if isinstance(msg, AIMessageChunk):
+                call_args.observe_ai(msg)
                 piece = extract_text(msg.content)
                 if piece:
                     text_parts.append(piece)
@@ -157,12 +163,35 @@ def _run_graph_collect(graph, cfg, inp, extract_text):
             elif isinstance(msg, ToolMessage):
                 tool_names.append(msg.name or "tool")
                 ok, err = instrument.tool_status(msg)
-                if instr.observe(msg.name or "tool", ok=ok, error=err):
+                if instr.observe(
+                    msg.name or "tool", args=call_args.args_for(msg), ok=ok, error=err
+                ):
                     text_parts.append(f"\n\n⚠️ {instr.abort_message}")
                     break
     finally:
         instr.finish()
-    return "".join(text_parts), tool_names, usage, _pending_interrupt(graph, cfg)
+    answer = "".join(text_parts)
+    if not answer.strip():
+        # Defence in depth. A turn that streamed no text but left a finished reply in the
+        # checkpoint used to be reported as an empty answer — indistinguishable, to a caller like
+        # ``exa eval operator-qa``, from an agent that had nothing to say. Whatever silences the
+        # stream, the state is still the source of truth for what the agent actually answered.
+        answer = _final_answer_from_state(graph, cfg, extract_text) or answer
+    return answer, tool_names, usage, _pending_interrupt(graph, cfg)
+
+
+def _final_answer_from_state(graph, cfg, extract_text) -> str:
+    """The last assistant message in the checkpointed state, or ``""`` if unreadable."""
+    try:
+        messages = (graph.get_state(cfg).values or {}).get("messages", [])
+    except Exception:  # noqa: BLE001 - a missing checkpointer must not break the turn
+        return ""
+    for msg in reversed(messages):
+        if type(msg).__name__.startswith("AI"):
+            text = extract_text(getattr(msg, "content", ""))
+            if text.strip():
+                return text
+    return ""
 
 
 # ── Streaming endpoint ────────────────────────────────────────────────────────
@@ -176,14 +205,13 @@ async def _stream_completion(session_id: str, text: str, model: str):
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
     instr = instrument.start(session_id)
+    call_args = instrument.ToolCallArgs()
 
     def _run() -> None:
         try:
-            for item in graph.stream(inp, cfg, stream_mode="messages"):
-                if not isinstance(item, tuple) or len(item) != 2:
-                    continue
-                msg, _meta = item
+            for msg, _meta in stream_messages(graph, inp, cfg):
                 if isinstance(msg, AIMessageChunk):
+                    call_args.observe_ai(msg)
                     piece = extract_text(msg.content)
                     if piece:
                         loop.call_soon_threadsafe(queue.put_nowait, ("token", piece))
@@ -194,7 +222,9 @@ async def _stream_completion(session_id: str, text: str, model: str):
                 elif isinstance(msg, ToolMessage):
                     loop.call_soon_threadsafe(queue.put_nowait, ("tool", msg.name or "tool"))
                     ok, err = instrument.tool_status(msg)
-                    if instr.observe(msg.name or "tool", ok=ok, error=err):
+                    if instr.observe(
+                        msg.name or "tool", args=call_args.args_for(msg), ok=ok, error=err
+                    ):
                         loop.call_soon_threadsafe(queue.put_nowait, ("error", instr.abort_message))
                         break
         except Exception as exc:  # surface as an error event

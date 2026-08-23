@@ -69,14 +69,14 @@ def test_azure_backend_preferred_when_configured(monkeypatch, probe):
     monkeypatch.setattr(
         config, "AZURE_OPENAI_ENDPOINT", "https://examlops.services.ai.azure.com/openai/v1/"
     )
-    monkeypatch.setattr(config, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+    monkeypatch.setattr(config, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.5")
 
     info = llm.check_backend()
-    assert info == {"ok": True, "type": "azure", "model": "gpt-5.4-mini"}
+    assert info == {"ok": True, "type": "azure", "model": "gpt-5.5"}
 
     built = llm.build_llm()
     # langchain-openai's ChatOpenAI exposes the model id as `model_name`.
-    assert built.model_name == "gpt-5.4-mini"
+    assert built.model_name == "gpt-5.5"
 
 
 def test_claude_backend_when_no_azure(monkeypatch, probe):
@@ -102,7 +102,7 @@ def _configure_azure(monkeypatch):
     monkeypatch.setattr(
         config, "AZURE_OPENAI_ENDPOINT", "https://examlops.services.ai.azure.com/openai/v1/"
     )
-    monkeypatch.setattr(config, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+    monkeypatch.setattr(config, "AZURE_OPENAI_DEPLOYMENT", "gpt-5.5")
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -122,7 +122,7 @@ def test_rejected_credential_reports_unhealthy(monkeypatch, probe, status):
     # The *preferred* backend is the one named: it is the one whose config the operator meant
     # to use, so it is the one worth pointing at.
     assert info["type"] == "azure"
-    assert info["model"] == "gpt-5.4-mini"
+    assert info["model"] == "gpt-5.5"
     # …and the report says what was tried and which variable to repair, because "not ok" alone
     # is what sent an operator hunting in the wrong place.
     assert info["skipped"] == ["azure", "ollama"]

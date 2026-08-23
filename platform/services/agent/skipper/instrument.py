@@ -14,6 +14,7 @@ Everything here is **best-effort and fail-open**: if ``examlops.agentops`` canno
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from skipper import config
@@ -33,8 +34,55 @@ except Exception:  # noqa: BLE001
     _AGENTOPS_OK = False
 
 
-def _tool_step(name: str, *, ok: bool = True, error: str | None = None) -> Any:
-    return AgentStep(tool=name or "tool", ok=ok, error=error)
+def _tool_step(name: str, *, args: Any = None, ok: bool = True, error: str | None = None) -> Any:
+    return AgentStep(tool=name or "tool", args=args, ok=ok, error=error)
+
+
+class ToolCallArgs:
+    """Remember each tool call's arguments so the loop breaker can tell calls apart.
+
+    The breaker's rule is *same tool, same arguments, N times*, but a ``ToolMessage`` carries only
+    a ``tool_call_id`` — the arguments were on the ``AIMessage`` that requested it. Without them
+    every call to one tool collapses onto a single key, so an agent legitimately asking
+    ``explain_command`` about three different commands is killed as a runaway loop on the third
+    one, and the turn returns the breaker notice instead of an answer. Measured 2026-08-23: the
+    30-question operator-QA set scored 0/30 this way, 13 answers empty and the rest breaker text.
+
+    Streaming delivers the arguments as JSON fragments spread over chunks, so they are accumulated
+    per call — by ``index`` (stable across a call's chunks) and mapped to the ``id`` the matching
+    ``ToolMessage`` will quote.
+    """
+
+    def __init__(self) -> None:
+        self._frags: dict[Any, list[str]] = {}
+        self._id_of: dict[Any, Any] = {}
+        self._by_id: dict[str, str] = {}
+
+    def observe_ai(self, msg: Any) -> None:
+        """Record the argument fragments (streaming) or full arguments (non-streaming)."""
+        for chunk in getattr(msg, "tool_call_chunks", None) or []:
+            index = chunk.get("index")
+            key = index if index is not None else chunk.get("id")
+            if key is None:
+                continue
+            if chunk.get("id"):
+                self._id_of[key] = chunk["id"]
+            self._frags.setdefault(key, []).append(chunk.get("args") or "")
+            call_id = self._id_of.get(key)
+            if call_id:
+                self._by_id[call_id] = "".join(self._frags[key])
+        for call in getattr(msg, "tool_calls", None) or []:
+            call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+            if not call_id:
+                continue
+            args = call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
+            if args:  # a chunk-accumulated value is already there in the streaming case
+                self._by_id[call_id] = json.dumps(args, sort_keys=True, default=str)
+
+    def args_for(self, tool_message: Any) -> str | None:
+        """The arguments of the call this ``ToolMessage`` answers, if they were seen."""
+        call_id = getattr(tool_message, "tool_call_id", None)
+        return self._by_id.get(call_id) if call_id else None
 
 
 class Instrumentation:
@@ -51,6 +99,7 @@ class Instrumentation:
         self._recorder = None
         self._breaker = None
         self.tripped: Any | None = None
+        self._unkeyed = 0
         if not self._enabled:
             return
         try:
@@ -62,11 +111,27 @@ class Instrumentation:
         except Exception:  # noqa: BLE001 - never break a chat turn
             self._enabled = False
 
-    def observe(self, tool_name: str, *, ok: bool = True, error: str | None = None) -> bool:
-        """Record one tool result. Returns ``True`` if the loop should abort (breaker tripped)."""
+    def observe(
+        self, tool_name: str, *, args: Any = None, ok: bool = True, error: str | None = None
+    ) -> bool:
+        """Record one tool result. Returns ``True`` if the loop should abort (breaker tripped).
+
+        *args* are what distinguishes one call from a repeat of the same call; pass them whenever
+        they are known (see :class:`ToolCallArgs`) or the loop rule degrades into "this tool was
+        used N times".
+        """
         if not self._enabled:
             return False
-        step = _tool_step(tool_name, ok=ok, error=error)
+        if args is None:
+            # The loop rule means "this exact call, again". When the arguments are not observable —
+            # LangGraph's ``messages`` stream surfaces a subgraph's ``ToolMessage`` without the
+            # ``AIMessage`` that requested it, so nothing on that path carries them — an empty key
+            # makes every call to one tool identical and kills the third one. A unique marker keeps
+            # such a step out of the loop rule; runaway turns stay bounded by the step-blowup cap
+            # and the error-burst rule, neither of which needs arguments.
+            self._unkeyed += 1
+            args = f"unobserved-call-{self._unkeyed}"
+        step = _tool_step(tool_name, args=args, ok=ok, error=error)
         try:
             if self._recorder is not None:
                 self._recorder.add(step)

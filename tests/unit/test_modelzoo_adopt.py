@@ -121,8 +121,12 @@ def test_connection_step_idempotent(_s3_env):
     assert out2["changed"] is False
 
 
-def test_connection_skipped_without_s3_env():
-    # no MLFLOW_S3_ENDPOINT_URL set → connection provisioning is a no-op, rest still provisioned
+def test_connection_skipped_without_s3_env(monkeypatch):
+    # no MLFLOW_S3_ENDPOINT_URL set → connection provisioning is a no-op, rest still provisioned.
+    # Deleted explicitly rather than assumed absent: a shell that sourced the repo's .env exports
+    # them, and the test then fails for a reason that has nothing to do with the code.
+    for var in ("MLFLOW_S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(var, raising=False)
     out = mz.adopt_model("JPCP")
     assert out["steps"]["connection"] == "skipped"
     assert out["steps"]["project"] == "created"
@@ -151,7 +155,9 @@ def test_no_connection_flag_skips(_s3_env):
     assert get_connection("minio", project="jpcp") is None
 
 
-def test_dry_run_connection_would_skip_without_env():
+def test_dry_run_connection_would_skip_without_env(monkeypatch):
+    for var in ("MLFLOW_S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(var, raising=False)
     out = mz.adopt_model("JPCP", dry_run=True)
     assert out["steps"]["connection"] == "would-skip"  # no S3 env → would be skipped
 

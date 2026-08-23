@@ -12,6 +12,8 @@ nothing matches so an ambiguous request is never sent to a write-capable pack by
 
 from __future__ import annotations
 
+import re
+
 from skipper import skills
 
 
@@ -39,17 +41,67 @@ def score(text: str) -> dict[str, int]:
 # request) even when the sentence also names an action verb like "deploy" or "promote".
 _HELP_MARKERS = ("how do i", "how to", "how can i", "how does", "what is", "explain how")
 
+# *Capability* phrasing — "can I …?", "does it support …?" — is the same intent wearing different
+# words, and it used to reach no specialist at all: none of these contain a `helper` trigger, so
+# they scored zero everywhere and fell to the read-only generalist, which answered from the model's
+# priors instead of the documentation. That is how Skipper came to recommend an LLM-judge promotion
+# gate without mentioning that ADR 0111 refuses an uncalibrated judge.
+_CAPABILITY_MARKERS = (
+    "can i ",
+    "could i ",
+    "am i able",
+    "is it possible",
+    "is there a way",
+    "do i need to",
+    "does examlops",
+    "does the platform",
+    "do you support",
+    "is there support for",
+    "does it support",
+)
+
+# …but "can I see the drift?" is an *operational* request in the same clothing. When one of these
+# verbs follows the marker the user wants the thing done, not explained, so the normal scoring
+# decides and a domain specialist keeps the turn.
+_OPERATIONAL_VERBS = (
+    "see",
+    "show",
+    "get",
+    "list",
+    "check",
+    "view",
+    "run",
+    "start",
+    "stop",
+    "restart",
+    "have",
+)
+
+_MARKER_VERB = re.compile(
+    r"\b(?:can|could)\s+(?:i|you|we)\s+(?:please\s+)?(" + "|".join(_OPERATIONAL_VERBS) + r")\b"
+)
+
+
+def _is_help_intent(low: str) -> bool:
+    """Does this message ask to *learn* something, rather than to have it done?"""
+    if any(m in low for m in _HELP_MARKERS):
+        return True
+    if any(m in low for m in _CAPABILITY_MARKERS):
+        return not _MARKER_VERB.search(low)
+    return False
+
 
 def choose(text: str) -> str:
     """Return the specialist name for a message, or ``general`` when nothing matches.
 
-    Help intent wins on interrogative how-to phrasing (a "how do I …?" is a request to *learn*,
-    routed to the docs-RAG helper, not to perform the named action). Otherwise the specialist with
-    the most trigger hits wins; ties fall to ``general`` (read-only) rather than a write pack.
+    Help intent wins on interrogative phrasing — both "how do I …?" and "can I …?" are requests to
+    *learn*, routed to the docs-RAG helper rather than to perform the named action. Otherwise the
+    specialist with the most trigger hits wins; ties fall to ``general`` (read-only) rather than a
+    write pack.
     """
     low = (text or "").lower()
     scores = score(low)
-    if scores.get("helper", 0) > 0 and any(m in low for m in _HELP_MARKERS):
+    if _is_help_intent(low):
         return "helper"
     best = max(scores, key=lambda n: scores[n], default="")
     if best and scores[best] > 0:

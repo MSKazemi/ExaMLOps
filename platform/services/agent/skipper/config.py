@@ -12,10 +12,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 # which is OpenAI-compatible, so we drive it with langchain-openai's ChatOpenAI
 # (base_url + api_key) rather than AzureChatOpenAI (that one expects the classic
 # https://<resource>.openai.azure.com shape). AZURE_OPENAI_DEPLOYMENT is the
-# deployment name shown in Foundry (e.g. "gpt-5.4-mini"), used as the model id.
+# deployment name shown in Foundry (e.g. "gpt-5.5"), used as the model id.
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-mini")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.5")
 
 # Claude API backend
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

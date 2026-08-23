@@ -5,7 +5,172 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Skipper's default Azure deployment is now `gpt-5.5`, and the reasoning-token trap that
+  comes with it is documented.** The agent ran on `gpt-5.4-mini`; the Foundry resource also
+  carries `gpt-5.5`, and the operator's standing preference is the strongest available model.
+  `AZURE_OPENAI_DEPLOYMENT` now defaults to `gpt-5.5` in `skipper/config.py`, matching the
+  deploy node's `.env`, with the backend table in `docs/guides/agent.md` and the env-var
+  reference updated so the documented default cannot disagree with the code. Verified against
+  the live endpoint before and after: `check_backend()` reports
+  `{'ok': True, 'type': 'azure', 'model': 'gpt-5.5'}` and a full `build_graph().invoke()` turn
+  makes a real `list_models` tool call and answers from live MLflow.
+
+  The trap is worth knowing before anything else calls this endpoint. `gpt-5.5` is a reasoning
+  model, so it spends completion budget on reasoning tokens *before* emitting any visible
+  content: a request capped at 16 `max_completion_tokens` returns **HTTP 200 with an empty
+  `content` string** — not an error, not a truncation flag, just a blank answer that reads like
+  a broken agent rather than a starved one. The same prompt at 512 answers normally. Skipper is
+  unaffected because its Azure branch passes no `max_tokens` at all and leaves temperature
+  unset (`gpt-5.x` rejects temperature overrides); any new caller must preserve both
+  properties. The existing backend tests monkeypatch the deployment name explicitly, so they
+  verify that whatever is configured reaches the model id rather than pinning a particular
+  model — the default itself is deliberately not asserted.
+
+- **Skipper migrated off the deprecated `create_react_agent`, and the migration everyone would
+  write first is silently broken.** `langgraph.prebuilt.create_react_agent` is deprecated since
+  LangGraph V1.0 and removed in V2.0; the agent used it in `skipper/graph.py` and in every
+  supervisor specialist. The warning says the function "has been moved to `langchain.agents`",
+  which reads like a rename and is not one: `create_agent` renames `prompt` to `system_prompt`
+  (narrowing it to str/SystemMessage — no Callable or Runnable), and drops `pre_model_hook` and
+  `post_model_hook` entirely in favour of `middleware`.
+
+  `graph.py` passed `pre_model_hook=build_summarization_hook()` whenever
+  `AGENT_SUMMARIZE_ENABLED` is set, so it needed the hook expressed as middleware. The natural
+  translation — an `AgentMiddleware.before_model` returning the hook's old
+  `{"llm_input_messages": …}` payload — **is accepted and silently ignored**: measured against a
+  recording model, the model received all 400 messages of a 400-message thread instead of the
+  trimmed list, with no error, no warning and no exception. That failure mode compiles, passes
+  any test that only asserts the agent returns, and lets the context window grow unbounded until
+  requests start failing on token limits in production. The working mechanism is
+  `wrap_model_call`, which hands over a `ModelRequest`:
+  `handler(request.override(messages=trim_to_budget(request.messages)))` — model input shrinks,
+  the durable checkpoint history is untouched, exactly the old semantics.
+
+  The trim itself is now `memory.trim_to_budget()`, shared by nothing else and unchanged
+  (`trim_messages(strategy="last")` — pure local computation, no model call). Note this is *not*
+  what `langchain.agents.middleware.SummarizationMiddleware` does despite the name similarity to
+  the old `build_summarization_hook`: that one calls an LLM to compress history, which would have
+  added a billable model call to every turn crossing the context budget.
+
+  `test_trim_middleware_shrinks_what_the_model_receives` asserts on the message list the model
+  was actually handed, and was verified red-green — restoring the `before_model` form fails it
+  with `assert 400 < 400`. The previous test asserted only that the graph compiled, which the
+  broken form also satisfies. Agent suite 206 → **207 passing, and the 24 deprecation warnings
+  per run are now zero**.
+
 ### Fixed
+
+- **The one CI gate `make preflight` does not mirror could quietly wreck the environment every
+  other gate depends on.** `make ci-modelzoo` bootstraps poetry as
+  `poetry || pipx install poetry || pip install poetry`. On a machine with neither poetry nor
+  pipx — this laptop, verified — the last branch runs, and `pip` there is the *project venv's*
+  pip, so poetry lands inside `.venv`. Worse, the recipe then hands poetry
+  `$(CURDIR)/.venv/bin/python` while `VIRTUAL_ENV` points at that same venv, which is how poetry
+  is told to adopt an already-activated environment: the modelzoo library plus its `dev,ci`
+  groups would install straight into the venv that runs the unit suite, the dashboard backend,
+  Skipper and the Postgres run. Added `uv tool install poetry` ahead of the pip fallback (uv is
+  the project toolchain and installs tools in isolation), and every poetry call now runs under
+  `env -u VIRTUAL_ENV` so it builds its own environment instead of borrowing ours. A no-op
+  wherever poetry or pipx already exists, which is every CI runner.
+
+- **The dashboard's frontend suite could fail a deploy on a stopwatch.** `make check` went red on
+  `Config.test.tsx > shows Save button for admin` with *"Test timed out in 5000ms"*. The test passes
+  in **~4.4 s** when its file runs alone, but measured inside the full suite it takes **5.75 s** —
+  over vitest's 5 s default, not marginally under it. The cost is contention, not the component: 79
+  jsdom files running in parallel accumulate 447 s of environment time, and a file's first test pays
+  the render and import cost. Nothing about the assertion is slow or wrong; the ceiling was too low.
+
+  That matters more than an ordinary flake because the frontend suite now gates `deploy:lxp`, so a
+  busy CI runner can fail a deploy over a test that works — and *"timed out"* reads like a hang,
+  which is how a false red gets waved through until it eventually hides a true one. `vite.config.ts`
+  now sets `testTimeout`/`hookTimeout` to 15 s, roughly 3x the observed worst case and still far
+  below anything a genuine hang would reach, with the measurement recorded in a comment so the
+  number is not mistaken for a guess. Full suite after the change: **79 files / 373 tests green**,
+  eslint 0 errors. A sweep of all 373 tests puts the next-slowest at 4.5 s and only three above 3 s,
+  so the new ceiling clears the whole field rather than just the test that failed.
+
+  Worth recording that this was caught before it cost anything: the CI job that runs this suite was
+  added on 2026-08-20 and sits in a batch of commits that has not been pushed, so the gate has never
+  executed on a runner. It runs the same `npx vitest run` against the same config, on a two-core
+  hosted runner rather than a twenty-core laptop — so its first execution would very likely have
+  failed, and the failure would have looked like the deploy gate rejecting the tree.
+
+- **`exa explain` rejected the command string it prints.** `exa explain exa status` answered
+  *"Unknown command: 'exa status'"* about a command that plainly exists — the leading `exa` was
+  matched as if it were a subcommand name — and the MCP `explain_command` tool shared the bug in a
+  form that closed the circle: it echoed the canonical path back as `"command": "exa status"`, the
+  very string it would then reject, so an agent following its own output got an error. Every
+  prefixed form failed (`exa status`, `exa serve reload`, `exa hpc place`, `exa --help`); only the
+  unprefixed form worked. A single `_normalize()` now drops a leading `exa` and any `-`-prefixed
+  token — an option is not a command name, so `exa --help` means "list the top-level commands" —
+  and **both** surfaces normalise before labelling as well as before resolving, or the echo returns
+  as `exa exa status`. Nine guards, including the round-trip property that was missing: whatever
+  the tool prints must be valid input to the tool. A typo is still a typo: `exa nope` resolves to
+  nothing.
+
+- **Skipper answered every question with an empty string, and its own loop breaker was aborting
+  the turns that did produce one.** `exa eval operator-qa` scored **0/30** — not a quality score
+  but a defect report, with 13 blank answers and the rest circuit-breaker text. Two independent
+  causes. First, the OpenAI-compatible bridge streamed with `stream_mode="messages"`, which stops
+  at the **top-level** graph; since the supervisor topology (ADR 0099) runs specialists as
+  *subgraphs*, the bridge saw **zero** message chunks while the finished answer sat in the
+  checkpoint — 503 events arrived, 417 of them carrying text, none of it reachable. Both loops now
+  go through one `stream_messages()` helper that passes `subgraphs=True` and unwraps either item
+  shape, with a state fallback that reads the last AI message from the checkpoint when a turn
+  streams nothing. Second, `instrument.observe()` built each `AgentStep` **without its arguments**,
+  and the loop detector keys on `(tool, redact(args))` — so `redact(None) == ""` collapsed every
+  call to a tool onto one key and the **third** call to *any* tool tripped the breaker and killed
+  the turn. Tool-call arguments are now reassembled from the streaming chunks and matched back by
+  `tool_call_id`; a call whose arguments could not be observed gets a unique key rather than a
+  shared one, so an unobservable stream can no longer look like a loop (the step-blowup cap still
+  stops a genuine runaway — tested). Orientation category **0/4 → 4/4**; the full suite scores
+  **20/30**.
+
+- **Skipper denied a documented capability because its docs search grepped the question
+  verbatim.** Asked *"can I use an LLM judge to gate promotion?"*, the agent replied that it could
+  not find a matching documentation entry — while `docs/guides/judge-calibration.md` exists and is
+  the entire subject of ADR 0111. `search_docs` handed the operator's phrase straight to `rg`, so
+  `"LLM judge promotion gate"` matched **0 files** and `"LLM-as-a-judge"` **0**, where
+  `"judge calibration"` matched 6 and `"judge"` 9 — a natural-language question was precisely the
+  input it could not serve, and it failed *silently*: "No matches" reads to a model as "the
+  platform does not do this". The literal phrase is still tried first (now as a fixed string, so a
+  trailing `?` is not a regex); on a miss the query degrades to its terms — stop-words dropped,
+  hyphenated compounds split, files ranked by how many **distinct** terms they contain so a long
+  file cannot crowd out the guide that is actually about the subject. An empty result now states
+  what was tried and that it means the search found nothing, **not** that the capability is
+  absent. Six guards; five fail against the old implementation.
+
+- **"Can I …?" reached no specialist at all, so capability questions were answered from the
+  model's priors instead of the documentation.** The router promotes a turn to the docs-RAG
+  `helper` only on `_HELP_MARKERS` — *how do i · how to · what is · explain how*. Capability
+  phrasing appears in none of them and carries no trigger keyword either, so *"Can I use an LLM
+  judge to gate promotion?"*, *"Is it possible to…"*, *"Does ExaMLOps support…"* all scored **zero
+  on every specialist** and fell through to the read-only generalist. The generalist was the other
+  half: it holds `search_knowledge` but its playbook only said "call tools proactively", while the
+  instruction to *ground the answer in retrieved passages* lives on `helper`. Both halves had to be
+  wrong for the failure, which is why neither showed up alone. The router now reads capability
+  phrasing as help intent while keeping the distinction that makes it safe — *"Can I roll back a
+  promotion?"* is a question, *"Can you show me the drift status?"* is a request, decided by
+  whether a verb of doing follows the marker — and the generalist is told the documentation is
+  authoritative and to say the docs do not cover something rather than answer from memory. The
+  answer that prompted this now cites `judge-calibration.md` and states the MVVP refusal;
+  governance **3/4 → 4/4**. 14 guards; 9 fail against the old code.
+
+- **Both of the autopilot's policy gates were dead, failing open, and silently.**
+  `_policy_decide` read `decision.action` — `Decision` carries `effect`/`rule`/`reason` and has
+  never had `.action` — so the `AttributeError` landed in the function's own bare `except` and
+  returned `("allow", "policy-unavailable")` for **every** action. A `deny` on `autopilot_trigger`
+  or `autopilot_promote` was ignored, and so was `require_approval`, the human-in-the-loop hold on
+  the one component that acts without a human. It survived because all six existing policy tests
+  patch `_policy_decide` itself, so the broken body never executed in the suite. It now reads
+  `decision.effect`; fail-open remains the design (ADR 0079 — a broken policy file must not wedge a
+  mutation path) but is no longer silent, logging which action it could not decide and returning
+  the reason. Verified against a real `policy.yaml`: `deny` produces a Policy Blocks table,
+  `require_approval` prints HUMAN ACTION REQUIRED, and both are audited beside the `exa-policy`
+  decision record. Nine new tests call the real function; four fail when the one-word bug is
+  restored.
 
 - **Two blocking CI jobs could not stop a deploy or a release — one of them the secret scan.**
   `deploy:lxp` and `release:gitlab` declare `needs:`, which makes them DAG jobs: GitLab starts
@@ -31,6 +196,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   same shape `dashboard-check` uses for a missing `npm`.
 
 ### Added
+
+- **`GET /api/info` now says whether Skipper actually has long-term memory.** Nothing — CLI, API or
+  UI — could answer *"does it remember anything?"*: a missing embedding backend drops the agent to
+  short-term memory with a single log line at startup, which is how it went unnoticed that
+  **`AGENT_EMBED_BACKEND` defaults to `ollama`, no Ollama is reachable on the dev laptop, and no
+  `skipper_memory.db` had ever been created** — so every agent evaluation to date was measured
+  without long-term memory. The endpoint now carries `memory`: the configured backend, model, dims
+  and database path from a new `memory.status()` (config-only, and a test fails if it so much as
+  builds embeddings), plus **`active`**, read from the compiled graph's store — so it reports what
+  the running agent *has*, not what it was asked for, and enabled-but-not-active points straight at
+  the embedding backend. The stack itself is sound: with `sentence-transformers`/`all-MiniLM-L6-v2`
+  at 384 dims, `SqliteStore` builds on `sqlite-vec` and semantic recall returned the right memory
+  for three queries sharing no keyword with the stored text.
+
+- **Two registry-walking guards over the MCP surface, replacing tests that checked a hand-picked
+  sample.** `test_mcp_capabilities.py` promised that *every* read tool degrades gracefully and
+  proved it against a list of ten, so a newly registered tool — or an old one that starts throwing
+  on a missing table — was never checked. `tests/unit/test_mcp_tools_never_raise.py` walks
+  `REGISTRY` itself: **48 tests**, all 46 read tools invoked, none raising (8 degrade to structured
+  errors because the control plane and MLflow are down locally, which is the point). Likewise the
+  write-policy tests proved the gate's logic well but proved only **one of nine** mutating tools
+  actually calls it. `test_mcp_agent_write_policy.py` now walks the registry too: **25 tests**, and
+  all nine mutating tools were called for real under `deny` and under `require_approval` — 9/9
+  refuse, before any side effect. Both guards are self-extending: a new tool with no sample
+  arguments fails with a message saying to add them, and both were proved red two ways before being
+  restored.
 
 - **`test:control-plane` — 82 more tests that gated nothing, and had rotted to the point of not
   running.** Asking "which suites does no job's exit code depend on?" a third time found the

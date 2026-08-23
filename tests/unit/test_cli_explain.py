@@ -124,3 +124,58 @@ def test_explain_history_after_requests():
     assert "JPCP" in result.output
     assert "unavailable" in result.output
     assert "ok" in result.output
+
+
+# ── the command written the way people write it ──────────────────────────────────────────────
+#
+# `exa explain exa status` used to answer "Unknown command: 'exa status'" about a command that
+# plainly exists, because the leading `exa` was matched as a subcommand name. The MCP tool made it
+# circular: it echoed the canonical form back as `"command": "exa status"` — the very string it
+# would then reject — so an agent following its own output hit an error.
+
+
+@pytest.mark.parametrize(
+    "written,canonical",
+    [
+        (["exa", "status"], "exa status"),
+        (["status"], "exa status"),
+        (["exa", "serve", "reload"], "exa serve reload"),
+        (["exa", "--help"], "exa"),
+        (["exa"], "exa"),
+        ([], "exa"),
+        (["serve", "reload", "--help"], "exa serve reload"),
+    ],
+)
+def test_a_leading_exa_and_any_options_are_not_command_names(written, canonical):
+    from examlops.cli.commands.explain_command import _normalize, _resolve
+
+    assert _resolve(written) is not None, f"{written} should resolve"
+    assert " ".join(["exa", *_normalize(written)]).strip() == canonical
+
+
+def test_a_genuinely_unknown_command_is_still_unknown():
+    """Normalising must not turn a typo into a match — `exa` is stripped, nothing else is."""
+    from examlops.cli.commands.explain_command import _resolve
+
+    assert _resolve(["exa", "nope"]) is None
+    assert _resolve(["nope"]) is None
+
+
+def test_the_mcp_tool_accepts_the_command_string_it_prints():
+    """Round-trip: whatever `explain_command` echoes must be valid input to `explain_command`."""
+    from examlops.mcp import tools
+
+    first = tools.explain_command("serve reload")
+    assert first["ok"] is True
+    again = tools.explain_command(first["command"])
+    assert again["ok"] is True, f"echoed {first['command']!r} was rejected: {again}"
+    assert again["command"] == first["command"]
+
+
+def test_the_mcp_tool_explains_a_prefixed_command():
+    from examlops.mcp import tools
+
+    out = tools.explain_command("exa status")
+    assert out["ok"] is True
+    assert out["command"] == "exa status"
+    assert out["summary"]

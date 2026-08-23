@@ -162,6 +162,10 @@ def test_config_tier_tars_and_records_key_ids(tmp_path, monkeypatch):
     (cfg.parent / "clusters.yaml").write_text("clusters: []\n")
     monkeypatch.setenv("EXAMLOPS_CONFIG", str(cfg))
     monkeypatch.setenv("EXAMLOPS_SECRETS_KEYS", "k1:xxxx,k2:yyyy")
+    # The legacy dashboard KEK is a *second* source of key ids; unset it so this test measures the
+    # keyring alone. A shell that sourced the repo's .env exports it and the assertion below then
+    # fails on a `legacy-dashboard` entry that has nothing to do with the code under test.
+    monkeypatch.delenv("DASHBOARD_SECRET_KEY", raising=False)
 
     res = config_tier.backup_config_tier(tmp_path)
     assert res.status == "ok"

@@ -39,6 +39,55 @@ def test_router_picks_specialist(text, expected):
     assert router.choose(text) == expected
 
 
+# ── capability phrasing: the class of question that used to reach nobody ──────────────────────
+#
+# "Can I …?" / "Does it support …?" contain no specialist trigger word, so they scored zero
+# everywhere and fell to the read-only generalist — which answered from the model's priors rather
+# than the docs. That is how "can I use an LLM judge to gate promotion?" got an answer that never
+# mentioned calibration, the one rule (ADR 0111) that would have refused it.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Can I use an LLM judge to gate promotion?",
+        "Could I gate promotion on an eval suite?",
+        "Is it possible to roll back a promotion?",
+        "Is there a way to split traffic between two versions?",
+        "Does ExaMLOps support A/B testing?",
+        "Does the platform support Flux as well as Slurm?",
+        "Am I able to pin a run to a dataset revision?",
+        "Do I need to approve a model before it serves?",
+    ],
+)
+def test_capability_questions_reach_the_docs_specialist(text):
+    assert router.choose(text) == "helper"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Same opening words, opposite intent: these ask for the thing to be DONE.
+        ("Can you show me the drift status?", "monitor"),
+        ("Can I see the audit log?", "governor"),
+        ("Can we check the platform health?", "monitor"),
+        ("Could you list the pending approvals?", "governor"),
+        ("Can you restart the stack?", "manager"),
+    ],
+)
+def test_operational_requests_are_not_mistaken_for_questions(text, expected):
+    """A verb of *doing* after "can I/you/we" keeps the turn with the domain specialist."""
+    assert router.choose(text) == expected
+
+
+def test_the_generalist_is_told_the_docs_outrank_its_own_knowledge():
+    """The generalist holds search_knowledge; without this line it had no reason to call it."""
+    playbook = skills.GENERAL.playbook.lower()
+    assert "search_knowledge" in playbook
+    assert "authoritative" in playbook
+    assert "search_knowledge" in skills.GENERAL.inrepo
+
+
 def test_router_reads_latest_user_message():
     from langchain_core.messages import AIMessage, HumanMessage
 
@@ -72,19 +121,19 @@ def test_toolsets_are_scoped_per_specialist():
 
 
 def test_supervisor_dispatches_to_routed_specialist(monkeypatch):
+    import langchain.agents as lc_agents
     from langchain_core.messages import AIMessage, HumanMessage
     from langchain_core.runnables import RunnableLambda
-    from langgraph import prebuilt
     from langgraph.checkpoint.memory import MemorySaver
 
-    def fake_create_react_agent(llm, tools=None, prompt=None, **kw):
+    def fake_create_agent(llm, tools=None, system_prompt=None, **kw):
         # The node echoes its playbook prompt so the test can see which specialist ran.
         def _node(state):
-            return {"messages": [AIMessage(content=str(prompt))]}
+            return {"messages": [AIMessage(content=str(system_prompt))]}
 
         return RunnableLambda(_node)
 
-    monkeypatch.setattr(prebuilt, "create_react_agent", fake_create_react_agent)
+    monkeypatch.setattr(lc_agents, "create_agent", fake_create_agent)
 
     graph = supervisor.build_supervisor(object(), MemorySaver(), inrepo_tools=list(TOOLS))
     assert graph is not None
