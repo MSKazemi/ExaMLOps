@@ -172,7 +172,7 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENT_SERVER_HOST` | `0.0.0.0` | Interface the agent server binds. See the warning above. |
-| `AGENT_CHECKPOINT_BACKEND` | `sqlite` | Conversation checkpoint store. `postgres` uses `AGENT_POSTGRES_DSN`, falling back to `DATABASE_URL`. |
+| `AGENT_CHECKPOINT_BACKEND` | `sqlite` | Conversation checkpoint store. `postgres` uses `AGENT_POSTGRES_DSN`, then `DATABASE_URL` — and **selecting `postgres` with neither set falls back to `sqlite`** rather than failing, so check the startup log if checkpoints are not where you expect. |
 | `AGENT_POSTGRES_DSN` | falls back to `DATABASE_URL` | DSN for the Postgres checkpointer. |
 | `AGENT_GRAPH_TIMEOUT` | `300.0` | Seconds one LangGraph run may take before it is abandoned. |
 | `AGENT_STREAM_IDLE_TIMEOUT` | `120.0` | Seconds of silence on a streaming response before it is closed. |
@@ -685,7 +685,7 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 | `EXAMLOPS_VAULT_TOKEN` | unset | Token for the OpenBao/Vault secrets backend. Unset ⇒ the backend degrades to Fernet, then to env. |
 | `EXAMLOPS_POLICY_ENGINE` | built-in | `opa` uses Rego via a local OPA binary, **if it is available** — otherwise the built-in engine stays in use, silently. |
 | `EXAMLOPS_POLICY_BUNDLE_DIR` | `~/.config/examlops/bundle` | Where Rego bundles are read from. |
-| `EXAMLOPS_LLM_LAUNCHER` | `external` | How `exa serve llm` starts a server (`external` / `compose` / `hpc` / `kserve`). |
+| `EXAMLOPS_LLM_LAUNCHER` | `external` | Default launcher for `exa serve llm` — one of `external`, `compose`, `slurm`, `flux`, `kserve` (`slurm` and `flux` are the same HPC launcher under two scheduler names). `--launcher` overrides it. |
 | `EXAMLOPS_LLM_COST_PROVIDER` | from `finops.yaml` | Provider for LLM token cost. |
 | `EXAMLOPS_KSERVE_GATEWAY_URL` | unset | Gateway the generated KServe endpoint is reachable on; recorded on the endpoint. |
 | `FEATURE_STORE_DIR` | `.feature_store` beside the platform datastore | On-disk feature store root. |
