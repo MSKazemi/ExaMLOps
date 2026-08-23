@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **`--help` examples are now held to the command tree too.** The curated "Common tasks" block on
+  every `exa` group is copy-paste UX — and `--help` is exactly where someone goes when they are
+  already unsure, so an example that errors teaches them the tool is broken rather than that the
+  line is old. Nothing connected the spec to the CLI, so a rename would have left the wrong line
+  rendering happily. `tests/unit/test_cli_group_help.py` now checks all 138 examples resolve, and
+  that every spec key is a real group (a key that matches nothing renders nowhere). The resolver
+  handles the three real shapes — trailing arguments, a global option ahead of the subcommand
+  (`exa -c lxp agent status`), and a group used directly (`exa audit --last 7d`) — and deliberately
+  does *not* stop at longest-prefix, because a renamed leaf would otherwise match its surviving
+  parent and pass. Proved red on both a renamed leaf and an orphaned key. Audit result: the
+  examples were all valid; the one gap was `exa eval calibration`, the only group of 80 with no
+  Common-tasks block, now given two read-only examples.
+
 - **The CLI reference now cannot drift from the CLI.** `docs/reference/cli-commands-guide.md`
   opens by claiming to document every `exa` command — a claim that was true on the day it was
   written and nowhere enforced since. A diff against the live Typer tree found `exa eval

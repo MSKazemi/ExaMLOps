@@ -159,6 +159,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "eval": [
         ("Run an evaluation suite", "exa eval run --help"),
     ],
+    "eval calibration": [
+        ("Can this judge gate a promotion?", "exa eval calibration show <judge>"),
+        ("List recorded calibrations", "exa eval calibration list"),
+    ],
     "slo": [
         ("List declared SLOs", "exa slo list"),
     ],
