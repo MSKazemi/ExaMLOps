@@ -15,13 +15,6 @@ _SERVICE_LABELS = {
     "ray_serve": "Ray Serve",
     "dashboard": "Dashboard",
 }
-_SERVICE_URLS = {
-    "control_plane": ":18002",
-    "mlflow": ":15000",
-    "prefect": ":14200",
-    "ray_serve": ":18001",
-    "dashboard": ":18099",
-}
 
 
 def status(
@@ -37,6 +30,22 @@ def status(
         _output.watch_loop(lambda: _render_status(cfg, watch=True), interval)
         return
     _render_status(cfg, watch=False)
+
+
+def _checked_address(key: str, svc: dict, cfg) -> str:
+    """The address the health check actually used.
+
+    The control plane reports it per service (`url`). Older deployments do not, and rather than
+    substitute the host port map — the thing that was wrong in the first place — say so: an
+    unknown address is `?`, not a guess. The control plane is the one service `exa` probes
+    itself, so its address is the configured one.
+    """
+    if key == "control_plane":
+        return str(cfg.control_plane_url)
+    url = svc.get("url")
+    if not url or url == "self":
+        return "?"
+    return str(url)
 
 
 def _render_status(cfg, watch: bool) -> None:
@@ -72,25 +81,23 @@ def _render_status(cfg, watch: bool) -> None:
         svc = services.get(key, {})
         svc_ok = svc.get("ok", False)
         label = _SERVICE_LABELS.get(key, key)
-        port = _SERVICE_URLS.get(key, "")
+        checked = _checked_address(key, svc, cfg)
         if not svc_ok:
             n_down += 1
-            cell = f"[red]✗ unreachable[/red]  [dim]{port}[/dim]"
+            cell = "[red]✗ unreachable[/red]"
         elif key == "ray_serve":
             loaded = svc.get("models", [])
-            cell = f"[green]✓ ok[/green]  [dim]{len(loaded)} model(s) loaded  {port}[/dim]"
-        elif key == "control_plane":
-            cell = f"[green]✓ ok[/green]  [dim]{port}[/dim]"
+            cell = f"[green]✓ ok[/green]  [dim]{len(loaded)} model(s) loaded[/dim]"
         elif key == "prefect":
             runs = svc.get("active_runs", None)
-            extra = f"  {runs} active run(s)" if runs is not None else ""
-            cell = f"[green]✓ ok[/green]  [dim]{extra}  {port}[/dim]"
+            extra = f"  [dim]{runs} active run(s)[/dim]" if runs is not None else ""
+            cell = f"[green]✓ ok[/green]{extra}"
         else:
-            cell = f"[green]✓ ok[/green]  [dim]{port}[/dim]"
-        rows.append([label, cell])
+            cell = "[green]✓ ok[/green]"
+        rows.append([label, cell, f"[dim]{checked}[/dim]"])
 
     _output.console.print()
-    _output.print_table("ExaMLOps Service Health", ["Service", "Status"], rows)
+    _output.print_table("ExaMLOps Service Health", ["Service", "Status", "Checked"], rows)
 
     if n_down:
         _output.warning(

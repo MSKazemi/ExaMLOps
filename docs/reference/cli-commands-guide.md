@@ -34,6 +34,13 @@ First-touch commands for orienting yourself on an ExaMLOps deployment: check pla
 
 Shows service health, pending approvals, and production models in one view. This is the default landing command when you sit down at a terminal.
 
+The health table's **Checked** column is the address that was actually probed. Every verdict except
+the control plane's own comes from the control plane, so under Docker Compose the addresses are
+in-network service names (`http://mlflow:5000`, `http://orchestrator:4200/api`) rather than the host
+port map you would open in a browser — open the address shown, not the one you expect. A `?` means
+the control plane is an older build that does not report what it checked; `exa` says so instead of
+guessing.
+
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa status` | Prints a platform snapshot: service health, pending approvals, and production models. | Your first-thing-in-the-morning check that MLflow/Prefect/Ray/control-plane are up and nothing is stuck awaiting approval. | `exa status`<br>`exa status --watch --interval 10` |

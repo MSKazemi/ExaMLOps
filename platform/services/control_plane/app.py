@@ -1160,9 +1160,17 @@ def health() -> dict[str, Any]:
         )
         poller_info["stale"] = _is_poller_stale()
 
-    all_ok = all(v == "ok" for v in _startup_checks.values())
+    # `all()` over an empty dict is vacuously true, so an unpopulated `_startup_checks`
+    # used to publish `status: "ok"` — a machine-readable all-clear from a process that had
+    # not run a single check (seen with `uvicorn --lifespan off`, and in any harness that
+    # mounts the app without entering the lifespan). Not-yet-checked is `starting`, which is
+    # honest and still 200, so a container healthcheck that only reads the code is unaffected.
+    if not _startup_checks:
+        status = "starting"
+    else:
+        status = "ok" if all(v == "ok" for v in _startup_checks.values()) else "degraded"
     return {
-        "status": "ok" if all_ok else "degraded",
+        "status": status,
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "auth_configured": _token_is_usable(),
@@ -1230,13 +1238,18 @@ def platform_status() -> dict[str, Any]:
     ray_models: list[str] = (
         [m.get("name", m) if isinstance(m, dict) else m for m in (ray_data or [])] if ray_ok else []
     )
+    # Report *which address was probed*, not just the verdict. The control plane pings its own
+    # in-network peers (`http://mlflow:5000` under compose), while `exa status` printed the host
+    # port map (`:15000`) beside each result — so a reader was told an address that had not been
+    # checked and, on a remote deployment, could not be opened either. Additive: an older client
+    # ignores the field, a newer client falls back when it is absent.
     return {
         "services": {
-            "control_plane": {"ok": True},
-            "mlflow": {"ok": mlflow_ok},
-            "prefect": {"ok": prefect_ok},
-            "ray_serve": {"ok": ray_ok, "models": ray_models},
-            "dashboard": {"ok": dashboard_ok},
+            "control_plane": {"ok": True, "url": "self"},
+            "mlflow": {"ok": mlflow_ok, "url": f"{MLFLOW_URL}/health"},
+            "prefect": {"ok": prefect_ok, "url": f"{PREFECT_API_URL}/health"},
+            "ray_serve": {"ok": ray_ok, "models": ray_models, "url": f"{RAY_SERVE_URL}/models"},
+            "dashboard": {"ok": dashboard_ok, "url": f"{DASHBOARD_URL}/api/health"},
         },
         "pending_approvals": pending_count,
     }

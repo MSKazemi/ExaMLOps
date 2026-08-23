@@ -724,3 +724,44 @@ def test_webhook_gitlab_malformed_json_returns_400(cp, monkeypatch):
         content=b"{not json",
     )
     assert resp.status_code == 400
+
+
+def test_health_says_starting_not_ok_before_any_check_runs(cp):
+    """`all()` over an empty dict is vacuously true — that must not become an all-clear.
+
+    An unpopulated `_startup_checks` used to publish `status: "ok"`: a machine-readable clean
+    bill of health from a process that had not run a single check. Reachable with
+    `uvicorn --lifespan off`, and in any harness that mounts the app without entering the
+    lifespan. Not-yet-checked is `starting`, and it is still HTTP 200 so a container
+    healthcheck reading only the status code is unaffected.
+    """
+    cp._startup_checks = {}
+    client = TestClient(cp.app)
+    data = client.get("/health").json()
+    assert data["startup_checks"] == {}
+    assert data["status"] == "starting", "an empty startup_checks dict must not be reported as 'ok'"
+
+    # The other direction: once checks have actually run and passed, 'ok' is still reachable.
+    cp._startup_checks = {"db": "ok", "registry": "ok", "token": "ok"}
+    assert client.get("/health").json()["status"] == "ok"
+    cp._startup_checks = {"db": "ok", "token": "missing"}
+    assert client.get("/health").json()["status"] == "degraded"
+
+
+def test_status_reports_the_address_it_probed(cp):
+    """`GET /status` must say *where* each check went, not only whether it passed.
+
+    The control plane pings its in-network peers, so the verdict alone is ambiguous to any client
+    that does not share its network view — `exa status` was filling the gap with the host port
+    map, which is a different address entirely.
+    """
+    client = TestClient(cp.app)
+    services = client.get("/status").json()["services"]
+
+    assert set(services) == {"control_plane", "mlflow", "prefect", "ray_serve", "dashboard"}
+    for name, svc in services.items():
+        assert "url" in svc, f"{name} reports a verdict without saying what it checked"
+    # The control plane is the thing answering, so it has no peer address to report.
+    assert services["control_plane"]["url"] == "self"
+    assert services["mlflow"]["url"].startswith(cp.MLFLOW_URL)
+    assert services["ray_serve"]["url"].startswith(cp.RAY_SERVE_URL)

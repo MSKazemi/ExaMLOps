@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The documentation site had no home page.** `mkdocs build` produced no `index.html`, so the
+  root of the published docs was a 404 — the one URL a reader, a search engine or an answer engine
+  reaches first. `docs/index.md` is now a real landing page (what ExaMLOps is, a start-here table
+  routing to the quick start / architecture / CLI guide / dashboard guide, what the platform
+  covers, and the four interfaces over shared code paths), wired in as `- Home:` at the top of the
+  nav. Verified with a clean `mkdocs build`: `site/index.html` absent → present, and the build's
+  warning set is byte-identical before and after, so the new page introduced no broken link.
+
 - **`exa chat` now installs.** The command existed, and the first thing it did on a clean checkout
   was refuse: *"the kq terminal client is not installed"*. ExaMLOps adopts
   [kube-q](https://github.com/MSKazemi/kube_q) unforked rather than writing a second REPL — but
@@ -20,6 +28,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`exa status` printed, beside every health verdict, an address that was not the address
+  checked.** The verdicts come from the control plane, which under compose probes its in-network
+  peers — `http://mlflow:5000`, `http://orchestrator:4200/api`, `http://ray-serving:8001`,
+  `http://dashboard:8099` — while the CLI rendered a hard-coded host port map (`:15000`, `:14200`,
+  `:18001`, `:18099`) that it had never contacted. On any deployment that is not a laptop the two
+  disagree, and an operator debugging an `✗ unreachable` opens the wrong URL, finds it healthy, and
+  distrusts the tool rather than the service. `/status` now reports the URL it used per service and
+  `exa status` shows it in a **Checked** column; where a deployment predates that field the column
+  says `?` rather than guessing, since guessing is what was wrong. The unused `_SERVICE_URLS` map is
+  gone. Guarded both ways in `tests/unit/test_cli_status.py` and
+  `platform/services/control_plane/tests/test_reliability.py`.
+
 - **Terminal messages silently deleted any bracketed word, including the install commands they
   were advertising.** `_output` renders through Rich, which reads `[chat]` as a style tag, so
   `uv pip install 'examlops[chat]'` reached the terminal as `uv pip install 'examlops'` — an
@@ -28,8 +48,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   is now central to the family rather than per-call-site, since callers pass prose and prose
   contains brackets: extras, TOML section headers, `[WARNING]` log lines. Guarded in
   `tests/unit/test_cli_output_formats.py`, proved red on two of the functions.
-
-### Fixed
 
 - **Three agent write tools could change the platform and then report that they had not.**
   `hpc_approve_cluster`, `project_assign_model` and `project_add_member` wrapped their audit write
