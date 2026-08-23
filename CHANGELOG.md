@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **Every multi-window burn-rate alert consulted one window.** `examlops.slo.generate_rules`
+  built its two operands from the same string — `err_short` and `err_long` were both
+  `1 - (sli_query)` — so each generated alert was `(X > t) and (X > t)`, which is `X > t`. The
+  window durations reached only the alert's *name* and its annotation, which told the reader the
+  budget was burning "over 5m+1h" while nothing ranged over either. The long window is the entire
+  point of the pattern: it is what makes a short window safe to page on, and ADR 0023 explicitly
+  rejects single-window alerts as the alternative it was avoiding. The alerts now range over the
+  generated `:error_ratio` recording rule with the short **and** the long window — that recording
+  rule is why it exists, since PromQL can only subscript a selector, which is how both operands
+  came to be one expression in the first place. Verified promtool-valid for both the default and a
+  custom `sli_query` spec. Guarded by `tests/unit/test_burn_rate_alerts_use_two_windows.py`
+  (4 of 8 proved red against the previous code).
+
+- The `promtool` leg of the C6 acceptance criteria (`test_slo.py::test_gwt1_promtool_validates`)
+  has never executed on any machine: promtool is absent from the developer venv and from the
+  GitHub `examlops` job, and GitLab's `test:infra:alert-rules` job runs promtool over the static
+  `alert_rules.yml` — not over these generated rules. Run by hand it passes, and it passed just as
+  happily while both windows were identical, because that is valid PromQL. Its docstring now says
+  so, and points at the semantic guard that runs everywhere.
+
 - **The published environment-variable reference was ~95 variables behind the code.**
   `docs/reference/env-vars.md` is the public answer to "what can I set?", and nothing had ever
   compared it to what the platform actually reads. Missing from it: `PLATFORM_DB` (the datastore
