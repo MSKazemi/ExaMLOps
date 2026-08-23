@@ -5,7 +5,7 @@ themed, accessible primitives that the domain consoles (MLOps, Facility, FinOps,
 It is **dependency-free** (self-contained SVG/CSS) and colour-blind-safe: every chart's colour comes
 from the F3 status tokens and is always paired with a label or value.
 
-- **Feature:** F4 · **Design:** [ADR 0055](../../design/adr/0055-dashboard-visualization-system.md) ·
+- **Feature:** F4 · **Design:** ADR 0055 (`design/adr/0055-dashboard-visualization-system.md`) ·
   **Spec:** `design/vision/specs/F4-visualization-system.md`
 - **Code:** `platform/services/dashboard/frontend/src/lib/viz.ts` +
   `platform/services/dashboard/frontend/src/components/viz/`

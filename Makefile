@@ -788,9 +788,13 @@ docs-serve: install-dev ## Serve MkDocs locally at http://localhost:8080 (hot-re
 	@$(UV) pip install -q mkdocs-material mkdocs-minify-plugin 2>/dev/null || true
 	@$(VENV)/bin/mkdocs serve --dev-addr 0.0.0.0:8080
 
-docs-build: install-dev ## Build MkDocs static site → site/
+docs-build: install-dev ## Build MkDocs static site → site/ (strict: a broken link fails)
 	@$(UV) pip install -q mkdocs-material mkdocs-minify-plugin 2>/dev/null || true
-	@$(VENV)/bin/mkdocs build --clean
+	@# --strict turns mkdocs' link warnings into failures. Twenty guides once linked to
+	@# design/adr/*.md, which is outside docs_dir and never published, so the built site
+	@# shipped twenty dead links and the build said nothing. Warnings are zero as of
+	@# 2026-08-23; keep it that way by failing here rather than in a reader's browser.
+	@$(VENV)/bin/mkdocs build --clean --strict
 	@printf "$(GREEN)Docs built: site/index.html$(RESET)\n"
 
 docs-cli: install-dev ## Regenerate the full CLI reference from the live command tree

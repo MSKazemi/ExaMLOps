@@ -9,7 +9,7 @@
 │ - Auth: JWT in localStorage                                                           │
 │ - Pages: Overview / Services / Models / Pipelines / Approvals / Config / Audit / Docs │
 └──────────────┬────────────────────────────────────────────────────────────────────────┘
-               │ HTTPS (operator's reverse proxy) → HTTP on 8088
+               │ HTTPS (operator's reverse proxy) → HTTP on 8099
                ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ FastAPI backend  (platform/services/dashboard/backend/)            │

@@ -6,7 +6,7 @@ it reports *evidence coverage*, not certification, and surfaces gaps rather than
 
 Open it from the sidebar (**Governance**, admin only) or navigate to `/governance`.
 
-- **Feature:** F14 · **Design:** [ADR 0063](../../design/adr/0063-dashboard-governance-compliance-surface.md) ·
+- **Feature:** F14 · **Design:** ADR 0063 (`design/adr/0063-dashboard-governance-compliance-surface.md`) ·
   **Spec:** `design/vision/specs/F14-governance-compliance-surface.md`
 - **Backend:** `platform/services/dashboard/backend/governance.py` + `routers/governance.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/governance.ts` + `pages/Governance.tsx`

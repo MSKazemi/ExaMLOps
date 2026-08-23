@@ -56,5 +56,5 @@ table. They are edited at runtime through the Config page (admin only).
 | MinIO S3 API       | 9000 | yes | `minio_url`         | yes | no (see [architecture](architecture.md)) |
 | Prometheus         | 9090 | yes | `prometheus_url`    | yes | yes |
 | Grafana            | 3000 | yes | `grafana_url`       | yes | yes (with auth injection when `grafana_api_key` set) |
-| Dashboard (this)   | 8088 | n/a | n/a                 | n/a | n/a |
+| Dashboard (this)   | 8099 | n/a | n/a                 | n/a | n/a |
 | Dataplane sim      | 8010 | yes | `dataplane_sim_url` | yes | no |

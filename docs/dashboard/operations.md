@@ -21,12 +21,35 @@
 3. **Bring up the stack:** `make stack-up`. The dashboard creates its tables and
    seeds the three secret-key rows on first boot.
 
-4. **Sign in** at http://localhost:8088 — first with the viewer password to
+4. **Sign in** at http://localhost:18099 — first with the viewer password to
    verify the read path, then with the admin password.
 
 5. As admin, **set the Grafana API key** (Config → Credentials). Confirm by
    loading a Grafana panel via `/api/proxy/grafana/...` (or the Models page if
    it routes through Grafana).
+
+## Running it without Docker
+
+For frontend or backend work, run the two halves directly. The backend needs the same four
+secrets as the container; an in-memory database keeps the run throwaway.
+
+```bash
+cd platform/services/dashboard/backend
+export DATABASE_URL=sqlite+aiosqlite:///:memory:
+export DASHBOARD_VIEWER_PASSWORD=v DASHBOARD_ADMIN_PASSWORD=a
+export DASHBOARD_JWT_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+export DASHBOARD_SECRET_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+uvicorn main:app --reload --port 8099
+```
+
+```bash
+# second terminal
+cd platform/services/dashboard/frontend && npm install && npm run dev
+```
+
+Point `PLATFORM_DB` at the same `platform.db` the CLI uses if you want the consoles to show real
+platform state; otherwise they render their empty states. Schema migrations for the dashboard's
+own tables are Alembic's: `cd platform/services/dashboard/backend && alembic upgrade head`.
 
 ## Backup
 

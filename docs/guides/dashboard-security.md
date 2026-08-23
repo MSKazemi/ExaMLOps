@@ -3,7 +3,7 @@
 The dashboard ships a frontend + BFF **security-hardening baseline**: strict security headers on
 every response, a rate-limit guard on expensive queries, and defense-in-depth markdown sanitization.
 
-- **Feature:** F16 · **Design:** [ADR 0053](../../design/adr/0053-dashboard-frontend-security-hardening.md) ·
+- **Feature:** F16 · **Design:** ADR 0053 (`design/adr/0053-dashboard-frontend-security-hardening.md`) ·
   **Spec:** `design/vision/specs/F16-frontend-security-hardening.md`
 - **Backend:** `platform/services/dashboard/backend/security.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/sanitize.ts`

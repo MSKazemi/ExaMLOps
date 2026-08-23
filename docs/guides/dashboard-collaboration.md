@@ -4,7 +4,7 @@ The dashboard lets teams collaborate directly on platform entities: comment with
 entity's activity trail, and share a time-frozen view via a scoped, expiring link. Everything is
 tenant-scoped, sanitized, and audited.
 
-- **Feature:** F22 · **Design:** [ADR 0073](../../design/adr/0073-dashboard-collaboration-workflow.md) ·
+- **Feature:** F22 · **Design:** ADR 0073 (`design/adr/0073-dashboard-collaboration-workflow.md`) ·
   **Spec:** `design/vision/specs/F22-collaboration-workflow.md`
 - **Backend:** `platform/services/dashboard/backend/collab.py` + `routers/collab.py`
 - **Frontend:** `lib/collab.ts` + `components/{CommentThread,ShareSnapshotButton}.tsx` (adopted on ModelDetail)

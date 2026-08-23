@@ -14,7 +14,7 @@ secret you enter is stored in the CLI/serving-readable secrets store.
 
 ## Prerequisites
 
-- The dashboard running (`make dashboard-up`, or the [local-dev recipe](../../CLAUDE.md#dashboard)).
+- The dashboard running (`make dashboard-up`, or the [local-dev recipe](../dashboard/operations.md#running-it-without-docker)).
 - The `projectsConsole` feature flag enabled (default on).
 - `PLATFORM_DB` pointing at the same `platform.db` the CLI uses (docker-compose does this).
 

@@ -4,7 +4,7 @@ The dashboard has a context-aware **copilot** in the shell. It answers grounded 
 platform and can **suggest** `exa` commands — but it never runs anything. It is a thin proxy to the
 **existing** Skipper agent (the same one `exa ask` uses), so there is no new model and no paid API.
 
-- **Feature:** F11 · **Design:** [ADR 0065](../../design/adr/0065-dashboard-embedded-copilot.md) ·
+- **Feature:** F11 · **Design:** ADR 0065 (`design/adr/0065-dashboard-embedded-copilot.md`) ·
   **Spec:** `design/vision/specs/F11-embedded-copilot.md`
 - **Backend:** `platform/services/dashboard/backend/copilot.py` + `routers/copilot.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/copilot.ts` + `components/CopilotPanel.tsx`

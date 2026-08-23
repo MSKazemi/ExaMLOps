@@ -7,7 +7,7 @@ jobs. It is read-only and degrades gracefully when telemetry is missing.
 
 Open it from the sidebar (**Facility**, the `Cpu` icon) or navigate to `/facility`.
 
-- **Feature:** F6 · **Design:** [ADR 0059](../../design/adr/0059-dashboard-exascale-facility-console.md) ·
+- **Feature:** F6 · **Design:** ADR 0059 (`design/adr/0059-dashboard-exascale-facility-console.md`) ·
   **Spec:** `design/vision/specs/F6-exascale-facility-console.md`
 - **Backend:** `platform/services/dashboard/backend/facility.py` + `routers/facility.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/facility.ts` + `pages/FacilityConsole.tsx`

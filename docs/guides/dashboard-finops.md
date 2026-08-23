@@ -6,7 +6,7 @@ cost/carbon backend and is honest about estimation uncertainty.
 
 Open it from the sidebar (**FinOps**, the `$` icon) or navigate to `/finops`.
 
-- **Feature:** F13 · **Design:** [ADR 0066](../../design/adr/0066-dashboard-finops-green-ai-surface.md) ·
+- **Feature:** F13 · **Design:** ADR 0066 (`design/adr/0066-dashboard-finops-green-ai-surface.md`) ·
   **Spec:** `design/vision/specs/F13-finops-green-ai-surface.md`
 - **Backend:** `platform/services/dashboard/backend/finops.py` + `routers/finops.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/finops.ts` + `pages/Finops.tsx`

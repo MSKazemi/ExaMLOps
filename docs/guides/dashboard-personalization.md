@@ -4,7 +4,7 @@ The dashboard remembers how you like to work: a preference center, a watchlist o
 about, a first-run guided tour, and a contextual help drawer with a glossary — all self-hosted and
 dependency-free.
 
-- **Feature:** F21 · **Design:** [ADR 0072](../../design/adr/0072-dashboard-personalization-workspaces.md) ·
+- **Feature:** F21 · **Design:** ADR 0072 (`design/adr/0072-dashboard-personalization-workspaces.md`) ·
   **Spec:** `design/vision/specs/F21-personalization-workspaces-onboarding.md`
 - **Frontend:** `lib/prefs.ts`, `lib/glossary.ts`, `pages/Preferences.tsx`,
   `components/{OnboardingTour,HelpDrawer,PinButton}.tsx`

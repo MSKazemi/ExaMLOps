@@ -4,7 +4,7 @@ The dashboard ships a single reusable table primitive — `<DataGrid/>` — that
 instead of hand-rolling a `<table>`. It provides sorting, faceted filtering, pagination, row selection,
 audited bulk actions, and CSV export, all **dependency-free** (no TanStack Table / virtualization lib).
 
-- **Feature:** F17 · **Design:** [ADR 0061](../../design/adr/0061-dashboard-data-grid-bulk-ops.md) ·
+- **Feature:** F17 · **Design:** ADR 0061 (`design/adr/0061-dashboard-data-grid-bulk-ops.md`) ·
   **Spec:** `design/vision/specs/F17-data-grid-bulk-ops.md`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/datagrid.ts` (pure helpers) +
   `components/DataGrid.tsx` (component)

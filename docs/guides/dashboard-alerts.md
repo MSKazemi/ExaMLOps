@@ -6,7 +6,7 @@ acknowledging one is audited.
 
 Open it from the sidebar (**Alerts**) or navigate to `/alerts`.
 
-- **Feature:** F12 · **Design:** [ADR 0062](../../design/adr/0062-dashboard-alerting-incident-oncall.md) ·
+- **Feature:** F12 · **Design:** ADR 0062 (`design/adr/0062-dashboard-alerting-incident-oncall.md`) ·
   **Spec:** `design/vision/specs/F12-alerting-incident-oncall.md`
 - **Backend:** `platform/services/dashboard/backend/alerts.py` + `routers/alerts.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/alerts.ts` + `pages/Alerts.tsx`

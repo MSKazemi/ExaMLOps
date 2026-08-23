@@ -3,7 +3,7 @@
 The dashboard adapts across form factors — laptop to ultrawide — and ships a **NOC/wall kiosk** mode, a
 pop-out for live panels, and a print stylesheet for clean reports. All dependency-free.
 
-- **Feature:** F20 · **Design:** [ADR 0069](../../design/adr/0069-dashboard-responsive-multidevice-noc.md) ·
+- **Feature:** F20 · **Design:** ADR 0069 (`design/adr/0069-dashboard-responsive-multidevice-noc.md`) ·
   **Spec:** `design/vision/specs/F20-responsive-multidevice-noc.md`
 - **Frontend:** `lib/responsive.ts`, `lib/noc.ts`, `pages/NocWall.tsx`, `components/PopOutButton.tsx`,
   `index.css` (print)

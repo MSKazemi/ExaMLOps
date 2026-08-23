@@ -7,7 +7,7 @@ promote without dropping to the CLI.
 
 Open it from the sidebar (**MLOps**, the `Boxes` icon) or navigate to `/mlops`.
 
-- **Feature:** F9 · **Design:** [ADR 0060](../../design/adr/0060-dashboard-mlops-console.md) ·
+- **Feature:** F9 · **Design:** ADR 0060 (`design/adr/0060-dashboard-mlops-console.md`) ·
   **Spec:** `design/vision/specs/F9-mlops-console.md`
 - **Backend:** `platform/services/dashboard/backend/mlops.py` + `routers/mlops.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/mlops.ts` + `pages/MlopsConsole.tsx`

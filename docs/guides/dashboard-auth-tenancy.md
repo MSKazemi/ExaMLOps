@@ -4,7 +4,7 @@ The dashboard authorizes actions with a **capability model** and scopes data by 
 backend (BFF) is the sole enforcement point; the UI uses capabilities only to decide what to
 show/disable and to explain why.
 
-- **Feature:** F15 · **Design:** [ADR 0057](../../design/adr/0057-dashboard-authn-authz-multitenancy.md) ·
+- **Feature:** F15 · **Design:** ADR 0057 (`design/adr/0057-dashboard-authn-authz-multitenancy.md`) ·
   **Spec:** `design/vision/specs/F15-authn-authz-multitenancy.md`
 - **Backend:** `platform/services/dashboard/backend/capabilities.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/capabilities.ts`,

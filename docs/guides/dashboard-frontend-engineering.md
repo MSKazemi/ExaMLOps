@@ -4,7 +4,7 @@ The dashboard frontend follows a small set of engineering conventions so pages s
 and fast. This guide documents the baseline the codebase currently enforces and the parts still on the
 roadmap.
 
-- **Feature:** F23 · **Design:** [ADR 0052](../../design/adr/0052-dashboard-frontend-engineering-baseline.md) ·
+- **Feature:** F23 · **Design:** ADR 0052 (`design/adr/0052-dashboard-frontend-engineering-baseline.md`) ·
   **Spec:** `design/vision/specs/F23-frontend-engineering-baseline.md`
 - **Code:** `platform/services/dashboard/frontend/src/lib/errors.ts`, `lib/flags.ts`,
   `components/ErrorBoundary.tsx`, `App.tsx`

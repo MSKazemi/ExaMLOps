@@ -6,7 +6,7 @@ continuous-eval scores. Surfaces whose backends aren't wired yet degrade gracefu
 
 Open it from the sidebar (**LLMOps**) or navigate to `/llmops`.
 
-- **Feature:** F10 · **Design:** [ADR 0064](../../design/adr/0064-dashboard-llmops-console.md) ·
+- **Feature:** F10 · **Design:** ADR 0064 (`design/adr/0064-dashboard-llmops-console.md`) ·
   **Spec:** `design/vision/specs/F10-llmops-console.md`
 - **Backend:** `platform/services/dashboard/backend/llmops.py` + `routers/llmops.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/llmops.ts` + `pages/Llmops.tsx`

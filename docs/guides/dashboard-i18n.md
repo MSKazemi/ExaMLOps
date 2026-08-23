@@ -4,7 +4,7 @@ The dashboard has a lightweight, **dependency-free** i18n layer: externalized co
 (English + Italian), locale-aware `Intl` formatting, and a **shared HPC-unit formatter** used across the
 facility and FinOps surfaces.
 
-- **Feature:** F19 · **Design:** [ADR 0071](../../design/adr/0071-dashboard-i18n-localization.md) ·
+- **Feature:** F19 · **Design:** ADR 0071 (`design/adr/0071-dashboard-i18n-localization.md`) ·
   **Spec:** `design/vision/specs/F19-i18n-localization.md`
 - **Frontend:** `lib/i18n.ts` (pure), `hooks/i18nContext.ts` + `hooks/I18nProvider.tsx`,
   `components/LocaleSwitcher.tsx`

@@ -4,7 +4,7 @@ The dashboard has a self-hosted feature-flag layer. Flags are evaluated **server
 caller's context (tenant, role, and a deterministic percentage bucket); the client receives
 *decisions*, not rules. Admins manage flags from the **Flags** page, and every change is audited.
 
-- **Feature:** F25 · **Design:** [ADR 0070](../../design/adr/0070-dashboard-feature-flags-staged-rollout.md) ·
+- **Feature:** F25 · **Design:** ADR 0070 (`design/adr/0070-dashboard-feature-flags-staged-rollout.md`) ·
   **Spec:** `design/vision/specs/F25-feature-flags-staged-rollout.md`
 - **Backend:** `platform/services/dashboard/backend/feature_flags.py` + `routers/flags.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/serverflags.ts` +

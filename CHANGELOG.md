@@ -28,6 +28,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The documentation site shipped 21 dead links, and the build never said so.** Twenty
+  `guides/dashboard-*.md` pages linked their design record as `../../design/adr/*.md` — a path
+  outside `docs_dir` that is never published — and one tutorial linked `../../CLAUDE.md`. Each
+  page already named its *spec* as an unlinked path on the same line, so the fix follows the
+  convention the files set themselves: the ADR is named, not linked. The tutorial's local-dev
+  recipe now points at a published section (**Running it without Docker**, new in the dashboard
+  operations runbook) instead of a file a reader does not have. `make docs-build` is `--strict`
+  from now on, so a broken link fails the build rather than reaching a reader's browser: warnings
+  went 21 → 0.
+
+- **Four dashboard docs sent operators to a port nothing listens on.** The runbook's sign-in step,
+  the audit `curl` example, the endpoint-inventory table and the architecture diagram all said
+  `8088`. Compose publishes `18099:8099` — 8088 is neither the host port nor the container port,
+  so step 4 of the first-time bootstrap ended in a connection refused. Host-facing references are
+  now `18099`, in-network ones `8099`.
+
 - **The control plane explained itself and the explanation was thrown away.** Asked to retrain an
   unknown dataset, `POST /retrain` answers `400` with *"Dataset 'NotADataset' not supported by
   JPCP. Supported: ['PM100Dataset', 'FDataDataset']"* — the list needed to retry. `_raise_http`
@@ -37,6 +53,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   status code cannot correct itself. The fallback now prefers the server's `detail` and keeps the
   code in the message; a body with nothing useful in it still falls back to the old text. Guarded
   in `tests/unit/test_cli_client.py`, proved red on two of the four cases.
+
+- **`exa status` printed, beside every health verdict, an address that was not the address
+  checked.** The verdicts come from the control plane, which under compose probes its in-network
+  peers — `http://mlflow:5000`, `http://orchestrator:4200/api`, `http://ray-serving:8001`,
+  `http://dashboard:8099` — while the CLI rendered a hard-coded host port map (`:15000`, `:14200`,
+  `:18001`, `:18099`) that it had never contacted. On any deployment that is not a laptop the two
+  disagree, and an operator debugging an `✗ unreachable` opens the wrong URL, finds it healthy, and
+  distrusts the tool rather than the service. `/status` now reports the URL it used per service and
+  `exa status` shows it in a **Checked** column; where a deployment predates that field the column
+  says `?` rather than guessing, since guessing is what was wrong. The unused `_SERVICE_URLS` map is
+  gone. Guarded both ways in `tests/unit/test_cli_status.py` and
+  `platform/services/control_plane/tests/test_reliability.py`.
 
 - **Terminal messages silently deleted any bracketed word, including the install commands they
   were advertising.** `_output` renders through Rich, which reads `[chat]` as a style tag, so

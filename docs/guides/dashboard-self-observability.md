@@ -6,7 +6,7 @@ telemetry egress** — everything is self-hosted.
 
 Open the status page from the sidebar (**Status**) or navigate to `/status`.
 
-- **Feature:** F24 · **Design:** [ADR 0067](../../design/adr/0067-dashboard-self-observability.md) ·
+- **Feature:** F24 · **Design:** ADR 0067 (`design/adr/0067-dashboard-self-observability.md`) ·
   **Spec:** `design/vision/specs/F24-dashboard-self-observability.md`
 - **Backend:** `platform/services/dashboard/backend/selfobs.py` + `routers/selfobs.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/telemetry.ts` + `pages/SelfObs.tsx`

@@ -4,7 +4,7 @@ The **command palette** is the dashboard's keyboard-first entry point. Press **�
 **Ctrl-K** (Linux/Windows) anywhere to open it, then type to fuzzy-navigate to any page or entity, run
 a role-scoped action, or search across models, HPC jobs, and the audit log.
 
-- **Feature:** F2 · **Design:** [ADR 0056](../../design/adr/0056-dashboard-command-palette-search.md) ·
+- **Feature:** F2 · **Design:** ADR 0056 (`design/adr/0056-dashboard-command-palette-search.md`) ·
   **Spec:** `design/vision/specs/F2-command-palette-search.md`
 - **Backend:** `platform/services/dashboard/backend/search.py` + `routers/search.py`
 - **Frontend:** `platform/services/dashboard/frontend/src/lib/commands.ts`, `lib/search.ts`,

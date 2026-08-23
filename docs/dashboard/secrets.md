@@ -93,5 +93,5 @@ No values — neither plaintext nor ciphertext — are stored in the audit table
 Read recent rows from the UI (admin → Audit page) or the API:
 
 ```bash
-curl -H "Authorization: Bearer $JWT" http://localhost:8088/api/audit?limit=50
+curl -H "Authorization: Bearer $JWT" http://localhost:18099/api/audit?limit=50
 ```

@@ -3,7 +3,7 @@
 The dashboard targets **WCAG 2.2 AA**. Accessibility is realized mostly through the F3 design system and
 a set of reusable primitives, so new surfaces inherit it rather than retrofitting each page.
 
-- **Feature:** F18 · **Design:** [ADR 0068](../../design/adr/0068-dashboard-accessibility.md) ·
+- **Feature:** F18 · **Design:** ADR 0068 (`design/adr/0068-dashboard-accessibility.md`) ·
   **Spec:** `design/vision/specs/F18-accessibility.md`
 - **Frontend:** `lib/a11y.ts` (pure), `hooks/useFocusTrap.ts`, `hooks/announcer.ts` +
   `hooks/useAnnouncer.tsx`, `components/SkipLink.tsx`, `index.css` (reduced-motion)
