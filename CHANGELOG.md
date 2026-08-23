@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The core CI gate could not fail on types, and `make preflight` mirrored the hole.**
+  `test:examlops` is the job both `deploy:lxp` and `release:gitlab` name in `needs:` — the list the
+  file itself calls the gate — and its mypy step ended in `|| true`, so the check every other gate
+  defers to reported success on types whatever it found. `preflight` mirrored it faithfully, `||
+  true` included, and its banner said so: *"(non-blocking, mirrors CI '|| true')"*. Both sides
+  agreed, neither could report a type error, and GitHub CI runs no mypy at all — leaving types
+  enforced only by a local `make check` nobody is obliged to run. Removing the swallow is safe
+  today: mypy is clean under CI's exact install (fresh venv, `uv pip install -e ".[dev]"`, its own
+  cache, 265 source files, exit 0), so the `|| true` was protecting nothing but the first type
+  error to land. The existing guard could not see this — it proves a job is *asked* for a verdict,
+  never that it can still give a negative one; `tests/unit/test_ci_gate_coverage.py` now closes
+  both sides, with a test for the matcher itself and a stated limit (it catches the explicit
+  idioms; it is not a shell semantics analyser).
+
 - **`exa chat` now reads as ExaMLOps, and refuses to open against an agent that is not running.**
   `kq` is adopted unforked, so out of the box it greeted an ExaMLOps operator as Kube-Q, *"your AI
   co-pilot for Kubernetes"*, and answered a refused connection with an offline REPL that retries
