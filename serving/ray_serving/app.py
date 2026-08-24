@@ -384,6 +384,12 @@ class MultiModelServer:
             description="Number of (model, alias) entries in the pre-loaded hot set",
             tag_keys=("replica",),
         )
+        # Publish it immediately, before any load is attempted. A gauge that is only written
+        # on a successful load does not read as 0 when nothing loaded — it does not exist, and
+        # `sum(ray_examlops_models_loaded) == 0` aggregates an absent series to an empty vector
+        # that matches nothing. RayServeNoModelsLoaded ("inference is impossible") was therefore
+        # silent in exactly the case it is named for. See _load_hot_aliases.
+        self._models_gauge.set(len(self._hot), tags={"replica": self._replica_id})
         self._reload_counter = Counter(
             "examlops_reload_total",
             description="Number of hot-reload operations",
@@ -411,6 +417,11 @@ class MultiModelServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Cannot reach MLflow at %s: %s", MLFLOW_TRACKING_URI, exc)
+            # `len(self._hot)`, not 0: the poller calls this again on a live replica, and the
+            # early return leaves the existing hot set untouched and still serving from cache.
+            # Reporting 0 there would page for an outage that is not happening. At first start
+            # the hot set is empty, so this is the 0 the alert needs.
+            self._models_gauge.set(len(self._hot), tags={"replica": self._replica_id})
             return
 
         new_hot: dict[tuple[str, str], dict[str, Any]] = {}

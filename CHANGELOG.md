@@ -7,6 +7,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **"No models loaded in Ray Serve" could not fire when no models were loaded.** The alert is
+  `sum(ray_examlops_models_loaded) == 0`, annotated *"inference is impossible"*. In PromQL, `sum()`
+  over a series that does not exist yields an **empty vector**, so `== 0` matches nothing — and the
+  gauge was only ever written *after* a successful registry scan. `_load_hot_aliases()` returns
+  early when MLflow is unreachable, before the `set()` at the end of the function, so a replica
+  that came up while MLflow was down published no series at all and the alert was structurally
+  silent in the one case it names. Nothing else covered it: `up{job="ray_serve"}` is `1` (Ray Serve
+  is healthy, it simply has no models), and every request resolves to `status="not_found"`, which
+  the error-rate and SLO burn alerts deliberately exclude because a 404 for a model the caller
+  named is normally the caller's mistake. **MLflow down at replica start therefore meant 100% of
+  inference failing with not one alert in the file firing.** Note the direction: with MLflow
+  *reachable* but holding no aliased models, `set(0)` ran, the series existed and the alert fired
+  correctly — so it worked in the case someone would notice anyway and was silent in the severe
+  one. The gauge is now published from replica start and on the unreachable path, where it reports
+  `len(self._hot)` rather than a blind `0` — the poller calls the same function on a live replica,
+  and the early return leaves the hot set untouched and still serving from cache, so `0` there
+  would page for an outage that is not happening. The alert also gained an `or absent(...)` arm so
+  it stays honest if any future path stops publishing the gauge. New
+  `tests/unit/test_absent_is_not_zero.py` pins all three registry states and adds the general rule:
+  an alert comparing a metric to a constant needs an `absent()` arm, since a value comparison can
+  never detect that the series is gone (`up` exempt — Prometheus synthesises it per target).
+
 - **Both SLO error-budget alerts paged on a single error, and printed a burn rate that was off by
   four to six orders of magnitude.** Burn rate is a ratio over a ratio — the observed error ratio
   divided by the error budget (`1 - SLO`). `SLOErrorBudgetFastBurn` and `SLOErrorBudgetSlowBurn`

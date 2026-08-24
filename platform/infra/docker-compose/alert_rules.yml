@@ -61,8 +61,12 @@ groups:
           summary: "Ray Serve p99 latency > 3 s (CRITICAL)"
           description: "p99 prediction latency is {{ $value | humanizeDuration }}."
 
+      # `or absent(...)`: `sum()` over a series that does not exist yields an empty vector, so
+      # `== 0` matched nothing precisely when nothing was loaded. The gauge is now published from
+      # replica start (serving/ray_serving/app.py), which fixes the cause; this arm means the
+      # alert still fires if any future path stops publishing it, instead of going quiet again.
       - alert: RayServeNoModelsLoaded
-        expr: sum(ray_examlops_models_loaded) == 0
+        expr: sum(ray_examlops_models_loaded) == 0 or absent(ray_examlops_models_loaded)
         for: 5m
         labels:
           severity: critical
