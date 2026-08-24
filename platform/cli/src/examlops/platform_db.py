@@ -1642,6 +1642,10 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # Unified Project workspace (ADR 0086): per-project cost attribution anchor.
     "model_costs": {
         "project": "TEXT",
+        # The scheduler reports (gpu_hours, cpu_hours) per job and the cost provider prices both;
+        # only the GPU half was ever stored, so a CPU-only site kept no record of the work it did.
+        # NULL = recorded before this column existed, and is not the same as 0.
+        "cpu_hours": "REAL",
     },
     # ADR 0111 no uncalibrated judge may gate: evaluator provenance (G7.3) + the uncertainty
     # interval every score must carry (G7.4). NULL = recorded before the ADR landed.

@@ -553,6 +553,7 @@ def cost(
                     pass
 
             gpu_hours = None
+            cpu_hours = None
             cost_usd = None
             if scheduler == "mock":
                 job_id, gpu_hours = _mock_slurm_data(model, ver_num)
@@ -567,7 +568,12 @@ def cost(
                 if gpu_hours is not None:
                     cost_usd = estimate_cost_via_provider(gpu_hours)["cost_usd"]
 
-            record_model_cost(model, ver_num, run_id, job_id, gpu_hours, cost_usd)
+            # cpu_hours is stored, not just priced: Flux reports it per job and it is the only
+            # record of the energy a run without an accelerator actually spent. Dropping it here
+            # is what made `exa finops carbon` structurally zero on a CPU-only site.
+            record_model_cost(
+                model, ver_num, run_id, job_id, gpu_hours, cost_usd, cpu_hours=cpu_hours
+            )
 
             if gpu_hours is not None and cost_usd is not None:
                 _tag_mlflow_version(cfg, model, str(ver_num), gpu_hours, cost_usd)

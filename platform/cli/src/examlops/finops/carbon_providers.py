@@ -7,8 +7,9 @@ YAML formula (see ``.claude/plans/finops-plugins/``).
 
 Providers registered here:
 
-* ``green-ai-default`` (**default**) — the platform's original formula, byte-for-byte. Guarantees zero
-  behaviour change when nothing is configured.
+* ``green-ai-default`` (**default**) — the platform's original formula plus a CPU-core-hours term;
+  byte-for-byte the original whenever ``cpu_hours`` is 0, so nothing changes for GPU-only sites.
+  The only built-in that can account for a run that used no accelerator.
 * ``codecarbon-like`` — component-based energy (GPU + CPU + RAM), after the CodeCarbon/mlco2 approach.
 * ``ccf-like`` — Cloud Carbon Footprint's ``usage × energy-coeff × PUE × grid-emissions`` shape.
 
@@ -26,7 +27,7 @@ from ..providers import Provider, ProviderMeta, register_provider
 from . import carbon
 
 # Extra documented defaults for the component/coefficient models (all overridable).
-DEFAULT_CPU_TDP_WATTS = 120.0  # a typical server CPU package
+DEFAULT_CPU_TDP_WATTS = carbon.DEFAULT_CPU_TDP_WATTS  # re-exported; defined with the pure model
 DEFAULT_RAM_WATTS_PER_GB = 0.3725  # CodeCarbon's DRAM power model (~3 W / 8 GB)
 DEFAULT_RAM_GB = 32.0
 DEFAULT_ENERGY_COEFF_KWH_PER_GPU_HOUR = 0.4  # CCF-style pre-PUE energy coefficient
@@ -47,13 +48,22 @@ class GreenAIDefaultProvider(Provider):
     def metadata(self) -> ProviderMeta:
         return ProviderMeta(
             methodology=(
-                "Energy = GPU-hours × (TDP/1000) × PUE; CO₂e = energy × grid intensity. "
-                "Grid intensity and TDP are estimates; treat figures as ±30%."
+                "Energy = (GPU-hours × GPU_TDP + CPU-core-hours × CPU_TDP)/1000 × PUE; "
+                "CO₂e = energy × grid intensity. Grid intensity and TDP are estimates; treat "
+                "figures as ±30%. With no CPU-hours this is the platform's original GPU-only "
+                "formula, unchanged."
             ),
             uncertainty=0.30,
             units={"kwh": "kWh", "co2e_g": "gCO2e"},
             outputs=("kwh", "co2e_g"),
-            params=("gpu_hours", "gpu_tdp_watts", "pue", "grid_intensity_g_per_kwh"),
+            params=(
+                "gpu_hours",
+                "gpu_tdp_watts",
+                "cpu_hours",
+                "cpu_tdp_watts",
+                "pue",
+                "grid_intensity_g_per_kwh",
+            ),
             source="conservative EU data-centre defaults",
         )
 
@@ -62,12 +72,23 @@ class GreenAIDefaultProvider(Provider):
         tdp = _f(inputs, "gpu_tdp_watts", carbon.DEFAULT_GPU_TDP_WATTS)
         pue = _f(inputs, "pue", carbon.DEFAULT_PUE)
         grid = _f(inputs, "grid_intensity_g_per_kwh", carbon.DEFAULT_GRID_INTENSITY_G_PER_KWH)
-        # Byte-identical to the legacy estimate_carbon path.
-        return carbon.estimate_carbon(gpu_hours, tdp, pue, grid)
+        cpu_hours = _f(inputs, "cpu_hours", 0.0)
+        cpu_tdp = _f(inputs, "cpu_tdp_watts", carbon.DEFAULT_CPU_TDP_WATTS)
+        # With cpu_hours = 0 this is byte-identical to the legacy estimate_carbon path.
+        return carbon.estimate_carbon(
+            gpu_hours, tdp, pue, grid, cpu_hours=cpu_hours, cpu_tdp_watts=cpu_tdp
+        )
 
 
 class CodeCarbonLikeProvider(Provider):
-    """Component-based energy: GPU + CPU + RAM draw over the run, scaled by PUE (CodeCarbon-style)."""
+    """Component-based energy: GPU + CPU + RAM draw over the run, scaled by PUE (CodeCarbon-style).
+
+    A whole-node model charged over **GPU-hours**: the CPU and RAM terms are the draw of the node
+    hosting the accelerators, not an independent CPU workload. It therefore declares no
+    ``cpu_hours`` parameter, and the seam refuses a call that supplies them rather than dropping
+    them — extending this formula to CPU-only runs would be inventing a methodology, not applying
+    CodeCarbon's.
+    """
 
     name = "codecarbon-like"
     version = "1.0"
@@ -109,7 +130,11 @@ class CodeCarbonLikeProvider(Provider):
 
 
 class CCFLikeProvider(Provider):
-    """Cloud Carbon Footprint shape: usage × energy-coefficient × PUE × grid-emissions."""
+    """Cloud Carbon Footprint shape: usage × energy-coefficient × PUE × grid-emissions.
+
+    The coefficient is per GPU-hour, so like ``codecarbon-like`` this declares no ``cpu_hours``
+    term; a CPU coefficient would be a number nobody here has measured.
+    """
 
     name = "ccf-like"
     version = "1.0"
@@ -158,14 +183,22 @@ class GridLiveProvider(Provider):
     def metadata(self) -> ProviderMeta:
         return ProviderMeta(
             methodology=(
-                "Energy = GPU-hours × (TDP/1000) × PUE; CO₂e = energy × LIVE grid intensity "
-                "fetched from EXAMLOPS_GRID_INTENSITY_URL (cached, ~5 min). Degrades to the "
-                "static default when no endpoint is configured or a fetch fails."
+                "Energy = (GPU-hours × GPU_TDP + CPU-core-hours × CPU_TDP)/1000 × PUE; "
+                "CO₂e = energy × LIVE grid intensity fetched from EXAMLOPS_GRID_INTENSITY_URL "
+                "(cached, ~5 min). Degrades to the static default when no endpoint is configured "
+                "or a fetch fails."
             ),
             uncertainty=0.20,
             units={"kwh": "kWh", "co2e_g": "gCO2e"},
             outputs=("kwh", "co2e_g"),
-            params=("gpu_hours", "gpu_tdp_watts", "pue", "grid_intensity_g_per_kwh"),
+            params=(
+                "gpu_hours",
+                "gpu_tdp_watts",
+                "cpu_hours",
+                "cpu_tdp_watts",
+                "pue",
+                "grid_intensity_g_per_kwh",
+            ),
             source="live grid-intensity endpoint (operator-configured)",
         )
 
@@ -181,7 +214,15 @@ class GridLiveProvider(Provider):
             from .grid_intensity import current_grid_intensity
 
             grid = current_grid_intensity(carbon.DEFAULT_GRID_INTENSITY_G_PER_KWH)
-        return carbon.estimate_carbon(gpu_hours, tdp, pue, grid)
+        # Stays what its docstring says it is: green-ai-default's energy model, live grid signal.
+        return carbon.estimate_carbon(
+            gpu_hours,
+            tdp,
+            pue,
+            grid,
+            cpu_hours=_f(inputs, "cpu_hours", 0.0),
+            cpu_tdp_watts=_f(inputs, "cpu_tdp_watts", carbon.DEFAULT_CPU_TDP_WATTS),
+        )
 
 
 def register_builtins() -> None:

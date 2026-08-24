@@ -6,32 +6,57 @@ documented data-centre figures and can all be overridden per call / per env.
 
 References for the defaults:
 * GPU TDP 400 W — mid-range data-centre accelerator board power.
+* CPU TDP 120 W — a typical server CPU package.
 * PUE 1.5 — typical (not best-in-class) data-centre power-usage effectiveness.
 * Grid intensity 300 gCO2e/kWh — order-of-magnitude EU average; override with the
   real-time value from a grid-intensity API for accuracy.
+
+**CPU-hours are a first-class input, not an optional extra.** Accounting only for GPU-hours makes
+every CPU-only run emit exactly zero, which is the best possible number and never the true one —
+and CPU-only is not a corner case here: the platform runs on Flux and Slurm sites whose nodes have
+no accelerators at all, and ``exa models cost`` already reads ``(gpu_hours, cpu_hours)`` per job
+from the scheduler. A run that used no GPU still burned energy.
 """
 
 from __future__ import annotations
 
 # Documented defaults (all overridable).
 DEFAULT_GPU_TDP_WATTS = 400.0
+DEFAULT_CPU_TDP_WATTS = 120.0
 DEFAULT_PUE = 1.5
 DEFAULT_GRID_INTENSITY_G_PER_KWH = 300.0
+
+
+class CarbonInputUnaccounted(ValueError):
+    """The chosen provider has no term for an input it was given.
+
+    Raised instead of dropping the input and returning a smaller number. A carbon figure that
+    quietly omits part of the work is worse than no figure: it is publishable, plausible and low.
+    """
 
 
 def estimate_energy_kwh(
     gpu_hours: float,
     gpu_tdp_watts: float = DEFAULT_GPU_TDP_WATTS,
     pue: float = DEFAULT_PUE,
+    *,
+    cpu_hours: float = 0.0,
+    cpu_tdp_watts: float = DEFAULT_CPU_TDP_WATTS,
 ) -> float:
-    """Estimate total facility energy (kWh) for a number of GPU-hours.
+    """Estimate total facility energy (kWh) for GPU-hours and CPU-core-hours.
 
-    ``kWh = gpu_hours × (tdp_watts / 1000) × pue`` — the PUE factor accounts for
-    cooling and other facility overhead beyond the raw GPU draw.
+    ``kWh = (gpu_hours × gpu_tdp + cpu_hours × cpu_tdp) / 1000 × pue`` — the PUE factor accounts
+    for cooling and other facility overhead beyond the raw device draw.
+
+    ``cpu_hours`` defaults to 0, so a GPU-only call is arithmetically identical to what this
+    function has always returned.
     """
     if gpu_hours < 0 or gpu_tdp_watts < 0 or pue < 0:
         raise ValueError("energy inputs must be non-negative")
-    return gpu_hours * (gpu_tdp_watts / 1000.0) * pue
+    if cpu_hours < 0 or cpu_tdp_watts < 0:
+        raise ValueError("energy inputs must be non-negative")
+    watt_hours = gpu_hours * gpu_tdp_watts + cpu_hours * cpu_tdp_watts
+    return watt_hours / 1000.0 * pue
 
 
 def co2e_grams(
@@ -48,9 +73,14 @@ def estimate_carbon(
     gpu_tdp_watts: float = DEFAULT_GPU_TDP_WATTS,
     pue: float = DEFAULT_PUE,
     grid_intensity_g_per_kwh: float = DEFAULT_GRID_INTENSITY_G_PER_KWH,
+    *,
+    cpu_hours: float = 0.0,
+    cpu_tdp_watts: float = DEFAULT_CPU_TDP_WATTS,
 ) -> dict[str, float]:
-    """One-shot GPU-hours → {kwh, co2e_g} estimate."""
-    kwh = estimate_energy_kwh(gpu_hours, gpu_tdp_watts, pue)
+    """One-shot device-hours → {kwh, co2e_g} estimate."""
+    kwh = estimate_energy_kwh(
+        gpu_hours, gpu_tdp_watts, pue, cpu_hours=cpu_hours, cpu_tdp_watts=cpu_tdp_watts
+    )
     return {"kwh": kwh, "co2e_g": co2e_grams(kwh, grid_intensity_g_per_kwh)}
 
 
@@ -70,12 +100,17 @@ def budget_usage_ratio(consumed: float, budget: float | None) -> float | None:
 def estimate_carbon_via_provider(
     gpu_hours: float,
     *,
+    cpu_hours: float = 0.0,
     provider: str | None = None,
     project: str | None = None,
     config: dict | None = None,
     **overrides: float,
 ) -> dict:
-    """GPU-hours → carbon via the **pluggable provider registry** (#20 + FinOps-plugins).
+    """Device-hours → carbon via the **pluggable provider registry** (#20 + FinOps-plugins).
+
+    ``cpu_hours`` is CPU-core-hours, the second half of what ``exa models cost`` already reads
+    from the scheduler. If the resolved provider declares no ``cpu_hours`` term this raises
+    :class:`CarbonInputUnaccounted` instead of returning a number that leaves them out.
 
     Resolves the active ``carbon`` provider — an explicit ``provider`` name, else the project's
     notebook/dashboard-authored active provider (when ``project`` is given), else the
@@ -104,13 +139,24 @@ def estimate_carbon_via_provider(
 
     block = dict(config) if config is not None else load_domain_config("carbon")
     coeffs = dict(block.get("coefficients") or {})
-    inputs = {**coeffs, **overrides, "gpu_hours": gpu_hours}
+    inputs = {**coeffs, **overrides, "gpu_hours": gpu_hours, "cpu_hours": cpu_hours}
     try:
         prov = resolve_provider("carbon", override=provider, config=block)
     except Exception:
         prov = get_provider("carbon", "green-ai-default")
-    result = dict(prov.compute(inputs))
     meta = prov.metadata()
+    # Refuse rather than drop. A provider that has no `cpu_hours` term would silently return the
+    # GPU-only number, which on a CPU-only run is zero — a low, plausible, publishable figure for
+    # work that really happened. Degrading gracefully is for an unavailable dependency, not for an
+    # input the caller measured and handed over.
+    if cpu_hours and "cpu_hours" not in meta.params:
+        raise CarbonInputUnaccounted(
+            f"carbon provider {prov.name!r} has no term for cpu_hours "
+            f"(it accounts for: {', '.join(meta.params)}). Refusing to report a figure that "
+            f"silently omits {cpu_hours} CPU-core-hours — choose a provider that accounts for "
+            "them (e.g. green-ai-default) or pass --cpu-hours 0 if they are genuinely not yours."
+        )
+    result = dict(prov.compute(inputs))
     result["provider"] = prov.name
     result["methodology"] = meta.methodology
     result["uncertainty"] = meta.uncertainty

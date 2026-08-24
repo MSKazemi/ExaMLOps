@@ -47,7 +47,10 @@ def assemble_report(
         total_g = sum((r.get("co2e_g") or 0) for r in records)
         report["sections"]["carbon"] = {
             "records": len(records),
-            "total_kg_co2e": round(total_g / 1000.0, 3),
+            # `None`, not 0.0, when nothing has been recorded. A Green-AI section that prints
+            # "0.000 kg CO2e" for a platform nobody has measured reads as an achievement, and this
+            # report is the kind of artefact that reaches a funder.
+            "total_kg_co2e": round(total_g / 1000.0, 3) if records else None,
         }
     except Exception as exc:  # noqa: BLE001
         report["sections"]["carbon"] = {"error": str(exc), "records": 0}
@@ -88,9 +91,11 @@ def render_text(report: dict[str, Any]) -> str:
 
     carbon = report["sections"].get("carbon", {})
     lines.append("\nCARBON (Green-AI)")
-    lines.append(
-        f"  total kg CO2e: {carbon.get('total_kg_co2e', 0)} over {carbon.get('records', 0)} records"
-    )
+    total_kg = carbon.get("total_kg_co2e")
+    if total_kg is None:
+        lines.append("  total kg CO2e: not measured — no carbon records (see `exa finops carbon`)")
+    else:
+        lines.append(f"  total kg CO2e: {total_kg} over {carbon.get('records', 0)} records")
 
     projects = report["sections"].get("projects", {})
     lines.append("\nPROJECTS")
@@ -105,6 +110,12 @@ def render_html(report: dict[str, Any]) -> str:
 
     cost = report["sections"].get("cost", {})
     carbon = report["sections"].get("carbon", {})
+    total_kg = carbon.get("total_kg_co2e")
+    carbon_line = (
+        "<b>not measured</b> — no carbon records"
+        if total_kg is None
+        else f"<b>{esc(total_kg)}</b> kg CO2e over {esc(carbon.get('records', 0))} records"
+    )
     projects = report["sections"].get("projects", {})
 
     cost_rows = "".join(
@@ -131,7 +142,7 @@ def render_html(report: dict[str, Any]) -> str:
 <div class="kpi">Total: <b>${esc(cost.get("total_cost_usd", 0))}</b></div>
 <table><tr><th>Model</th><th>GPU-h</th><th>Cost</th><th>Runs</th></tr>{cost_rows}</table>
 <h2>Carbon (Green-AI)</h2>
-<p><b>{esc(carbon.get("total_kg_co2e", 0))}</b> kg CO2e over {esc(carbon.get("records", 0))} records</p>
+<p>{carbon_line}</p>
 <h2>Projects</h2>
 <table><tr><th>Project</th><th>Consumption</th></tr>{proj_rows}</table>
 </body></html>"""

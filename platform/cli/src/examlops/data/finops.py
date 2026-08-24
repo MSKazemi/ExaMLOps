@@ -122,6 +122,7 @@ def record_model_cost(
     gpu_hours: float | None,
     cost_usd: float | None,
     project: str | None = None,
+    cpu_hours: float | None = None,
 ) -> None:
 
     # Attribute the cost to the model's project (ADR 0086) when not passed explicitly.
@@ -131,9 +132,20 @@ def record_model_cost(
     with get_db() as conn:
         conn.execute(
             """INSERT INTO model_costs
-               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project),
+               (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project,
+                cpu_hours)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                model_name,
+                version,
+                run_id,
+                job_id,
+                gpu_hours,
+                cost_usd,
+                recorded_at,
+                project,
+                cpu_hours,
+            ),
         )
 
 

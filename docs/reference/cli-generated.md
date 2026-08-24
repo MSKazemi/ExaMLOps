@@ -1030,12 +1030,16 @@ Energy (kWh) and CO2e accounting for training runs.
 
 #### `exa finops carbon estimate`
 
-Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write).
+Estimate energy (kWh) and CO2e (g) for GPU-hours and CPU-core-hours (no DB write).
 
-The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or
-a declarative YAML formula. Defaults reproduce the platform's original methodology exactly.
+Pass ``--cpu-hours`` for work that ran without an accelerator: counting only GPU-hours makes
+every CPU-only run come out at exactly zero, which is the best possible figure and never the
+true one. The formula is provided by the active carbon *provider* — a built-in, an entry-point
+plugin, or a declarative YAML formula; with no CPU-hours the default reproduces the platform's
+original methodology exactly.
 
 - `--gpu-hours` — GPU-hours to estimate
+- `--cpu-hours` — CPU-core-hours to estimate (a CPU-only run is not zero-carbon)
 - `--grid-intensity` — gCO2e per kWh
 - `--provider` — Carbon provider (default: green-ai-default). See: carbon providers
 - `--pue` — Override datacentre PUE
@@ -1050,6 +1054,7 @@ List the available carbon providers (built-ins + entry-point plugins) and their 
 Estimate (via the active provider) and persist a carbon record for a training run.
 
 - `--gpu-hours` — GPU-hours consumed by the run
+- `--cpu-hours` — CPU-core-hours consumed by the run (counted, not assumed zero)
 - `--run-id` — MLflow run id
 - `--grid-intensity` — gCO2e per kWh
 - `--provider` — Carbon provider (default: green-ai-default). See: carbon providers

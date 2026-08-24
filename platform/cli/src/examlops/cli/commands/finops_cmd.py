@@ -178,9 +178,47 @@ def _carbon_overrides(grid_intensity: float, pue: float | None, gpu_tdp: float |
     return overrides
 
 
+def _estimate_or_exit(
+    gpu_hours: float,
+    cpu_hours: float,
+    provider: str | None,
+    grid_intensity: float,
+    pue: float | None,
+    gpu_tdp: float | None,
+) -> dict:
+    """Estimate, or exit 1 with the reason — never fall back to a smaller number.
+
+    Two ways to end up publishing a figure that means nothing, both refused here: asking about no
+    work at all, and handing CPU-hours to a provider that has no term for them.
+    """
+    from examlops.finops.carbon import CarbonInputUnaccounted
+
+    if gpu_hours <= 0 and cpu_hours <= 0:
+        _output.error(
+            "nothing to account for: no GPU-hours and no CPU-hours",
+            hint=(
+                "pass --gpu-hours and/or --cpu-hours. A record of 0 kWh is a claim that the run "
+                "consumed no energy, not a note that nobody counted it."
+            ),
+        )
+    try:
+        return estimate_carbon_via_provider(
+            gpu_hours,
+            cpu_hours=cpu_hours,
+            provider=provider,
+            **_carbon_overrides(grid_intensity, pue, gpu_tdp),
+        )
+    except CarbonInputUnaccounted as exc:
+        _output.error(str(exc))
+        raise  # unreachable: _output.error exits — keeps the type checker and the reader honest
+
+
 @carbon_app.command("estimate", epilog=_EX_CARBON_EST)
 def carbon_estimate(
-    gpu_hours: float = typer.Option(..., "--gpu-hours", help="GPU-hours to estimate"),
+    gpu_hours: float = typer.Option(0.0, "--gpu-hours", help="GPU-hours to estimate"),
+    cpu_hours: float = typer.Option(
+        0.0, "--cpu-hours", help="CPU-core-hours to estimate (a CPU-only run is not zero-carbon)"
+    ),
     grid_intensity: float = typer.Option(
         DEFAULT_GRID_INTENSITY_G_PER_KWH, "--grid-intensity", help="gCO2e per kWh"
     ),
@@ -192,19 +230,20 @@ def carbon_estimate(
     pue: float | None = typer.Option(None, "--pue", help="Override datacentre PUE"),
     gpu_tdp: float | None = typer.Option(None, "--gpu-tdp", help="Override GPU TDP (watts)"),
 ) -> None:
-    """Estimate energy (kWh) and CO2e (g) for a number of GPU-hours (no DB write).
+    """Estimate energy (kWh) and CO2e (g) for GPU-hours and CPU-core-hours (no DB write).
 
-    The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or
-    a declarative YAML formula. Defaults reproduce the platform's original methodology exactly.
+    Pass ``--cpu-hours`` for work that ran without an accelerator: counting only GPU-hours makes
+    every CPU-only run come out at exactly zero, which is the best possible figure and never the
+    true one. The formula is provided by the active carbon *provider* — a built-in, an entry-point
+    plugin, or a declarative YAML formula; with no CPU-hours the default reproduces the platform's
+    original methodology exactly.
     """
-    est = estimate_carbon_via_provider(
-        gpu_hours, provider=provider, **_carbon_overrides(grid_intensity, pue, gpu_tdp)
-    )
+    est = _estimate_or_exit(gpu_hours, cpu_hours, provider, grid_intensity, pue, gpu_tdp)
     if _output.json_mode:
-        _output.print_json({"gpu_hours": gpu_hours, **est})
+        _output.print_json({"gpu_hours": gpu_hours, "cpu_hours": cpu_hours, **est})
         return
     _output.print_table(
-        f"Carbon estimate — {gpu_hours} GPU-h",
+        f"Carbon estimate — {gpu_hours} GPU-h, {cpu_hours} CPU-core-h",
         ["Metric", "Value"],
         [
             ["Energy (kWh)", f"{est['kwh']:.3f}"],
@@ -221,7 +260,10 @@ def carbon_estimate(
 @carbon_app.command("record", epilog=_EX_CARBON_RECORD)
 def carbon_record(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
-    gpu_hours: float = typer.Option(..., "--gpu-hours", help="GPU-hours consumed by the run"),
+    gpu_hours: float = typer.Option(0.0, "--gpu-hours", help="GPU-hours consumed by the run"),
+    cpu_hours: float = typer.Option(
+        0.0, "--cpu-hours", help="CPU-core-hours consumed by the run (counted, not assumed zero)"
+    ),
     run_id: str | None = typer.Option(None, "--run-id", help="MLflow run id"),
     grid_intensity: float = typer.Option(
         DEFAULT_GRID_INTENSITY_G_PER_KWH, "--grid-intensity", help="gCO2e per kWh"
@@ -236,9 +278,7 @@ def carbon_record(
 ) -> None:
     """Estimate (via the active provider) and persist a carbon record for a training run."""
     init_db()
-    est = estimate_carbon_via_provider(
-        gpu_hours, provider=provider, **_carbon_overrides(grid_intensity, pue, gpu_tdp)
-    )
+    est = _estimate_or_exit(gpu_hours, cpu_hours, provider, grid_intensity, pue, gpu_tdp)
     write_carbon_record(model, run_id, est["kwh"], est["co2e_g"], grid_intensity, est["provider"])
     write_audit_event(
         "cli",
@@ -247,6 +287,7 @@ def carbon_record(
         model,
         {
             "gpu_hours": gpu_hours,
+            "cpu_hours": cpu_hours,
             "provider": est["provider"],
             "kwh": est["kwh"],
             "co2e_g": est["co2e_g"],

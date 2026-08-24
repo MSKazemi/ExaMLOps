@@ -45,15 +45,41 @@ exa finops carbon estimate --gpu-hours 12 --provider ccf-like --pue 1.3
 
 ## The built-in carbon providers
 
-| Provider | Formula | Uncertainty |
-|---|---|---|
-| **`green-ai-default`** (default) | `kWh = gpu_hours × (gpu_tdp/1000) × pue`; `co2e_g = kWh × grid_intensity` | ±30% |
-| **`codecarbon-like`** | component energy: `(gpu_tdp + cpu_tdp + ram_gb × ram_w_per_gb)/1000 × pue`, after CodeCarbon | ±25% |
-| **`ccf-like`** | `kWh = gpu_hours × energy_coeff_kwh_per_gpu_hour × pue`, after Cloud Carbon Footprint | ±30% |
-| **`grid-live`** | `green-ai-default` formula, but `grid_intensity` is fetched **live** from a configured endpoint (degrades to the static default offline) | ±20% |
+| Provider | Formula | CPU-only work? | Uncertainty |
+|---|---|---|---|
+| **`green-ai-default`** (default) | `kWh = (gpu_hours × gpu_tdp + cpu_hours × cpu_tdp)/1000 × pue`; `co2e_g = kWh × grid_intensity` | **yes** | ±30% |
+| **`codecarbon-like`** | component energy: `gpu_hours × (gpu_tdp + cpu_tdp + ram_gb × ram_w_per_gb)/1000 × pue`, after CodeCarbon | no | ±25% |
+| **`ccf-like`** | `kWh = gpu_hours × energy_coeff_kwh_per_gpu_hour × pue`, after Cloud Carbon Footprint | no | ±30% |
+| **`grid-live`** | `green-ai-default` formula, but `grid_intensity` is fetched **live** from a configured endpoint (degrades to the static default offline) | **yes** | ±20% |
 
 Coefficients (with their defaults): `gpu_tdp_watts` 400, `pue` 1.5, `grid_intensity_g_per_kwh` 300,
 `cpu_tdp_watts` 120, `ram_gb` 32, `ram_watts_per_gb` 0.3725, `energy_coeff_kwh_per_gpu_hour` 0.4.
+
+### CPU-only runs are not zero-carbon
+
+`--cpu-hours` is CPU-core-hours, and it is the other half of what the scheduler already reports for
+every job — `exa models cost --record` reads `(gpu_hours, cpu_hours)` from Flux and stores both.
+Counting only GPU-hours makes a run on a cluster without accelerators come out at exactly
+`0.000 kWh`, which is the best possible number and never the true one:
+
+```bash
+exa finops carbon estimate --cpu-hours 32              # 5.760 kWh · 1728 gCO2e
+exa finops carbon record JPCP --cpu-hours 32 --run-id <mlflow_run_id>
+```
+
+Two refusals guard the figure rather than shrinking it:
+
+- **A provider with no `cpu_hours` term rejects the call.** `codecarbon-like` charges CPU and RAM
+  over *GPU*-hours (a whole-node model) and `ccf-like` has a per-GPU-hour coefficient; neither can
+  price CPU-only work, and extending them would mean inventing a methodology rather than applying
+  theirs. Handed `--cpu-hours` they exit 1 and name a provider that can, instead of silently
+  returning the smaller GPU-only number.
+- **Supplying neither GPU- nor CPU-hours is refused.** A stored record of `0 kWh` is a claim that
+  the run consumed no energy, not a note that nobody counted it. For the same reason
+  `exa report` prints `not measured` rather than `0.000 kg CO2e` when there are no carbon records.
+
+With `--cpu-hours` left at 0 every figure is arithmetically identical to what these providers have
+always returned, so nothing changes for a GPU site.
 
 ### Live grid intensity (`grid-live`)
 

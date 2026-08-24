@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Every run without an accelerator was accounted at exactly zero emissions.** Green-AI carbon
+  accounting took one input — `gpu_hours` — and all four built-in providers multiply by it, so a
+  CPU-only job produced `0.000 kWh / 0.0 gCO2e`, printed with an uncertainty band and rolled into
+  `exa report`'s Green-AI total. That is the best possible figure and never the true one, and
+  CPU-only is the normal case at the HPC sites this targets: `exa models cost --record` already
+  reads `(gpu_hours, cpu_hours)` per job from Flux and prices both through the cost provider, then
+  stored only the GPU half. `--gpu-hours` was a *required* option, so 0 was the only way to describe
+  such a run. `cpu_hours` (CPU-core-hours) and `cpu_tdp_watts` (120 W default) are now first-class
+  inputs of `estimate_energy_kwh` / `estimate_carbon` / `estimate_carbon_via_provider`, accounted by
+  `green-ai-default` and `grid-live`; `exa finops carbon estimate|record` take `--cpu-hours`, and
+  `model_costs` gains an additive `cpu_hours` column so the measured value is stored rather than
+  used once and discarded. With `--cpu-hours` unset every figure is arithmetically identical to
+  before. Two refusals replace two silent numbers: a provider with no `cpu_hours` term
+  (`codecarbon-like` charges CPU+RAM over *GPU*-hours; `ccf-like` has a per-GPU-hour coefficient)
+  now raises `CarbonInputUnaccounted` and names one that can, instead of returning the smaller
+  GPU-only answer — graceful degradation is for an unavailable dependency, not for an input the
+  caller measured; and supplying neither GPU- nor CPU-hours exits 1 rather than storing a row that
+  claims the run consumed no energy. For the same reason `exa report` prints `not measured` instead
+  of `0.000 kg CO2e` when no carbon record exists. ADR 0074 carries a dated amendment. Of the 11 new
+  tests, 9 are red against the previous code and 2 are the controls that pin the unchanged GPU path.
+
 - **"No models loaded in Ray Serve" could not fire when no models were loaded.** The alert is
   `sum(ray_examlops_models_loaded) == 0`, annotated *"inference is impossible"*. In PromQL, `sum()`
   over a series that does not exist yields an **empty vector**, so `== 0` matches nothing — and the
