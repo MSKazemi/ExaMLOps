@@ -3,7 +3,7 @@ import { Server, Activity, Box, Database, Layers, GitBranch } from 'lucide-react
 import { ServiceCard } from '@/components/ServiceCard'
 import { ArchitectureFlow } from '@/components/ArchitectureFlow'
 import { useHealth, useModels, useModelRegistry, useModelzooStats } from '@/lib/api'
-import type { ServiceStatus } from '@/lib/api'
+import type { ServiceInfo } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
 import { GrafanaPanel } from '@/components/GrafanaPanel'
 import { QuickActions } from '@/components/QuickActions'
@@ -81,10 +81,12 @@ function StatCard({
   return <div className={base} style={style}>{inner}</div>
 }
 
-function StatusSummaryBar({ services }: { services: [string, { status: ServiceStatus; url: string }][] }) {
+function StatusSummaryBar({ services }: { services: [string, ServiceInfo][] }) {
   const online   = services.filter(([, s]) => s.status === 'ok').length
   const degraded = services.filter(([, s]) => s.status === 'degraded').length
   const down     = services.filter(([, s]) => s.status === 'down').length
+  // Counted apart from the three verdicts, because it is the absence of one.
+  const unknown  = services.filter(([, s]) => s.status === 'unknown').length
   const total    = services.length
   if (total === 0) return null
 
@@ -93,6 +95,7 @@ function StatusSummaryBar({ services }: { services: [string, { status: ServiceSt
       {online   > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />{online} online</span>}
       {degraded > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />{degraded} degraded</span>}
       {down     > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />{down} offline</span>}
+      {unknown  > 0 && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-slate-400 inline-block" />{unknown} not measured</span>}
     </div>
   )
 }
@@ -105,8 +108,10 @@ export function Overview() {
   const { theme } = useTheme()
   const grafanaTheme = theme === 'day' ? 'light' : 'dark'
 
-  const services = data ? (Object.entries(data.services) as [string, { status: ServiceStatus; url: string }][]) : []
+  const services = data ? (Object.entries(data.services) as [string, ServiceInfo][]) : []
   const onlineCount  = services.filter(([, s]) => s.status === 'ok').length
+  // The "Online" tile is a fraction, and its denominator may not include entries nothing probed.
+  const probedCount  = services.filter(([, s]) => s.status !== 'unknown').length
 
   // GitLab-sourced counts take precedence; fall back to registry-derived counts
   const modelsCount   = zoo?.configured ? (zoo.models_count   ?? '—') : (registry?.length ?? '—')
@@ -186,7 +191,7 @@ export function Overview() {
       {/* ── Stats ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <StatCard label="Services"       value={services.length || '—'}        icon={Server}   />
-        <StatCard label="Online"         value={isLoading ? '…' : onlineCount} icon={Activity} accent="green" />
+        <StatCard label="Online"         value={isLoading ? '…' : `${onlineCount}/${probedCount}`} icon={Activity} accent="green" />
         <StatCard label="Models Loaded"  value={models?.length ?? '—'}         icon={Box}      accent="indigo" href="/build/models" />
         <StatCard label="ModelZoo"       value={modelsCount}                   icon={Layers}   accent="amber"  href="/build/models" />
         <StatCard label="Datasets"       value={datasetsCount}                 icon={Database} href="/build/datasets" />
@@ -243,6 +248,7 @@ export function Overview() {
               name={SERVICE_LABELS[key] ?? key}
               url={svc.url}
               status={svc.status}
+              note={svc.note}
             />
           ))}
         </div>

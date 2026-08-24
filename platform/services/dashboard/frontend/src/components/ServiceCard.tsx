@@ -4,6 +4,8 @@ interface Props {
   name: string
   url: string
   status: ServiceStatus
+  /** Why an `unknown` entry is not measured; shown on hover. */
+  note?: string
 }
 
 const STATUS_CONFIG: Record<ServiceStatus, {
@@ -38,10 +40,22 @@ const STATUS_CONFIG: Record<ServiceStatus, {
     bg: 'oklch(0.66 0.22 25 / 8%)',
     border: 'oklch(0.66 0.22 25 / 25%)',
   },
+  // Deliberately grey, and deliberately not red: nothing was measured, so nothing is claimed.
+  unknown: {
+    dot: '#94a3b8',
+    ring: '#94a3b8',
+    label: 'Not measured',
+    labelColor: 'var(--muted-foreground)',
+    bg: 'oklch(0.60 0.02 260 / 8%)',
+    border: 'oklch(0.60 0.02 260 / 25%)',
+  },
 }
 
-export function ServiceCard({ name, url, status }: Props) {
-  const cfg = STATUS_CONFIG[status]
+export function ServiceCard({ name, url, status, note }: Props) {
+  // The status arrives from the API as data, so TypeScript's exhaustiveness proves nothing about
+  // it: a backend that adds a fifth word would index this map to `undefined` and the first
+  // `cfg.bg` below would take the whole page down. Fall back to the one entry that claims least.
+  const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.unknown
 
   return (
     <div
@@ -57,6 +71,7 @@ export function ServiceCard({ name, url, status }: Props) {
         <div
           className="flex items-center gap-1.5 rounded-full px-2.5 py-1 shrink-0"
           style={{ background: cfg.bg, border: `1px solid ${cfg.border}` }}
+          title={note}
         >
           {/* Pulse dot */}
           <span className="relative flex h-1.5 w-1.5 shrink-0">

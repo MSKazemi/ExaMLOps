@@ -8,17 +8,24 @@ import {
   restartContainer,
 } from "./containers"
 
-export type ServiceStatus = 'ok' | 'degraded' | 'down'
+// `unknown` is not a fourth degree of broken. The backend reports it for the entries it
+// never probes — a scheduler it cannot reach from here, a bus whose bridge does not report
+// its connection — so the UI can say "not measured" instead of showing a verdict nobody took.
+export type ServiceStatus = 'ok' | 'degraded' | 'down' | 'unknown'
 
 export interface ServiceInfo {
   status: ServiceStatus
   url: string
+  /** Why this entry is not measured. Present only alongside `unknown`. */
+  note?: string
 }
 
 export interface HealthResponse {
   status: ServiceStatus
   checked_at: string
   services: Record<string, ServiceInfo>
+  /** The keys of `services` that are reported but never probed; they do not move `status`. */
+  unmeasured?: string[]
 }
 
 export interface ModelInfo {

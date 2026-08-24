@@ -7,6 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The `platform_db` coupling ratchet enforced nothing if its path went stale.** The ratchet's
+  baseline is 0, so its whole content is the negative claim "no module imports `platform_db`
+  directly". `_importers()` walked a hard-coded root with no proof it had read anything, so an
+  empty scan found zero importers, `0 <= 0` held, and the guard reported green — as did
+  `test_ratchet_is_tight`, since `0 - 0 <= 3`. Demonstrated by pointing the root at a directory
+  that does not exist: both tests passed. Total compliance and a stale path produced identical
+  green, and this repo has already moved that tree once, into `platform/`. `_importers()` now
+  asserts it found Python files before anything is concluded from what it did not find, matching
+  the pattern already used by `test_no_bare_sqlite_connect.py` and `test_connections_are_scoped.py`.
+  New meta-guard `tests/unit/test_guard_paths_are_not_stale.py` evaluates every module-level
+  repo path bound in `tests/unit` (56 today) and fails on any that no longer exists; it checks the
+  fact rather than trying to recognise an assertion style, and asserts it evaluated something so it
+  cannot become the defect it guards against. Both directions proved.
 - **Two dashboard storage tests could not fail.** `test_ensure_bucket_creates_when_missing` and
   `test_delete` called their subject and asserted nothing, so each passed as long as nothing raised
   — proved by replacing `ImageStorage.ensure_bucket()` and `.delete()` with `return`, which left
@@ -49,6 +62,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   address nobody chose. `seanerbus_bridge_url` is now a real config field
   (`SEANERBUS_BRIDGE_STATUS_URL`, `[urls] seanerbus_bridge`, default the published host port
   `18003`), read by both commands and visible in `exa env`.
+- **The dashboard's health endpoint published two verdicts nothing had measured.** `/api/health`
+  answered `slurm: ok` whenever `EXAMLOPS_SLURM_MODE=mock` — a green tick for a scheduler that is
+  not involved in a mock run at all — and `slurm: down` in every other mode, which is precisely the
+  case where a scheduler *does* exist and the dashboard simply cannot reach it from the container.
+  That second branch pinned the top-level `status` at `degraded` for the entire life of any
+  real-scheduler deployment, which is how an operator learns to stop reading a health page.
+  `seanerbus_sim` had the mirror-image defect: it copied the bridge's HTTP reachability, but the
+  bridge's `/health` is a constant `{"status": "ok", …}` that reports nothing about the Cap'n Proto
+  bus, so the entry claimed the simulator was up on the strength of a probe that could not tell.
+  Both now report `status: "unknown"` with a `note` saying why, are listed in a new top-level
+  `unmeasured` array, and are excluded from the `ok`/`degraded` rollup — which the third new guard
+  checks cannot make `status` unfalsifiable. The frontend gained a fourth, grey **Not measured**
+  badge (`ServiceStatus` now includes `'unknown'`, `ServiceInfo` an optional `note` shown on hover)
+  and the Online tile counts `online/probed` rather than counting unprobed entries against itself.
+  `ServiceCard` also no longer indexes its style map with unvalidated API data: a status word the
+  frontend has not been taught produced `undefined` and threw during render, blanking the Overview
+  page — proved by removing the new fallback and watching the guard go red.
 - **An SLO nobody had measured was published as an SLO that was being met.** `slo_status()`
   computed `sli = (good / total) if total else 1.0`, so zero recorded samples scored as a perfect
   ratio: a full error budget, `OK` in `exa slo status`, and a green *Meeting* pill on the dashboard

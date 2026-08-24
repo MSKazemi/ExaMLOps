@@ -17,6 +17,9 @@ _cache: dict = {}
 _cache_lock = asyncio.Lock()
 _probe_in_progress: set[str] = set()
 
+# Reported for completeness, never probed — see `_do_health_check`.
+_UNMEASURED = {"slurm", "seanerbus_sim"}
+
 # (internal_url, health_path, default_public_url)
 _SERVICES = {
     "mlflow": (settings.mlflow_url, "/health", settings.public_mlflow_url),
@@ -89,15 +92,46 @@ async def _do_health_check() -> dict:
     # Dashboard is self — always ok if we're responding.
     services["dashboard"] = {"status": "ok", "url": settings.public_dashboard_url}
 
-    # Slurm adapter is inline (no HTTP endpoint); report ok in mock mode, down in real mode.
-    slurm_status = "ok" if settings.slurm_mode == "mock" else "down"
-    services["slurm"] = {"status": slurm_status, "url": ""}
+    # The two entries below are not probes, and used to be published as though they were: the
+    # scheduler was reported `ok` whenever `EXAMLOPS_SLURM_MODE=mock` — a green tick for a
+    # scheduler that is not involved at all — and `down` on every real-scheduler deployment,
+    # which pinned the whole page at `degraded` forever and taught its readers to ignore it.
+    # The bus was reported with whatever the *bridge* answered, which says nothing about the
+    # bus. `unknown` is the true value: nobody looked.
+    if settings.slurm_mode == "mock":
+        slurm_note = (
+            "EXAMLOPS_SLURM_MODE=mock — training runs inline, so there is no scheduler to probe."
+        )
+    else:
+        slurm_note = (
+            f"scheduler mode {settings.slurm_mode!r} runs off-cluster and the dashboard cannot "
+            "reach it from here; see `exa hpc queue` / `exa hpc capacity`."
+        )
+    services["slurm"] = {"status": "unknown", "url": "", "note": slurm_note}
 
-    # SeanerBUS Sim is an external Cap'n Proto bus — proxy its reachability from bridge health.
-    services["seanerbus_sim"] = {"status": services["seanerbus"]["status"], "url": ""}
+    # SeanerBUS is an external Cap'n Proto bus. The bridge's /health answers a constant
+    # {"status": "ok"} and reports nothing about its connection to the bus, so the bridge being
+    # reachable is not evidence about the bus.
+    services["seanerbus_sim"] = {
+        "status": "unknown",
+        "url": "",
+        "note": (
+            "the bridge does not report its bus connection, so only the bridge itself is probed "
+            "— see the `seanerbus` entry."
+        ),
+    }
 
-    overall = "ok" if all(s["status"] == "ok" for s in services.values()) else "degraded"
-    return {"status": overall, "checked_at": now, "services": services}
+    # An unmeasured service cannot make the platform degraded, and cannot make it healthy either.
+    # It is excluded from the verdict and named, so the gap is visible instead of being folded
+    # into a colour.
+    measured = {k: v for k, v in services.items() if k not in _UNMEASURED}
+    overall = "ok" if all(s["status"] == "ok" for s in measured.values()) else "degraded"
+    return {
+        "status": overall,
+        "checked_at": now,
+        "services": services,
+        "unmeasured": sorted(_UNMEASURED),
+    }
 
 
 def _apply_host_rewrite(data: dict, request_host: str) -> dict:

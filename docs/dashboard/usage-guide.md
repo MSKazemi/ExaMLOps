@@ -62,7 +62,8 @@ confirm the platform is up and jump into any area.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
-| View platform status | Shows service count, online count, models loaded, ModelZoo/dataset counts, and per-service `ok/degraded/down` badges | First thing you check each session — is everything healthy | Sidebar → Overview (or `/`) | `exa status` |
+| View platform status | Shows service count, online count (`online/probed`), models loaded, ModelZoo/dataset counts, and per-service `Online`/`Degraded`/`Offline`/`Not measured` badges | First thing you check each session — is everything healthy | Sidebar → Overview (or `/`) | `exa status` |
+| Read an unmeasured service | A grey **Not measured** badge means the dashboard probes nothing for that entry; hover it for the reason | Tell "we did not look" apart from "it is down" — `slurm` and `seanerbus_sim` are always unmeasured, and never move the overall status | Overview → Services → hover the badge | `exa hpc queue` / `exa hpc capacity` for the scheduler |
 | Quick actions | Shortcut buttons into common flows (command-center) | Fast jump to frequent tasks | Overview → Quick Actions row | — |
 | Open a service | Deep-link to a service's own UI (MLflow, Grafana, …) | Drill into a specific tool | Click a Service Health card | — |
 | Jump to Models / Datasets | Stat tiles link into those consoles | Navigate by the numbers | Click Models Loaded / ModelZoo / Datasets tile | `exa models list` / `exa data list` |

@@ -93,16 +93,31 @@ Aggregate health of all services. No authentication required.
   "status": "ok",
   "checked_at": "2026-04-30T12:00:00+00:00",
   "services": {
-    "mlflow":     {"status": "ok",      "url": "http://localhost:5000"},
-    "prefect":    {"status": "ok",      "url": "http://localhost:4200"},
-    "ray_serve":  {"status": "degraded","url": "http://localhost:8265"},
-    "prometheus": {"status": "ok",      "url": "http://localhost:9090"},
-    "grafana":    {"status": "ok",      "url": "http://localhost:3000"}
-  }
+    "mlflow":     {"status": "ok",       "url": "http://localhost:15000"},
+    "prefect":    {"status": "ok",       "url": "http://localhost:14200"},
+    "ray_serve":  {"status": "degraded", "url": "http://localhost:18001"},
+    "prometheus": {"status": "ok",       "url": "http://localhost:19090"},
+    "grafana":    {"status": "ok",       "url": "http://localhost:13000"},
+    "slurm":      {"status": "unknown",  "url": "",
+                   "note": "EXAMLOPS_SLURM_MODE=mock — training runs inline, so there is no scheduler to probe."}
+  },
+  "unmeasured": ["seanerbus_sim", "slurm"]
 }
 ```
 
-`status` per service: `"ok"`, `"degraded"` (non-2xx response), `"down"` (no connection).
+`status` per service: `"ok"`, `"degraded"` (non-2xx response), `"down"` (no connection), and
+`"unknown"` — *nothing was probed*, so no verdict is claimed. An `unknown` entry always carries a
+`note` saying why, and every such key is listed in the top-level `unmeasured` array.
+
+**`unmeasured` entries do not move the top-level `status`.** Two services are reported for
+completeness and never probed: `slurm` (the scheduler runs off-cluster, or in `mock` mode is not
+involved at all — use `exa hpc queue` / `exa hpc capacity` instead) and `seanerbus_sim` (the bridge
+does not report its bus connection, so only the bridge's own HTTP endpoint is measured, under the
+`seanerbus` key). Before this, `slurm` answered `ok` in mock mode and `down` in every other mode,
+which held the whole payload at `degraded` for the entire life of a real-scheduler deployment.
+
+The URLs above are the **host** ports the compose stack publishes (`15000:5000`, `14200:4200`, …).
+Inside the compose network the dashboard is given the service-name addresses instead.
 
 ---
 
