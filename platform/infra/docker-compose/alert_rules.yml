@@ -11,7 +11,7 @@ groups:
 
       - alert: RayServeHighErrorRate
         expr: |
-          sum(rate(ray_examlops_predict_requests_total{status="error"}[5m]))
+          sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[5m]))
           / clamp_min(sum(rate(ray_examlops_predict_requests_total[5m])), 0.001)
           > 0.05
         for: 10m
@@ -24,7 +24,7 @@ groups:
 
       - alert: RayServeHighErrorRateCritical
         expr: |
-          sum(rate(ray_examlops_predict_requests_total{status="error"}[5m]))
+          sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[5m]))
           / clamp_min(sum(rate(ray_examlops_predict_requests_total[5m])), 0.001)
           > 0.20
         for: 5m
@@ -83,7 +83,7 @@ groups:
 
       - alert: SLOErrorBudgetFastBurn
         expr: |
-          sum(rate(ray_examlops_predict_requests_total{status="error"}[1h]))
+          sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[1h]))
           / (0.005 / (30 * 24 * 3600))
           > 14.4
         for: 5m
@@ -96,7 +96,7 @@ groups:
 
       - alert: SLOErrorBudgetSlowBurn
         expr: |
-          sum(rate(ray_examlops_predict_requests_total{status="error"}[6h]))
+          sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[6h]))
           / (0.005 / (30 * 24 * 3600))
           > 3
         for: 60m

@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Four alerts about the serving error rate could not see a hung model.** Ray Serve's request
+  counter carries a `status` label and the serving code emits five values for it — `success`,
+  `error`, `invalid`, `not_found` and `timeout`. `RayServeHighErrorRate`,
+  `RayServeHighErrorRateCritical` and both SLO error-budget burn alerts selected only
+  `status="error"`, so `timeout` counted as neither a failure nor a burn. That is not a rare
+  value: it is `FuturesTimeoutError` returned as HTTP 504 by the hard per-request timeout the
+  serving code added precisely so "a hung model can't pin the replica worker". A replica hanging
+  on **every** request would therefore have reported an error rate of `0/N`, burned error budget
+  at 0×, and left all four alerts silent — the one failure mode the timeout exists to survive was
+  the one the alerting could not describe. The narrow selector was never a decision: two rules
+  further down the same file, `RayServeReloadFailures` already uses the right idiom
+  (`status!="success"`). All four now select `status=~"error|timeout"`. `invalid` (a 422 for a
+  malformed feature vector) and `not_found` (a 404 for a model the caller named) stay out, as the
+  serving code's own comment intends. New `tests/unit/test_error_alerts_see_every_failure.py`
+  cross-checks every `status` value the serving path emits against what the alert selectors match,
+  so a status added later is a failing test until someone decides which side of the error rate it
+  belongs on; `make alerts-check` validates the rewritten rules against promtool.
+
 - **`exa status` promised production models and structurally could not show any.** The command's
   `--help`, its docstring, `sdk.status()`'s docstring and the README all say the snapshot covers
   "service health, pending approvals, production models". The section read a `production_models`
