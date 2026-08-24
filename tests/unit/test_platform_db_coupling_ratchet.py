@@ -50,8 +50,21 @@ def _imports_public_helper(text: str) -> bool:
 
 
 def _importers() -> list[str]:
+    """Modules importing a public `platform_db` helper — and proof there was something to read.
+
+    The ratchet's baseline is 0, so its entire content is a negative claim, and an empty scan
+    produces the strongest possible pass: zero importers found, `0 <= 0`, green. Demonstrated by
+    pointing `_ROOT` at a directory that does not exist — both tests in this module passed.
+    That failure is indistinguishable from total compliance, and this repo has already moved this
+    tree once (into `platform/`), which is exactly how a root goes stale.
+    """
+    files = [p for p in _ROOT.rglob("*.py") if "__pycache__" not in p.parts]
+    assert files, (
+        f"scanned {_ROOT} and found no Python files — the ratchet's root is stale, not the tree "
+        "clean. Until this path is right the guard enforces nothing."
+    )
     out: list[str] = []
-    for py in _ROOT.rglob("*.py"):
+    for py in files:
         rel = py.relative_to(_ROOT)
         if rel.name in _EXEMPT or (rel.parts and rel.parts[0] in _EXEMPT_DIRS):
             continue
