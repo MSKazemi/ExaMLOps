@@ -39,7 +39,16 @@ the control plane's own comes from the control plane, so under Docker Compose th
 in-network service names (`http://mlflow:5000`, `http://orchestrator:4200/api`) rather than the host
 port map you would open in a browser — open the address shown, not the one you expect. A `?` means
 the control plane is an older build that does not report what it checked; `exa` says so instead of
-guessing.
+guessing. A service the control plane does not report at all is shown as **— not reported**, not as
+unreachable: nothing was probed, so nothing is claimed.
+
+**Production models** come from the MLflow registry, which is where lifecycle aliases live — the
+control plane's `/status` does not carry them. A model appears when it holds a `Production` or
+`Staging` alias. Three outcomes are distinguished, and none of them is silence: the table, `No
+model carries a Production or Staging alias` when the registry was read and holds none, and
+`production models unknown` when the registry could not be read (including when the health table
+already shows MLflow down, in which case it is not probed a second time). `exa --json status`
+carries the same `production_models` list the table shows.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|

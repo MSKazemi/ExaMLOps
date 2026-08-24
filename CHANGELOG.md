@@ -7,6 +7,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **`exa status` promised production models and structurally could not show any.** The command's
+  `--help`, its docstring, `sdk.status()`'s docstring and the README all say the snapshot covers
+  "service health, pending approvals, production models". The section read a `production_models`
+  (falling back to `models`) key out of the control plane's `/status` — an endpoint that has never
+  returned either: measured against the running app, it answers exactly `services` and
+  `pending_approvals`. So the list was empty on every real call, and because the renderer printed
+  nothing at all for an empty list, the answer arrived as **silence** — indistinguishable from a
+  platform with no models in production. Two unit tests kept it green by feeding a hand-written
+  payload containing the invented key. Production models now come from the MLflow registry, where
+  lifecycle aliases actually live, and three outcomes are distinguished: the table, `No model
+  carries a Production or Staging alias` when the registry was read and holds none, and `production
+  models unknown` when it could not be read — which also covers the case where the health table has
+  already reported MLflow down, so it is not probed a second time. `exa --json status` now carries
+  the same list the table shows. New `tests/unit/test_control_plane_status_contract.py` pins the
+  real payload shape against the live app so no client can drift back to reading a key nobody sends.
+- **`sdk.status()` restored the fabrication it had removed, on its failure path.** The reachable
+  branch carries a comment explaining that an unknown `pending_approvals` must stay `None` rather
+  than become `0`; the unreachable branch three lines above returned `pending_approvals=0` —
+  "the approval queue is empty", from a control plane nobody could reach. `PlatformStatus` now
+  types both fields as unknown-able (`production_models: list | None`) and the unreachable branch
+  returns `None` for each. The unit test had asserted `== 0`.
+- **A service the control plane never mentioned was reported as unreachable.** `exa status` read
+  each entry with `svc.get("ok", False)`, so a key absent from an older control plane's payload
+  rendered as `✗ unreachable` and counted into the "run: exa doctor" warning — sending a reader to
+  debug a service nothing had probed. Absent entries now render `— not reported` with their own
+  warning line.
 - **The `platform_db` coupling ratchet enforced nothing if its path went stale.** The ratchet's
   baseline is 0, so its whole content is the negative claim "no module imports `platform_db`
   directly". `_importers()` walked a hard-coded root with no proof it had read anything, so an

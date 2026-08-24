@@ -74,15 +74,18 @@ class ServiceHealth:
 class PlatformStatus:
     """A snapshot of platform health, pending approvals, and production models.
 
-    ``reachable`` is ``False`` when the control plane could not be contacted; the other fields are
-    then empty. ``raw`` carries the underlying payload for renderers that need extra detail — new
-    code should prefer the typed fields.
+    ``reachable`` is ``False`` when the control plane could not be contacted; ``pending_approvals``
+    and ``production_models`` are then ``None`` — *unknown*, which is not the same claim as "none"
+    and must not be rendered as one. ``raw`` carries the underlying payload for renderers that need
+    extra detail — new code should prefer the typed fields.
     """
 
     reachable: bool
     services: dict[str, ServiceHealth]
     pending_approvals: int | None
-    production_models: list[Any]
+    #: ``None`` means *not determined* — the control plane or the model registry could not be
+    #: read. An empty list is the measured claim that no model carries a lifecycle alias.
+    production_models: list[Any] | None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -98,8 +101,11 @@ def status() -> PlatformStatus:
     except Exception:
         # Any transport failure (ClientError, socket reset, timeout) → degrade to "unreachable"
         # rather than raising into callers (graceful-degradation invariant, ADR 0076).
+        # Not `pending_approvals=0`: zero is the answer "the queue is empty", and a control plane
+        # nobody could reach has not told us that. The same fabrication was removed from the
+        # endpoint itself, and it was still being reintroduced here on the failure path.
         return PlatformStatus(
-            reachable=False, services={}, pending_approvals=0, production_models=[], raw={}
+            reachable=False, services={}, pending_approvals=None, production_models=None, raw={}
         )
     services = {
         key: ServiceHealth(name=key, ok=bool(val.get("ok")), detail=dict(val))
@@ -113,9 +119,54 @@ def status() -> PlatformStatus:
         pending_approvals=(
             None if data.get("pending_approvals") is None else int(data["pending_approvals"])
         ),
-        production_models=list(data.get("production_models") or data.get("models") or []),
+        production_models=_production_models(cfg, data, services),
         raw=dict(data),
     )
+
+
+def _production_models(cfg, data: dict[str, Any], services: dict[str, ServiceHealth]):
+    """Models carrying a lifecycle alias — read from the registry that actually owns them.
+
+    Both this facade and ``exa status`` used to answer this by reading a ``production_models`` (or
+    ``models``) key out of the control plane's ``/status``. That endpoint has never returned
+    either: measured against the live app, ``/status`` carries exactly ``services`` and
+    ``pending_approvals``. So the promise in three docstrings, in ``exa status --help`` and in the
+    README resolved to an empty list on every call, and because the renderer prints nothing for an
+    empty list, the answer arrived as *silence* — indistinguishable from a platform with no models
+    in production.
+
+    MLflow's registry is where aliases live, so that is where the answer comes from. ``None`` means
+    the registry could not be read, which is a different claim from "no model is in production" and
+    is rendered differently.
+    """
+    from examlops.cli import _client
+
+    supplied = data.get("production_models") or data.get("models")
+    if supplied:
+        # A future control plane that does carry the field wins; nothing today does.
+        return list(supplied)
+    mlflow = services.get("mlflow")
+    if mlflow is not None and not mlflow.ok:
+        # The status ping already established it is down. Asking again buys a second timeout and
+        # the same answer.
+        return None
+    try:
+        registry = _client.get(f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search")
+    except Exception:
+        return None
+    out: list[dict[str, Any]] = []
+    for m in registry.get("registered_models") or []:
+        aliases = {a.get("alias"): a.get("version") for a in (m.get("aliases") or [])}
+        if "Production" not in aliases and "Staging" not in aliases:
+            continue
+        out.append(
+            {
+                "name": m.get("name"),
+                "production_version": aliases.get("Production"),
+                "staging_version": aliases.get("Staging"),
+            }
+        )
+    return out
 
 
 def place(gpus: int = 0, cpus: int = 0, nodes: int = 1, provider: str | None = None):

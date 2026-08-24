@@ -58,7 +58,10 @@ def _render_status(cfg, watch: bool) -> None:
 
     if _output.json_mode:
         if data:
-            _output.print_json(data)
+            # The control plane's payload does not carry production models; the snapshot resolves
+            # them from the registry. Emitting `raw` alone made `--json` and the table disagree
+            # about what the command had found.
+            _output.print_json({**data, "production_models": snapshot.production_models})
         else:
             _output.print_json({"error": "control_plane_unreachable"})
         return
@@ -77,11 +80,19 @@ def _render_status(cfg, watch: bool) -> None:
     services = data.get("services", {})
     rows = []
     n_down = 0
+    n_unreported = 0
     for key in _SERVICE_ORDER:
-        svc = services.get(key, {})
-        svc_ok = svc.get("ok", False)
+        svc = services.get(key)
         label = _SERVICE_LABELS.get(key, key)
-        checked = _checked_address(key, svc, cfg)
+        checked = _checked_address(key, svc or {}, cfg)
+        if svc is None:
+            # An older control plane that does not report this service has not reported it *down*.
+            # Rendering the absence as `✗ unreachable` sends a reader to debug a service that may
+            # be fine, and counts it into the "run: exa doctor" warning.
+            n_unreported += 1
+            rows.append([label, "[dim]— not reported[/dim]", "[dim]—[/dim]"])
+            continue
+        svc_ok = svc.get("ok", False)
         if not svc_ok:
             n_down += 1
             cell = "[red]✗ unreachable[/red]"
@@ -102,6 +113,11 @@ def _render_status(cfg, watch: bool) -> None:
     if n_down:
         _output.warning(
             f"{n_down} service{'s' if n_down != 1 else ''} unreachable — run: exa doctor"
+        )
+    if n_unreported:
+        _output.warning(
+            f"{n_unreported} service{'s' if n_unreported != 1 else ''} not reported by the control "
+            "plane — its /status is older than this client, so their health is unknown"
         )
 
     # ── Pending approvals ──────────────────────────────────────────────────
@@ -142,19 +158,13 @@ def _render_status(cfg, watch: bool) -> None:
         _output.ok("No pending approvals")
 
     # ── Production models ──────────────────────────────────────────────────
-    models_list = data.get("production_models") or data.get("models") or []
-    if models_list and isinstance(models_list, list) and models_list:
-        _output.print_table(
-            "Production Models",
-            ["Model", "Production Version", "Staging Version"],
-            [
-                [
-                    (m if isinstance(m, str) else (m.get("name") or "—")),
-                    m.get("production_version", "—") if isinstance(m, dict) else "—",
-                    m.get("staging_version", "—") if isinstance(m, dict) else "—",
-                ]
-                for m in models_list
-            ],
+    # Three outcomes, and the old code could express only one of them. It read a key the control
+    # plane has never returned, so the list was always empty, and an empty list printed *nothing* —
+    # which reads as "no models are in production" to anyone looking at the screen.
+    models_list = snapshot.production_models
+    if models_list is None:
+        _output.warning(
+            "production models unknown — the model registry could not be read; run: exa doctor"
         )
     elif isinstance(models_list, dict):
         # Some responses return a dict {name: {aliases: ...}}
@@ -165,7 +175,21 @@ def _render_status(cfg, watch: bool) -> None:
                 rows_m.append([name, aliases.get("Production", "—"), aliases.get("Staging", "—")])
             else:
                 rows_m.append([name, "—", "—"])
-        if rows_m:
-            _output.print_table("Production Models", ["Model", "Production", "Staging"], rows_m)
+        _output.print_table("Production Models", ["Model", "Production", "Staging"], rows_m)
+    elif not models_list:
+        _output.ok("No model carries a Production or Staging alias")
+    else:
+        _output.print_table(
+            "Production Models",
+            ["Model", "Production Version", "Staging Version"],
+            [
+                [
+                    (m if isinstance(m, str) else (m.get("name") or "—")),
+                    (m.get("production_version") or "—") if isinstance(m, dict) else "—",
+                    (m.get("staging_version") or "—") if isinstance(m, dict) else "—",
+                ]
+                for m in models_list
+            ],
+        )
 
     _output.console.print()

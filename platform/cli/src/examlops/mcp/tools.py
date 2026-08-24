@@ -126,7 +126,14 @@ def model_detail(name: str) -> dict[str, Any]:
 
 
 def list_production_models() -> dict[str, Any]:
-    """List the models the control plane knows about and their associated datasets."""
+    """Registry of model names and their training datasets — NOT which models are in production.
+
+    The name is a misnomer kept for wire compatibility. This calls the control plane's ``/models``,
+    which is the auto-discovery registry: every known model with the datasets it trains on, and no
+    version or lifecycle alias at all. An agent asked "which models are in production?" must call
+    ``list_models`` instead, which reads the MLflow registry and reports each model's ``Production``
+    alias.
+    """
     cfg = _cfg()
     res = _get(f"{cfg.control_plane_url}/models", token=cfg.control_plane_token)
     if not res.get("ok"):

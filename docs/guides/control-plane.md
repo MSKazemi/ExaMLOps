@@ -7,6 +7,7 @@
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/health` | none | Liveness + Prefect URL + auth state + registered models + pending approval count |
+| GET | `/status` | none | Concurrent peer pings + pending approval count. Returns **exactly** `services` (`control_plane`/`mlflow`/`prefect`/`ray_serve`/`dashboard`, each `{ok, url}`) and `pending_approvals`. It carries **no** model list — `exa status` reads production models from the MLflow registry instead |
 | GET | `/models` | none | List `model_name → datasets` known to the auto-discovery registry |
 | POST | `/retrain` | **Bearer** | Validate + schedule a Prefect flow run |
 | GET | `/retrain/{flow_run_id}` | none | Poll Prefect for the run state |

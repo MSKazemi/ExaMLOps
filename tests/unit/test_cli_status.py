@@ -18,12 +18,15 @@ _FAKE_SERVICES = {
     "ray_serve": {"ok": True, "models": []},
     "dashboard": {"ok": True},
 }
+# The live `/status` carries exactly `services` and `pending_approvals` — see
+# `test_control_plane_status_contract.py`. This fixture used to add a `production_models` key that
+# no version of the endpoint has ever sent, which is why the table it fed was green for a feature
+# that did not work.
 FAKE_STATUS = {
     "status": "ok",
     "pending_approvals": 2,
     "auth_configured": True,
     "services": _FAKE_SERVICES,
-    "production_models": [{"name": "JPCP", "production_version": "17", "staging_version": "18"}],
 }
 FAKE_APPROVALS = [
     {
@@ -43,11 +46,18 @@ FAKE_APPROVALS = [
 
 def test_status_shows_summary():
     with patch(
-        "examlops.cli.commands.status._client.get", side_effect=[FAKE_STATUS, FAKE_APPROVALS]
+        "examlops.cli.commands.status._client.get",
+        side_effect=[FAKE_STATUS, _REGISTRY, FAKE_APPROVALS],
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status"], terminal_width=200)
     assert result.exit_code == 0
-    assert "ok" in result.output.lower() or "JPCP" in result.output
+    # `"ok" in output.lower()` was the old assertion, and every green cell contains it — so it
+    # could not distinguish a working command from a broken one. Name the things the command is
+    # actually for.
+    out = result.output
+    assert "Service Health" in out
+    assert "2 pending approval" in out
+    assert "JPCP" in out and "17" in out, "the production model table is part of the summary"
 
 
 def test_status_json():
@@ -93,3 +103,90 @@ def test_host_port_map_is_not_presented_as_the_checked_address():
     out = _status_output(bare)
     for port in (":15000", ":14200", ":18001", ":18099"):
         assert port not in out, f"{port} was printed as if it had been checked"
+
+
+# ── production models: three outcomes, and the command could express only one ────────────────
+#
+# `exa status --help` promises "service health, pending approvals, production models", and the
+# section read a `production_models` key out of `/status`. That endpoint has never sent one
+# (`test_control_plane_status_contract.py` pins it), so the list was empty on every real call — and
+# the renderer printed *nothing at all* for an empty list. The screen therefore said, by silence,
+# that no model was in production, whether the platform had three or the registry was unreadable.
+
+_REGISTRY = {
+    "registered_models": [
+        {
+            "name": "JPCP",
+            "aliases": [
+                {"alias": "Production", "version": "17"},
+                {"alias": "Staging", "version": "18"},
+            ],
+        },
+        {"name": "unaliased", "aliases": []},
+    ]
+}
+
+
+def _run(status_payload, registry):
+    """Invoke `exa status`, routing the /status and registry-search calls separately."""
+
+    def get(url, *a, **k):
+        if "registered-models/search" in url:
+            if isinstance(registry, Exception):
+                raise registry
+            return registry
+        return status_payload
+
+    with patch("examlops.cli.commands.status._client.get", get):
+        result = runner.invoke(app, ["status"], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+_NO_APPROVALS = {**FAKE_STATUS, "pending_approvals": 0, "services": _PROBED}
+
+
+def test_production_models_are_listed():
+    out = _run(_NO_APPROVALS, _REGISTRY)
+    assert "Production Models" in out
+    assert "JPCP" in out and "17" in out and "18" in out
+    assert "unaliased" not in out, "a model with no lifecycle alias is not in production"
+
+
+def test_no_production_models_says_so_instead_of_printing_nothing():
+    out = _run(_NO_APPROVALS, {"registered_models": []})
+    assert "No model carries a Production or Staging alias" in out
+
+
+def test_an_unreadable_registry_is_reported_as_unknown():
+    from examlops.cli import _client
+
+    out = _run(_NO_APPROVALS, _client.ClientError("registry refused"))
+    assert "production models unknown" in out
+    assert "No model carries" not in out, "unknown must not be rendered as measured-and-none"
+
+
+def test_json_carries_the_production_models_the_table_shows():
+    import json
+
+    def get(url, *a, **k):
+        return _REGISTRY if "registered-models/search" in url else _NO_APPROVALS
+
+    with patch("examlops.cli.commands.status._client.get", get):
+        result = runner.invoke(app, ["--json", "status"])
+    body = json.loads(result.stdout)
+    assert [m["name"] for m in body["production_models"]] == ["JPCP"], (
+        "`--json` emitted the raw control-plane payload, so it disagreed with the table"
+    )
+
+
+# ── a service the control plane never mentioned is not a service that is down ────────────────
+
+
+def test_an_unreported_service_is_not_called_unreachable():
+    """An older control plane omits a key; `svc.get("ok", False)` read that as a failed probe."""
+    partial = {k: v for k, v in _PROBED.items() if k != "dashboard"}
+    out = _run({**_NO_APPROVALS, "services": partial}, {"registered_models": []})
+    assert "not reported" in out
+    assert "1 service not reported by the control plane" in out
+    assert "unreachable" not in out, "nothing was probed, so nothing may be called unreachable"

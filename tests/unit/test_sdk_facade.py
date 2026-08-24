@@ -31,8 +31,11 @@ def test_status_returns_typed_object_when_unreachable(monkeypatch):
     assert isinstance(st, sdk.PlatformStatus)
     assert st.reachable is False
     assert st.services == {}
-    assert st.pending_approvals == 0
-    assert st.production_models == []
+    # Unknown, not zero. This assertion used to read `== 0` — the value that means "the approval
+    # queue is empty", which a control plane nobody could reach has not told us. The endpoint
+    # stopped fabricating it; the facade's failure path was still putting it back.
+    assert st.pending_approvals is None
+    assert st.production_models is None
 
 
 def test_status_parses_typed_services(monkeypatch):
@@ -51,6 +54,85 @@ def test_status_parses_typed_services(monkeypatch):
     assert isinstance(st.services["mlflow"], sdk.ServiceHealth)
     assert st.pending_approvals == 2
     assert st.production_models[0]["name"] == "JPCP"
+
+
+# ── production models come from the registry, because /status has never carried them ────────────
+#
+# The payload above is the one this suite invented. The live endpoint returns exactly two keys —
+# `services` and `pending_approvals` — verified against the running app, and `tests/unit/
+# test_control_plane_status_contract.py` pins that so this can never silently drift back. Reading a
+# key nobody sends made `production_models` an empty list on every real call, and an empty list
+# renders as nothing at all: the platform looked like it had no models in production.
+
+_LIVE_STATUS = {
+    "services": {"mlflow": {"ok": True, "url": "http://mlflow:5000/health"}},
+    "pending_approvals": 0,
+}
+_REGISTRY = {
+    "registered_models": [
+        {
+            "name": "jpcp",
+            "aliases": [
+                {"alias": "Production", "version": "17"},
+                {"alias": "Staging", "version": "18"},
+            ],
+        },
+        {"name": "mack", "aliases": [{"alias": "Staging", "version": "4"}]},
+        {"name": "mcbound", "aliases": []},
+    ]
+}
+
+
+def _route(monkeypatch, registry):
+    """Answer /status with the live shape and the registry search with `registry`."""
+    from examlops.cli import _client
+
+    def get(url, *a, **k):
+        if "registered-models/search" in url:
+            if isinstance(registry, Exception):
+                raise registry
+            return registry
+        return _LIVE_STATUS
+
+    monkeypatch.setattr(_client, "get", get)
+
+
+def test_production_models_are_read_from_the_registry(monkeypatch):
+    _route(monkeypatch, _REGISTRY)
+    st = sdk.status()
+    by_name = {m["name"]: m for m in st.production_models}
+    assert set(by_name) == {"jpcp", "mack"}, "a model with no lifecycle alias is not in production"
+    assert by_name["jpcp"]["production_version"] == "17"
+    assert by_name["jpcp"]["staging_version"] == "18"
+    assert by_name["mack"]["production_version"] is None
+
+
+def test_an_unreadable_registry_is_unknown_not_empty(monkeypatch):
+    from examlops.cli import _client
+
+    _route(monkeypatch, _client.ClientError("registry down"))
+    assert sdk.status().production_models is None
+
+
+def test_a_registry_with_no_aliases_is_measured_and_empty(monkeypatch):
+    _route(monkeypatch, {"registered_models": [{"name": "mcbound", "aliases": []}]})
+    assert sdk.status().production_models == [], "measured-and-none is a list, not None"
+
+
+def test_a_down_mlflow_is_not_probed_twice(monkeypatch):
+    """The status ping already said MLflow is down; asking again buys a timeout, not an answer."""
+    from examlops.cli import _client
+
+    asked = []
+
+    def get(url, *a, **k):
+        asked.append(url)
+        return {"services": {"mlflow": {"ok": False}}, "pending_approvals": 0}
+
+    monkeypatch.setattr(_client, "get", get)
+    st = sdk.status()
+    assert st.production_models is None
+    assert not any("registered-models" in u for u in asked), asked
 
 
 def test_place_routes_through_placement_provider(monkeypatch):

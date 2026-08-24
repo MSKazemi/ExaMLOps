@@ -84,3 +84,18 @@ def test_no_read_tool_reaches_the_real_platform_db(db):
     # The fixture points PLATFORM_DB at tmp_path; if a tool hardcoded a path instead, the repo's
     # own platform.db would be read during the suite.
     assert os.environ["PLATFORM_DB"].endswith("never_raise.db")
+
+
+def test_the_misnamed_mcp_tool_says_what_it_actually_returns():
+    """`list_production_models` reads the auto-discovery registry, not lifecycle aliases.
+
+    An agent selects a tool by its name and description. This one is named for a question it
+    cannot answer — `/models` returns `{model_name: datasets}` with no version and no alias — and
+    `list_models` next to it is the tool that reads the MLflow aliases. The name stays for wire
+    compatibility, so the description has to carry the correction.
+    """
+    from examlops.mcp.tools import list_production_models
+
+    doc = list_production_models.__doc__ or ""
+    assert "NOT which models are in production" in doc
+    assert "list_models" in doc, "the description must name the tool that does answer this"
