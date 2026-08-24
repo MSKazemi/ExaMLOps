@@ -615,10 +615,23 @@ An autouse fixture in `tests/unit/conftest.py` refuses, for the duration of ever
 15000 MLflow, 18001 Ray Serve, 18002 control plane, 18004 agent, 18099 dashboard:
 
 ```
-AssertionError: this unit test connected to the Skipper agent at 127.0.0.1:18004. Whether that
-service is running is a property of this machine, not of the code under test — stub the client
-(see tests/unit/test_cli_chat.py::_isolate) or point at a port nothing serves.
+LiveServiceContacted: this unit test connected to the Skipper agent at 127.0.0.1:18004. Whether
+that service is running is a property of this machine, not of the code under test — stub the
+client (see tests/unit/test_cli_chat.py::_isolate) or point at a port nothing serves.
 ```
+
+**`LiveServiceContacted` derives from `BaseException`, not `Exception`, and that is load-bearing.**
+Service-probing code catches broadly — that is what a probe *is*. The control plane's own `_ping`
+is `try: urlopen(...) except Exception: return False`, and the dashboard's health router swallows
+everything its twelve pings can throw. While the guard raised an `AssertionError` it was caught by
+the code under test and turned into "the service is down": the guard stayed silent, the test went
+green, and the verdict was still whatever happened to be listening on the developer's machine. So
+the guard was not enforcing over precisely the code most likely to need it. A `BaseException`
+passes through those handlers the way `KeyboardInterrupt` does, and pytest reports it as an error.
+The four `except BaseException` handlers in the platform (`platform_db`'s transaction context and
+the three `resilience` wrappers) all re-raise, and `retry_on()` does not match this type, so
+nothing retries or absorbs it. Each of the three suites has a
+`test_the_guard_survives_the_except_exception_every_probe_is_written_with` test pinning it.
 
 The rule is deliberately narrow, because unit tests open sockets for good reasons:
 `test_vlm_serving_engine` starts its own `HTTPServer` on an ephemeral port, `test_datastore_reachability`
@@ -651,6 +664,11 @@ before `app` is reloaded — the module reads them into constants at import time
 calling `GET /status`, which fans out to all four peers, for reasons that had nothing to do with
 them (the pending-approval count, the reported probe address); one sibling test had shown the
 isolated form for a year by patching `urllib.request.urlopen`, but nothing made it the rule.
+
+All three copies now have a `test_live_service_guard.py` beside them — the dashboard's was added
+last, after the suite had run the guard before every one of its tests without anything testing the
+guard itself. It reaches its port list through a `guarded_ports` fixture in the conftest rather
+than re-deriving it, so the test and the guard cannot drift apart.
 
 That copy is deliberate, and `test_live_service_guard.py` in the same directory is what makes it
 safe to keep: the control-plane CI job installs `fastapi`, `uvicorn`, `prometheus_client`, `pyyaml`

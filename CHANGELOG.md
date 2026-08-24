@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **The live-service guard could not fire over the code that most needed it.** Three suites carry
+  an autouse fixture that fails any test reaching a platform service port on this host — the
+  protection added after two `exa chat` tests turned out to be green only because a Skipper agent
+  happened to be listening. It raised an `AssertionError`, and every service probe in this codebase
+  wraps its socket call in `except Exception`, because that is what a probe is: the control plane's
+  `_ping` is `try: urlopen(...) except Exception: return False`, and the dashboard's health router
+  swallows everything its twelve pings can throw. The guard therefore fired *inside* the code under
+  test, was absorbed, and came back out as "the service is down" — guard silent, test green, and
+  the result still a property of the developer's machine. Demonstrated directly: a probe written in
+  that shape returned `False` instead of failing. The guard now raises `LiveServiceContacted`, a
+  `BaseException` subclass, which passes through those handlers the way `KeyboardInterrupt` does;
+  the platform's four `except BaseException` handlers all re-raise and `retry_on()` does not match
+  it, so nothing absorbs or retries it. Each of the three suites gained a test that writes a probe
+  the way this repo writes probes and asserts the guard still escapes it.
+- **The dashboard's copy of the guard was itself untested.** It has run before every test of that
+  suite since it was added, with nothing to notice if it stopped firing — the one failure mode
+  that takes the whole protection with it silently. It now has the same
+  `test_live_service_guard.py` the other two suites carry, reaching the guarded port list through a
+  new `guarded_ports` fixture rather than re-deriving it, so the test and the guard cannot drift.
 - **Four alerts about the serving error rate could not see a hung model.** Ray Serve's request
   counter carries a `status` label and the serving code emits five values for it — `success`,
   `error`, `invalid`, `not_found` and `timeout`. `RayServeHighErrorRate`,

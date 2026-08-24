@@ -160,6 +160,28 @@ def _service_ports() -> dict[int, str]:
     return _SERVICE_PORTS
 
 
+@pytest.fixture
+def guarded_ports() -> dict[int, str]:
+    """The port→setting map the live-service guard enforces, exposed for its own tests.
+
+    `test_live_service_guard.py` cannot `import conftest`, and re-deriving the list there would
+    let the test and the guard drift apart — which is the one failure this fixture exists to make
+    impossible.
+    """
+    return dict(_service_ports())
+
+
+class LiveServiceContacted(BaseException):
+    """Raised when a test reaches a platform service port on this host.
+
+    A ``BaseException``, not an ``Exception``, and that is the whole point: every service probe in
+    this repo wraps its socket call in ``except Exception``, so an ``AssertionError`` raised here
+    was caught by the code under test and became "the service is down" — guard silent, test green,
+    machine still measured. ``BaseException`` passes through those handlers the way
+    ``KeyboardInterrupt`` does. Each suite keeps its own copy on purpose (see this file's header).
+    """
+
+
 @pytest.fixture(autouse=True)
 def _no_live_backing_services():
     # Restores by hand rather than through `monkeypatch`: an autouse conftest fixture that requests
@@ -179,7 +201,7 @@ def _no_live_backing_services():
         except (TypeError, IndexError, KeyError):
             return
         if port in ports and str(host) in _LOCAL_HOSTS:
-            raise AssertionError(
+            raise LiveServiceContacted(
                 f"this test connected to {ports[port]} at {host}:{port}. Whether that service is "
                 "running is a property of this machine, not of the code under test — mock the "
                 "client (see tests/test_health.py) or point the setting at a port nothing serves."

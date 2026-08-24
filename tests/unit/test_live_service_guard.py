@@ -19,7 +19,7 @@ import pytest
 
 
 def test_reaching_a_platform_service_port_on_this_host_fails_loudly():
-    with pytest.raises(AssertionError) as caught:
+    with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
         socket.socket().connect(("127.0.0.1", 18004))
     assert "the Skipper agent" in str(caught.value)
     assert "stub the client" in str(caught.value), "the failure must say what to do instead"
@@ -28,8 +28,9 @@ def test_reaching_a_platform_service_port_on_this_host_fails_loudly():
 def test_connect_ex_is_covered_too():
     """``connect_ex`` returns an errno instead of raising, so a probe written with it would
     otherwise slip past the guard and quietly report whatever the machine is running."""
-    with pytest.raises(AssertionError):
+    with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
         socket.socket().connect_ex(("localhost", 18099))
+    assert type(caught.value).__name__ == "LiveServiceContacted"
 
 
 def test_a_socket_the_test_opened_itself_is_left_alone():
@@ -45,5 +46,31 @@ def test_a_socket_the_test_opened_itself_is_left_alone():
 def test_a_far_host_on_a_platform_port_is_not_the_platform():
     """Only *this* host's service ports are the accident. ``agent.test:18004`` is a name that
     does not resolve, which is exactly how the launcher tests pin the URL without reaching it."""
-    with pytest.raises(OSError):  # DNS failure, not the guard's AssertionError
+    with pytest.raises(OSError):  # DNS failure, not the guard's LiveServiceContacted
         socket.socket().connect(("agent.test", 18004))
+
+
+def test_the_guard_survives_the_except_exception_every_probe_is_written_with():
+    """The reason the guard raises a ``BaseException`` and not an ``AssertionError``.
+
+    Service-probing code catches broadly — that is what a probe is. The control plane's own
+    ``_ping`` is ``try: urlopen(...) except Exception: return False``, and with an
+    ``AssertionError`` the guard fired *inside* that handler: the probe reported "service down",
+    the test went green, and it had still contacted whatever was listening on this machine. So the
+    guard was not enforcing over exactly the code most likely to need it.
+    """
+
+    def probe_the_way_this_repo_writes_probes() -> bool:
+        try:
+            socket.socket().connect(("127.0.0.1", 18002))
+            return True
+        except Exception:  # noqa: BLE001 — this breadth is the point of the test
+            return False
+
+    with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
+        probe_the_way_this_repo_writes_probes()
+    assert type(caught.value).__name__ == "LiveServiceContacted"
+    assert not isinstance(caught.value, Exception), (
+        "an Exception subclass would be swallowed by the handler above and the guard would be "
+        "silent for every probe in the codebase"
+    )

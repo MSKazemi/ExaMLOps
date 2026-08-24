@@ -42,6 +42,19 @@ _LIVE_PORTS = {
 _LOCAL = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
 
+class LiveServiceContacted(BaseException):
+    """Raised when a unit test reaches a platform service port on this host.
+
+    A ``BaseException``, not an ``Exception``, and that is the whole point. Every piece of
+    service-probing code in this repo wraps its socket call in ``except Exception`` — that is what
+    a health probe *is* — so an ``AssertionError`` raised by the guard was caught by the code under
+    test and turned into "the service is down". The guard then reported nothing, the test passed,
+    and it had still measured the developer's machine. Verified on the control plane's ``_ping``,
+    whose ``except Exception`` swallowed the guard whole. ``BaseException`` passes straight through
+    those handlers, the same way ``KeyboardInterrupt`` does, and pytest reports it as an error.
+    """
+
+
 @pytest.fixture(autouse=True)
 def _no_live_services():
     # Restores by hand rather than through `monkeypatch`: an autouse conftest fixture that requests
@@ -57,7 +70,7 @@ def _no_live_services():
         except (TypeError, IndexError, KeyError):
             return
         if port in _LIVE_PORTS and str(host) in _LOCAL:
-            raise AssertionError(
+            raise LiveServiceContacted(
                 f"this unit test connected to {_LIVE_PORTS[port]} at {host}:{port}. "
                 "Whether that service is running is a property of this machine, not of the code "
                 "under test — stub the client (see tests/unit/test_cli_chat.py::_isolate) or "

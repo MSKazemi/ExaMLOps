@@ -69,6 +69,17 @@ def _peers_point_nowhere():
                 os.environ[var] = value
 
 
+class LiveServiceContacted(BaseException):
+    """Raised when a test reaches a platform service port on this host.
+
+    A ``BaseException``, not an ``Exception``, and that is the whole point: every service probe in
+    this repo wraps its socket call in ``except Exception``, so an ``AssertionError`` raised here
+    was caught by the code under test and became "the service is down" — guard silent, test green,
+    machine still measured. ``BaseException`` passes through those handlers the way
+    ``KeyboardInterrupt`` does. Each suite keeps its own copy on purpose (see this file's header).
+    """
+
+
 @pytest.fixture(autouse=True)
 def _no_live_services():
     real_connect = socket.socket.connect
@@ -80,7 +91,7 @@ def _no_live_services():
         except (TypeError, IndexError, KeyError):
             return
         if port in _LIVE_PORTS and str(host) in _LOCAL:
-            raise AssertionError(
+            raise LiveServiceContacted(
                 f"this test connected to {_LIVE_PORTS[port]} at {host}:{port}. Whether that "
                 "service is running is a property of this machine, not of the control plane — "
                 "patch `urllib.request.urlopen` (see test_status_runs_concurrently) or leave the "

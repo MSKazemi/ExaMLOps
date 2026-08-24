@@ -38,6 +38,8 @@ _ASSERTION_FREE_BY_DESIGN = {
     "tests/unit/test_live_service_guard.py::test_a_socket_the_test_opened_itself_is_left_alone",
     "platform/services/control_plane/tests/test_live_service_guard.py"
     "::test_a_socket_the_test_opened_itself_is_left_alone",
+    "platform/services/dashboard/backend/tests/test_live_service_guard.py"
+    "::test_a_socket_the_test_opened_itself_is_left_alone",
     "tests/unit/test_datastore_reachability.py::test_listening_socket_passes",
     "tests/unit/test_datastore_reachability.py::test_unparseable_dsn_is_left_for_psycopg_to_reject",
     "tests/unit/test_datastore_reachability.py::test_cases_libpq_handles_better_are_skipped",
