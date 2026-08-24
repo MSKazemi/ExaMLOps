@@ -31,7 +31,6 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "test.db"))
     monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "unit-test-signing-key")
     init_db()
-    supplychain._verify_cache.clear()
 
 
 def _artifacts(tmp_path: Path) -> list[Path]:

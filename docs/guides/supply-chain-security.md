@@ -58,6 +58,14 @@ if not supplychain.verify_before_load(model, version, paths, mode="enforce"):
     raise RuntimeError(f"refusing to load unverified {model}@{version}")
 ```
 
+Verification is **never cached**. Both the artifact hash and the signature comparison run on every
+call, so a `verified` answer is always about the bytes on disk right now, and swapping an artifact
+between two loads is caught by the second one. The cost is one SHA-256 pass over the artifact
+bundle per load — roughly 2 ms for a 1 MB model, 77 ms for 50 MB. Budget for it on the load path
+rather than trying to avoid it: a cached verdict about a model's bytes is stale the moment those
+bytes, its signature record or the signing key change. (Spec D3 R8 originally asked for a
+per-digest cache; it is withdrawn — see the 2026-08-24 amendment on ADR 0013.)
+
 Every sign and every verify-failure is written to `audit_events` (source
 `exa-supplychain`), so tamper attempts and unsigned-load attempts are auditable (D4).
 

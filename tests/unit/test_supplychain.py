@@ -23,7 +23,6 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "test.db"))
     monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "unit-test-signing-key")
     init_db()
-    supplychain._verify_cache.clear()
 
 
 def _artifacts(tmp_path: Path) -> list[Path]:
@@ -47,7 +46,6 @@ def test_gwt1_sign_verify_roundtrip(tmp_path):
 def test_gwt2_tamper_detected(tmp_path):
     paths = _artifacts(tmp_path)
     supplychain.sign_model("JPCP", "17", paths)
-    supplychain._verify_cache.clear()
     # Mutate an artifact after signing.
     paths[0].write_bytes(b"weights-v2-EVIL")
     result = supplychain.verify_model("JPCP", "17", paths)
@@ -58,7 +56,6 @@ def test_gwt2_tamper_detected(tmp_path):
 def test_gwt3_enforce_refuses_on_failure(tmp_path):
     paths = _artifacts(tmp_path)
     supplychain.sign_model("JPCP", "17", paths)
-    supplychain._verify_cache.clear()
     paths[0].write_bytes(b"tampered")
     assert supplychain.verify_before_load("JPCP", "17", paths, mode="enforce") is False
 
@@ -66,7 +63,6 @@ def test_gwt3_enforce_refuses_on_failure(tmp_path):
 def test_gwt6_warn_may_load(tmp_path):
     paths = _artifacts(tmp_path)
     supplychain.sign_model("JPCP", "17", paths)
-    supplychain._verify_cache.clear()
     paths[0].write_bytes(b"tampered")
     # warn mode records the failure but does not block the load
     assert supplychain.verify_before_load("JPCP", "17", paths, mode="warn") is True
@@ -109,15 +105,23 @@ def test_bom_persisted_and_reloadable(tmp_path):
     assert stored["bomFormat"] == "CycloneDX"
 
 
-def test_verify_cache_hit(tmp_path):
+def test_every_verification_is_a_fresh_one(tmp_path):
+    """This test used to assert the second call came back `cached` (spec R8).
+
+    It does not any more, because the cache is gone: keyed by artifact digest it answered a
+    different question than the gate asks, and no correct key was worth the 4 microseconds it
+    saved. See `test_verify_cache_answers_the_right_question.py` for the failure that ended it.
+    """
     paths = _artifacts(tmp_path)
     supplychain.sign_model("JPCP", "17", paths)
-    supplychain._verify_cache.clear()
-    first = supplychain.verify_model("JPCP", "17", paths)
-    assert first.reason == "verified"
-    second = supplychain.verify_model("JPCP", "17", paths)
-    assert second.reason == "cached"
-    assert second.ok is True
+    assert supplychain.verify_model("JPCP", "17", paths).reason == "verified"
+    assert supplychain.verify_model("JPCP", "17", paths).reason == "verified"
+
+    # And the second call is a real one: tamper between the two and it is caught.
+    paths[0].write_bytes(b"weights-swapped")
+    third = supplychain.verify_model("JPCP", "17", paths)
+    assert third.ok is False
+    assert "tamper" in third.reason
 
 
 def test_missing_signing_key_raises(tmp_path, monkeypatch):

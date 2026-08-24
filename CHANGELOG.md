@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A model whose artifacts had been swapped for another model's was reported `verified` and
+  admitted in `enforce` mode.** `verify_before_load` is the last gate before a set of bytes is
+  served, and its answer came from a cache keyed by artifact digest alone — spec D3 R8, "verification
+  results SHOULD be cached per artifact digest". That key answers "have these bytes ever verified,
+  for anything?", not "do these bytes match the signature recorded for *this* version?", and a hit
+  returned before the digest comparison ran, so it short-circuited the tamper check itself.
+  Reproduced end to end: sign and verify model A, then replace model B's artifacts with A's bytes —
+  `verify_model` returned `ok=True, reason="cached"` and `verify_before_load(mode="enforce")`
+  returned `True`. A rotated signing key went stale the same way, in the same direction.
+  The cache is **removed** rather than re-keyed: the verdict depends on the bytes, the recorded
+  signature *and* the signing key, so a correct key must resolve the signing key — most of the
+  remaining work — and all a cache could ever save is the HMAC over a 64-character digest, measured
+  at 3.79 us against a 2.00 ms artifact hash for a 1 MB model (0.19% of the call) and 4.26 us
+  against 77 ms at 50 MB. It could never save the artifact hash, because that hash is the check.
+  R8 is withdrawn in the spec and ADR 0013 carries an amendment. Nine tests across three files had
+  cleared the cache before asserting anything, so a cold cache and a repeat of the identical
+  question were the only behaviours the suite ever exercised; the new
+  `tests/unit/test_verify_cache_answers_the_right_question.py` clears nothing, and four of its five
+  tests are red against the previous code.
+
 - **The live-service guard could not fire over the code that most needed it.** Three suites carry
   an autouse fixture that fails any test reaching a platform service port on this host — the
   protection added after two `exa chat` tests turned out to be green only because a Skipper agent

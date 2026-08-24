@@ -21,8 +21,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 _CHUNK = 1 << 20
-# Per-digest verify cache (spec R8).
-_verify_cache: dict[str, bool] = {}
+
+# There is deliberately no verification cache here. Spec R8 asked for one "per artifact digest",
+# and that key answers a different question than the gate asks: "have these bytes ever verified,
+# for anything?" rather than "do these bytes match *this* version's recorded signature?". The two
+# diverge the moment two records share a digest, and the divergence is a false accept — a version
+# whose artifacts had been swapped for another model's signed bytes was reported `verified` and
+# loaded in `enforce` mode. A key that could be correct would have to include the recorded
+# signature and the signing key, and resolving the signing key is most of the remaining work.
+#
+# What the cache could ever have saved is 4 us of HMAC over a 64-character digest. It could never
+# save the part that costs anything — re-hashing the artifacts — because that hash IS the tamper
+# check, so a cache hit would be the check answering itself. Measured: 3.79 us against a 2.00 ms
+# digest for a 1 MB artifact (0.19%), 4.26 us against 77 ms for 50 MB (0.0055%).
 
 
 class SigningKeyMissing(RuntimeError):
@@ -92,28 +103,26 @@ def sign_model(
     digest = artifact_digest(artifact_paths)
     sig = _hmac_sign(digest)
     store_model_signature(model, version, digest, sig, algo="hmac-sha256", signed_by=actor)
-    _verify_cache.pop(digest, None)
     _audit("model_signed", model, version, actor, {"digest": digest[:16]})
     return Signature(model, version, digest, "hmac-sha256", sig)
 
 
 def verify_model(model: str, version: str, artifact_paths: Iterable[Path]) -> VerifyResult:
-    """Verify a model's signature against the current artifact bytes (spec R6, cached R8)."""
+    """Verify a model's signature against the current artifact bytes (spec R6).
+
+    Every check runs on every call — see the note at the top of this module for why the R8 cache
+    was removed rather than re-keyed.
+    """
     from examlops.data.registry import get_model_signature
 
     row = get_model_signature(model, version)
     if row is None:
         return VerifyResult(False, "unsigned: no signature on record")
     current = artifact_digest(artifact_paths)
-    if current in _verify_cache:
-        ok = _verify_cache[current]
-        return VerifyResult(ok, "cached" if ok else "cached-fail", current)
     if current != row["digest"]:
-        _verify_cache[current] = False
         return VerifyResult(False, "tampered: artifact digest changed", current)
     expected = _hmac_sign(current)
     ok = hmac.compare_digest(expected, row["signature"])
-    _verify_cache[current] = ok
     return VerifyResult(ok, "verified" if ok else "bad-signature", current)
 
 

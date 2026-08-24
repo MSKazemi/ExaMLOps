@@ -96,7 +96,6 @@ def test_gwt6_verify_before_load_refuses_tampered(tmp_path):
     art = tmp_path / "model.pkl"
     art.write_bytes(b"good-weights")
     supplychain.sign_model("JPCP", "17", [art])
-    supplychain._verify_cache.clear()
     art.write_bytes(b"TAMPERED")
 
     backend = sb.KServeK8s()
@@ -109,7 +108,6 @@ def test_verify_before_load_allows_valid(tmp_path):
     art = tmp_path / "model.pkl"
     art.write_bytes(b"good-weights")
     supplychain.sign_model("JPCP", "17", [art])
-    supplychain._verify_cache.clear()
 
     backend = sb.KServeK8s()
     assert backend.verify_before_load("JPCP", "17", [art], mode="enforce") is True
