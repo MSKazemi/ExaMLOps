@@ -45,4 +45,39 @@ def test_near_square_default_layout():
 def test_empty_fleet():
     grid = tile_grid([])
     assert grid["tiles"] == [] and grid["summary"]["nodes"] == 0
+    # Not 1.0. A fleet with no nodes has no health to report, and this assertion used to pin the
+    # opposite — see the block below for why that mattered on a wall-mounted heatmap.
+    assert grid["summary"]["fleet_health"] is None
+
+
+# ── an empty fleet is not a healthy fleet (T88) ─────────────────────────────────────────────
+#
+# `fleet_health` averages a 0–1 per-node score and drives the heatmap colour ramp on the NOC wall.
+# With no nodes there is nothing to average, and the old code answered 1.0 — the value reserved for
+# a fleet where every node is idle and well. The states that produce an empty snapshot are exactly
+# the ones worth seeing: discovery never ran, the probe failed, the registry was wiped, or a
+# `--cluster` filter matched nothing. Each of them painted the display its most reassuring colour.
+
+
+def test_a_fleet_with_no_nodes_reports_no_health_rather_than_perfect_health():
+    summary = tile_grid([])["summary"]
+    assert summary["fleet_health"] is None
+    assert summary["nodes"] == 0
+
+
+def test_a_cluster_filter_that_matches_nothing_does_not_report_perfect_health():
+    """The same empty snapshot `exa fleet heatmap --cluster typo` produces."""
+    assert tile_grid([])["summary"]["fleet_health"] is None
+
+
+def test_a_fleet_whose_nodes_are_all_down_still_reports_zero_not_none():
+    """The control: 0.0 means measured-and-terrible and must stay distinguishable from None."""
+    grid = tile_grid([_node("a", "n0", 8, "down"), _node("a", "n1", 8, "down")])
+    assert grid["summary"]["fleet_health"] == 0.0
+    assert grid["summary"]["down_nodes"] == 2
+
+
+def test_a_healthy_fleet_still_reports_one():
+    """The other control: the reading that used to be ambiguous still means what it says."""
+    grid = tile_grid([_node("a", f"n{i}", 8, "idle") for i in range(3)])
     assert grid["summary"]["fleet_health"] == 1.0

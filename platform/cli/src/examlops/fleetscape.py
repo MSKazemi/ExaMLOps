@@ -36,6 +36,9 @@ def tile_grid(nodes: list[dict[str, Any]], *, cols: int | None = None) -> dict[s
     Nodes are grouped by cluster then laid out row-major into a near-square grid (``cols`` overrides
     the width). Each tile carries its (row, col) position, node/cluster id, GPUs, state, and a 0–1
     ``health`` for colouring. Returns ``{tiles, dims: {rows, cols}, clusters: {...}, summary: {...}}``.
+
+    ``summary["fleet_health"]`` is ``None`` when the fleet is empty — there is nothing to average,
+    which is not the same claim as a fleet in perfect health.
     """
     ordered = sorted(
         nodes, key=lambda n: (n.get("cluster", ""), n.get("node") or n.get("name") or "")
@@ -67,10 +70,17 @@ def tile_grid(nodes: list[dict[str, Any]], *, cols: int | None = None) -> dict[s
         total_gpus += gpus
         down += 1 if health == 0.0 else 0
     for c in clusters.values():
-        c["avg_health"] = round(c["health_sum"] / c["nodes"], 3) if c["nodes"] else 0.0
+        # A cluster only exists here because a node created it, so `nodes` is always >= 1.
+        c["avg_health"] = round(c["health_sum"] / c["nodes"], 3)
         del c["health_sum"]
     rows = (n + width - 1) // width if n else 0
-    fleet_health = round(sum(t["health"] for t in tiles) / n, 3) if n else 1.0
+    # `None`, not 1.0. This average drives the heatmap colour ramp, and an empty snapshot is
+    # produced by exactly the situations worth seeing — discovery never ran, the probe failed,
+    # the registry was wiped, a `--cluster` filter matched nothing. Scoring "nothing to average"
+    # as the value reserved for a fleet of healthy idle nodes paints the most reassuring colour
+    # on the display whose only job is to show that something is wrong. 0.0 stays available and
+    # distinct: it means measured, and every node is down.
+    fleet_health = round(sum(t["health"] for t in tiles) / n, 3) if n else None
     return {
         "tiles": tiles,
         "dims": {"rows": rows, "cols": width},

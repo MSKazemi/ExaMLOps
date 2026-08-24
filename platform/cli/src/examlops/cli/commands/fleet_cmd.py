@@ -99,12 +99,20 @@ def heatmap(
         _output.print_json(grid)
         return
     s = grid["summary"]
+    health = s["fleet_health"]
     _output.print_record(
         {
             "nodes": s["nodes"],
             "total_gpus": s["total_gpus"],
             "down_nodes": s["down_nodes"],
-            "fleet_health": s["fleet_health"],
+            # An empty fleet has no health to average. Printing a number here — any number —
+            # would be read as a measurement of a fleet that was never looked at.
+            "fleet_health": "— (no nodes)" if health is None else health,
             "grid": f"{grid['dims']['rows']}×{grid['dims']['cols']}",
         }
     )
+    if health is None:
+        _output.warning(
+            "No nodes in the registry for this view, so fleet health is not a measurement. "
+            "Run: exa hpc detect"
+        )

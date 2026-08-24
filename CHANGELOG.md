@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **A fleet with no nodes reported perfect health.** `fleetscape.tile_grid()` averages a 0–1
+  per-node score into `summary.fleet_health`, which drives the heatmap colour ramp on the 3D/NOC
+  fleet view and prints in `exa fleet heatmap`. With an empty snapshot there is nothing to average,
+  and the code answered `1.0` — the value reserved for a fleet where every node is idle and well.
+  The situations that produce an empty snapshot are exactly the ones worth seeing: discovery never
+  ran, the probe failed, the registry was wiped, or a `--cluster` filter matched nothing. Each of
+  them painted the wall display its most reassuring colour. `exa fleet heatmap --cluster <typo>`
+  reported `fleet_health: 1.0` against `nodes: 0`. It is now `None` (`null` in JSON), the table
+  prints `— (no nodes)` with a warning naming `exa hpc detect`, and `0.0` keeps its distinct
+  meaning of measured-and-every-node-down. The unit test that had pinned `== 1.0` for the empty
+  fleet asserted the defect and now asserts the absence.
 - **An SLO nobody had measured was published as an SLO that was being met.** `slo_status()`
   computed `sli = (good / total) if total else 1.0`, so zero recorded samples scored as a perfect
   ratio: a full error budget, `OK` in `exa slo status`, and a green *Meeting* pill on the dashboard
