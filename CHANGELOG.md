@@ -7,6 +7,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Two dashboard storage tests could not fail.** `test_ensure_bucket_creates_when_missing` and
+  `test_delete` called their subject and asserted nothing, so each passed as long as nothing raised
+  — proved by replacing `ImageStorage.ensure_bucket()` and `.delete()` with `return`, which left
+  both green. Each named an observable effect, a bucket created and an object deleted, that its
+  body never looked at; `test_delete`'s "missing object must not raise" case was not tested either,
+  because the object it expected to be gone was still there. Both now check the bucket afterwards
+  through the same async client the suite's moto shim adapts, and both were re-verified red against
+  the neutered methods. New guard `tests/unit/test_every_test_can_fail.py` fails on any test
+  function with no assertion, no raise and no `assert_*` helper: 3060 test functions scanned, 13
+  exempted individually with the reason their only claim is "does not raise", and the exemption
+  list is itself checked for dead entries. The guard was proved to catch a newly-added
+  assertion-free test and to go green again when it was removed.
 - **A fleet with no nodes reported perfect health.** `fleetscape.tile_grid()` averages a 0–1
   per-node score into `summary.fleet_health`, which drives the heatmap colour ramp on the 3D/NOC
   fleet view and prints in `exa fleet heatmap`. With an empty snapshot there is nothing to average,
