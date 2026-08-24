@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Fixed
 
+- **Both SLO error-budget alerts paged on a single error, and printed a burn rate that was off by
+  four to six orders of magnitude.** Burn rate is a ratio over a ratio — the observed error ratio
+  divided by the error budget (`1 - SLO`). `SLOErrorBudgetFastBurn` and `SLOErrorBudgetSlowBurn`
+  instead divided an error *rate* by a constant "budget per second"
+  (`sum(rate(errors[1h])) / (0.005 / (30*24*3600))`), comparing errors/second against
+  fraction/second and calling the result a multiplier. The arithmetic: the `> 14.4` threshold
+  worked out at **one error every 417 days**, so a single error anywhere in the window scored
+  `144000×` and paged `critical`, and a service comfortably inside its SLO — 0.1% errors against a
+  0.5% budget, a true burn rate of `0.2×` — reported `5184000×`. The `{{ $value }}` in the
+  description put that number in front of the operator. Both now compare the error ratio against
+  `multiplier × budget` (`> 0.072` and `> 0.015`), which is the form the repo's own rule generator
+  (`examlops.slo`) and `slo_status()` have always used; only this hand-written static copy
+  disagreed, and nothing compared the two. Also corrected the fast-burn description, which claimed
+  the 30-day budget "expires in < 2 hours" — a sustained 14.4× burn exhausts it in ~50 hours.
+  promtool cannot catch this (the expression is valid PromQL over a live metric) and neither can a
+  test that greps the expression, since the broken form contains every token the fixed one does, so
+  the new `tests/unit/test_burn_rate_is_a_ratio.py` **evaluates** each rule against six traffic
+  scenarios — healthy, idle, one stray error, inside-SLO, 4× budget, real outage — and separately
+  checks that each threshold equals the multiplier its own summary advertises.
+
 - **A model whose artifacts had been swapped for another model's was reported `verified` and
   admitted in `enforce` mode.** `verify_before_load` is the last gate before a set of bytes is
   served, and its answer came from a cache keyed by artifact digest alone — spec D3 R8, "verification

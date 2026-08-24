@@ -82,23 +82,30 @@ groups:
           description: "{{ $value }} failed reload(s) for model {{ $labels.model_name }} in 15 min."
 
       - alert: SLOErrorBudgetFastBurn
+        # Burn rate is a RATIO over a RATIO: the observed error ratio divided by the error
+        # budget (1 - SLO). Dividing an error *rate* by "budget per second" instead compares
+        # errors/second against a fraction/second, which is not a burn rate and is not even
+        # dimensionless — one single error anywhere in the window scored 144000x and paged.
+        # 14.4 x 0.005 = 0.072. The repo's own rule generator (examlops.slo) has always done
+        # it this way; only this hand-written copy did not.
         expr: |
           sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[1h]))
-          / (0.005 / (30 * 24 * 3600))
-          > 14.4
+          / clamp_min(sum(rate(ray_examlops_predict_requests_total[1h])), 0.001)
+          > 0.072
         for: 5m
         labels:
           severity: critical
           service: serving
         annotations:
           summary: "SLO error budget burn rate > 14.4× (1 h window)"
-          description: "Error budget burn rate is {{ $value | humanize }}×. At this rate the 30-day 0.5% budget expires in < 2 hours."
+          description: "Error budget burn rate is {{ $value | humanize }}×. At this rate the 30-day 0.5% budget is gone in ~50 hours."
 
       - alert: SLOErrorBudgetSlowBurn
+        # 3 x 0.005 = 0.015. See SLOErrorBudgetFastBurn above for why this is a ratio.
         expr: |
           sum(rate(ray_examlops_predict_requests_total{status=~"error|timeout"}[6h]))
-          / (0.005 / (30 * 24 * 3600))
-          > 3
+          / clamp_min(sum(rate(ray_examlops_predict_requests_total[6h])), 0.001)
+          > 0.015
         for: 60m
         labels:
           severity: warning
