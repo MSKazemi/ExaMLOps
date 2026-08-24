@@ -18,6 +18,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   prints `— (no nodes)` with a warning naming `exa hpc detect`, and `0.0` keeps its distinct
   meaning of measured-and-every-node-down. The unit test that had pinned `== 1.0` for the empty
   fleet asserted the defect and now asserts the absence.
+- **The control plane's Prefect endpoint defaulted to a port that is right in neither
+  deployment.** `PREFECT_API_URL` fell back to `http://localhost:4200/api`, but `4200` is
+  Prefect's *container* port: the stack publishes it on the host as `14200` (`14200:4200`), and
+  inside the compose network the address is `http://orchestrator:4200/api`, which compose sets
+  explicitly. So the fallback only ever applied where it could not work — a control plane started
+  outside compose reported a healthy Prefect as **down** on `/status`, and `PrefectGateway` posted
+  its retrain flow runs into a closed port. Fixed to the host port, and guarded:
+  `test_localhost_defaults_match_published_ports.py` parses every `docker-compose*.yml` and fails
+  any source default that names a container-side port on `localhost`, so a new service is covered
+  the moment it is published. Two exemptions carry their reason and are re-checked each run.
+- **The bridge's address was documented as configurable and was not, in either `exa` command
+  that probes it.** `exa seanerbus status` resolved it with `getattr(cfg, "seanerbus_bridge_url",
+  …)` against a `Config` that has never had that attribute, so the fallback was the only value it
+  could produce, and `exa production verify` hard-coded `http://localhost:18003` twice. Neither
+  could be pointed at a bridge on another host or at the bare-metal bridge in dev — a
+  production-readiness check reporting "SeanerBUS unreachable" with full confidence about an
+  address nobody chose. `seanerbus_bridge_url` is now a real config field
+  (`SEANERBUS_BRIDGE_STATUS_URL`, `[urls] seanerbus_bridge`, default the published host port
+  `18003`), read by both commands and visible in `exa env`.
 - **An SLO nobody had measured was published as an SLO that was being met.** `slo_status()`
   computed `sli = (good / total) if total else 1.0`, so zero recorded samples scored as a perfect
   ratio: a full error budget, `OK` in `exa slo status`, and a green *Meeting* pill on the dashboard
@@ -50,6 +69,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The control-plane test suite can no longer measure the developer's machine.** Its
+  `conftest.py` gained the guard the platform and dashboard suites already carry — a refusal to
+  `connect` to a platform service port on this host — plus an autouse fixture that points the four
+  peer URLs at `127.0.0.1:1` before `app` is imported. Four tests were calling `GET /status`, which
+  fans out to MLflow, Prefect, Ray Serve and the dashboard, for reasons that had nothing to do with
+  those peers; they exercised whichever branch this machine happened to produce and paid up to 15
+  seconds per probe to a port that DROPs. The guard is a deliberate copy — the control-plane CI job
+  installs no `examlops`, because the service does not depend on it — and
+  `test_live_service_guard.py` beside it proves the copy still works. Measured on the Skipper agent
+  suite at the same time: it reaches nothing, and needed no change.
 - **The same guard on the dashboard's backend suite, and two tests it caught immediately.** The
   port list is derived from `settings`, so a backing service added there is covered without editing
   the guard (`database_url` excluded — the Postgres run connects for real). It found the defect in

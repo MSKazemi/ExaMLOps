@@ -248,7 +248,7 @@ Two tables are created on first startup alongside the existing `pending_approval
 |---|---|---|
 | `CONTROL_PLANE_PORT` | `8002` | HTTP port |
 | `CONTROL_PLANE_TOKEN` | unset (required) | Bearer token for `POST /retrain` |
-| `PREFECT_API_URL` | `http://localhost:4200/api` | Prefect server endpoint |
+| `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
 | `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`) |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
 | `CONTROL_PLANE_DB` | `/data/approvals.db` | SQLite file path for the Phase 11 pending approval store; falls back to `./approvals.db` if `/data/` is not writable |

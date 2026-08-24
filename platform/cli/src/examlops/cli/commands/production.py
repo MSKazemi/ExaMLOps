@@ -394,9 +394,10 @@ def _check_dashboard(cfg) -> CheckResult:
     )
 
 
-def _check_seanerbus() -> CheckResult:
-    health_ok, health, health_message = _safe_get("http://localhost:18003/health")
-    stats_ok, stats, stats_message = _safe_get("http://localhost:18003/stats")
+def _check_seanerbus(cfg) -> CheckResult:
+    base = cfg.seanerbus_bridge_url.rstrip("/")
+    health_ok, health, health_message = _safe_get(f"{base}/health")
+    stats_ok, stats, stats_message = _safe_get(f"{base}/stats")
     inferences = stats.get("inferences_total", 0) if isinstance(stats, dict) else 0
     ok = health_ok and stats_ok and isinstance(health, dict) and health.get("status") == "ok"
     return CheckResult(
@@ -417,7 +418,7 @@ def _run_verification_checks(cfg) -> list[CheckResult]:
         _check_ray_serve(cfg),
         _check_modelzoo(cfg),
         _check_dashboard(cfg),
-        _check_seanerbus(),
+        _check_seanerbus(cfg),
     ]
 
 

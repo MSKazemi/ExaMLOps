@@ -126,7 +126,7 @@ def regen_uuid(
 def status():
     """Probe the SeanerBUS bridge health and runtime stats endpoints."""
     cfg = load_config()
-    base_url = getattr(cfg, "seanerbus_bridge_url", "http://localhost:18003")
+    base_url = cfg.seanerbus_bridge_url
     try:
         health = _client.get(f"{base_url}/health")
         stats = _client.get(f"{base_url}/stats")

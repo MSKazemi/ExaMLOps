@@ -28,7 +28,8 @@ Production-grade improvements batch 2 (2026-06-12 round 2):
 Env vars (all existing + new):
     CONTROL_PLANE_PORT                default: 8002
     CONTROL_PLANE_TOKEN               REQUIRED — bearer token for write endpoints
-    PREFECT_API_URL                   default: http://localhost:4200/api
+    PREFECT_API_URL                   default: http://localhost:14200/api  (the host port;
+                                      compose sets http://orchestrator:4200/api itself)
     PREFECT_DEPLOYMENT_NAME           default: examlops_scheduled_training/nightly
     CONTROL_PLANE_DB                  default: /data/approvals.db
     RETRAIN_RATE_LIMIT_PER_MIN        default: 20
@@ -201,7 +202,13 @@ def _token_is_usable() -> bool:
     return not any(m in t for m in _WEAK_MARKERS)
 
 
-PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:4200/api").rstrip("/")
+# 4200 is Prefect's *container* port. On this host the stack publishes it as 14200
+# (`14200:4200` in docker-compose.yml), and inside the compose network the address is
+# `http://orchestrator:4200/api`, which compose sets explicitly. So the old default —
+# loopback plus the container port — was right in neither place: a control plane started
+# outside compose reported a healthy Prefect as down on `/status`, and `PrefectGateway`
+# posted its retrain flow runs into nothing.
+PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:14200/api").rstrip("/")
 PREFECT_DEPLOYMENT_NAME = os.getenv(
     "PREFECT_DEPLOYMENT_NAME", "examlops_scheduled_training/nightly"
 )

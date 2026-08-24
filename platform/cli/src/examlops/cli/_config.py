@@ -26,11 +26,30 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("prefect_url", "prefect", "PREFECT_API_URL", "http://localhost:14200", False),
     ("dashboard_url", "dashboard", "DASHBOARD_URL", "http://localhost:18099", False),
     ("agent_url", "agent", "AGENT_URL", "http://localhost:18004", False),
+    # The bridge is reached at the *host* port by anything running outside its container.
+    # `exa seanerbus status` read a `seanerbus_bridge_url` attribute that no Config ever
+    # had, and `exa production` hard-coded the address twice, so the variable the platform
+    # documents for locating the bridge steered neither of them.
+    (
+        "seanerbus_bridge_url",
+        "seanerbus_bridge",
+        "SEANERBUS_BRIDGE_STATUS_URL",
+        "http://localhost:18003",
+        False,
+    ),
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
 ]
 
-_URL_KEYS = {"control_plane", "ray_serve", "mlflow", "prefect", "dashboard", "agent"}
+_URL_KEYS = {
+    "control_plane",
+    "ray_serve",
+    "mlflow",
+    "prefect",
+    "dashboard",
+    "agent",
+    "seanerbus_bridge",
+}
 
 # Kept for backward compatibility with callers importing _DEFAULTS.
 _DEFAULTS = {toml_key: default for _, toml_key, _, default, _ in _FIELDS}
@@ -44,6 +63,7 @@ class Config:
     prefect_url: str = "http://localhost:14200"
     dashboard_url: str = "http://localhost:18099"
     agent_url: str = "http://localhost:18004"
+    seanerbus_bridge_url: str = "http://localhost:18003"
     control_plane_token: str = ""
     dashboard_token: str = ""
 

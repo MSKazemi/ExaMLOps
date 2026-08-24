@@ -123,9 +123,9 @@ Open http://localhost:14200 to:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PREFECT_API_URL` | `http://localhost:4200/api` | Prefect server endpoint |
+| `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint (host port; `4200` is the container port compose maps from) |
 | `EXAMLOPS_SLURM_MODE` | `mock` | `mock` = train inline, `slurm` = submit to HPC |
-| `MLFLOW_TRACKING_URI` | `http://localhost:5000` | Where to log experiments |
+| `MLFLOW_TRACKING_URI` | `http://localhost:15000` | Where to log experiments (host port; `5000` is the container port) |
 
 ## Connecting to a remote Prefect server
 

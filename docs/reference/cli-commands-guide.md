@@ -459,7 +459,7 @@ Plan, execute, and verify production deploys of models.
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa production deploy [ACTION] [DEPLOY_ID]` | Plans/executes deploys or inspects history/status; `--execute` (default is a side-effect-free dry run), `--models` (stale/all/IDs), `--dataset`, `-e/--env`, `--registry`, `--no-schedule`, plus history filters (`--limit`, `--status`, `--model`, `--operation`). | Roll out stale models, or review deploy history. Default is a safe plan. **mutation with `--execute`** | `exa production deploy --models stale` &nbsp;·&nbsp; `exa production deploy --models JPCP,MACK --dataset PM100Dataset --execute` |
-| `exa production verify` | Verifies production service health without changing state. | Confirm production is healthy after a deploy. | `exa production verify` |
+| `exa production verify` | Verifies production service health without changing state. The SeanerBUS check follows `SEANERBUS_BRIDGE_STATUS_URL` / the `seanerbus_bridge` config key. | Confirm production is healthy after a deploy. | `exa production verify` |
 
 ### `exa gateway` — model gateway (virtual keys, routing, cost)
 
@@ -1066,6 +1066,6 @@ Manages the per-model SeanerBUS UUIDs the bridge uses to register one req/res ha
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa seanerbus list` | Shows all models and their SeanerBUS UUIDs. | Audit which models are bus-registered | `exa seanerbus list` |
-| `exa seanerbus status` | Probes the SeanerBUS bridge health + runtime stats endpoints. | Check the bridge is reachable and serving | `exa seanerbus status` |
+| `exa seanerbus status` | Probes the SeanerBUS bridge health + runtime stats endpoints. | Check the bridge is reachable and serving | `SEANERBUS_BRIDGE_STATUS_URL=http://node:18003 exa seanerbus status` |
 | `exa seanerbus init-uuids` | Assigns a UUID to every model missing one (idempotent). **(mutation)** | Backfill UUIDs on existing models, then commit | `exa seanerbus init-uuids` |
 | `exa seanerbus regen-uuid` | Regenerates one model's SeanerBUS UUID (notify HPC teams of the change). **(mutation, outward impact)** | Rotate a compromised/duplicated UUID | `exa seanerbus regen-uuid JPCP` |

@@ -644,10 +644,44 @@ It found the defect in both directions at once — one test asserted the SeanerB
 asserted a response header while fanning out to nine live services and leaving the result in the
 health router's 30-second process-global cache.
 
-Neither guard uses `monkeypatch`. An autouse conftest fixture that requests it pulls it earlier in
+The control-plane suite carries a third copy, in
+`platform/services/control_plane/tests/conftest.py`, together with an autouse fixture that points
+`MLFLOW_TRACKING_URI` / `PREFECT_API_URL` / `RAY_SERVE_URL` / `DASHBOARD_URL` at `127.0.0.1:1`
+before `app` is reloaded — the module reads them into constants at import time. Four tests were
+calling `GET /status`, which fans out to all four peers, for reasons that had nothing to do with
+them (the pending-approval count, the reported probe address); one sibling test had shown the
+isolated form for a year by patching `urllib.request.urlopen`, but nothing made it the rule.
+
+That copy is deliberate, and `test_live_service_guard.py` in the same directory is what makes it
+safe to keep: the control-plane CI job installs `fastapi`, `uvicorn`, `prometheus_client`, `pyyaml`
+and `pytest` and no `examlops` at all, because the service does not depend on the platform package.
+A shared helper would give its test suite a dependency the service itself does not have — so the
+mechanism is copied, and each copy proves itself.
+
+None of the three guards uses `monkeypatch`. An autouse conftest fixture that requests it pulls it earlier in
 setup order for every test in the suite, which reverses teardown order against any fixture that
 assumed monkeypatch had already restored the environment — `test_settings.py` assumed exactly that,
 and errored the moment the guard existed. A guard must not reorder the suite it guards.
+
+### A default endpoint may not name a container port on `localhost`
+
+Every service here is published on the host under the project's +10000 offset — `14200:4200` for
+Prefect, `19000:9000` for MinIO, `18099:8099` for the dashboard. A client therefore has exactly two
+correct addresses: the **host** port (`localhost:14200`), or the **service name** inside the compose
+network (`http://orchestrator:4200/api`, which compose sets itself). `localhost:4200` is neither —
+nothing listens there on the host, and inside the network `localhost` is the caller's own container.
+
+The failure is silent. The control plane defaulted to `localhost:4200`, so a control plane started
+outside compose reported a perfectly healthy Prefect as **down** on `/status` and posted its retrain
+flow runs into a closed port; `exa backup create` reached `localhost:9000` for MinIO the same way and
+recorded an empty object tier. Neither raised.
+
+`tests/unit/test_localhost_defaults_match_published_ports.py` derives the rule instead of listing it:
+it parses every `docker-compose*.yml` for `HOST:CONTAINER` mappings and fails on any source default
+naming a container-side port on `localhost`, so publishing a new service brings its port under the
+guard with no edit. Two exemptions are recorded with reasons and re-checked each run — the inference
+pipeline runs *inside* the Ray container, and the SeanerBUS bridge is also run bare-metal in dev,
+where it serves on the host's `8003` with no mapping at all.
 
 ---
 
