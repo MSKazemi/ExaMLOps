@@ -46,17 +46,30 @@ def test_no_remove_orphans_on_the_lxp_stack(job: str):
     )
 
 
-def test_rollback_refuses_an_empty_previous_sha():
-    """An absent/empty prev_sha.txt must abort, not `git reset --hard ''`."""
+def test_rollback_refuses_an_empty_previous_release():
+    """An absent/empty artifact must abort rather than activating an empty path."""
     script = _script("smoke:lxp")
-    assert "PREV_SHA" in script, "smoke:lxp no longer records a previous SHA"
-    guard = '-z "$PREV_SHA"'
+    assert "PREV_RELEASE" in script, "smoke:lxp no longer records the previous release"
+    guard = '-z "$PREV_RELEASE"'
     assert guard in script, (
-        "smoke:lxp only guards PREV_SHA against the literal 'NONE'. If prev_sha.txt is missing "
-        "(artifact expired, deploy job replaced) `cat` yields an empty string, the guard misses "
-        "and the rollback runs `git reset --hard ''` on production while logging "
-        '"Auto-rolling back to ". Guard on emptiness too.'
+        "smoke:lxp must refuse an empty previous-release artifact instead of passing an empty "
+        "path to the remote activation script"
     )
+
+
+def test_deploy_does_not_mutate_the_legacy_checkout():
+    script = _script("deploy:lxp")
+    assert "git pull" not in script
+    assert "git reset" not in script
+    assert "git archive" in script
+    assert "lxp_release.sh" in script
+
+
+def test_rollback_reactivates_a_release_instead_of_resetting_git():
+    script = _script("smoke:lxp")
+    assert "git reset" not in script
+    assert "lxp_release.sh" in script
+    assert " activate " in script
 
 
 def test_rollback_still_fails_the_pipeline():

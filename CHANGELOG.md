@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-08-25
+
+### Changed
+
+- **LXP deployments now promote tested, commit-addressed releases instead of pulling into a
+  mutable checkout.** GitLab archives the exact commit that passed the complete gate, transfers it
+  over the existing deployment SSH channel, and activates
+  `$LXP_DEPLOY_PATH-releases/<commit>` through `$LXP_DEPLOY_PATH-current`. Mutable platform state,
+  environment files, and authored providers live in `$LXP_DEPLOY_PATH-state`; notebook homes and
+  project workspaces remain in Docker volumes. The legacy LXP checkout is preserved and used only
+  to seed state during migration. Smoke-test rollback reactivates the prior release with the same
+  deployment procedure, without `git reset`, while release directories isolate any notebook-made
+  source changes from the next deployment.
+
 ### Fixed
 
 - **Every run without an accelerator was accounted at exactly zero emissions.** Green-AI carbon

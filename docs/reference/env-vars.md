@@ -600,12 +600,15 @@ site's addressing or filesystem layout is published. Set the real values in
 | `EXAMLOPS_DEPLOY_HOST` | `examlops-deploy` | ssh host or alias of the deploy node; used by `make remote-rebuild` |
 | `EXAMLOPS_DEPLOY_PATH` | `/opt/examlops` | Checkout path on the deploy node; used by `make remote-rebuild` and the `platform/ci/*.sh` helper scripts |
 | `EXAMLOPS_HOST_REPO` | `/opt/examlops` | The same path as seen by the Docker host — bind-mounted into spawned JupyterHub notebooks and used by the compose stack |
+| `EXAMLOPS_STATE_DIR` | same as `EXAMLOPS_HOST_REPO` | Persistent databases and authored providers. GitLab deployments set this to a stable sibling directory while application releases use commit-addressed directories. |
+| `EXAMLOPS_HOST_STATE` | same as `EXAMLOPS_HOST_REPO` | Host-side persistent-state path passed by Compose to JupyterHub for sibling-container bind mounts. Normally derived from `EXAMLOPS_STATE_DIR`; do not set it separately. |
 | `EXAMLOPS_GITLAB_HOST_ENTRY` | `gitlab.example.com:127.0.0.1` | `"<host>:<ip>"` DNS pin injected into the control plane via `docker-compose.lxp.yml` `extra_hosts`, for deploy nodes that cannot resolve an internal GitLab |
 
 ```bash
 EXAMLOPS_DEPLOY_HOST=my-deploy-node
 EXAMLOPS_DEPLOY_PATH=/srv/examlops
 EXAMLOPS_HOST_REPO=/srv/examlops
+EXAMLOPS_STATE_DIR=/srv/examlops-state
 EXAMLOPS_GITLAB_HOST_ENTRY=gitlab.internal.example.com:10.0.0.5
 ```
 

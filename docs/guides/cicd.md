@@ -344,25 +344,32 @@ Three rules, in order — GitLab takes the first match:
 | `main` **and** `$DEPLOY_REQUIRES_APPROVAL` set | `manual` | Production becomes a button rather than an automatic consequence of merging. This is the tier-free substitute for GitLab's Premium deployment approvals: it gates *when*, not *who*, which is the half that matters with one maintainer. |
 | `main` | `on_success` | Default: merge to `main` deploys. |
 
-`resource_group: production-lxp` is shared with `smoke:lxp`. There is one node and deploying is a
-`git pull` + rebuild on a shared checkout, so two pipelines reaching it at once would interleave —
-and `smoke:lxp` records the previous SHA for rollback, so a concurrent run could roll the node back
-to a SHA the *other* pipeline recorded.
+`resource_group: production-lxp` is shared with `smoke:lxp`. There is one node, so a second
+pipeline cannot change the active release while the first pipeline is still running its health
+gate.
 
 
-Connects to `lxp-cpu01` via SSH and runs a rolling deploy:
+The runner creates an archive from the exact tested commit and copies it to the node. The node
+extracts it into a commit-addressed directory and activates it:
 
 ```bash
-# If repo not cloned yet
-git clone $LXP_DEPLOY_REPO $LXP_DEPLOY_PATH
-
-# Else update
-cd $LXP_DEPLOY_PATH && git pull origin main
-
-# Restart services
-docker compose -f platform/infra/docker-compose/docker-compose.yml \
-               -f platform/infra/docker-compose/docker-compose.lxp.yml up --build -d
+git archive --format=tar.gz -o examlops-$CI_COMMIT_SHA.tar.gz $CI_COMMIT_SHA
+scp examlops-$CI_COMMIT_SHA.tar.gz lxp:/tmp/
+ssh lxp platform/ci/lxp_release.sh deploy $LXP_DEPLOY_PATH $CI_COMMIT_SHA /tmp/archive
 ```
+
+The resulting layout separates source from mutable data:
+
+| Path | Role |
+|---|---|
+| `$LXP_DEPLOY_PATH-releases/<commit>` | Exact application source for one tested commit |
+| `$LXP_DEPLOY_PATH-current` | Symlink to the active production release |
+| `$LXP_DEPLOY_PATH-state` | Persistent `platform.db`, authored providers, environment files, and upstream model library |
+| `$LXP_DEPLOY_PATH` | Preserved legacy/user workspace; never reset or cleaned by CI |
+
+Jupyter user homes and project workspaces remain Docker volumes. Notebook-authored source files may
+change the active release directory, but they cannot contaminate the next release because each
+deployment starts from a new archive.
 
 The job registers a GitLab **Environment** (`production-lxp`) so every deploy is recorded in the GitLab UI under **Deployments → Environments**, with a link to the dashboard at `http://$LXP_HOST:18099`.
 
@@ -373,8 +380,8 @@ The job registers a GitLab **Environment** (`production-lxp`) so every deploy is
 ### smoke:lxp
 
 Waits `$SMOKE_STARTUP_WAIT`, then runs `platform/ci/smoke_check.sh` on the node, retrying up to
-`$SMOKE_RETRY_COUNT` times. If every attempt fails it **rolls the node back** to the SHA
-`deploy:lxp` recorded in the `prev_sha.txt` artifact, re-checks health, and then exits 1 regardless
+`$SMOKE_RETRY_COUNT` times. If every attempt fails it **reactivates the previous release directory**
+recorded in the `prev_release.txt` artifact, re-checks health, and then exits 1 regardless
 — a rollback is a recovery, not a success, and the bad commit must still fail the pipeline.
 
 Two properties of that path are easy to lose and expensive to lose, so
@@ -386,14 +393,11 @@ Two properties of that path are easy to lose and expensive to lose, so
   copy until 2026-08-20, so recovering from a bad deploy would have restored the previous code
   while destroying Grafana embeds, project workbenches and the bus tab — at the one moment
   production is already broken and nobody would connect the two.
-* **An empty previous SHA aborts.** The guard used to test only for the literal `NONE`. A missing
-  `prev_sha.txt` makes `cat` yield an empty string, which slipped past it and reached
-  `git reset --hard ''` on production, under a log line reading "Auto-rolling back to ".
+* **An empty previous release aborts.** A missing or empty artifact never reaches the remote
+  activation script.
 
-The rollback restores the **core stack only** — it does not re-run the modelzoo fetch, the
-JupyterHub image build, the bridge start, the ACL grant or the `exa` CLI refresh that `deploy:lxp`
-does afterwards. Those are all non-fatal extras on the way in; if a rollback ever fires, check them
-by hand.
+Activation and rollback use the same script, including CLI refresh and optional profile services,
+so the recovery path cannot silently omit deployment steps.
 
 
 ## Stage: post-deploy
@@ -437,8 +441,6 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 | `LXP_USER` | | | SSH username on the deploy node |
 | `LXP_HOST` | | | `<REMOTE_HOST>` |
 | `LXP_DEPLOY_PATH` | | | Absolute repo path on lxp-cpu01, e.g. `$EXAMLOPS_DEPLOY_PATH` |
-| `LXP_DEPLOY_REPO` | | | GitLab SSH URL of this repo |
-| `LXP_MODELZOO_REPO` | | ✅ | Clone URL of the **upstream** `software/modelzoo` repo. `seanergys_modelzoo` is not vendored in this repo (ADR 0094) — the deploy job fetches it into `$LXP_DEPLOY_PATH/modelzoo`, which is where `EXAMLOPS_MODELZOO_DIR` resolves by default. Unset ⇒ not fetched, and training/serving fail until it is present. |
 | `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
 | `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
 | `DEPLOY_REQUIRES_APPROVAL` | | | **Optional.** Any value turns `deploy:lxp` into a manual button. Unset ⇒ `main` deploys automatically. |
@@ -449,9 +451,10 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 
 ## One-time lxp-cpu01 server setup
 
-The deploy job SSHes into lxp-cpu01 and the server must be able to pull from the GitLab repo. Two keys are involved:
+The deploy job streams the tested GitLab checkout to lxp-cpu01, so the node itself needs no GitLab
+credential. Only the CI runner-to-node SSH key is required.
 
-### 1. CI runner → lxp-cpu01 (deploy SSH key)
+### CI runner → lxp-cpu01 (deploy SSH key)
 
 ```bash
 # On your local machine: generate a dedicated deploy key
@@ -469,32 +472,6 @@ Grab the host key for `LXP_HOST_KEY`:
 ssh-keyscan <REMOTE_HOST>
 # Copy one ed25519 or ecdsa line → store as LXP_HOST_KEY
 ```
-
-### 2. lxp-cpu01 → GitLab (deploy read key)
-
-lxp-cpu01 needs to `git clone / git pull` from the GitLab repo. The cleanest way is a GitLab deploy key:
-
-```bash
-# On lxp-cpu01: generate a key if one doesn't exist
-ssh-keygen -t ed25519 -C "lxp-deploy" -f ~/.ssh/gitlab_deploy
-
-# Copy the PUBLIC key
-cat ~/.ssh/gitlab_deploy.pub
-```
-
-Register this public key in **GitLab → Project → Settings → Repository → Deploy keys** (read-only access). Then on lxp-cpu01:
-
-```bash
-# ~/.ssh/config
-Host gitlab.example.com
-  HostName gitlab.example.com
-  User git
-  IdentityFile ~/.ssh/gitlab_deploy
-```
-
-Test with: `ssh -T git@gitlab.example.com`
-
----
 
 ## Enabling blocking integration tests
 

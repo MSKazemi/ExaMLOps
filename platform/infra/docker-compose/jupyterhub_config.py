@@ -22,12 +22,14 @@ c.DockerSpawner.remove = True
 # providers are shared with the CLI/dashboard/serving. DockerSpawner spawns *sibling* containers
 # via the Docker socket, so these are HOST paths (EXAMLOPS_HOST_REPO on the deploy node).
 _HOST_REPO = os.environ.get("EXAMLOPS_HOST_REPO", "/opt/examlops")
+_HOST_STATE = os.environ.get("EXAMLOPS_HOST_STATE", _HOST_REPO)
 c.DockerSpawner.volumes = {
     # {servername} is empty for the default lab and the workbench name for a named server, so each
     # project workbench gets its own persistent home volume.
     "jupyter-user-{username}-{servername}": "/home/jovyan/work",
     _HOST_REPO: {"bind": "/repo", "mode": "ro"},
-    f"{_HOST_REPO}/.providers": {"bind": "/repo/.providers", "mode": "rw"},
+    f"{_HOST_STATE}/.providers": {"bind": "/repo/.providers", "mode": "rw"},
+    f"{_HOST_STATE}/platform.db": {"bind": "/repo/platform.db", "mode": "rw"},
     # Read-WRITE so a notebook can author/update pipeline code and have the platform pick it up:
     #   usecases/  → model YAML + per-model configs + dataset schemas (the pipeline definitions, ADR 0094)
     #   pipelines/ → the Prefect pipeline engine / generator
