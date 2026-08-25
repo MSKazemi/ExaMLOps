@@ -191,3 +191,21 @@ export function activeSectionId(pathname: string): string | null {
   }
   return null
 }
+
+/** Human-readable route title for browser metadata and assistive route announcements. */
+export function pageTitleForPath(pathname: string): string {
+  if (pathname === '/noc') return 'NOC wall'
+
+  const items = [HOME_ITEM, ...NAV_SECTIONS.flatMap((section) => section.items), ...UTILITY_NAV]
+  const item = items.find((candidate) => isNavItemActive(candidate.path, pathname))
+  if (!item) return 'Page not found'
+  if (pathname === item.path) return item.label
+
+  const leaf = pathname.split('/').filter(Boolean).pop()
+  if (!leaf) return item.label
+  try {
+    return `${decodeURIComponent(leaf)} · ${item.label}`
+  } catch {
+    return `${leaf} · ${item.label}`
+  }
+}

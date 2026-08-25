@@ -6,6 +6,7 @@ import {
   ROUTE_REDIRECTS,
   activeSectionId,
   isNavItemActive,
+  pageTitleForPath,
 } from './nav'
 
 /**
@@ -154,5 +155,22 @@ describe('activeSectionId', () => {
     expect(activeSectionId('/')).toBeNull()
     expect(activeSectionId('/documents')).toBeNull()
     expect(activeSectionId('/nope')).toBeNull()
+  })
+})
+
+describe('pageTitleForPath', () => {
+  it('uses canonical navigation labels for list and utility routes', () => {
+    expect(pageTitleForPath('/')).toBe('Overview')
+    expect(pageTitleForPath('/operate/self-obs')).toBe('Self-Obs')
+    expect(pageTitleForPath('/preferences')).toBe('Preferences')
+  })
+
+  it('adds the decoded entity name for a detail route', () => {
+    expect(pageTitleForPath('/build/models/forecast%20v2')).toBe('forecast v2 · Models')
+  })
+
+  it('labels special and unknown routes honestly', () => {
+    expect(pageTitleForPath('/noc')).toBe('NOC wall')
+    expect(pageTitleForPath('/does-not-exist')).toBe('Page not found')
   })
 })

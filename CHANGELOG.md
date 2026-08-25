@@ -257,6 +257,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added
 
+- **The dashboard shell now works as a compact, resilient operator surface.** Small screens get an
+  accessible navigation drawer with focus containment, Escape/backdrop dismissal, and active
+  tenant context instead of a permanently fixed desktop sidebar. Unknown URLs render the existing
+  designed 404, route crashes reset after navigation, and browser titles follow the active console
+  or entity. The model-description editor is loaded only when an administrator enters edit mode,
+  reducing the normal Model Detail route from roughly 1.09 MB to 33 kB minified; its editor remains
+  an isolated on-demand chunk. Frontend TypeScript is now strict, lint warnings fail the build, and
+  regression coverage exercises the drawer, route titles, and unknown-route behavior.
+
 - **The control-plane test suite can no longer measure the developer's machine.** Its
   `conftest.py` gained the guard the platform and dashboard suites already carry — a refusal to
   `connect` to a platform service port on this host — plus an autouse fixture that points the four

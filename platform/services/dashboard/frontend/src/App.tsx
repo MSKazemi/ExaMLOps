@@ -8,10 +8,11 @@ import { useAnnouncer } from '@/hooks/announcer'
 import { AuthGate } from '@/components/AuthGate'
 import { Layout } from '@/components/Layout'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { NotFound } from '@/components/NotFound'
 import { Skeleton } from '@/components/ui/skeleton'
 import { shouldRetry } from '@/lib/errors'
 import { isEnabled } from '@/lib/flags'
-import { ROUTE_REDIRECTS } from '@/lib/nav'
+import { pageTitleForPath, ROUTE_REDIRECTS } from '@/lib/nav'
 import { usePrefs } from '@/lib/prefs'
 import { Overview } from '@/pages/Overview'
 import { Services } from '@/pages/Services'
@@ -100,11 +101,18 @@ function RouteAnnouncer() {
   const { pathname } = useLocation()
   const { announce } = useAnnouncer()
   useEffect(() => {
-    // Announce the leaf segment (the console), not the lifecycle-group prefix — `/build/models` → "Models".
-    const seg = pathname === '/' ? 'overview' : (pathname.split('/').filter(Boolean).pop() ?? 'overview')
-    announce(`${seg.charAt(0).toUpperCase()}${seg.slice(1)} page`)
+    const title = pageTitleForPath(pathname)
+    document.title = `${title} · ExaMLOps`
+    announce(`${title} page`)
   }, [pathname, announce])
   return null
+}
+
+// Remount the boundary after navigation so a crash in one console cannot strand every subsequent
+// route on the previous error screen.
+function RouteErrorBoundary({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation()
+  return <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
 }
 
 export default function App() {
@@ -126,7 +134,7 @@ export default function App() {
                 }}
               >
                 {/* One page's crash shows a designed fallback instead of blanking the shell (F23). */}
-                <ErrorBoundary>
+                <RouteErrorBoundary>
                   <Suspense fallback={<RouteFallback />}>
                     <Routes>
                       {/* Canonical lifecycle-scoped routes (ADR 0097 §1/§3). */}
@@ -191,9 +199,10 @@ export default function App() {
                       {Object.entries(ROUTE_REDIRECTS).map(([from, to]) => (
                         <Route key={from} path={`${from}/*`} element={<RedirectSplat to={to} />} />
                       ))}
+                      <Route path="*" element={<NotFound />} />
                     </Routes>
                   </Suspense>
-                </ErrorBoundary>
+                </RouteErrorBoundary>
               </div>
               </Layout>
             </AuthGate>

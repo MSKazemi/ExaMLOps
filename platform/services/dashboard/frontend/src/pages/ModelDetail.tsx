@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { lazy, Suspense, useState, useRef, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -21,8 +21,10 @@ import { sanitizeMarkdown } from '@/lib/sanitize'
 import { isAdmin } from '@/lib/auth'
 import { CommentThread } from '@/components/CommentThread'
 import { ShareSnapshotButton } from '@/components/ShareSnapshotButton'
-import MDEditor from '@uiw/react-md-editor'
-import '@uiw/react-md-editor/markdown-editor.css'
+
+const MarkdownEditor = lazy(() =>
+  import('@/components/MarkdownEditor').then((module) => ({ default: module.MarkdownEditor })),
+)
 
 interface CostRow {
   version: number
@@ -365,7 +367,7 @@ export function ModelDetail() {
         setPredictJson(JSON.stringify(example, null, 2))
       }
     }
-  }, [data])
+  }, [data, predictJson])
   const [predictResult, setPredictResult] = useState<unknown>(null)
   const [predictError, setPredictError] = useState<string | null>(null)
   const [showTry, setShowTry] = useState(false)
@@ -566,12 +568,9 @@ export function ModelDetail() {
         <div className="p-5" style={{ background: 'var(--surface-0)' }}>
           {editing ? (
             <div data-color-mode="dark">
-              <MDEditor
-                value={draftMd}
-                onChange={v => setDraftMd(v ?? '')}
-                height={400}
-                preview="live"
-              />
+              <Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+                <MarkdownEditor value={draftMd} onChange={setDraftMd} />
+              </Suspense>
             </div>
           ) : data.description.body ? (
             <div className="prose prose-invert prose-sm max-w-none">

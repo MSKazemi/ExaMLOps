@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { ChevronDown, Zap, LogOut, Sun, Moon, MoonStar } from 'lucide-react'
+import { ChevronDown, Zap, LogOut, Sun, Moon, MoonStar, Menu, X } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
 import seanergysLogo from '@/assets/seanergys.jpg'
 import { clearAuth, getRole } from '@/lib/auth'
@@ -23,6 +23,7 @@ import { HelpDrawer } from '@/components/HelpDrawer'
 import { OnboardingTour } from '@/components/OnboardingTour'
 import { SkipLink } from '@/components/SkipLink'
 import { LocaleSwitcher } from '@/components/LocaleSwitcher'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
 
 const THEMES: { value: Theme; icon: typeof Sun; label: string }[] = [
   { value: 'day',      icon: Sun,      label: 'Day'      },
@@ -55,7 +56,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { data: pendingApprovals } = useApprovalsCount()
   const pendingCount = pendingApprovals?.length ?? 0
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const mobileNavRef = useRef<HTMLElement>(null)
   const openSection = activeSectionId(pathname)
+  useFocusTrap(mobileNavRef, mobileNavOpen)
+
+  useEffect(() => {
+    if (!mobileNavOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mobileNavOpen])
 
   // An item is shown when the role clears any admin gate and its feature flag (if any) is on.
   const canSee = (item: NavItem) =>
@@ -89,6 +102,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <Link
         key={item.path}
         to={item.path}
+        onClick={() => setMobileNavOpen(false)}
         aria-current={active ? 'page' : undefined}
         className={cn(
           'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
@@ -123,8 +137,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
       <SkipLink />
       <CommandPalette />
+      {mobileNavOpen && (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="no-print fixed inset-0 z-40 bg-black/55 backdrop-blur-[1px] lg:hidden"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      )}
       <aside
-        className="no-print w-56 shrink-0 flex flex-col border-r border-border"
+        ref={mobileNavRef}
+        role={mobileNavOpen ? 'dialog' : undefined}
+        aria-modal={mobileNavOpen ? true : undefined}
+        aria-label={mobileNavOpen ? 'Main navigation' : undefined}
+        className={cn(
+          'no-print fixed inset-y-0 left-0 z-50 w-72 flex-col border-r border-border shadow-2xl',
+          'lg:static lg:z-auto lg:flex lg:w-56 lg:shadow-none',
+          mobileNavOpen ? 'flex' : 'hidden',
+        )}
         style={{ background: 'var(--sidebar)' }}
       >
         <div className="p-4 border-b border-border">
@@ -142,6 +172,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <p className="font-bold text-sm leading-none">ExaMLOps</p>
               <p className="text-[10px] text-muted-foreground mt-0.5 tracking-wide">MLOps Platform</p>
             </div>
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="Close navigation"
+              className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
           </div>
           <div className="flex items-center gap-2.5 px-0.5">
             <img src={uniboLogo} alt="University of Bologna" className="h-7 w-7 object-contain opacity-75" />
@@ -264,7 +302,31 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main id="main" tabIndex={-1} className="flex-1 min-h-0 overflow-auto">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="no-print flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open navigation"
+            aria-expanded={mobileNavOpen}
+            className="rounded-md border border-border p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Menu className="size-4" aria-hidden="true" />
+          </button>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">ExaMLOps</p>
+            <p className="truncate text-[11px] text-muted-foreground">
+              {openSection ? NAV_SECTIONS.find((section) => section.id === openSection)?.label : 'Overview'}
+            </p>
+          </div>
+          {tenant && tenant !== 'default' && (
+            <span className="ml-auto max-w-36 truncate rounded-md border border-border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+              {tenant}
+            </span>
+          )}
+        </header>
+        <main id="main" tabIndex={-1} className="flex-1 min-h-0 overflow-auto">{children}</main>
+      </div>
       <CopilotPanel />
       <HelpDrawer />
       <OnboardingTour />

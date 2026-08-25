@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/lib/theme'
@@ -65,5 +65,20 @@ describe('Layout — grouped shell (BL-013a)', () => {
     expect(screen.queryByRole('button', { name: /Govern/i })).not.toBeInTheDocument()
     // Build (non-admin) is still there.
     expect(screen.getByRole('button', { name: /Build/i })).toBeInTheDocument()
+  })
+
+  it('opens and closes the compact navigation drawer', () => {
+    renderLayout('/')
+    const primaryNav = screen.getByRole('navigation', { name: 'Primary' })
+    const drawer = primaryNav.closest('aside')
+    expect(drawer).toHaveClass('hidden')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+    expect(drawer).toHaveClass('flex')
+    expect(drawer).toHaveAttribute('role', 'dialog')
+    expect(drawer).toHaveAttribute('aria-modal', 'true')
+
+    fireEvent.click(within(drawer!).getByRole('button', { name: 'Close navigation' }))
+    expect(drawer).toHaveClass('hidden')
   })
 })

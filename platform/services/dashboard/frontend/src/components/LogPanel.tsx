@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useCallback, useState, useEffect, useRef } from "react"
 import { getLogs, streamLogs } from "../lib/containers"
 
 interface Props {
@@ -13,7 +13,7 @@ export function LogPanel({ containerName, token }: Props) {
   const stopRef = useRef<(() => void) | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  async function fetchSnapshot() {
+  const fetchSnapshot = useCallback(async () => {
     setLoading(true)
     try {
       const text = await getLogs(containerName, 100)
@@ -23,7 +23,7 @@ export function LogPanel({ containerName, token }: Props) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [containerName])
 
   function startLive() {
     setLive(true)
@@ -44,10 +44,10 @@ export function LogPanel({ containerName, token }: Props) {
   }
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: fetchSnapshot is an async fetch to an external system (with teardown), the canonical effect use case, not a synchronous state derivation.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the snapshot is an external-system fetch; state updates after the request resolves.
     fetchSnapshot()
     return () => stopRef.current?.()
-  }, [containerName])
+  }, [fetchSnapshot])
 
   useEffect(() => {
     if (scrollRef.current) {

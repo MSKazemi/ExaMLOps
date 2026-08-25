@@ -1,12 +1,29 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import { RedirectSplat } from './App'
+import App, { RedirectSplat } from './App'
 import { ROUTE_REDIRECTS } from '@/lib/nav'
+import { clearAuth, setAuth } from '@/lib/auth'
 
 describe('App', () => {
-  it('module loads without error', () => {
-    expect(true).toBe(true)
+  beforeEach(() => {
+    localStorage.clear()
+    setAuth({ token: 'test', role: 'viewer', expiresAt: new Date(Date.now() + 60_000).toISOString() })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]))))
+  })
+
+  afterEach(() => {
+    clearAuth()
+    vi.unstubAllGlobals()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('renders a useful fallback and title for an unknown URL', async () => {
+    window.history.replaceState({}, '', '/does-not-exist')
+    render(<App />)
+
+    expect(screen.getByText('Page not found')).toBeInTheDocument()
+    await waitFor(() => expect(document.title).toBe('Page not found · ExaMLOps'))
   })
 })
 
