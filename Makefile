@@ -180,7 +180,7 @@ full-up: _guard-uv ## Start everything: stack + monitoring + SeanerBUS (reqgen +
 	  "SeanerBUS Bridge"   "http://localhost:18003  (/health · /stats · /metrics)"
 	@printf "\n$(DIM)Logs: make seanerbus-bridge-logs · make seanerbus-reqgen-logs$(RESET)\n\n"
 
-stack-up: _guard-uv ## Start core stack only: Postgres · MLflow · Prefect · Ray Serve · Dashboard · Control Plane
+stack-up: _guard-uv ## Start core stack: Postgres · MLflow · Prefect · Ray · Control Plane · Agent · Dashboard
 	@printf "$(BOLD)Starting ExaMLOps core stack...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) up -d --build
 	@printf "\n$(GREEN)Core stack is up:$(RESET)\n"
@@ -190,6 +190,7 @@ stack-up: _guard-uv ## Start core stack only: Postgres · MLflow · Prefect · R
 	  "Prefect UI"    "http://localhost:14200" \
 	  "Ray Serve API" "http://localhost:18001  (/docs · /health · /models)" \
 	  "Ray Dashboard" "http://localhost:18265"
+	@printf "  %-30s %s\n" "Skipper Agent" "http://localhost:18004  (/healthz)"
 	@printf "\n$(DIM)Tip: 'make monitoring-up' to also start Prometheus/Grafana/Loki · 'make full-up' for everything$(RESET)\n\n"
 
 stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + SeanerBUS + Jupyter) — prevents auto-restart on reboot
@@ -377,8 +378,12 @@ seanerbus-reqgen-logs: ## Tail SeanerBUS request generator logs (inference_reque
 SEANERBUS_SERVER ?= localhost
 SEANERBUS_PORT   ?= 5398
 
-seanerbus-install: ## Install seanerbus Python bindings + pycapnp into .venv
-	uv pip install -e ".[seanerbus]"
+seanerbus-install: install ## Install SeanerBUS Python bindings from the configured sibling checkout
+	@test -d "$(SEANERBUS_DIR)/bindings/python" || { \
+	  printf "$(RED)ERROR: SeanerBUS Python bindings not found under $(SEANERBUS_DIR).$(RESET)\n"; \
+	  exit 1; \
+	}
+	$(UV) pip install -e "$(SEANERBUS_DIR)/bindings/python"
 
 seanerbus-bridge-up: ## Start seanerbus bridge bare-metal (reqres mode, real SeanerBUS)
 	SEANERBUS_HOST=$(SEANERBUS_SERVER) SEANERBUS_PORT=$(SEANERBUS_PORT) \
@@ -495,7 +500,7 @@ firewall-fix-logs: ## Tail the firewall-fix sidecar (shows each rule (re-)apply)
 	@cd $(FIREWALL_FIX_DIR) && docker compose logs -f
 
 # =============================================================================
-##@ Skipper  (LangGraph management agent — CLI, web, kube-q bridge)
+##@ Skipper  (LangGraph management agent — CLI, web, OpenAI-compatible bridge)
 # =============================================================================
 
 skipper: install ## Start Skipper, the ExaMLOps management agent CLI (backend: Azure/Claude API or Ollama)
@@ -850,18 +855,17 @@ skipper-test:  ## Run the Skipper agent unit tests
 
 agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)
 
-skipper-server: install ## Start Skipper's web UI + OpenAI/kube-q bridge (port 18004)
+skipper-server: install ## Start Skipper's web UI + OpenAI-compatible bridge (port 18004)
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 	printf "$(BOLD)Skipper (ExaMLOps agent)$(RESET)  →  http://localhost:$${AGENT_SERVER_PORT:-18004}\n"; \
 	$(PYTHON) platform/services/agent/agent_server.py
 
 agent-server: skipper-server ## Alias for `skipper-server` (backward compatibility)
 
-skipper-chat: ## Chat with Skipper via the kube-q `kq` terminal client (needs skipper-server running)
+skipper-chat: install ## Chat with Skipper via the native `exa chat` client
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
-	$(VENV)/bin/kq --version >/dev/null 2>&1 || $(UV) pip install -q kube-q; \
-	printf "$(GREEN)Connecting kube-q → Skipper$(RESET)  (http://localhost:$${AGENT_SERVER_PORT:-18004})\n"; \
-	$(VENV)/bin/kq --url http://localhost:$${AGENT_SERVER_PORT:-18004} $${AGENT_API_KEY:+--api-key $$AGENT_API_KEY}
+	AGENT_URL="$${AGENT_URL:-http://localhost:$${AGENT_SERVER_PORT:-18004}}" \
+	$(VENV_BIN)/exa chat
 
 agent-chat: skipper-chat ## Alias for `skipper-chat` (backward compatibility)
 

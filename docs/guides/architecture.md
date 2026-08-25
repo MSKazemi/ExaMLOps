@@ -95,7 +95,7 @@ graph TB
     CP -- "metrics" --> Prom
     Prom --> Grafana
 
-    subgraph Agent["Skipper — Management Agent (CLI + HTTP · skipper pkg, 45 tools / 10 groups)"]
+    subgraph Agent["Skipper — Management Agent (CLI + HTTP · specialist tool packs)"]
         AgentCLI["LangGraph ReAct Agent\n(make skipper · Azure/Claude/Ollama LLM)\nconfirm-before-write · SQLite memory"]
     end
 
@@ -104,7 +104,7 @@ graph TB
     AgentCLI -- "metrics tools\n/api/v1/query" --> Prom
     AgentCLI -- "training/approvals/modelzoo\nPOST /retrain, /approve, ..." --> CP
     AgentCLI -- "services + pipelines/scaffold\nauthenticated DashboardClient" --> DashBE
-    AgentCLI -- "docs/knowledge tools\nsearch/read repo docs" --> Docs[("docs/ + CLAUDE.md")]
+    AgentCLI -- "docs/knowledge tools\nsearch/read public docs" --> Docs[("docs/")]
     AgentCLI -- "platform_ops tools\ndiff, lineage, drift, audit, traffic, promote" --> PlatDB[("platform.db\nSQLite")]
 ```
 

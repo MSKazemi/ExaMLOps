@@ -1,7 +1,7 @@
 """Rich markup handed to an escaping helper is printed at the operator, verbatim.
 
 ``_output.ok/error/warning/info/hint/detail`` all run their message through Rich's
-``escape()``, and for a good reason recorded in that module: an unescaped ``examlops[chat]``
+``escape()``, and for a good reason recorded in that module: an unescaped ``examlops[mcp]``
 renders as ``examlops``, so a hint would silently instruct someone to install the wrong
 thing. The escape is correct. What was wrong is that 59 call sites across 29 files still
 passed ``[bold]…[/bold]`` and friends, so ``exa secrets set`` greeted a clean install with
@@ -67,10 +67,10 @@ def test_the_guard_catches_a_planted_offender(tmp_path):
 
 
 def test_plain_brackets_are_not_mistaken_for_markup(tmp_path):
-    """`examlops[chat]` and `[project.scripts]` are exactly what the escaping protects."""
+    """`examlops[mcp]` and `[project.scripts]` are exactly what the escaping protects."""
     good = tmp_path / "good_cmd.py"
     good.write_text(
-        "_output.hint(\"Install it with: uv pip install 'examlops[chat]'\")\n"
+        "_output.hint(\"Install it with: uv pip install 'examlops[mcp]'\")\n"
         '_output.error("Add a [project.entry-points] table to pyproject.toml")\n'
     )
     assert _offenders([good]) == []

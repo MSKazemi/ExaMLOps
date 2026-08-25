@@ -37,16 +37,18 @@ Write a manifest from the source tree, then verify a target against it::
     python3 platform/ci/verify_deploy_integrity.py manifest platform/cli/src/examlops > /tmp/m.txt
     python3 platform/ci/verify_deploy_integrity.py verify   /path/to/target/examlops /tmp/m.txt
 
-Or do both ends in one command over ssh (this is the form the deploy procedure uses)::
+Against a remote target it takes two commands, not one: the manifest travels on stdin, so the
+script itself cannot (``python3 -`` would consume the same pipe). Copy it once, then stream::
 
+    scp platform/ci/verify_deploy_integrity.py <host>:/tmp/exa_integrity.py
     python3 platform/ci/verify_deploy_integrity.py manifest platform/cli/src/examlops \\
-      | ssh lxp-cpu01 'python3 - verify /nfs/share01/examlops/platform/cli/src/examlops -' \\
-      < /dev/stdin
+      | ssh <host> 'python3 /tmp/exa_integrity.py verify /path/to/examlops -'
 
-And, on the target, that the thing actually starts::
+And, on the target, that the thing actually starts. Run the ``/tmp`` copy from the ``scp`` above,
+not the target's own checkout — that checkout is what you are not yet trusting, and on a first
+deploy it will not carry this script at all::
 
-    ssh lxp-cpu01 'cd /nfs/share01/examlops && .venv/bin/python \\
-      platform/ci/verify_deploy_integrity.py import'
+    ssh <host> 'cd /path/to/repo && .venv/bin/python /tmp/exa_integrity.py import'
 
 Exit codes: 0 = identical / imports, 1 = drift or an unimportable CLI, 2 = usage.
 Non-zero is meant to fail a deploy.

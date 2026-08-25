@@ -11,7 +11,7 @@ def _patch_dashboard(monkeypatch):
 
 
 def _login_mock():
-    respx.post("http://localhost:18099/api/login").mock(
+    respx.post("http://localhost:18099/api/auth/login").mock(
         return_value=httpx.Response(200, json={"token": "T", "role": "admin", "expires_at": "x"})
     )
 

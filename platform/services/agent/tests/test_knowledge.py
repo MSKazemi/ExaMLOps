@@ -65,6 +65,7 @@ def test_ingest_then_query_roundtrip(kb):
     # the promotion doc should surface for a promotion question
     assert any("promote" in h.text.lower() for h in hits)
     assert all(h.path.endswith(".md") for h in hits)
+    assert all(str(kb.parent) not in h.path for h in hits)
 
 
 def test_query_returns_none_before_ingest(kb):
@@ -75,6 +76,14 @@ def test_query_returns_none_before_ingest(kb):
 def test_query_none_when_disabled(kb, monkeypatch):
     monkeypatch.setattr(config, "AGENT_KNOWLEDGE_ENABLED", False)
     assert knowledge.query("anything") is None
+
+
+def test_query_filters_chunks_from_roots_that_are_no_longer_allowed(kb, monkeypatch):
+    knowledge.ingest()
+    private = kb.parent / "private"
+    private.mkdir()
+    monkeypatch.setattr(config, "AGENT_KNOWLEDGE_ROOTS", str(private))
+    assert knowledge.query("promote a model", k=3) is None
 
 
 def test_ingest_audits_event(kb):

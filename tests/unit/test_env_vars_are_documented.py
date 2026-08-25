@@ -4,7 +4,7 @@
 the code, and it had fallen ~90 variables behind — including `PLATFORM_DB` (the datastore every
 process opens), `EXAMLOPS_USECASE_DIR` (how the platform reaches its content at all),
 `EXAMLOPS_DB_BACKEND` and the autopilot kill-switch. All four were documented in the repository's
-private `CLAUDE.md` and in no public surface, which is the worst arrangement: the knowledge exists,
+private maintainer notes and in no public surface, which is the worst arrangement: the knowledge exists,
 so nobody notices it is not published.
 
 It also named `JUPYTERHUB_PORT`, which nothing reads — the Hub listens on 8000 and Compose maps

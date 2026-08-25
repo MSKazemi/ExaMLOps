@@ -1,7 +1,7 @@
 """Knowledge / Docs-RAG memory tier (T2, Phase 3, ADR 0101).
 
-Gives Skipper grounded "how do I …?" answers by chunking + embedding the documentation
-(``docs/**``, ``design/adr/**``, …) into a vector collection, then retrieving the most relevant
+Gives Skipper grounded "how do I …?" answers by chunking + embedding public documentation
+(``docs/**`` by default) into a vector collection, then retrieving the most relevant
 chunks at query time. It **reuses the platform's own vector-store seam**
 (:func:`examlops.vector_store.select_store` — the tenant-isolated SQLite fallback in ``platform.db``,
 or pgvector) driven by **Skipper's local embeddings** (:func:`skipper.memory.build_embeddings`,
@@ -77,6 +77,22 @@ def _roots() -> list[Path]:
         if raw and Path(raw).exists():
             roots.append(Path(raw))
     return roots
+
+
+def _allowed_citation(raw_path: str) -> str | None:
+    """Return a non-sensitive citation for a path under a configured knowledge root."""
+    try:
+        path = Path(raw_path).resolve()
+    except Exception:
+        return None
+    for root in _roots():
+        resolved_root = root.resolve()
+        if path.is_relative_to(resolved_root):
+            try:
+                return path.relative_to(config._REPO_ROOT.resolve()).as_posix()
+            except ValueError:
+                return path.relative_to(resolved_root).as_posix()
+    return None
 
 
 def available() -> bool:
@@ -202,8 +218,13 @@ def query(question: str, k: int = 5) -> list[Chunk] | None:
     out: list[Chunk] = []
     for h in hits:
         md = h.metadata or {}
+        citation = _allowed_citation(str(md.get("path", "")))
+        if citation is None:
+            # Existing collections may contain chunks from roots that are private now. Enforce the
+            # current allowlist at retrieval time so a stale index cannot bypass the new policy.
+            continue
         _flagged, safe = _apply_guardrail(str(md.get("text", "")))
-        out.append(Chunk(path=str(md.get("path", "?")), text=safe, score=float(h.score)))
+        out.append(Chunk(path=citation, text=safe, score=float(h.score)))
     return out or None
 
 

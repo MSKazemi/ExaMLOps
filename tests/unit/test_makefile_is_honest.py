@@ -93,7 +93,7 @@ def test_every_documented_make_target_exists():
 
 # The lint scope is written out in full in five places — `make lint`, `make lint-fix`,
 # `make ci-examlops`, `make preflight` (twice), `.gitlab-ci.yml` and `.github/workflows/ci.yml`.
-# CLAUDE.md names this as an invariant that "must agree" and nothing enforced it. When they
+# Repository policy names this as an invariant that "must agree". When the scopes
 # disagree the failure is silent and one-directional: the local gate passes over a narrower
 # tree than CI checks, so the first sign is a red pipeline after a push.
 

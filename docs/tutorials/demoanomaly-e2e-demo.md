@@ -116,9 +116,10 @@ MODEL_VERSION = "v2"     # was "v1" — the human-readable marker logged to MLfl
 Then push and open a merge request, and merge to `main`:
 
 ```bash
-git -C /home/mohsen/scratch/seanergys/modelzoo add -A
-git -C /home/mohsen/scratch/seanergys/modelzoo commit -m "DemoAnomaly v2"
-git -C /home/mohsen/scratch/seanergys/modelzoo push                  # → open MR → merge to main
+MODELZOO_DIR=/path/to/modelzoo
+git -C "$MODELZOO_DIR" add -A
+git -C "$MODELZOO_DIR" commit -m "DemoAnomaly v2"
+git -C "$MODELZOO_DIR" push                  # → open MR → merge to main
 ```
 
 ### 1.3 AI-production reacts — three ways to pick up the merge

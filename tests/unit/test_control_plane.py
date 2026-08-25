@@ -31,9 +31,10 @@ FAKE_REGISTRY = {
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     """TestClient with a fixed token, fake registry, and mocked Prefect gateway."""
     monkeypatch.setattr(cp, "CONTROL_PLANE_TOKEN", "test-token")
+    monkeypatch.setattr(cp, "CONTROL_PLANE_DB", str(tmp_path / "control-plane.db"))
     monkeypatch.setattr(cp, "_load_registry", lambda: FAKE_REGISTRY)
 
     fake_gateway = MagicMock()
@@ -92,8 +93,9 @@ class TestRetrainAuth:
         )
         assert r.status_code == 403
 
-    def test_unset_token_is_503(self, monkeypatch):
+    def test_unset_token_is_503(self, monkeypatch, tmp_path):
         monkeypatch.setattr(cp, "CONTROL_PLANE_TOKEN", "")
+        monkeypatch.setattr(cp, "CONTROL_PLANE_DB", str(tmp_path / "control-plane.db"))
         monkeypatch.setattr(cp, "_load_registry", lambda: FAKE_REGISTRY)
         with TestClient(cp.app) as c:
             r = c.post(

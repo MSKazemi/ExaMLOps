@@ -12,7 +12,7 @@ Public API::
     provider = get_provider("carbon", config={"provider": "green-ai-default"})
     result = provider.compute({"gpu_hours": 10})
 
-See ``.claude/plans/finops-plugins/`` for the design (research, plan, ADR).
+See ADRs 0076–0082 under ``design/adr/`` for the public design record.
 """
 
 from __future__ import annotations

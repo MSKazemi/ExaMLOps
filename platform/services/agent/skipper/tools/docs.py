@@ -160,14 +160,12 @@ def search_docs(query: str) -> str:
 
 @tool
 def read_doc(path: str) -> str:
-    """Read a documentation file by its relative path (under the docs root or CLAUDE.md).
+    """Read a public documentation file by its relative path under the docs root.
 
     Args:
         path: Relative path, e.g. 'guides/agent.md'.
     """
     root = _docs_root()
-    if Path(path).name == "CLAUDE.md":
-        return Path(config.CLAUDE_MD).read_text(errors="ignore")[:8000]
     target = (root / path).resolve()
     if not target.is_relative_to(root):
         return "Error: path is outside the docs root."

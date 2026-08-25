@@ -663,7 +663,10 @@ function renderThreadList(threads) {
   for (const t of threads) {
     const li = document.createElement('li');
     li.dataset.id = t;
-    li.innerHTML = `<div class="thread-id">${t}</div>`;
+    const label = document.createElement('div');
+    label.className = 'thread-id';
+    label.textContent = t;
+    li.appendChild(label);
     li.addEventListener('click', () => switchThread(t));
     if (t === currentThread) li.classList.add('active');
     ul.appendChild(li);
@@ -677,7 +680,7 @@ function newThread() {
 }
 
 async function switchThread(threadId, isNew = false) {
-  if (isStreaming) return;
+  if (isStreaming || typeof threadId !== 'string') return;
   currentThread = threadId;
 
   // Update sidebar active state
@@ -701,10 +704,14 @@ async function switchThread(threadId, isNew = false) {
 
   // Update thread list (add if new)
   const ul = document.getElementById('thread-list');
-  if (!ul.querySelector(`[data-id="${threadId}"]`)) {
+  const exists = Array.from(ul.querySelectorAll('li')).some(li => li.dataset.id === threadId);
+  if (!exists) {
     const li = document.createElement('li');
     li.dataset.id = threadId;
-    li.innerHTML = `<div class="thread-id">${threadId}</div>`;
+    const label = document.createElement('div');
+    label.className = 'thread-id';
+    label.textContent = threadId;
+    li.appendChild(label);
     li.addEventListener('click', () => switchThread(threadId));
     li.classList.add('active');
     ul.prepend(li);
@@ -713,7 +720,7 @@ async function switchThread(threadId, isNew = false) {
 
 async function loadHistory(threadId) {
   try {
-    const r = await fetch(`/api/threads/${threadId}/history`);
+    const r = await fetch(`/api/threads/${encodeURIComponent(threadId)}/history`);
     const d = await r.json();
     for (const msg of d.messages || []) {
       if (msg.role === 'human') {
@@ -734,7 +741,7 @@ function connect(threadId) {
   setConnectionStatus('connecting');
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/chat/${threadId}`);
+  ws = new WebSocket(`${proto}://${location.host}/ws/chat/${encodeURIComponent(threadId)}`);
 
   ws.onopen = () => {
     setConnectionStatus('connected');
@@ -1032,10 +1039,31 @@ function replyInterrupt(confirmed) {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function renderMarkdown(text) {
   try {
-    return marked.parse(text, { breaks: true, gfm: true });
+    return sanitizeHtml(marked.parse(text, { breaks: true, gfm: true }));
   } catch {
     return escapeHtml(text);
   }
+}
+
+function sanitizeHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('script,iframe,object,embed,link,meta,style').forEach(
+    element => element.remove()
+  );
+  template.content.querySelectorAll('*').forEach(element => {
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'style') {
+        element.removeAttribute(attr.name);
+      } else if ((name === 'href' || name === 'src') &&
+                 !/^(https?:|mailto:|#)/.test(value) && !value.startsWith('/')) {
+        element.removeAttribute(attr.name);
+      }
+    }
+  });
+  return template.innerHTML;
 }
 
 function highlightCode(el) {

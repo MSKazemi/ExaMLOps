@@ -87,7 +87,7 @@ exa config init
 
 Prompts for each service URL and the control plane token. Press Enter to keep the current value.
 
-### `exa config set <key> <value>`
+### `exa config set <key> [value]`
 
 Set a single config key without the interactive wizard.
 
@@ -102,7 +102,7 @@ Set a single config key without the interactive wizard.
 
 ```bash
 exa config set control_plane http://<REMOTE_HOST>:18002
-exa config set control_plane_token mysecrettoken
+exa config set control_plane_token  # hidden prompt; avoids shell-history exposure
 ```
 
 ---

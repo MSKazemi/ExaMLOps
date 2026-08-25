@@ -240,9 +240,8 @@ app.add_typer(agent_cmd.app, name="agent", help="Skipper agent — health, backe
 # the same discoverability mistake the Agents & Automation panel exists to correct.
 app.command(
     "chat",
-    help="Interactive conversation with the Skipper agent (kq client)",
+    help="Interactive conversation with the Skipper agent",
     epilog=agent_cmd._CHAT_EXAMPLES,
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )(agent_cmd.chat)
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
 app.add_typer(

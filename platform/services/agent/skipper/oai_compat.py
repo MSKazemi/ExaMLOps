@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat-completions bridge for the kube-q (`kq`) client.
+"""OpenAI-compatible chat-completions bridge for ExaMLOps and third-party clients.
 
 `kq` is a general-purpose terminal chat client (session history, full-text
 search, branching, token/cost tracking, human-in-the-loop approvals). Its
@@ -7,21 +7,19 @@ default "kube-q" backend speaks the OpenAI Chat Completions wire format:
     POST /v1/chat/completions   (SSE when stream=true, JSON otherwise)
     GET  /healthz
 
-This module translates that wire format onto the ExaMLOps LangGraph agent so
-`kq --url http://localhost:18004` drives the real agent with all its tools — no
-fork of kube-q required. Only the tools/prompts are ExaMLOps-specific and those
-already live server-side; the chat client stays generic.
+This module translates the wire format onto the ExaMLOps LangGraph agent. The native
+``exa chat`` client is canonical; generic clients can use this compatibility surface.
 
 Design notes
 ------------
 * Conversation state is kept server-side by the LangGraph SQLite checkpointer,
-  keyed by the ``X-Session-ID`` header → ``thread_id``. This matches kube-q's
-  ``build_payload`` which sends only the *latest* user message each turn.
+  keyed by the ``X-Session-ID`` header or ``user`` field → ``thread_id``.
 * HITL: a LangGraph ``interrupt()`` (write-tool confirmation gate) becomes a
   final chunk carrying ``hitl_required=true`` + ``action_id``. kube-q surfaces
   an approval prompt; typing ``/approve`` sends the literal message ``"approve"``
   (``/deny`` → ``"deny"``), which we route to ``Command(resume=…)``.
-* Tool activity is surfaced via the ``ki_event`` side-channel kube-q understands.
+* Tool activity is surfaced via the ``ki_event`` side-channel understood by ``exa chat`` and
+  retained for compatibility with existing clients.
 """
 
 from __future__ import annotations
@@ -29,13 +27,14 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import Command
 
 from skipper import config, instrument
@@ -45,6 +44,7 @@ router = APIRouter()
 
 _OBJECT_CHUNK = "chat.completion.chunk"
 _OBJECT_FULL = "chat.completion"
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -115,10 +115,10 @@ def _norm_usage(usage_metadata: Mapping[str, Any] | None) -> dict | None:
 # ── Graph plumbing (lazy imports avoid a circular import with server.py) ──────
 
 
-def _graph_and_extract():
-    from skipper.server import _extract_text, _get_graph
+def _graph_and_extract(*, read_only: bool = False):
+    from skipper.server import _extract_text, _get_graph, _get_readonly_graph
 
-    return _get_graph(), _extract_text
+    return (_get_readonly_graph() if read_only else _get_graph()), _extract_text
 
 
 def stream_messages(graph, inp, cfg):
@@ -136,11 +136,58 @@ def _pending_interrupt(graph, cfg) -> Any | None:
         return None
 
 
-def _build_input(graph, cfg, text: str) -> Any:
+def _build_input(graph, cfg, text: str, system_messages: tuple[str, ...] = ()) -> Any:
     """Route the message: resume a pending HITL interrupt, else a fresh human turn."""
     if _pending_interrupt(graph, cfg) is not None:
         return Command(resume=text if _is_affirmative(text) else "no")
-    return {"messages": [HumanMessage(content=text)]}
+    messages: list[Any] = [SystemMessage(content=item) for item in system_messages]
+    messages.append(HumanMessage(content=text))
+    return {"messages": messages}
+
+
+def _content_text(content: Any) -> str:
+    """Extract text from an OpenAI string or text-content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return ""
+
+
+def _request_messages(body: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Validate a stateful chat turn while preserving client-supplied system context."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=422, detail="messages must be a non-empty array")
+    systems: list[str] = []
+    latest_user = ""
+    for item in messages:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="each message must be an object")
+        role = item.get("role")
+        text = _content_text(item.get("content"))
+        if role == "system" and text.strip():
+            systems.append(text)
+        elif role == "user" and text.strip():
+            latest_user = text
+    if not latest_user:
+        raise HTTPException(status_code=422, detail="a non-empty user message is required")
+    return latest_user, tuple(systems)
+
+
+def _request_session_id(header: str | None, body: dict[str, Any]) -> str:
+    """Return a bounded checkpoint key suitable for storage and URL reuse."""
+    candidate = header or body.get("user") or f"exa-{uuid.uuid4().hex[:8]}"
+    if not isinstance(candidate, str) or not _SESSION_ID.fullmatch(candidate):
+        raise HTTPException(
+            status_code=422,
+            detail="session id must be 1-128 letters, digits, dots, underscores, colons, or hyphens",
+        )
+    return candidate
 
 
 def _run_graph_collect(graph, cfg, inp, extract_text):
@@ -197,10 +244,17 @@ def _final_answer_from_state(graph, cfg, extract_text) -> str:
 # ── Streaming endpoint ────────────────────────────────────────────────────────
 
 
-async def _stream_completion(session_id: str, text: str, model: str):
-    graph, extract_text = _graph_and_extract()
+async def _stream_completion(
+    session_id: str,
+    text: str,
+    model: str,
+    system_messages: tuple[str, ...] = (),
+    *,
+    read_only: bool = False,
+):
+    graph, extract_text = _graph_and_extract(read_only=read_only)
     cfg = {"configurable": {"thread_id": session_id}}
-    inp = _build_input(graph, cfg, text)
+    inp = _build_input(graph, cfg, text, system_messages)
     cid = _completion_id()
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
@@ -315,27 +369,33 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-    session_id = x_session_id or body.get("user") or f"kq-{uuid.uuid4().hex[:8]}"
+    metadata = body.get("metadata")
+    read_only = bool(isinstance(metadata, dict) and metadata.get("examlops_read_only") is True)
+    session_id = _request_session_id(x_session_id, body)
+    if read_only:
+        session_id = f"readonly:{session_id}"
     model = body.get("model") or "examlops-agent"
-    messages = body.get("messages") or []
-    text = ""
-    if messages:
-        content = messages[-1].get("content", "")
-        text = content if isinstance(content, str) else str(content)
+    text, system_messages = _request_messages(body)
 
     if body.get("stream"):
         return StreamingResponse(
-            _stream_completion(session_id, text, model),
+            _stream_completion(session_id, text, model, system_messages, read_only=read_only),
             media_type="text/event-stream",
         )
 
     # Non-streaming: run to completion and return a single JSON body.
-    graph, extract_text = _graph_and_extract()
+    graph, extract_text = _graph_and_extract(read_only=read_only)
     cfg = {"configurable": {"thread_id": session_id}}
-    inp = _build_input(graph, cfg, text)
+    inp = _build_input(graph, cfg, text, system_messages)
     try:
-        full_text, _tools, usage, intr = await asyncio.to_thread(
-            _run_graph_collect, graph, cfg, inp, extract_text
+        full_text, tools, usage, intr = await asyncio.wait_for(
+            asyncio.to_thread(_run_graph_collect, graph, cfg, inp, extract_text),
+            timeout=config.AGENT_GRAPH_TIMEOUT,
+        )
+    except TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={"error": {"message": "agent graph exceeded its execution timeout"}},
         )
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": {"message": str(exc)}})
@@ -356,6 +416,8 @@ async def chat_completions(
     }
     if hitl:
         choice["action_id"] = session_id
+    if tools:
+        choice["trace"] = [{"kind": "tool", "name": name, "detail": "completed"} for name in tools]
     resp: dict[str, Any] = {
         "id": _completion_id(),
         "object": _OBJECT_FULL,

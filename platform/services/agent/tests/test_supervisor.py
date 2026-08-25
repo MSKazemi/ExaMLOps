@@ -95,6 +95,11 @@ def test_router_reads_latest_user_message():
     assert router.choose_from_messages(msgs) == "monitor"
 
 
+def test_router_sends_cross_domain_ties_to_read_only_generalist():
+    """An ambiguous request must not reach whichever write-capable pack was declared first."""
+    assert router.choose("approve and retrain JPCP") == "general"
+
+
 # ── scoped tool packs ─────────────────────────────────────────────────────────
 
 

@@ -12,7 +12,32 @@ from skipper.tools import TOOLS
 from skipper.tools import memory as memory_tools
 
 
-def build_graph(model: str | None = None, db_path: str | None = None, memory_db: str | None = None):
+def _tool_name(tool: Any) -> str:
+    return getattr(tool, "name", getattr(tool, "__name__", ""))
+
+
+def read_only_tools() -> list[Any]:
+    """Build the dashboard-safe tool set with mutating and memory-write tools excluded."""
+    from skipper.confirm import WRITE_TOOLS
+    from skipper.tools.mcp_bridge import mcp_tools
+
+    tools: list[Any] = mcp_tools(include_writes=False)
+    known = {_tool_name(tool) for tool in tools}
+    tools.extend(
+        tool
+        for tool in TOOLS
+        if _tool_name(tool) not in WRITE_TOOLS and _tool_name(tool) not in known
+    )
+    return tools
+
+
+def build_graph(
+    model: str | None = None,
+    db_path: str | None = None,
+    memory_db: str | None = None,
+    *,
+    read_only: bool = False,
+):
     """Compile the ReAct agent graph.
 
     Always binds the base tools, the system prompt, and the SQLite checkpointer
@@ -26,14 +51,18 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     checkpointer = build_checkpointer(db_path)
     # Platform-capability tools: the shared examlops.mcp registry (single source of truth) when
     # AGENT_USE_MCP_TOOLS is set, else the in-repo tool set. Off by default → unchanged.
-    if config.AGENT_USE_MCP_TOOLS:
+    if read_only:
+        tools = read_only_tools()
+    elif config.AGENT_USE_MCP_TOOLS:
         from skipper.tools.mcp_bridge import mcp_tools
 
-        tools: list[Any] = mcp_tools()
+        tools = mcp_tools()
     else:
         tools = list(TOOLS)
     kwargs: dict = {}
-    store = build_store(memory_db)
+    # Durable memory includes write tools, so the dashboard's propose-only graph deliberately
+    # has no memory store. Its thread is also isolated and single-use at the BFF boundary.
+    store = None if read_only else build_store(memory_db)
     if store is not None:
         kwargs["store"] = store
         tools += memory_tools.TOOLS  # memory tools need the injected store
@@ -42,7 +71,7 @@ def build_graph(model: str | None = None, db_path: str | None = None, memory_db:
     # sub-agent. It draws its read tools from the MCP registry and its gated writes from the
     # in-repo tools, so it is built independently of AGENT_USE_MCP_TOOLS. Any failure returns
     # None and we fall through to the single ReAct agent below (additive, never breaks the chat).
-    if supervisor.enabled():
+    if supervisor.enabled() and not read_only:
         extra = list(memory_tools.TOOLS) if store is not None else []
         graph = supervisor.build_supervisor(
             llm, checkpointer, store=store, inrepo_tools=list(TOOLS), extra_tools=extra

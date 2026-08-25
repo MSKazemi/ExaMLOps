@@ -94,7 +94,7 @@ Manages the CLI's own settings and named environment contexts in `~/.config/exam
 |---|---|---|---|
 | `exa config show` | Prints the current resolved config (env vars merged with the TOML file). | Quick read of what's configured, without the provenance detail `exa env` adds. | `exa config show` |
 | `exa config init` | Interactive wizard that writes `~/.config/examlops/config.toml`. **Mutation** (writes config, prompts interactively). | First-time setup on a new machine when you'd rather answer prompts than set keys one by one. | `exa config init` |
-| `exa config set <key> <value>` | Sets a single config key in the TOML file; `--context` targets a named context. **Mutation** (writes config). | Point the CLI at a control plane, MLflow, or token, or populate a per-environment context. | `exa config set control_plane http://<REMOTE_HOST>:18002`<br>`exa config set control_plane http://<REMOTE_HOST>:18002 --context lxp` |
+| `exa config set <key> [value]` | Sets a config key; `--context` targets a named context. Omit secret values to use the hidden prompt. **Mutation** (writes config). | Point the CLI at a service or store a token without shell-history exposure. | `exa config set control_plane http://<REMOTE_HOST>:18002`<br>`exa config set agent_token --context production` |
 | `exa config contexts` | Lists configured contexts (environments) and marks the active one. | To see which environments are defined and which one commands will hit right now. | `exa config contexts` |
 | `exa config use <name>` | Switches the active context (environment). **Mutation** (writes `active_context`). | Flip between, e.g., a local dev context and the `lxp` remote server without re-typing endpoints. | `exa config use lxp` |
 | `exa config export` | One-file YAML snapshot of **all** platform configuration, generated live: CLI settings with provenance, contexts, HPC cluster registry, artifact-vs-dataset object-store split, per-model YAMLs, env overlays, FinOps providers, and every platform env var (secrets redacted). Read-only view — edit the underlying sources, not the snapshot. | Inspect a whole deployment at a glance, attach config to a bug report, or `diff` two environments (run it on the laptop and on lxp, then diff the files). | `exa config export`<br>`exa config export -o examlops-config.yaml`<br>`exa --json config export` |
@@ -573,22 +573,19 @@ stays under Getting Started: it introspects the command tree and calls no agent.
 
 ### `exa chat` — hold a conversation with the agent
 
-A launcher, deliberately, not a second chat client. ExaMLOps settled this question already
-(`platform/services/agent/kube-q/README.md`): the terminal client is
-[kube-q](https://github.com/MSKazemi/kube_q) (`kq`), used **unforked from PyPI**, and the platform
-adapts *to it* by exposing an OpenAI-compatible bridge on the agent server — so one binary drives
-ExaMLOps, KubeIntellect, or any other agentic backend by URL. Everything `kq` already has arrives
-for free: session history and resume, full-text search over past conversations, conversation
-branching, `/approve` and `/deny` for the human-in-the-loop gate, token/cost accounting, and Rich
-rendering.
-
-What this adds over `make skipper-chat` is the thing a Makefile target cannot do: it honours the
-CLI's own configuration, so `exa -c lxp chat` reaches the agent in the *lxp* context without
-editing a profile or exporting a variable.
+The native interactive client for Skipper. It honours the active CLI context, checks that the agent
+and its model backend are ready, streams answers and tool activity, and preserves conversations by
+session ID. Use `exa ask` instead when you need a single scriptable answer.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa chat` | Launches `kq` against the agent URL resolved from your active context, forwarding `AGENT_API_KEY` when set. Probes the agent first and names the start command if it is down, rather than dropping you into `kq`'s offline REPL; passes `--no-banner --agent-name Skipper` so the client reads as ExaMLOps, and prints the backend that answered. Anything after `--` is passed straight through to `kq` and overrides those defaults. Needs the client: `uv pip install 'examlops[chat]'` (included in `[dev]`). | A back-and-forth investigation where each answer changes the next question — as opposed to `exa ask`, which is one shot. | `exa chat`<br>`exa -c lxp chat`<br>`exa chat -- --resume last` |
+| `exa chat` | Starts a new native Skipper conversation using the agent URL from the active context. | A back-and-forth investigation where each answer changes the next question. | `exa chat`<br>`exa -c staging chat` |
+| `exa chat --session ID` | Opens or continues the named session. | Continue an incident or investigation across terminal runs. | `exa chat --session incident-42` |
+
+Inside the client, use `/help`, `/status`, `/sessions`, `/history`, `/new`, `/resume ID`,
+`/approve`, `/deny`, and `/quit`. Approval commands are available when a write tool pauses for
+human confirmation. The OpenAI-compatible endpoint remains available for optional third-party
+clients, but their extra commands are not part of the `exa chat` contract.
 
 ### `exa agent` — is the agent up, and which brain is it using?
 

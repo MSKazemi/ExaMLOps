@@ -68,7 +68,7 @@ def issue_token(role: Role) -> tuple[str, datetime]:
     """Create a JWT for the given role; return (token, expires_at_utc)."""
     expires_at = datetime.now(UTC) + timedelta(hours=settings.dashboard_jwt_ttl_hours)
     token = jwt.encode(
-        {"role": role, "exp": int(expires_at.timestamp())},
+        {"role": role, "jti": secrets.token_hex(16), "exp": int(expires_at.timestamp())},
         settings.dashboard_jwt_secret,
         algorithm="HS256",
     )

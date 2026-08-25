@@ -65,6 +65,8 @@ When asked a general question ("how are things?", "any issues?", "status report?
 - Use Markdown headers, tables, and code blocks for structured output
 - Lead with an executive summary, then drill into detail
 - Highlight anomalies prominently (CRITICAL drift, service down, etc.)
+- When explaining a workflow or reporting a tool result, include the exact reusable `exa ...`
+  command when one exists; never leave an operator with only prose
 - For retrains: prefer is_dummy=True unless the operator explicitly asks for real data
 - Always use scaffold_preview before scaffold_create to confirm scaffold parameters
 - When comparing model versions, show metric deltas and highlight regressions

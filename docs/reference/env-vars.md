@@ -161,22 +161,19 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 
 ## Agent (Skipper) — server, checkpointing & review queue
 
-!!! warning "`AGENT_API_KEY` gates one endpoint, and the default bind is every interface"
+!!! warning "Authenticate deliberate network exposure"
 
-    The token is checked on `POST /v1/chat/completions` only. The WebSocket chat at
-    `/ws/chat/{thread_id}` — the interface that runs tools — and the thread-history endpoints have
-    no gate at all, and `AGENT_SERVER_HOST` defaults to `0.0.0.0`. Setting a key does not make the
-    agent safe to expose. Bind loopback and reach it through an SSH tunnel unless the host is
-    already on a trusted network; the server prints this warning at startup.
+    The server defaults to loopback. If you bind another interface, set `AGENT_API_KEY` to protect
+    completions, status, history, and WebSocket tools, and put the endpoint behind TLS. The built-in
+    browser exchanges the key for an HttpOnly, same-site session cookie.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_SERVER_HOST` | `0.0.0.0` | Interface the agent server binds. See the warning above. |
+| `AGENT_SERVER_HOST` | `127.0.0.1` | Interface the agent server binds. See the warning above. |
 | `AGENT_CHECKPOINT_BACKEND` | `sqlite` | Conversation checkpoint store. `postgres` uses `AGENT_POSTGRES_DSN`, then `DATABASE_URL` — and **selecting `postgres` with neither set falls back to `sqlite`** rather than failing, so check the startup log if checkpoints are not where you expect. |
 | `AGENT_POSTGRES_DSN` | falls back to `DATABASE_URL` | DSN for the Postgres checkpointer. |
 | `AGENT_GRAPH_TIMEOUT` | `300.0` | Seconds one LangGraph run may take before it is abandoned. |
 | `AGENT_STREAM_IDLE_TIMEOUT` | `120.0` | Seconds of silence on a streaming response before it is closed. |
-| `AGENT_CLAUDE_MD` | `<repo>/CLAUDE.md` | Project brief loaded into the agent's context. |
 | `AGENT_MEMORY_REVIEW_QUEUE` | `false` | Queue memory writes for human review instead of applying them. |
 | `AGENT_MEMORY_REVIEW_DB` | `./skipper_review.db` | Where that review queue lives — separate from `AGENT_MEMORY_DB`. |
 
@@ -344,7 +341,7 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `CONTROL_PLANE_PORT` | `8002` | HTTP port for the retrain API (host-exposed as `18002`) |
 | `CONTROL_PLANE_TOKEN` | **required** | Bearer token for `POST /retrain` and approval endpoints; unset causes write endpoints to return 503 |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Control plane URL used by the dataplane simulator and CI notify script |
-| `CONTROL_PLANE_DB` | `/data/approvals.db` | SQLite file path for the Phase 11 pending approval store; falls back to `./approvals.db` if `/data/` is not writable |
+| `CONTROL_PLANE_DB` | `/data/approvals.db` | SQLite path for control-plane approvals and ModelZoo freshness when `EXAMLOPS_DB_BACKEND=sqlite`; an unwritable parent fails readiness |
 
 ### ModelZoo Integration (Phase 12)
 
@@ -431,10 +428,12 @@ The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skippe
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback). Via ollama-tunnel: any model from the Omega/Kapa list. Must support tool calling. |
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. Omega tunnel default. Use `localhost:11434` for a local `ollama serve`. |
+| `AGENT_CONTAINER_OLLAMA_URL` | `http://host.docker.internal:11436` | Compose-only Ollama URL. This avoids treating the agent container's own loopback as the host's Ollama server. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids reload latency on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | Disable (`false`) / force (`true`) / leave-default (`default`) thinking models' extra reasoning tokens. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
-| `AGENT_API_KEY` | unset | Optional bearer token gating the OpenAI-compatible `POST /v1/chat/completions` bridge consumed by the kube-q (`kq`) client. Unset ⇒ open (local dev); when set, send `Authorization: Bearer <key>` (e.g. `kq --api-key <key>` / `KUBE_Q_API_KEY`). |
+| `AGENT_API_KEY` | unset | Optional credential protecting completions, agent status, conversation history, and WebSocket tools. Native clients send `Authorization: Bearer <key>`; the browser uses an HttpOnly session cookie. |
+| `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
 | `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve endpoint for the `predict` / inference tools |
 | `AGENT_DB` | `./agent_memory.db` | SQLite file backing the LangGraph checkpointer — conversations persist here and are resumable by thread id (`/resume`) |

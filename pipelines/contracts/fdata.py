@@ -1,6 +1,6 @@
 """A5 — Data contract for the FData dataset (ADR 0005).
 
-Columns per the real parquet schema (see CLAUDE.md "FData Parquet Schema"):
+Columns per the real parquet schema:
 ``pclass`` (string: memory-bound/compute-bound), ``mbwidth`` (double memory
 bandwidth), ``embedding`` (list<float>, 384-dim). Versioned as code; bump
 ``version`` on any change.

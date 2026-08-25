@@ -26,10 +26,12 @@ def _fake_graph():
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    from skipper import config
     from skipper import server as srv
 
     # Reset shared graph state so each test starts clean
+    monkeypatch.setattr(config, "AGENT_API_KEY", "")
     srv._graph = None
     srv._backend_info = {}
     with patch.object(srv, "_get_graph", return_value=_fake_graph()):
@@ -90,6 +92,70 @@ def test_api_threads_lists_saved(client):
     with patch.object(srv, "_get_graph", return_value=fake):
         resp = client.get("/api/threads")
     assert set(resp.json()["threads"]) == {"cli-aaa", "cli-bbb"}
+
+
+# ── auth boundary ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("path", ("/api/info", "/api/threads", "/api/threads/private/history"))
+def test_data_routes_require_agent_key_when_configured(client, monkeypatch, path):
+    from skipper import config
+
+    monkeypatch.setattr(config, "AGENT_API_KEY", "secret")
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer secret"}).status_code == 200
+
+
+def test_browser_login_issues_cookie_for_http_and_websocket(client, monkeypatch):
+    from skipper import config
+
+    monkeypatch.setattr(config, "AGENT_API_KEY", "secret")
+    login = client.post("/", data={"api_key": "secret"}, follow_redirects=False)
+    assert login.status_code == 303
+    cookie = login.cookies.get("examlops_agent_session")
+    assert cookie
+    assert cookie != "secret"
+    assert "HttpOnly" in login.headers["set-cookie"]
+    assert "SameSite=strict" in login.headers["set-cookie"]
+
+    assert client.get("/api/threads").status_code == 200
+    with client.websocket_connect("/ws/chat/browser-session") as ws:
+        ws.send_json({"type": "message", "text": "hello"})
+        assert ws.receive_json()["type"] == "done"
+
+
+def test_browser_login_rejects_wrong_key(client, monkeypatch):
+    from skipper import config
+
+    monkeypatch.setattr(config, "AGENT_API_KEY", "secret")
+    response = client.post("/", data={"api_key": "wrong"})
+    assert response.status_code == 401
+    assert "Invalid API key" in response.text
+
+
+def test_websocket_rejects_missing_agent_key(client, monkeypatch):
+    from skipper import config
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setattr(config, "AGENT_API_KEY", "secret")
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws/chat/private"):
+            pass
+
+
+def test_agent_key_comparison_is_constant_time(monkeypatch):
+    from skipper import config, server
+
+    monkeypatch.setattr(config, "AGENT_API_KEY", "secret")
+    compared = []
+
+    def compare(left, right):
+        compared.append((left, right))
+        return left == right
+
+    monkeypatch.setattr(server.hmac, "compare_digest", compare)
+    assert server._token_matches("secret") is True
+    assert compared == [("secret", "secret")]
 
 
 # ── /api/threads/{id}/history ─────────────────────────────────────────────────

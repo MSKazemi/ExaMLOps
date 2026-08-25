@@ -34,6 +34,7 @@ the model's prose doesn't say so.
 |---|---|
 | Page context (R2) | `buildContext(pathname)` sends `{page, entity, filters}`; the backend injects it into the system prompt |
 | Prompt injection (R6) | page context is framed as **UNTRUSTED data, never instructions** in the system prompt |
+| Tool authorization (R5) | dashboard calls run on an enforced read-only tool graph in a login-scoped thread |
 | Output sanitization (R1) | answers render through `sanitizeMarkdown` (F16) — scripts/handlers/js: URIs stripped |
 | Transparency (R6) | the agent's tool-call trace is shown in a collapsible panel |
 | Audit (D4) | every query writes a `copilot_query` event to `audit_events` (`source = dashboard-copilot`) |
@@ -43,10 +44,12 @@ the model's prose doesn't say so.
 
 | Endpoint | Role | Purpose |
 |---|---|---|
-| `POST /api/v1/copilot/ask` | viewer | `{question, context, session}` → `{answer, hitl_required, proposals[], trace[]}` |
+| `POST /api/v1/copilot/ask` | viewer | `{question, context}` → `{answer, hitl_required, proposals[], trace[]}` |
 
-The endpoint proxies `AGENT_URL` (default `http://localhost:18004`); set it (or `exa config set agent
-<url>`) to point at your Skipper bridge. `AGENT_API_KEY` is forwarded as a bearer token if set.
+The standard Compose and Helm deployments wire `AGENT_URL` to their internal `agent` service. For a
+custom dashboard deployment, set `AGENT_URL` in the **dashboard process environment**; `exa config set
+agent <url>` configures CLI clients only. `AGENT_API_KEY` is forwarded as a bearer token and must
+match the agent. Helm requires it in the chart's existing Secret.
 
 ## Notes & limits
 

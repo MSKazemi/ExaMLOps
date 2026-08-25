@@ -81,7 +81,7 @@ def doctor() -> None:
             "API token",
             False,
             "not set — write endpoints will return 503",
-            "Set CONTROL_PLANE_TOKEN env var or: exa config set control_plane_token <token>",
+            "Set CONTROL_PLANE_TOKEN or enter it securely with: exa config set control_plane_token",
         )
 
     # ── Services ───────────────────────────────────────────────────────────

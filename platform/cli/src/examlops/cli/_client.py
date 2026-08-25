@@ -128,7 +128,8 @@ def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:
     if code == 401:
         raise ClientError(
             f"Authentication required ({url}). "
-            "Set CONTROL_PLANE_TOKEN or run: exa config set control_plane_token <token>",
+            "Configure the token required by that service (for Skipper: AGENT_API_KEY or "
+            "`exa config set agent_token` and use the hidden prompt).",
             status=code,
         ) from exc
     if code == 403:

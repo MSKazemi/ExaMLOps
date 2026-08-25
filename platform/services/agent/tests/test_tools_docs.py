@@ -7,7 +7,6 @@ def _setup_docs(tmp_path, monkeypatch):
     (tmp_path / "guides" / "agent.md").write_text("# Agent\nThe agent uses Ollama and LangGraph.\n")
     (tmp_path / "architecture.md").write_text("# Architecture\nControl plane on port 18002.\n")
     monkeypatch.setattr(config, "AGENT_DOCS_ROOT", str(tmp_path))
-    monkeypatch.setattr(config, "CLAUDE_MD", str(tmp_path / "CLAUDE.md"))
 
 
 def test_list_docs(tmp_path, monkeypatch):
@@ -34,6 +33,19 @@ def test_read_doc_rejects_traversal(tmp_path, monkeypatch):
     assert "outside the docs root" in out
 
 
+def test_read_doc_does_not_special_case_private_assistant_files(tmp_path, monkeypatch):
+    public = tmp_path / "public"
+    public.mkdir()
+    private = tmp_path / "CLAUDE.md"
+    private.write_text("private instructions must not reach the agent")
+    monkeypatch.setattr(config, "AGENT_DOCS_ROOT", str(public))
+
+    out = docs.read_doc.invoke({"path": "CLAUDE.md"})
+
+    assert "not found" in out
+    assert "private instructions" not in out
+
+
 def test_get_howto_known_topic(tmp_path, monkeypatch):
     _setup_docs(tmp_path, monkeypatch)
     out = docs.get_howto.invoke({"topic": "add a model"})
@@ -55,7 +67,6 @@ def _setup_judge_docs(tmp_path, monkeypatch):
     )
     (tmp_path / "guides" / "unrelated.md").write_text("# Storage\nBuckets and prefixes.\n")
     monkeypatch.setattr(config, "AGENT_DOCS_ROOT", str(tmp_path))
-    monkeypatch.setattr(config, "CLAUDE_MD", str(tmp_path / "CLAUDE.md"))
 
 
 def test_a_question_finds_the_guide_even_though_the_phrase_is_absent(tmp_path, monkeypatch):

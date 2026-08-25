@@ -40,6 +40,31 @@ spec:
                 name: {{ include "examlops.fullname" . }}-config
             - secretRef:
                 name: {{ .Values.existingSecret }}
+          env:
+            - name: AGENT_SERVER_PORT
+              value: {{ .Values.agent.port | quote }}
+            - name: AGENT_CHECKPOINT_BACKEND
+              value: postgres
+            - name: AGENT_REQUIRE_API_KEY
+              value: "true"
+            - name: AGENT_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: AGENT_POSTGRES_DSN
+            - name: CONTROL_PLANE_URL
+              value: http://{{ include "examlops.fullname" . }}-control-plane:{{ .Values.controlPlane.port }}
+            - name: DASHBOARD_URL
+              value: http://{{ include "examlops.fullname" . }}-dashboard:{{ .Values.dashboard.port }}
+            - name: MLFLOW_TRACKING_URI
+              value: {{ .Values.agent.serviceUrls.mlflow | quote }}
+            - name: RAY_SERVE_URL
+              value: {{ .Values.agent.serviceUrls.rayServe | quote }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.agent.serviceUrls.prometheus | quote }}
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:

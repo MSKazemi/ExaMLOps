@@ -18,11 +18,31 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /api
+          # Keep control-plane machine endpoints reachable without stealing the dashboard's
+          # entire /api namespace. Kubernetes selects the longest matching prefix.
+          - path: /api/changes
             pathType: Prefix
             backend:
               service:
                 name: {{ include "examlops.fullname" . }}-control-plane
+                port: {name: http}
+          - path: /webhooks/modelzoo
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "examlops.fullname" . }}-control-plane
+                port: {name: http}
+          - path: /retrain
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "examlops.fullname" . }}-control-plane
+                port: {name: http}
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "examlops.fullname" . }}-dashboard
                 port: {name: http}
           - path: /
             pathType: Prefix

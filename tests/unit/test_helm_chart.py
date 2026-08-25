@@ -34,6 +34,10 @@ def _chart() -> dict:
     return yaml.safe_load((CHART / "Chart.yaml").read_text())
 
 
+def _values() -> dict:
+    return yaml.safe_load((CHART / "values.yaml").read_text())
+
+
 def _platform_version() -> str:
     pyproject = (REPO / "pyproject.toml").read_text()
     return next(
@@ -65,8 +69,8 @@ def test_app_version_tracks_the_platform_version():
 def test_the_maintainer_is_the_author():
     """A chart published under someone's name lists that person, not the product."""
     maintainers = _chart()["maintainers"]
-    emails = {m.get("email") for m in maintainers}
-    assert "mohsen.seyedkazemi@gmail.com" in emails, maintainers
+    names = {m.get("name") for m in maintainers}
+    assert "Mohsen Seyedkazemi Ardebili" in names, maintainers
 
 
 def test_the_chart_declares_a_home_that_exists_publicly():
@@ -134,6 +138,49 @@ def _images(doc: dict) -> list[str]:
     return [c["image"] for c in spec.get("containers", []) if "image" in c]
 
 
+@needs_helm
+def test_copilot_is_wired_to_agent_and_dashboard_owns_api_routes():
+    result = _render("--set", "global.imageRegistry=ghcr.io/example/")
+    assert result.returncode == 0, result.stderr
+    docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+    dashboard = next(
+        doc
+        for doc in docs
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"].endswith("-dashboard")
+    )
+    env = {
+        item["name"]: item.get("value")
+        for item in dashboard["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["AGENT_URL"] == "http://rel-examlops-agent:18004"
+
+    ingress = next(doc for doc in docs if doc.get("kind") == "Ingress")
+    paths = ingress["spec"]["rules"][0]["http"]["paths"]
+    backends = {path["path"]: path["backend"]["service"]["name"] for path in paths}
+    assert backends["/api"] == "rel-examlops-dashboard"
+    assert backends["/api/changes"] == "rel-examlops-control-plane"
+
+
+@needs_helm
+def test_ha_agent_uses_shared_checkpoint_backend_and_requires_api_key():
+    result = _render("--set", "global.imageRegistry=ghcr.io/example/")
+    assert result.returncode == 0, result.stderr
+    agent = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "Deployment" and doc["metadata"]["name"].endswith("-agent")
+    )
+    env = {
+        item["name"]: item.get("value")
+        for item in agent["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["AGENT_CHECKPOINT_BACKEND"] == "postgres"
+    assert env["AGENT_REQUIRE_API_KEY"] == "true"
+    assert env["AGENT_POSTGRES_DSN"] is None  # sourced from a Secret, never chart values
+    assert env["CONTROL_PLANE_URL"] == "http://rel-examlops-control-plane:8002"
+
+
 def test_chart_version_moves_with_the_platform():
     """A frozen chart version makes every republish invisible to `helm repo update`.
 
@@ -146,6 +193,35 @@ def test_chart_version_moves_with_the_platform():
         f"Chart version {_chart()['version']} != platform {_platform_version()}; bump it, "
         "or consumers of the published repo will never see this change."
     )
+
+
+def test_control_plane_defaults_do_not_claim_unsafe_horizontal_scaling():
+    """Process-local coordination still exists, so HA must be an explicit future opt-in."""
+    control_plane = _values()["controlPlane"]
+    assert control_plane["replicaCount"] == 1
+    assert control_plane["autoscaling"]["enabled"] is False
+
+
+def test_control_plane_image_contains_the_shared_postgres_backend():
+    dockerfile = (REPO / "platform" / "services" / "control_plane" / "Dockerfile").read_text()
+    assert "COPY platform/cli /app/platform/cli" in dockerfile
+    assert "platform/cli[postgres]" in dockerfile
+
+
+@needs_helm
+def test_control_plane_probes_separate_liveness_from_readiness():
+    result = _render("--set", "global.imageRegistry=ghcr.io/example/")
+    assert result.returncode == 0, result.stderr
+    control_plane = next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+        and doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"].endswith("-control-plane")
+    )
+    container = control_plane["spec"]["template"]["spec"]["containers"][0]
+    assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
+    assert container["livenessProbe"]["httpGet"]["path"] == "/livez"
 
 
 # ── every published command for this chart must be one that works ──────────────────────────────

@@ -13,7 +13,7 @@ def _patch_dashboard(monkeypatch):
 @respx.mock
 def test_list_services(monkeypatch):
     _patch_dashboard(monkeypatch)
-    respx.post("http://localhost:18099/api/login").mock(
+    respx.post("http://localhost:18099/api/auth/login").mock(
         return_value=httpx.Response(200, json={"token": "T", "role": "admin", "expires_at": "x"})
     )
     respx.get("http://localhost:18099/api/containers").mock(
@@ -27,7 +27,7 @@ def test_list_services(monkeypatch):
 def test_restart_confirmed(monkeypatch):
     _patch_dashboard(monkeypatch)
     monkeypatch.setattr(confirm, "interrupt", lambda payload: "yes")
-    respx.post("http://localhost:18099/api/login").mock(
+    respx.post("http://localhost:18099/api/auth/login").mock(
         return_value=httpx.Response(200, json={"token": "T", "role": "admin", "expires_at": "x"})
     )
     respx.post("http://localhost:18099/api/containers/mlflow/restart").mock(

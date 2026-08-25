@@ -7,11 +7,14 @@ Start with:  uvicorn skipper.server:app --port 18004
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import threading
 from typing import Any
+from urllib.parse import parse_qs
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
@@ -23,15 +26,64 @@ from skipper.llm import check_backend
 app = FastAPI(title="Skipper (ExaMLOps agent)", docs_url=None, redoc_url=None)
 
 _graph: Any = None
+_readonly_graph: Any = None
 _backend_info: dict = {}
 _graph_lock = threading.Lock()
 
-# OpenAI-compatible bridge (/v1/chat/completions + /healthz) consumed by the
-# kube-q `kq` terminal client. Imported after `app` so its lazy imports of
+# OpenAI-compatible bridge (/v1/chat/completions + /healthz) used by the native CLI and optional
+# third-party clients. Imported after `app` so its lazy imports of
 # `_get_graph`/`_extract_text` resolve without a circular import.
 from skipper.oai_compat import router as oai_router  # noqa: E402
 
 app.include_router(oai_router)
+
+_AUTH_COOKIE = "examlops_agent_session"
+
+
+def _token_matches(candidate: str | None) -> bool:
+    """Compare an agent credential without leaking a useful timing signal."""
+    return bool(
+        config.AGENT_API_KEY
+        and candidate
+        and hmac.compare_digest(str(candidate), config.AGENT_API_KEY)
+    )
+
+
+def _browser_cookie_value() -> str:
+    """Derive a session value so the browser never stores the API key itself."""
+    return hmac.new(
+        config.AGENT_API_KEY.encode(), b"examlops-browser-session-v1", hashlib.sha256
+    ).hexdigest()
+
+
+def _authorized(authorization: str | None, cookie: str | None) -> bool:
+    """Authenticate either an API bearer token or the browser's HttpOnly session cookie."""
+    if not config.AGENT_API_KEY:
+        return True
+    scheme, _, credential = (authorization or "").partition(" ")
+    bearer = credential if scheme.lower() == "bearer" else None
+    cookie_ok = bool(cookie and hmac.compare_digest(cookie, _browser_cookie_value()))
+    return _token_matches(bearer) or cookie_ok
+
+
+def _request_authorized(request: Request) -> bool:
+    return _authorized(request.headers.get("authorization"), request.cookies.get(_AUTH_COOKIE))
+
+
+async def _require_agent_auth(request: Request) -> None:
+    if not _request_authorized(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _login_page(*, invalid: bool = False) -> str:
+    error = "<p style='color:#f85149'>Invalid API key.</p>" if invalid else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Skipper sign in</title></head>
+<body style="font:16px system-ui;max-width:28rem;margin:12vh auto;padding:1rem">
+<h1>Skipper</h1><p>Enter the ExaMLOps agent API key to open this browser session.</p>{error}
+<form method="post" action="/"><label>API key<br><input name="api_key" type="password"
+autocomplete="current-password" required autofocus></label>
+<button type="submit">Sign in</button></form></body></html>"""
 
 
 def _get_graph():
@@ -44,6 +96,17 @@ def _get_graph():
                 _backend_info = check_backend()
                 _graph = build_graph(model=_backend_info.get("model"))
     return _graph
+
+
+def _get_readonly_graph():
+    """Return a graph that cannot call any mutating or durable-memory tool."""
+    global _readonly_graph, _backend_info
+    if _readonly_graph is None:
+        with _graph_lock:
+            if _readonly_graph is None:
+                _backend_info = check_backend()
+                _readonly_graph = build_graph(model=_backend_info.get("model"), read_only=True)
+    return _readonly_graph
 
 
 def _extract_text(content) -> str:
@@ -82,7 +145,7 @@ def stream_messages(graph, inp, cfg):
 
 
 @app.get("/api/info")
-async def api_info():
+async def api_info(_auth: None = Depends(_require_agent_auth)):
     info = check_backend()
     # `active` is the honest answer to "does this agent remember anything across threads?" — the
     # compiled graph either got a store or it did not. The rest is what was *asked* for, so a
@@ -106,7 +169,7 @@ async def api_info():
 
 
 @app.get("/api/threads")
-async def list_threads():
+async def list_threads(_auth: None = Depends(_require_agent_auth)):
     graph = _get_graph()
     try:
         seen = list({c.config["configurable"]["thread_id"] for c in graph.checkpointer.list(None)})
@@ -116,7 +179,7 @@ async def list_threads():
 
 
 @app.get("/api/threads/{thread_id}/history")
-async def thread_history(thread_id: str):
+async def thread_history(thread_id: str, _auth: None = Depends(_require_agent_auth)):
     graph = _get_graph()
     cfg = {"configurable": {"thread_id": thread_id}}
     try:
@@ -149,6 +212,11 @@ async def thread_history(thread_id: str):
 
 @app.websocket("/ws/chat/{thread_id}")
 async def chat_websocket(websocket: WebSocket, thread_id: str):
+    if not _authorized(websocket.headers.get("authorization"), websocket.cookies.get(_AUTH_COOKIE)):
+        # Browser WebSocket constructors cannot attach an Authorization header. The built-in UI
+        # authenticates through the HttpOnly, same-site cookie issued by POST / below.
+        await websocket.close(code=1008, reason="Invalid or missing API key")
+        return
     await websocket.accept()
     graph = _get_graph()
     try:
@@ -248,7 +316,34 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+async def index(request: Request):
     from skipper.chat_html import CHAT_HTML
 
+    if config.AGENT_API_KEY and not _request_authorized(request):
+        return HTMLResponse(_login_page())
     return CHAT_HTML
+
+
+@app.post("/", response_class=HTMLResponse)
+async def browser_login(request: Request):
+    """Exchange the browser login form for a same-origin cookie usable by fetch and WebSocket.
+
+    The key is submitted in the request body rather than a query string, keeping it out of normal
+    access logs. The cookie is HttpOnly and SameSite=Strict; HTTPS deployments also receive the
+    Secure attribute.
+    """
+    if not config.AGENT_API_KEY:
+        return RedirectResponse(url="/", status_code=303)
+    body = (await request.body())[:8192].decode("utf-8", errors="replace")
+    candidate = (parse_qs(body).get("api_key") or [""])[0]
+    if not _token_matches(candidate):
+        return HTMLResponse(_login_page(invalid=True), status_code=401)
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        _AUTH_COOKIE,
+        _browser_cookie_value(),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+    return response

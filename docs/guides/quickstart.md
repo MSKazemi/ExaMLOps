@@ -33,7 +33,6 @@ install rather than failing with a traceback:
 |---|---|
 | `examlops[analysis]` | Statistical A/B analysis — `exa serve ab analyze` |
 | `examlops[backup]` | Object-store and off-site backup tiers — `exa backup` |
-| `examlops[chat]` | The `kq` terminal client behind `exa chat` |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
 | `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |
@@ -212,5 +211,5 @@ See [JupyterHub Guide](jupyter.md) for user management and full setup details.
 - Architecture overview → [Architecture](architecture.md)
 - Trigger retrains from clients → [Control Plane](control-plane.md)
 - Notebook environment → [JupyterHub Guide](jupyter.md)
-- Add a non-sklearn framework → see CLAUDE.md "Framework Extensibility (Phase 5)"
-- Connect to a real HPC cluster → CLAUDE.md "HPC modes" section
+- Add a non-sklearn framework → [Add a new model](add-a-new-model.md)
+- Connect to an HPC cluster → [Distributed training](distributed-training.md)

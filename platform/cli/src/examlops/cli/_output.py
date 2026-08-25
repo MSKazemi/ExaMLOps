@@ -147,8 +147,8 @@ def _to_html(data: Any) -> str:
 
 
 # Every message below is Rich-escaped. Callers pass plain prose, and prose contains brackets:
-# `examlops[chat]`, a TOML `[project.entry-points]` header, a `[WARNING]` log line. Unescaped,
-# Rich reads those as style tags and *silently deletes them* — `pip install examlops[chat]`
+# `examlops[mcp]`, a TOML `[project.entry-points]` header, a `[WARNING]` log line. Unescaped,
+# Rich reads those as style tags and *silently deletes them* — `pip install examlops[mcp]`
 # renders as `pip install examlops`, an instruction that installs the wrong thing. A hint that
 # quietly lies is worse than no hint, so the escaping is central rather than per-call-site.
 

@@ -10,22 +10,19 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
 def exposure_warning(host: str, api_key: str) -> str | None:
-    """Warn when the agent is reachable off-box without a token.
-
-    ``AGENT_API_KEY`` gates ``POST /v1/chat/completions`` and nothing else — the WebSocket chat at
-    ``/ws/chat/{thread_id}`` and the thread-history endpoints are open to anyone who can reach the
-    port. The default bind is ``0.0.0.0``, so the default posture on a shared host is an
-    unauthenticated agent that can call tools. Setting a key does not close that; only the bind
-    address does, until the native endpoints are gated too.
-    """
+    """Warn when an operator deliberately exposes the agent beyond loopback."""
     if host in _LOOPBACK:
         return None
+    if api_key:
+        return (
+            f"WARNING: binding {host} exposes the agent to the network. AGENT_API_KEY protects "
+            "chat, history, and WebSocket routes, but the token must be transported over TLS. "
+            "Prefer a TLS reverse proxy or bind AGENT_SERVER_HOST=127.0.0.1 and use a secure tunnel."
+        )
     return (
-        f"WARNING: binding {host} — the WebSocket chat and thread history are reachable from the "
-        "network and are NOT gated by AGENT_API_KEY"
-        + (" (which is set, but only covers /v1/chat/completions)." if api_key else " (unset).")
-        + " Bind AGENT_SERVER_HOST=127.0.0.1 and reach it over an SSH tunnel unless this host is "
-        "already on a trusted network."
+        f"WARNING: binding {host} with AGENT_API_KEY unset exposes chat, tools, and conversation "
+        "history without authentication. Set AGENT_API_KEY, or bind "
+        "AGENT_SERVER_HOST=127.0.0.1 and use a secure tunnel."
     )
 
 
@@ -34,7 +31,15 @@ if __name__ == "__main__":
     from skipper.server import app  # noqa: F401
 
     port = int(os.environ.get("AGENT_SERVER_PORT", "18004"))
-    host = os.environ.get("AGENT_SERVER_HOST", "0.0.0.0")
+    host = os.environ.get("AGENT_SERVER_HOST", "127.0.0.1")
+    require_key = os.environ.get("AGENT_REQUIRE_API_KEY", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if require_key and not os.environ.get("AGENT_API_KEY"):
+        raise SystemExit("AGENT_API_KEY is required when AGENT_REQUIRE_API_KEY=true")
     print(f"Skipper (ExaMLOps agent)  →  http://{host}:{port}")
     if (warning := exposure_warning(host, os.environ.get("AGENT_API_KEY", ""))) is not None:
         print(warning, file=sys.stderr)

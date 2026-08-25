@@ -232,8 +232,7 @@ the server — the browser sees only `hasSecret`.
 | Enforced isolation (network firewalling · per-bucket IAM · cluster queue admission) | **future** | — |
 
 Design set: dossier `design/vision/library/soa-project-anatomy.md`, Vision Card
-`design/vision/ideas/2026-07-16-project-anatomy.md`, ADRs 0091–0093, specs P6–P8, plan
-`.claude/plans/project-anatomy/`.
+`design/vision/ideas/2026-07-16-project-anatomy.md`, ADRs 0091–0093, and specs P6–P8.
 
 ## Related
 

@@ -31,6 +31,9 @@ RUN pip install --upgrade pip \
     && pip install -e /app/platform/cli
 
 COPY platform/services/agent /app/platform/services/agent
+# Copilot answers documentation questions from this public knowledge root. Private planning and
+# assistant-working directories are deliberately not copied into the image.
+COPY docs /app/docs
 
 # Writable-path defaults for a read-only root filesystem. /tmp is the emptyDir the chart
 # mounts; anything not listed here must not be written at runtime.

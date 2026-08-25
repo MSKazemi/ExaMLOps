@@ -43,6 +43,8 @@ spec:
           env:
             - name: CONTROL_PLANE_URL
               value: http://{{ include "examlops.fullname" . }}-control-plane:{{ .Values.controlPlane.port }}
+            - name: AGENT_URL
+              value: http://{{ include "examlops.fullname" . }}-agent:{{ .Values.agent.port }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:

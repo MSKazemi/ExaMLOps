@@ -15,6 +15,15 @@ def test_build_graph_binds_tools_and_checkpointer(tmp_path, monkeypatch):
     assert g is not None  # compiled graph with tools + checkpointer (no LLM call made)
 
 
+def test_dashboard_read_only_toolset_excludes_every_confirmed_write():
+    from skipper import graph
+
+    names = {graph._tool_name(tool) for tool in graph.read_only_tools()}
+    assert names
+    assert names.isdisjoint(confirm.WRITE_TOOLS)
+    assert "search_knowledge" in names
+
+
 def test_interrupt_resume_roundtrip(tmp_path):
     """A confirmed_write tool inside a real graph suspends on interrupt and resumes."""
 

@@ -68,6 +68,9 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+from examlops.storage import PostgresBackend, SqliteBackend
 
 T = TypeVar("T")
 
@@ -213,6 +216,7 @@ PREFECT_DEPLOYMENT_NAME = os.getenv(
     "PREFECT_DEPLOYMENT_NAME", "examlops_scheduled_training/nightly"
 )
 CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB", "/data/approvals.db")
+CONTROL_PLANE_STATE_BACKEND = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
 MODELZOO_WEBHOOK_SECRET = os.getenv("MODELZOO_WEBHOOK_SECRET", "")
 MODELZOO_AUTO_RETRAIN = os.getenv("MODELZOO_AUTO_RETRAIN", "false").lower() == "true"
 MODELZOO_POLL_SECONDS = int(os.getenv("MODELZOO_POLL_SECONDS", "300"))
@@ -455,26 +459,41 @@ _CREATE_INDICES_SQL = [
 ]
 
 
-def _get_db() -> sqlite3.Connection:
-    """Open the SQLite DB.
+def _get_db() -> Any:
+    """Open the configured control-plane state store.
 
-    Improvement 2: WAL mode for better concurrency.
-    Improvement 20: Retries on OperationalError for NFS-hosted DB resilience.
+    SQLite remains the local-development backend and retains the WAL/retry behaviour. Production
+    may select the existing shared Postgres adapter with ``EXAMLOPS_DB_BACKEND=postgres`` and
+    ``EXAMLOPS_POSTGRES_DSN``. Keeping this behind one connection function lets the endpoint
+    contracts remain unchanged while removing the control plane's private persistence island.
     """
+    if CONTROL_PLANE_STATE_BACKEND == "postgres":
+        conn = PostgresBackend().connect()
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
+        conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
+        for idx_sql in _CREATE_INDICES_SQL:
+            conn.execute(idx_sql)
+        conn.commit()
+        return conn
+
+    if CONTROL_PLANE_STATE_BACKEND != "sqlite":
+        raise RuntimeError(
+            "Unsupported EXAMLOPS_DB_BACKEND for the control plane: "
+            f"{CONTROL_PLANE_STATE_BACKEND!r}; expected 'sqlite' or 'postgres'"
+        )
+
     db_path = CONTROL_PLANE_DB
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
-        try:
-            os.makedirs(db_dir, exist_ok=True)
-        except OSError:
-            db_path = "./approvals.db"
+        os.makedirs(db_dir, exist_ok=True)
 
     last_exc: Exception | None = None
     for attempt, delay in enumerate([0.0, 0.1, 0.3], start=1):
         if delay:
             time.sleep(delay)
         try:
-            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn = SqliteBackend(db_path).connect()
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute(_CREATE_TABLE_SQL)
@@ -760,12 +779,12 @@ def _record_push_event(
     with _DB_LOCK:
         conn = _get_db()
         try:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO modelzoo_events (commit_sha, branch, pushed_by, timestamp, source, raw_payload) "
                 "VALUES (?, ?, ?, ?, 'webhook', ?)",
                 (commit_sha, branch, pushed_by, now, raw_payload),
             )
-            event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            event_id = int(cursor.lastrowid or 0)
             for model_id in registry:
                 conn.execute(
                     "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since) "
@@ -866,11 +885,11 @@ def _run_poll_cycle() -> dict[str, Any]:
             ).fetchone()
             if existing:
                 return {}
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO modelzoo_events (commit_sha, branch, pushed_by, timestamp, source) VALUES (?, ?, ?, ?, 'poll')",
                 (latest_sha, MODELZOO_WATCH_BRANCH, pushed_by, committed_at),
             )
-            event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            event_id = int(cursor.lastrowid or 0)
             for model_id in registry:
                 conn.execute(
                     "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, is_stale, stale_since) "
@@ -1166,9 +1185,38 @@ def _pending_approvals_count() -> int | None:
             conn.close()
 
 
+def _runtime_capabilities() -> dict[str, Any]:
+    """Describe the controls this process actually uses, not only configured target backends."""
+    blockers = [
+        "rate_limit_process_local",
+        "idempotency_process_local",
+        "retrain_dedup_process_local",
+        "circuit_breaker_process_local",
+    ]
+    if MODELZOO_POLL_SECONDS > 0:
+        blockers.append("poller_leader_not_externalized")
+    if CONTROL_PLANE_STATE_BACKEND != "postgres":
+        blockers.append("state_not_shared")
+    return {
+        "state_backend": CONTROL_PLANE_STATE_BACKEND,
+        "configured_coordinator": os.getenv("EXAMLOPS_COORDINATOR", "db").strip().lower(),
+        "configured_event_publisher": os.getenv("EXAMLOPS_EVENT_PUBLISHER", "log").strip().lower(),
+        "active_coordination": "process-local",
+        "poller_enabled": MODELZOO_POLL_SECONDS > 0,
+        "horizontal_scaling_safe": False,
+        "horizontal_scaling_blockers": blockers,
+    }
+
+
 @app.get("/ready", include_in_schema=False)
 def ready() -> dict[str, str]:
-    """Improvement 15: fast liveness probe — always 200 if the process is alive."""
+    """Compatibility alias for the original process-liveness endpoint."""
+    return {"status": "alive"}
+
+
+@app.get("/livez", include_in_schema=False)
+def livez() -> dict[str, str]:
+    """Process liveness: HTTP 200 means the server can answer and may be restarted if it cannot."""
     return {"status": "alive"}
 
 
@@ -1209,7 +1257,34 @@ def health() -> dict[str, Any]:
         "startup_checks": _startup_checks,
         "poller": poller_info,
         "circuit_breaker": {"state": _prefect_breaker.state},
+        "runtime": _runtime_capabilities(),
     }
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz() -> JSONResponse:
+    """Traffic readiness: return non-2xx unless runtime dependencies are safe to use.
+
+    ``/health`` remains a diagnostic endpoint with a stable 200 response and a verdict in its JSON
+    body. Orchestrators need the verdict encoded in the HTTP status, which is what this endpoint
+    provides. A stale enabled poller is also not ready: routing more traffic to a replica whose
+    reconciliation loop has stopped only makes recovery less likely.
+    """
+    try:
+        payload = health()
+    except Exception as exc:  # noqa: BLE001 - readiness must fail closed on diagnostic bugs
+        logger.error("Readiness evaluation failed: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "not_ready", "reason": "health evaluation failed"},
+        )
+
+    poller = payload.get("poller") or {}
+    ready_now = payload.get("status") == "ok" and not poller.get("stale", False)
+    if ready_now:
+        return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
+    payload["status"] = "not_ready"
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=payload)
 
 
 @app.get("/status")

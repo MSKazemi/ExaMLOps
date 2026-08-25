@@ -70,17 +70,18 @@ docker-socket-proxy (least-privilege Docker API), enable the `backup` profile + 
 
 ## Path B — Enterprise Kubernetes (the target shape)
 
-The chart at `platform/infra/helm/examlops/` (Chart 0.1.0). It ships a genuinely enterprise **pod
-posture** — non-root (uid 10001), read-only rootfs, drop-ALL caps, seccomp RuntimeDefault, HPA + PDB +
-topology-spread — and an nginx Ingress with TLS. **It deploys only control-plane + dashboard + agent**
-and expects the stateful services to be provided externally.
+The chart at `platform/infra/helm/examlops/` ships an enterprise **pod posture** — non-root
+(uid 10001), read-only rootfs, drop-ALL caps, seccomp RuntimeDefault, PDBs, topology spread, and an
+nginx Ingress with TLS. **It deploys only control-plane + dashboard + agent** and expects stateful
+services externally. The control plane deliberately defaults to one replica until distributed
+coordination and poller leadership are integrated; its HPA must remain disabled until those gates pass.
 
 ### Prerequisites (bring-your-own managed services)
 - A Kubernetes cluster (1.27+), an ingress controller, and cert-manager (or pre-provisioned TLS).
 - **Postgres** (the chart references CloudNativePG — `postgres.host/readHost/database`).
 - **Object storage** (MinIO or S3 — `minio.endpoint/bucket`).
-- **Redis** (for cross-host coordination) and **NATS** (event backbone) — the chart injects
-  `EXAMLOPS_COORDINATOR=redis` and `EXAMLOPS_EVENT_PUBLISHER=nats`.
+- **Redis** and **NATS** are future requirements for multi-replica coordination and event delivery.
+  Their current interfaces are not yet wired into every control-plane call path.
 - An external **Secret** holding the app secrets (never templated into the chart).
 
 ### Install
@@ -91,7 +92,8 @@ kubectl create secret generic examlops-secrets \
   --from-literal=DASHBOARD_SECRET_KEY=... \
   --from-literal=DASHBOARD_ADMIN_PASSWORD=... \
   --from-literal=DASHBOARD_VIEWER_PASSWORD=... \
-  --from-literal=CONTROL_PLANE_TOKEN=...
+  --from-literal=CONTROL_PLANE_TOKEN=... \
+  --from-literal=EXAMLOPS_POSTGRES_DSN='postgresql://...'
 
 # 2. Validate then install
 make helm-validate                       # lint + refusal check + render (+ kubectl dry-run if a cluster is reachable)
@@ -191,8 +193,8 @@ the dashboard was rebuilt, and the live API was verified end-to-end (authenticat
 
 ## What a *true* one-command enterprise cluster install still needs
 
-The honest gap list (source: `.claude/plans/enterprise-readiness/`). None of these block Path A; they
-are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant cluster install":
+The gap list below does not block Path A; these items stand between the current
+partial Helm chart and a turnkey, HA, multi-tenant cluster install:
 
 1. **Versioned artifacts, not build-from-HEAD.** Today every path builds images on the target host
    (`compose build`) and installs the CLI editable (`pip install -e`). Enterprise needs **published,
@@ -203,10 +205,10 @@ are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant clus
    `NetworkPolicy`, `ServiceMonitor`/`PrometheusRule`, agent HPA/PDB, and either bundle the stateful
    services as subcharts (Postgres/Redis/NATS operators) or ship an **umbrella chart** so the data
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
-3. **Re-platform state for real.** `EXAMLOPS_DB_BACKEND=postgres` now carries every `platform_db`
-   helper *and* the dashboard, and the whole unit suite passes on Postgres 16 — what is left before
-   multi-replica HA is real: a `pg_dump` backup tier. Same for the Redis
-   coordinator and NATS/Kafka event backbone (currently loud-failing skeletons). See
+3. **Finish multi-replica control-plane coordination.** The platform, dashboard, and control-plane
+   state can use the Postgres adapter, but rate limits, idempotency, breaker state, runtime config,
+   and poller ownership are still process-local. Wire a real Redis coordinator and one supported
+   event transport, then pass concurrent-replica and failover tests before enabling the HPA. See
    `docs/guides/postgres-backend.md`.
 4. **Identity on by default.** Wire the OIDC dependency across control-plane/dashboard/agent routes and
    ship multi-tenancy as the enterprise default, replacing the two-shared-passwords model.
@@ -216,8 +218,8 @@ are what stands between "partial Helm chart" and "turnkey, HA, multi-tenant clus
 6. **Secure-by-default.** Remove the `minioadmin` defaults, plaintext HTTP, and wildcard
    CORS/allowed-hosts from the compose path so a copy-paste install isn't insecure.
 
-These map directly onto the enterprise-readiness roadmap (Phase 1 HA → Phase 2 identity/tenancy → …) in
-`.claude/plans/enterprise-readiness/02-ROADMAP.md`.
+These map to the public architecture records: Phase 1 HA, Phase 2 identity and
+tenancy, followed by automated cluster bootstrap and operational hardening.
 
 ---
 

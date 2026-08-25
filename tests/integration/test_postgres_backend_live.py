@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,49 @@ def test_project_anatomy_round_trips(pg_schema):
     full = pg_schema.get_project_full("research")
     assert full["name"] == "research"
     assert full["cpu_limit"] == 4
+
+
+def test_control_plane_state_round_trips_on_postgres(pg_schema, monkeypatch):
+    """The separate approval/ModelZoo store must use the same production backend seam."""
+    control_plane_dir = (
+        Path(__file__).resolve().parents[2] / "platform" / "services" / "control_plane"
+    )
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "integration-test-token")
+    monkeypatch.setenv("MODELZOO_POLL_SECONDS", "0")
+    monkeypatch.syspath_prepend(str(control_plane_dir))
+    spec = spec_from_file_location("control_plane_postgres_live", control_plane_dir / "app.py")
+    assert spec and spec.loader
+    control_plane = module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, control_plane)
+    spec.loader.exec_module(control_plane)
+
+    conn = control_plane._get_db()
+    cursor = conn.execute(
+        "INSERT INTO pending_approvals (id, model_id, status, requested_at) VALUES (?, ?, ?, ?)",
+        ("cp-pg-1", "JPCP", "pending", "2026-08-25T00:00:00"),
+    )
+    assert cursor.rowcount == 1
+    event = conn.execute(
+        "INSERT INTO modelzoo_events "
+        "(commit_sha, branch, pushed_by, timestamp, source) VALUES (?, ?, ?, ?, ?)",
+        ("abc123", "main", "integration", "2026-08-25T00:00:00", "test"),
+    )
+    event_id = event.lastrowid
+    conn.commit()
+    conn.close()
+
+    conn = control_plane._get_db()
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM pending_approvals WHERE status=?", ("pending",)
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute("SELECT commit_sha FROM modelzoo_events WHERE id=?", (event_id,)).fetchone()[0]
+        == "abc123"
+    )
+    conn.close()
 
 
 # ── connection pooling ────────────────────────────────────────────────────────

@@ -19,14 +19,20 @@ def test_defaults(tmp_path, monkeypatch):
     assert cfg.mlflow_url == "http://localhost:15000"
     assert cfg.prefect_url == "http://localhost:14200"
     assert cfg.control_plane_token == ""
+    assert cfg.agent_token == ""
 
 
 def test_env_overrides_defaults():
-    env = {"CONTROL_PLANE_URL": "http://n1:18002", "CONTROL_PLANE_TOKEN": "secret"}
+    env = {
+        "CONTROL_PLANE_URL": "http://n1:18002",
+        "CONTROL_PLANE_TOKEN": "secret",
+        "AGENT_API_KEY": "agent-secret",
+    }
     with patch.dict(os.environ, env):
         cfg = load_config()
     assert cfg.control_plane_url == "http://n1:18002"
     assert cfg.control_plane_token == "secret"
+    assert cfg.agent_token == "agent-secret"
 
 
 def test_toml_overrides_defaults(tmp_path, monkeypatch):

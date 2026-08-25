@@ -89,6 +89,25 @@ def test_db_indices_exist(cp):
     assert "idx_me_sha" in indices
 
 
+def test_postgres_backend_is_selected_for_control_plane_state(cp, monkeypatch):
+    """Production state must use the shared backend instead of opening CONTROL_PLANE_DB."""
+    connection = MagicMock()
+    backend = MagicMock()
+    backend.connect.return_value = connection
+    monkeypatch.setattr(cp, "CONTROL_PLANE_STATE_BACKEND", "postgres")
+    monkeypatch.setattr(cp, "PostgresBackend", lambda: backend)
+
+    assert cp._get_db() is connection
+    backend.connect.assert_called_once_with()
+    connection.commit.assert_called_once_with()
+
+
+def test_unknown_control_plane_state_backend_fails_closed(cp, monkeypatch):
+    monkeypatch.setattr(cp, "CONTROL_PLANE_STATE_BACKEND", "mystery")
+    with pytest.raises(RuntimeError, match="Unsupported EXAMLOPS_DB_BACKEND"):
+        cp._get_db()
+
+
 # ─── Round 1: Improvement 5 — Concurrent /status ─────────────────────────────
 
 
@@ -470,6 +489,46 @@ def test_ready_independent_of_startup_checks(tmp_path, monkeypatch):
     client = TestClient(cp_app.app)
     resp = client.get("/ready")
     assert resp.status_code == 200
+
+
+def test_livez_is_process_liveness(cp):
+    cp._startup_checks = {"db": "fail: unavailable", "token": "missing"}
+    resp = TestClient(cp.app).get("/livez")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "alive"}
+
+
+def test_readyz_is_503_before_startup_checks(cp):
+    cp._startup_checks = {}
+    resp = TestClient(cp.app).get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+
+
+def test_readyz_is_200_only_when_dependencies_are_healthy(cp):
+    cp._startup_checks = {"db": "ok", "registry": "ok", "token": "ok"}
+    client = TestClient(cp.app)
+    assert client.get("/readyz").status_code == 200
+
+    cp._startup_checks["db"] = "fail: unavailable"
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+
+
+def test_readyz_fails_closed_when_store_becomes_unreadable(cp, monkeypatch):
+    cp._startup_checks = {"db": "ok", "registry": "ok", "token": "ok"}
+    monkeypatch.setattr(cp, "_pending_approvals_count", lambda: None)
+    assert TestClient(cp.app).get("/readyz").status_code == 503
+
+
+def test_health_reports_actual_horizontal_scaling_capabilities(cp):
+    runtime = TestClient(cp.app).get("/health").json()["runtime"]
+    assert runtime["state_backend"] == "sqlite"
+    assert runtime["active_coordination"] == "process-local"
+    assert runtime["horizontal_scaling_safe"] is False
+    assert "rate_limit_process_local" in runtime["horizontal_scaling_blockers"]
+    assert "state_not_shared" in runtime["horizontal_scaling_blockers"]
 
 
 # ─── Round 2: Improvement 16 — Approval expiry ───────────────────────────────

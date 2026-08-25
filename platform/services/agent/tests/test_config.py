@@ -12,4 +12,5 @@ def test_docs_root_points_at_repo_docs():
     from skipper import config
 
     assert config.AGENT_DOCS_ROOT.endswith("docs")
-    assert config.CLAUDE_MD.endswith("CLAUDE.md")
+    assert config.AGENT_KNOWLEDGE_ROOTS == config.AGENT_DOCS_ROOT
+    assert "design" not in config.AGENT_KNOWLEDGE_ROOTS

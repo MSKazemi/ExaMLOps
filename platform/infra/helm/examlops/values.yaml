@@ -1,5 +1,7 @@
 # ExaMLOps enterprise reference values (Phase 1 item 1.1).
-# Every tier is stateless + multi-replica; state lives in HA Postgres + distributed MinIO (below).
+# Stateful dependencies live in HA Postgres + distributed MinIO. The control-plane defaults to one
+# replica until its process-local coordination controls are fully externalized; enabling its HPA
+# before that integration is complete can duplicate commands and poller work.
 # NO container_name pins, NO hostPath, NO privileged — pods are schedulable + replaceable anywhere.
 
 global:
@@ -11,14 +13,17 @@ global:
 
 # ── shared secret (created out-of-band; NEVER templated with real values) ──────────────────────
 # Provide a Kubernetes Secret with these keys and reference it here. The chart never embeds secrets.
-existingSecret: examlops-secrets   # keys: CONTROL_PLANE_TOKEN, DASHBOARD_JWT_SECRET,
+existingSecret: examlops-secrets   # keys: CONTROL_PLANE_TOKEN, EXAMLOPS_POSTGRES_DSN,
+                                   #       AGENT_API_KEY, AGENT_POSTGRES_DSN,
+                                   #       one LLM credential,
+                                   #       DASHBOARD_JWT_SECRET,
                                    #       DASHBOARD_SECRET_KEY, DASHBOARD_ADMIN_PASSWORD,
                                    #       DASHBOARD_VIEWER_PASSWORD, EXAMLOPS_SECRETS_KEYS, DATABASE_URL
 
 # ── external managed state (referenced, not deployed by this chart) ────────────────────────────
 postgres:
   # Recommended: CloudNativePG `Cluster` CR (3 instances, sync replicas). See README. The app reads
-  # DATABASE_URL from existingSecret; this block documents the expected topology.
+  # EXAMLOPS_POSTGRES_DSN from existingSecret; DATABASE_URL may separately configure MLflow.
   host: examlops-pg-rw          # CloudNativePG read-write service
   readHost: examlops-pg-ro
   database: examlops
@@ -37,7 +42,9 @@ ingress:
 
 # ── control plane (the write API — must scale + survive host loss) ─────────────────────────────
 controlPlane:
-  replicaCount: 3
+  # Safe default while rate limits, idempotency, breaker state, and poller leadership are local.
+  # Raise this only after the distributed-coordination integration gates in the roadmap pass.
+  replicaCount: 1
   image:
     repository: examlops-control-plane
     tag: ""                      # defaults to .Chart.AppVersion
@@ -47,17 +54,18 @@ controlPlane:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 512Mi}
   autoscaling:
-    enabled: true
-    minReplicas: 3
+    enabled: false
+    minReplicas: 1
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
   pdb:
     enabled: true
     minAvailable: 2
   env:
-    # Coordination + admission are externalized so replicas don't double-fire (items 1.2/1.5).
-    EXAMLOPS_COORDINATOR: redis
-    EXAMLOPS_EVENT_PUBLISHER: nats
+    # Safe implemented defaults. Switch only after the selected external implementations are wired
+    # into the control-plane call paths and their endpoint variables are present in the Secret.
+    EXAMLOPS_COORDINATOR: db
+    EXAMLOPS_EVENT_PUBLISHER: log
   extraEnv: []
 
 dashboard:
@@ -81,6 +89,13 @@ agent:
     tag: ""
     pullPolicy: IfNotPresent
   port: 18004
+  # The chart owns only the control-plane/dashboard/agent tiers. Point these at the managed
+  # platform services available in the target namespace or network.
+  serviceUrls:
+    mlflow: http://mlflow:5000
+    rayServe: http://ray-serving:8001
+    prometheus: http://prometheus:9090
+  extraEnv: []
   resources:
     requests: {cpu: 100m, memory: 512Mi}
     limits: {cpu: "1", memory: 1Gi}

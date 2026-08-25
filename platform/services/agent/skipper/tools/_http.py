@@ -61,7 +61,7 @@ class DashboardClient:
 
     def _login(self) -> None:
         with httpx.Client(timeout=config.HTTP_TIMEOUT) as client:
-            resp = client.post(f"{self._base}/api/login", json={"password": self._password})
+            resp = client.post(f"{self._base}/api/auth/login", json={"password": self._password})
             resp.raise_for_status()
             self._token = resp.json()["token"]
 

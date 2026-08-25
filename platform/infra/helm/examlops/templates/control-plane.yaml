@@ -67,11 +67,11 @@ spec:
           resources:
             {{- toYaml .Values.controlPlane.resources | nindent 12 }}
           readinessProbe:
-            httpGet: {path: /health, port: http}
+            httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /health, port: http}
+            httpGet: {path: /livez, port: http}
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:

@@ -26,6 +26,7 @@ export interface CopilotResponse {
   hitl_required: boolean
   proposals: ActionProposal[]
   trace: AgentTraceStep[]
+  error_code?: 'agent_auth' | 'agent_response' | 'agent_timeout' | 'agent_unavailable' | 'agent_error'
   _partial?: string[]
 }
 
@@ -61,13 +62,12 @@ export function proposalGateLabel(p: ActionProposal): string {
 
 export function useCopilotAsk() {
   return useMutation({
-    mutationFn: (vars: { question: string; context: CopilotContext; session?: string }) =>
+    mutationFn: (vars: { question: string; context: CopilotContext }) =>
       apiFetch<CopilotResponse>('/api/v1/copilot/ask', {
         method: 'POST',
         body: JSON.stringify({
           question: vars.question,
           context: vars.context,
-          session: vars.session ?? 'dashboard-copilot',
         }),
       }),
   })

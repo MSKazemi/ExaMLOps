@@ -103,6 +103,5 @@ express your logic — never widen the sandbox to run richer code.
 
 Placement is the first non-finops domain to become programmable. The same mechanism is being extended
 to **drift** and **promotion** scoring, plus **policy-as-code** governance and a stable Python **SDK**
-— see the design in `design/adr/0076`–`0082` and the roadmap in
-`.claude/plans/programmable-mlops/`. The north-star (a policy-governed self-driving MLOps loop on
-sovereign HPC) is in `design/vision/futures/`.
+— see the design in `design/adr/0076`–`0082`. The north-star (a policy-governed
+self-driving MLOps loop on sovereign HPC) is in `design/vision/futures/`.

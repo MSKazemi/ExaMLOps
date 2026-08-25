@@ -131,7 +131,7 @@ Reject a pending model change — no training will run.
 
 Ask the Skipper agent a question in natural language.
 
-- `--session, -s` — Session id to preserve conversational context
+- `--session, -s` — Session id to preserve conversational context (default: isolated one-shot)
 - `--stream` — Print the answer as it is generated (default: on at a terminal, off when piped)
 
 ## `exa assets`
@@ -334,7 +334,10 @@ Build a structured model card from live data — gaps as 'not provided' (R3/R4).
 
 ## `exa chat`
 
-Interactive conversation with the Skipper agent (kq client)
+Interactive conversation with the Skipper agent
+
+- `--session, -s` — Server-side conversation ID to create or resume
+- `--stream` — Stream answer tokens as they arrive
 
 ## `exa compliance`
 

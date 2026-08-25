@@ -39,7 +39,7 @@ def test_request_json_unreachable():
 
 @respx.mock
 def test_dashboard_client_logs_in_then_calls():
-    respx.post("http://dash/api/login").mock(
+    respx.post("http://dash/api/auth/login").mock(
         return_value=httpx.Response(200, json={"token": "T", "role": "admin", "expires_at": "x"})
     )
     route = respx.get("http://dash/api/containers").mock(
@@ -53,7 +53,7 @@ def test_dashboard_client_logs_in_then_calls():
 
 @respx.mock
 def test_dashboard_client_reauths_on_401():
-    respx.post("http://dash/api/login").mock(
+    respx.post("http://dash/api/auth/login").mock(
         return_value=httpx.Response(200, json={"token": "T2", "role": "admin", "expires_at": "x"})
     )
     respx.get("http://dash/api/containers").mock(

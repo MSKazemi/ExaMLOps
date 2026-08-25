@@ -217,8 +217,8 @@ def build_trim_middleware():
     ⛔ Must use ``wrap_model_call``, NOT ``before_model``. A ``before_model`` hook
     returning ``{"llm_input_messages": ...}`` — the old hook's contract — is accepted
     and **silently ignored**: no error, no warning, and trimming just stops, so the
-    context grows unbounded until requests fail on token limits. Measured, not assumed;
-    see ``.claude/plans/langgraph-create-agent-migration.md``.
+    context grows unbounded until requests fail on token limits. This behavior is
+    covered by the middleware regression tests.
     """
     from langchain.agents.middleware import AgentMiddleware
 

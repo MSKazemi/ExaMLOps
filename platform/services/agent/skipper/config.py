@@ -49,13 +49,12 @@ CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
 DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")
 
-# Optional bearer token gating the OpenAI-compatible chat bridge (/v1/chat/completions,
-# consumed by the kube-q `kq` client). Unset ⇒ the bridge is open (local dev default).
+# Optional credential gating the OpenAI-compatible bridge, agent status/history APIs, and
+# WebSocket tools. Unset means open access on the loopback-only development default.
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 
 AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
-CLAUDE_MD = os.getenv("AGENT_CLAUDE_MD", str(_REPO_ROOT / "CLAUDE.md"))
 
 # Knowledge / Docs-RAG memory tier (T2, Phase 3, ADR 0101). Chunk+embed the docs so the agent
 # answers "how do I …?" from the actual documentation with citations, reusing the platform's
@@ -68,11 +67,12 @@ AGENT_KNOWLEDGE_ENABLED = os.getenv("AGENT_KNOWLEDGE_ENABLED", "true").strip().l
     "off",
 )
 AGENT_KNOWLEDGE_KB = os.getenv("AGENT_KNOWLEDGE_KB", "skipper-knowledge")
-# Semicolon-separated roots to ingest (docs, ADRs, CLI reference, CLAUDE.md). Absolute or
-# repo-relative. Only Markdown files are indexed.
+# Semicolon-separated public documentation roots to ingest. Absolute or repo-relative. Only
+# Markdown files are indexed. Private design notes and assistant working files are deliberately
+# excluded from the default knowledge surface.
 AGENT_KNOWLEDGE_ROOTS = os.getenv(
     "AGENT_KNOWLEDGE_ROOTS",
-    ";".join([str(_REPO_ROOT / "docs"), str(_REPO_ROOT / "design" / "adr")]),
+    str(_REPO_ROOT / "docs"),
 )
 AGENT_KNOWLEDGE_CHUNK_SIZE = int(os.getenv("AGENT_KNOWLEDGE_CHUNK_SIZE", "60"))
 AGENT_KNOWLEDGE_OVERLAP = int(os.getenv("AGENT_KNOWLEDGE_OVERLAP", "15"))

@@ -196,7 +196,7 @@ Honest status, so you can decide whether this fits your deployment:
   fixture-shaped, no engine errors). Porting those fixtures to the seam is a tracked step.
 - `exa data retention-prune --vacuum` and `exa doctor`'s DB checks are SQLite-specific.
 
-Progress and the remaining work are tracked in `.claude/plans/enterprise-readiness/05-POSTGRES-MIGRATION.md`.
+Progress and remaining public work are summarized in this guide and the linked architecture records.
 
 ## Backing it up
 

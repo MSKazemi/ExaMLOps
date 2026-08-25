@@ -15,13 +15,13 @@ there the whole point is one parseable object.
 
 from __future__ import annotations
 
-import os
 import sys
+import uuid
 
 import typer
 
 from examlops.cli import _client, _output
-from examlops.cli._config import load_config
+from examlops.cli._config import load_config, scoped_agent_session
 
 _EXAMPLES = (
     "Examples:\n\n"
@@ -40,8 +40,11 @@ def ask(
     question: list[str] = typer.Argument(
         ..., help="Your question in plain English (quote it or pass as words)"
     ),
-    session: str = typer.Option(
-        "exa-cli", "--session", "-s", help="Session id to preserve conversational context"
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Session id to preserve conversational context (default: isolated one-shot)",
     ),
     stream: bool | None = typer.Option(
         None,
@@ -55,8 +58,9 @@ def ask(
         _output.error("Empty question.", hint='Try: exa ask "which models are in production?"')
         return
 
+    session = session or f"exa-ask-{uuid.uuid4().hex[:12]}"
     cfg = load_config()
-    token = os.getenv("AGENT_API_KEY", "")
+    token = cfg.agent_token
     # Auto: stream at a terminal, not when the caller is going to parse us. `--json` must stay a
     # single object, and a piped consumer generally wants the whole answer at once.
     if stream is None:
@@ -65,7 +69,7 @@ def ask(
         "model": "examlops-agent",
         "messages": [{"role": "user", "content": text}],
         "stream": stream,
-        "user": session,
+        "user": scoped_agent_session(session),
     }
     url = f"{cfg.agent_url.rstrip('/')}/v1/chat/completions"
 

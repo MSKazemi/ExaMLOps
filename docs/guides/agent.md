@@ -2,10 +2,11 @@
 
 Skipper — the ExaMLOps management agent — lets operators manage, monitor, and control the ExaMLOps platform through natural language. It is built on **LangGraph's ReAct loop** (`langgraph.prebuilt.create_react_agent`) and exposes **45 tools across 10 groups** that query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, inspect drift and audit history, set traffic splits, promote versions, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, plus the shared `platform_db` SQLite store, requiring no additional services of its own.
 
-It runs in two modes:
+Operators normally use Skipper through the native CLI, backed by the agent server:
 
-- **CLI** — an interactive REPL (`make skipper`) with slash-commands, write-confirmation prompts, and persistent conversation threads.
+- **Native client** — `exa chat`, with streaming, session management, and explicit write approval.
 - **HTTP server** — a FastAPI service (`agent_server.py`, default port **18004**) serving a streaming WebSocket chat at `/ws/chat/{thread_id}`, a REST history/info API at `/api/*`, and an embedded HTML chat UI at `/`.
+- **Developer REPL** — `make skipper` runs the agent process directly for local debugging.
 
 ## Architecture
 
@@ -101,11 +102,12 @@ At least one ExaMLOps service must be running. The agent gracefully reports when
 ## Quick Start
 
 ```bash
-ollama-tunnel start   # ensure Omega tunnel is up (if using tunnel; skip for local ollama)
-make skipper            # reads AGENT_OLLAMA_URL + AGENT_MODEL from .env automatically
+ollama-tunnel start       # if using a tunnel; skip for local Ollama
+make skipper-server      # start the agent service
+exa chat                 # open the native interactive client
 ```
 
-The agent prints its startup banner and drops into a REPL:
+`exa chat` prints the resolved server and model status, then opens the Skipper prompt:
 
 ```
 Skipper · ExaMLOps agent  (model: llama3.1:8b  ·  ollama: http://localhost:11436)
@@ -309,9 +311,10 @@ The agent exposes **45 tools across 10 groups**. The LLM selects the appropriate
 | **docs/knowledge** | `search_docs`, `read_doc`, `list_docs`, `get_howto` | Search the repo's `docs/` directory, read a specific doc file, list all available docs, or look up a how-to answer grounded in the documentation. `search_docs` takes a whole question: the literal phrase is tried first, and on a miss the query degrades to its terms (stop-words dropped, hyphenated compounds split), ranked by how many distinct terms each file matches. |
 | **platform_ops** | `compare_model_versions`, `get_model_lineage`, `get_drift_status`, `get_input_drift_status`, `query_audit_log`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `validate_model_serving`, `get_platform_summary`, `diagnose_platform` | Operational observability and lifecycle control (Phase 19/21/22). Compare metric/param deltas between versions; trace the pipeline→dataset→model lineage; read prediction-drift and input-embedding-drift status (CRITICAL/WARNING/OK); query the platform audit log; set per-alias traffic percentages; metric-gate a promotion; fire drift-based auto-retrains (cooldown-aware); smoke-test a model against a latency SLA; and produce a quick `get_platform_summary` or a full prioritized `diagnose_platform` report. `set_traffic_split`, `promote_model`, and `trigger_auto_retrain` are write tools requiring confirmation. |
 
-## Slash Commands
+## Direct Developer REPL Commands
 
-Type a slash command at the `skipper >` prompt instead of a question:
+These commands belong to the lower-level `make skipper` REPL. The first-party `exa chat` commands
+are listed under [Native `exa chat` client](#native-exa-chat-client).
 
 | Command | Description |
 |---|---|
@@ -446,7 +449,7 @@ python -m skipper.memory_admin stats
 Besides the CLI, the agent ships a FastAPI server (`agent_server.py`) that serves the same ReAct graph over HTTP — useful for embedding the agent in a browser or driving it programmatically.
 
 ```bash
-python platform/services/agent/agent_server.py     # binds 0.0.0.0:18004 (AGENT_SERVER_PORT)
+python platform/services/agent/agent_server.py     # binds 127.0.0.1:18004 by default
 # or:
 uvicorn skipper.server:app --port 18004
 ```
@@ -458,60 +461,53 @@ uvicorn skipper.server:app --port 18004
 | Thread list | `GET /api/threads` | All saved thread IDs in the checkpoint store. |
 | Thread history | `GET /api/threads/{thread_id}/history` | Messages for a given thread. |
 | Streaming chat | `WS /ws/chat/{thread_id}` | WebSocket chat. Server streams `{"type": "token"}` chunks, `{"type": "tool", "name": ...}` events, `{"type": "interrupt", "payload": ...}` for the write-confirmation gate, and `{"type": "done"}` to end a turn. |
-| Chat completions | `POST /v1/chat/completions` | OpenAI-compatible bridge (SSE when `stream=true`, JSON otherwise) consumed by the [kube-q](https://github.com/MSKazemi/kube_q) `kq` client. Conversation state is keyed by the `X-Session-ID` header → LangGraph `thread_id`. |
+| Chat completions | `POST /v1/chat/completions` | Optional OpenAI-compatible integration endpoint (SSE when `stream=true`, JSON otherwise). Conversation state is keyed by the `X-Session-ID` header → LangGraph `thread_id`. |
 | Health | `GET /healthz` | Liveness probe for the bridge (`{"status": "ok"}`). |
 
 The WebSocket honours the same write-confirmation gate as the CLI: on an `interrupt` event the client replies with an affirmative/negative decision, which the server feeds back into the graph as a LangGraph `Command` to resume or cancel the pending write.
 
-### kube-q (`kq`) terminal client
+### Native `exa chat` client
 
-The `POST /v1/chat/completions` + `GET /healthz` bridge lets the general-purpose
-[kube-q](https://github.com/MSKazemi/kube_q) client (`kq`) drive the ExaMLOps
-agent — bringing session history, full-text search, conversation branching,
-token/cost tracking, and HITL approvals to the terminal, **without forking**.
-
-`kq` is a declared dependency, not a suggestion: install it with the **`chat` extra**, which is
-also part of `[dev]`, so a development checkout has a working `exa chat` after `make install-dev`.
+`exa chat` is the first-party interactive client for Skipper. It resolves the agent URL from the
+active ExaMLOps context, checks the backend before opening the prompt, streams answers and tool
+activity, and keeps conversation state under an explicit session ID.
 
 ```bash
-uv pip install 'examlops[chat]'   # the kq client (kube-q, unforked from PyPI)
-
-make skipper-server          # run the agent + bridge (port 18004)
-exa chat                     # ← the normal way in: resolves the agent URL from the CLI's config
-exa -c lxp chat              #   …so another environment needs no exported variable
-exa chat -- --resume last    #   anything after `--` goes straight through to kq
-
-make skipper-chat            # equivalent, but pinned to localhost
-kq --url http://localhost:18004 --query "which models are in production?" --output plain
+make skipper-server                 # run Skipper on port 18004
+exa chat                            # start a new interactive session
+exa chat --session incident-42      # open or continue a named session
+exa -c staging chat --session triage
 ```
 
-`exa chat` is a launcher, deliberately — ExaMLOps adapts *to* `kq` through the bridge rather than
-writing a second REPL, so session history, search, branching, HITL approval and cost accounting all
-arrive for the cost of resolving one URL. What it adds over `make skipper-chat` is the CLI's own
-configuration: context, agent URL, and `AGENT_API_KEY` forwarding. It launches `kq`; it does not
-bundle it, and if the client is absent it says which command installs it.
+The interactive commands are:
 
-Two things the launcher does that `kq` on its own cannot:
+| Command | Purpose |
+|---|---|
+| `/help` | Show the client commands. |
+| `/status` | Show the current session, agent URL, backend, and model status. |
+| `/sessions` | List saved Skipper sessions. |
+| `/history` | Show the current session's conversation history. |
+| `/new` | Start a fresh session without deleting earlier sessions. |
+| `/resume ID` | Switch to the saved session identified by `ID`. |
+| `/approve` | Approve the pending write action. |
+| `/deny` | Reject the pending write action. |
+| `/quit` | Exit the client; the session remains resumable. |
 
-- **It checks the agent is there first.** `kq` answers a refused connection by opening its REPL in
-  offline mode and retrying three times per message, so an agent that was never started costs you a
-  banner, a question and four timeouts before you learn nothing is listening. `exa chat` probes
-  `/api/info` and, if the agent is down, names it and the command that starts it instead of opening
-  the client.
-- **It dresses the client as ExaMLOps.** Unforked, `kq` introduces itself as Kube-Q, *"your AI
-  co-pilot for Kubernetes"* — right for the client, wrong for an operator asking Skipper about
-  drift and HPC jobs. The launcher passes `--no-banner --agent-name Skipper` and prints its own
-  header naming the agent URL and the **backend that actually answered**, which is the fact worth
-  seeing before you trust a reply. Anything you pass after `--` wins, so
-  `exa chat -- --agent-name X` still does what it says.
+Write tools pause before execution. Review the proposed action, then use `/approve` or `/deny`.
+For a single scriptable question, use `exa ask`.
 
-HITL: write tools trip a LangGraph `interrupt()`; `kq` shows an approval panel and
-switches its prompt to `HITL>`. `/approve` and `/deny` are relayed to the graph as
-`Command(resume=…)`. Set `AGENT_API_KEY` on the server to require a bearer token
-**on `/v1/chat/completions`** (pass it to `kq --api-key` / `KUBE_Q_API_KEY`). It does not gate the
-WebSocket chat or the thread-history endpoints, and `AGENT_SERVER_HOST` defaults to `0.0.0.0` — so
-a key alone does not make the agent safe to expose; bind loopback and tunnel. See
-`platform/services/agent/kube-q/README.md` for the profile and full workflow.
+### Optional kube-q compatibility
+
+Skipper also exposes `POST /v1/chat/completions` and `GET /healthz` for OpenAI-compatible clients.
+The unforked [kube-q](https://github.com/MSKazemi/kube_q) client can use this bridge for basic chat,
+streaming, session IDs, and HITL approval. This is a compatibility surface, not the canonical
+ExaMLOps client, and kube-q commands that require Kubernetes context or additional backend endpoints
+are not implemented by Skipper. See `platform/services/agent/kube-q/README.md` for the supported
+workflow.
+
+Set `AGENT_API_KEY` to protect completions, status, conversation history, and WebSocket tools. The
+server defaults to `127.0.0.1`; deliberate network exposure should use TLS. The built-in browser
+exchanges the key for an HttpOnly, same-site session cookie.
 
 ## Environment Variables
 
@@ -527,7 +523,7 @@ a key alone does not make the agent safe to expose; bind loopback and tunnel. Se
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids 30–60 s reloads on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | `false` disables thinking models' extra reasoning tokens (snappier); `true` forces it on; `default`/`none` leaves the model default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
-| `AGENT_API_KEY` | unset | Optional bearer token gating `POST /v1/chat/completions` (the kube-q bridge). Unset ⇒ open (local dev). When set, clients must send `Authorization: Bearer <key>` (e.g. `kq --api-key <key>`). |
+| `AGENT_API_KEY` | unset | Optional credential protecting completions, status, history, and WebSocket tools. Compatible clients send `Authorization: Bearer <key>`; the browser uses a session cookie. |
 | `AGENT_DB` | `./agent_memory.db` | Path to the SQLite file used by the LangGraph `SqliteSaver` checkpointer for persistent conversation threads. |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs tools (`search_docs`, `read_doc`, `list_docs`, `get_howto`) search. Defaults to the `docs/` folder at repo root. |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | Shared with the rest of the stack — controls where registry tools query MLflow. |

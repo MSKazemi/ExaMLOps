@@ -23,8 +23,7 @@
 #   edit the host ruleset. Requires only Docker access — no host sudo.
 #
 #   This is a STOPGAP. The durable fix is a host-level systemd unit owned by the
-#   sysadmin (see .claude/plans/sysadmin-email-lxp-docker-egress.txt). Keep this
-#   running until that lands.
+#   sysadmin. Keep this running until that lands.
 # ──────────────────────────────────────────────────────────────────────────────
 set -u
 

@@ -67,10 +67,9 @@ docker run --rm --privileged --network=host alpine sh -c \
 ## This is a stopgap
 
 The durable fix is a host-level **systemd one-shot** (ordered after
-`firewalld.service` and `docker.service`) owned by the cluster sysadmin. The
-request, with commands and verification, is drafted at
-`.claude/plans/sysadmin-email-lxp-docker-egress.txt`. Keep this sidecar running
-until that unit is installed; once it is, `make firewall-fix-down` and remove it.
+`firewalld.service` and `docker.service`) owned by the cluster sysadmin. Keep
+this sidecar running until that unit is installed; once it is, run
+`make firewall-fix-down` and remove it.
 
 > ⚠️ Privileged + host-network container. Review before deploying. If you do not
 > want this in the public mirror, exclude it by adding `firewall-fix/` to `.dualgit/private.deny`.

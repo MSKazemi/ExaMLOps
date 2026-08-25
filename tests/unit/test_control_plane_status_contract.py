@@ -34,6 +34,9 @@ def cp_client(tmp_path, monkeypatch):
     import app as cp
     from fastapi.testclient import TestClient
 
+    # The module can already be imported by another test file, so patch the resolved setting too.
+    monkeypatch.setattr(cp, "CONTROL_PLANE_DB", str(tmp_path / "control-plane.db"))
+
     # No sockets. Peer reachability is not what this file is about, and a real ping would measure
     # whichever containers happen to run on the developer's machine. `platform_status()` imports
     # `urllib.request` inside the function, so the patch has to be on the module itself — and note

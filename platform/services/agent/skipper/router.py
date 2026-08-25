@@ -103,9 +103,10 @@ def choose(text: str) -> str:
     scores = score(low)
     if _is_help_intent(low):
         return "helper"
-    best = max(scores, key=lambda n: scores[n], default="")
-    if best and scores[best] > 0:
-        return best
+    best_score = max(scores.values(), default=0)
+    winners = [name for name, value in scores.items() if value == best_score and value > 0]
+    if len(winners) == 1:
+        return winners[0]
     return skills.GENERAL.name
 
 

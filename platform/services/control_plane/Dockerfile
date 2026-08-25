@@ -13,6 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 # during validation pulls in scikit-learn etc., so install the full project.
 COPY pipelines /app/pipelines
 COPY modelzoo /app/modelzoo
+COPY platform/cli /app/platform/cli
 COPY platform/services/control_plane /app/platform/services/control_plane
 # ADR 0094: concrete model YAML lives in the use-case pack, not pipelines/models. The control
 # plane resolves the registry via resolve_models_dir() → <repo>/usecases/seanergy/pack.toml, so
@@ -22,6 +23,7 @@ COPY usecases /app/usecases
 
 RUN pip install --upgrade pip \
     && pip install -e /app/pipelines \
+    && pip install -e '/app/platform/cli[postgres]' \
     && pip install fastapi uvicorn[standard] \
        opentelemetry-distro==0.63b1 \
        opentelemetry-exporter-otlp-proto-grpc==1.42.1 \

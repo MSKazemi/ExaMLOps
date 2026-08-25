@@ -493,8 +493,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `EXAMLOPS_DB_BACKEND`/`EXAMLOPS_POSTGRES_DSN`, `EXAMLOPS_COORDINATOR`, the autopilot kill-switch,
   the secrets keyring, the WORM anchor, OIDC — and `EXAMLOPS_ACTOR`, which stamps the actor into
   every audit event and appeared only inside *another* row's default. All of those are documented
-  in the repository's own `CLAUDE.md`, which is the worst arrangement: the knowledge exists, so
-  nobody notices it is unpublished. 27 variables documented in a new
+  only in private maintainer notes, which meant nobody noticed it was unpublished. 27 variables
+  are now documented in a new
   *Platform datastore, coordination & governance* section, every default read from source.
 
 - The reference also named `JUPYTERHUB_PORT`, with a default of `8888`. Nothing reads it; the Hub
@@ -619,8 +619,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `modelzoo/`, whose Makefile is **empty**; the working route is
   `poetry run python scripts/create_sample_data.py`.
 
-- **The lint scope is now enforced to be the same in all five places it is written.** CLAUDE.md
-  names this as an invariant that "must agree" and nothing checked it. Disagreement fails silently
+- **The lint scope is now enforced to be the same in all five places it is written.** Repository
+  policy names this as an invariant that "must agree" and nothing checked it. Disagreement fails silently
   and in one direction — the local gate passes over a narrower tree than CI inspects, so the first
   sign is a red pipeline after a push. The guard compares the scope in the Makefile, `.gitlab-ci.yml`
   and the GitHub workflow, and refuses to pass when a file yields no scope at all (a scan that finds
@@ -838,7 +838,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 - **The documentation site shipped 21 dead links, and the build never said so.** Twenty
   `guides/dashboard-*.md` pages linked their design record as `../../design/adr/*.md` — a path
-  outside `docs_dir` that is never published — and one tutorial linked `../../CLAUDE.md`. Each
+  outside `docs_dir` that is never published — and one tutorial linked a private maintainer file. Each
   page already named its *spec* as an unlinked path on the same line, so the fix follows the
   convention the files set themselves: the ADR is named, not linked. The tutorial's local-dev
   recipe now points at a published section (**Running it without Docker**, new in the dashboard
@@ -930,7 +930,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - **The CLI reference now cannot drift from the CLI.** `docs/reference/cli-commands-guide.md`
   opens by claiming to document every `exa` command — a claim that was true on the day it was
   written and nowhere enforced since. A diff against the live Typer tree found `exa eval
-  operator-qa` documented nowhere, and two stale counts (the guide said v0.46.0, `CLAUDE.md` said
+  operator-qa` documented nowhere, and two stale counts (the guide said v0.46.0, internal notes said
   "~345 commands"; the tree has 365 leaves under 62 groups). The row is written and the counts are
   corrected, but the fix is `tests/unit/test_cli_guide_coverage.py`: it walks the live tree and
   fails when a command exists that the guide has never heard of, and fails the other way when the
@@ -1754,7 +1754,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   ten-package `pip install` list while `platform/services/agent/requirements.txt` was the pinned
   source of truth, and the two had already diverged (the list was missing `httpx` and asked for
   `uvicorn` rather than `uvicorn[standard]`). It now installs from the requirements file.
-- **`.github/workflows/ci.yml` was documented as three jobs it never had.** `CLAUDE.md` described
+- **`.github/workflows/ci.yml` was documented as three jobs it never had.** Earlier maintainer notes described
   `modelzoo`, `infra` and `examlops` running in parallel there; the workflow contained only
   `examlops` (the `make ci-modelzoo`/`ci-infra` targets are real, but mirror the **GitLab** jobs).
   Corrected rather than quietly rewritten, so the discrepancy is visible.
@@ -2809,8 +2809,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   tests: `lib/nav.test.ts` (config integrity + `isNavItemActive`/`activeSectionId`) and
   `components/Layout.test.tsx` (grouped render, collapse, active-group-open, admin gating). Frontend
   gates green: **307 vitest** (61→62 files), tsc + eslint clean on changed files. ADR 0097 records
-  the information architecture + console-meta-framework decisions; the console↔CLI↔router mapping
-  lives in `.claude/plans/dashboard-enterprise-rebuild/01-information-architecture.md`.
+  the information architecture + console-meta-framework decisions.
 
 ### Fixed
 
@@ -2855,8 +2854,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `GatewayClient.chat`, so routing generation through it is cost-accounted for free. Additive and
   backward-compatible (echo defaults unchanged). 13 GWT-backed unit tests
   (`tests/unit/test_enterprise_llm_serving_a1.py`); ruff/mypy clean. A2–A4 (real GPU quant + eval-gate,
-  multi-node, enterprise wrap) and Track B (KServe) remain infra-gated — see
-  `.claude/plans/enterprise-llm-serving/_STATUS.md`.
+  multi-node, enterprise wrap) and Track B (KServe) remain infra-gated.
 - **feat(serving): Enterprise LLM Serving — A2 partial: honest CPU quantization (R-A4).**
   `examlops.engines.quantize_model` now emits a clear `RuntimeWarning` when no CUDA GPU is
   reachable (new `_gpu_available()` helper: torch present + a visible device), stating that it
@@ -3911,10 +3909,10 @@ tenant claim) into one key. Additive · test-backed (GWT) · back-compat preserv
 - **feat(projects): dashboard** — `routers/projects.py` (`/api/v1/projects` list + `/{name}` anatomy
   + admin writes), `PROJECT_MANAGE` capability, `projectsConsole` flag, and a React Projects console
   (`Projects.tsx`/`ProjectDetail.tsx` + `lib/projects.ts`).
-- **docs(projects):** guide `docs/guides/projects-workspaces.md`; CLAUDE.md phase-41 row + commands;
+- **docs(projects):** guide `docs/guides/projects-workspaces.md` and CLI commands;
   `docs/reference/commands.md` Projects section. Design set: SoA dossier
   `design/vision/library/rhoai-soa-projects.md`, Vision Card (GO 24/25), ADRs **0086–0090**, specs
-  **P1–P5**, plan `.claude/plans/projects-workspace/`. Roadmap: P2 Named Connections · P3
+  **P1–P5**. Roadmap: P2 Named Connections · P3
   project-scoped serving/pipelines · P4 project FinOps/monitoring · P5 workbenches.
 
 ## [0.33.0] — 2026-07-16
@@ -4086,8 +4084,7 @@ lives in additive `platform_db` tables.
   surfaces every domain's providers (builtin/plugin/config + load status). A cluster's declared scalar
   `capabilities` (e.g. `carbon_intensity`) pass through to formulas. Graceful degradation: a broken
   provider falls back to `least-loaded`. Guide: `docs/guides/programmable-mlops.md`; design:
-  `design/adr/0076`–`0082`, `design/vision/{ideas,library,futures,specs}/`; plan:
-  `.claude/plans/programmable-mlops/`.
+  `design/adr/0076`–`0082`, `design/vision/{ideas,library,futures,specs}/`.
 
 - **HPC fleet discovery — auto-detect the scheduler and enumerate resources (Phase 35a, read-only).**
   New `exa hpc` command group answers "which scheduler runs here, what nodes/GPUs does it have, and are
@@ -4101,8 +4098,7 @@ lives in additive `platform_db` tables.
   `sinfo`/GRES; a real scheduler reporting count-only GPUs is enriched with device detail from `nvidia-smi`.
   `--save --cluster <name>` persists the inventory to the new additive `hpc_nodes` table
   (`record_node_snapshot`/`get_node_snapshot`, latest-wins). Discovery only *proposes* — turning a cluster
-  into one exaMLOps will schedule on is the sysadmin-approval step (Phase 35b). Design/plan in
-  `.claude/plans/hpc-fleet-integration/`.
+  into one exaMLOps will schedule on is the sysadmin-approval step (Phase 35b).
 - **HPC cluster registry + sysadmin-approval-gated connect (Phase 35b).** A discovered cluster is now
   *registered* — never auto-connected. `exa hpc connect <host> --name <n>` probes the host and writes a
   cluster to the registry in state **PENDING**; `exa hpc clusters` lists all clusters and their state; and
@@ -4137,7 +4133,7 @@ lives in additive `platform_db` tables.
   (registered only under `EXAMLOPS_MCP_ALLOW_WRITES`) — so an agent can answer "which clusters are online,
   how many free GPUs, where should this run?" while approval stays human-gated. **Phase 35 (HPC Fleet)
   complete: discover → approve → place → account, across SLURM/Flux/unmanaged, pluggable for the future.**
-  Guide: `docs/guides/hpc-fleet.md`; design/impl log `.claude/plans/hpc-fleet-integration/`.
+  Guide: `docs/guides/hpc-fleet.md`.
 
 - **Pluggable calculation providers — carbon & FinOps become swappable (ADR 0074).** A new general,
   reusable substrate `examlops.providers` (Strategy/Provider pattern + Python entry-point plugins +
@@ -4152,8 +4148,8 @@ lives in additive `platform_db` tables.
   `carbon estimate`/`record`. Resolution: `--provider` → `EXAMLOPS_CARBON_PROVIDER` → config → default;
   bad plugin/config degrades to the default, never crashes. Two documented trust tiers (Python plugin =
   trusted; YAML expression = sandboxed). Modelled on the Green Software Foundation Impact Framework.
-  `simpleeval` added as the optional `[finops]` extra (lazy). New guide `docs/guides/finops-providers.md`;
-  design in `.claude/plans/finops-plugins/`. The substrate is domain-agnostic — reused next for cost.
+  `simpleeval` added as the optional `[finops]` extra (lazy). New guide `docs/guides/finops-providers.md`.
+  The substrate is domain-agnostic — reused next for cost.
   Provenance: `carbon_records` gains an additive `provider` column (migration-guarded); `exa finops carbon
   record` persists which provider produced a figure, and the dashboard FinOps console reports the
   provider(s) used and surfaces the active provider's own methodology + uncertainty. Example plugin under
@@ -4599,7 +4595,7 @@ lives in additive `platform_db` tables.
 - **Dashboard next-gen initiative — design complete + implementation started.** A 24-feature program
   to make the operator dashboard exascale-ready. Design phase distilled 200 aspects into a roadmap,
   target-state architecture, and 24 accepted ADRs (`design/adr/0050`–`0073`) + specs
-  (`design/vision/specs/F1`–`F25`); see `.claude/plans/dashboard-nextgen/`.
+  (`design/vision/specs/F1`–`F25`).
   - **Design-system substrate (F3 / ADR 0051):** `lib/status.ts` — colourblind-safe status/severity
     semantics (`HealthStatus`/`Severity` → `{label, icon, theme-aware colorVar}`, `statusMeta()`,
     `normalizeHealth()`); `ui/status-pill.tsx` `<StatusPill>` pairs colour with an icon **and** a text
@@ -4610,8 +4606,7 @@ lives in additive `platform_db` tables.
   - Additive frontend-only; 17 new dashboard tests (green). Adoption across the 13 existing pages is
     the next step.
 - **`exa` CLI next-gen overhaul — agent-native surface (Phases N1–N7 + N1.1/N4.1).** Turns the
-  operator CLI into a futuristic, agent-native, extensible platform surface. See ADR 0045 and
-  `.claude/plans/exa-cli-nextgen/`.
+  operator CLI into a futuristic, agent-native, extensible platform surface. See ADR 0045.
   - **MCP + Agent-to-Agent (N1/N1.1):** new `examlops.mcp` package exposes the platform to LLM
     agents and MCP clients, reusing the CLI's own `_client`/`platform_db` code paths (single source
     of truth). `exa mcp serve` (FastMCP, stdio+http), `exa mcp tools`, `exa mcp resources`,
@@ -4973,4 +4968,4 @@ lives in additive `platform_db` tables.
 
 ## [0.20.0] — earlier
 
-Phase 0–21 shipped. See `CLAUDE.md` Phase rollout table for scope per phase.
+Phase 0–21 shipped; later entries provide the public rollout record.

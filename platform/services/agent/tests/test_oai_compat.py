@@ -1,4 +1,4 @@
-"""Tests for the OpenAI-compatible chat bridge consumed by kube-q (`kq`)."""
+"""Tests for the OpenAI-compatible bridge used by ExaMLOps chat clients."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessageChunk, SystemMessage, ToolMessage
 
 
 def _fake_graph(stream_items=None, tasks=None):
@@ -35,16 +35,23 @@ def make_client():
     """Return a factory that builds a TestClient wired to a given fake graph."""
     from skipper import server as srv
 
+    patchers = []
+
     def _factory(graph):
         srv._graph = None
+        srv._readonly_graph = None
         srv._backend_info = {}
         cm = patch.object(srv, "_get_graph", return_value=graph)
+        readonly_cm = patch.object(srv, "_get_readonly_graph", return_value=graph)
         cm.start()
+        readonly_cm.start()
+        patchers.extend((cm, readonly_cm))
         client = TestClient(srv.app)
-        client._patch_cm = cm  # keep a handle so we can stop it
         return client
 
     yield _factory
+    for patcher in reversed(patchers):
+        patcher.stop()
 
 
 def _sse_events(text: str) -> list[dict]:
@@ -164,6 +171,79 @@ def test_non_stream_returns_message(make_client):
     assert data["object"] == "chat.completion"
     assert data["choices"][0]["message"]["content"] == "Answer text"
     assert data["choices"][0]["hitl_required"] is False
+
+
+def test_read_only_request_uses_isolated_checkpoint_namespace(make_client):
+    graph = _fake_graph(stream_items=[(AIMessageChunk(content="safe"), {})])
+    client = make_client(graph)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "status"}],
+            "user": "dashboard-request",
+            "metadata": {"examlops_read_only": True},
+        },
+    )
+    assert response.status_code == 200
+    call_cfg = graph.stream.call_args[0][1]
+    assert call_cfg == {"configurable": {"thread_id": "readonly:dashboard-request"}}
+
+
+def test_system_context_reaches_the_graph_instead_of_being_discarded(make_client):
+    graph = _fake_graph(stream_items=[(AIMessageChunk(content="grounded"), {})])
+    client = make_client(graph)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {"role": "system", "content": "UNTRUSTED page context; propose only"},
+                {"role": "user", "content": "What should I do?"},
+            ],
+            "stream": False,
+        },
+    )
+    assert response.status_code == 200
+    supplied = graph.stream.call_args[0][0]["messages"]
+    assert isinstance(supplied[0], SystemMessage)
+    assert "propose only" in supplied[0].content
+    assert supplied[-1].content == "What should I do?"
+
+
+@pytest.mark.parametrize("messages", ([], [{"role": "assistant", "content": "no user"}], ["x"]))
+def test_invalid_or_userless_message_arrays_are_rejected(make_client, messages):
+    client = make_client(_fake_graph())
+    response = client.post("/v1/chat/completions", json={"messages": messages, "stream": False})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("session", ("contains spaces", "../private", "x" * 129, 42))
+def test_invalid_session_ids_are_rejected(make_client, session):
+    client = make_client(_fake_graph())
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "status"}], "user": session},
+    )
+    assert response.status_code == 422
+
+
+def test_non_stream_response_includes_sanitized_tool_trace(make_client):
+    graph = _fake_graph(
+        stream_items=[
+            (
+                ToolMessage(content="sensitive result", name="platform_health", tool_call_id="t1"),
+                {},
+            ),
+            (AIMessageChunk(content="healthy"), {}),
+        ]
+    )
+    client = make_client(graph)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "status"}], "stream": False},
+    )
+    trace = response.json()["choices"][0]["trace"]
+    assert trace == [{"kind": "tool", "name": "platform_health", "detail": "completed"}]
+    assert "sensitive result" not in str(trace)
 
 
 # ── auth gate ──────────────────────────────────────────────────────────────────

@@ -239,6 +239,64 @@ services:
       timeout: 5s
       retries: 10
 
+  # Skipper agent — serves the OpenAI-compatible endpoint used by the dashboard Copilot.
+  # `localhost` inside the dashboard container points back to that container, so the BFF
+  # must use this service name instead.
+  agent:
+    build:
+      context: ../../..
+      dockerfile: platform/services/agent/Dockerfile
+      network: host
+    image: examlops-agent
+    container_name: examlops-agent
+    mem_limit: ${AGENT_MEM_LIMIT:-2g}
+    environment:
+      AGENT_SERVER_HOST: 0.0.0.0
+      AGENT_SERVER_PORT: "18004"
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-llama3.1:8b}
+      # Do not reuse the host CLI's localhost URL inside a container. Override this only when
+      # Compose should reach an Ollama server somewhere other than the Docker host.
+      AGENT_OLLAMA_URL: ${AGENT_CONTAINER_OLLAMA_URL:-http://host.docker.internal:11436}
+      AGENT_OLLAMA_KEEP_ALIVE: ${AGENT_OLLAMA_KEEP_ALIVE:-30m}
+      AGENT_OLLAMA_REASONING: ${AGENT_OLLAMA_REASONING:-false}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-5.5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RAY_SERVE_URL: http://ray-serving:8001
+      PROMETHEUS_URL: http://prometheus:9090
+      CONTROL_PLANE_URL: http://control-plane:8002
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      DASHBOARD_URL: http://dashboard:8099
+      DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-}
+      PLATFORM_DB: /data/platform.db
+      AGENT_DB: /data/agent_memory.db
+      AGENT_MEMORY_DB: /data/skipper_memory.db
+      AGENT_MEMORY_REVIEW_DB: /data/skipper_review.db
+      AGENT_DOCS_ROOT: /app/docs
+      AGENT_KNOWLEDGE_ROOTS: /app/docs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:18004:18004"
+    volumes:
+      - agent_data:/data
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:18004/healthz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   # ── Optional monitoring stack (start with: make monitoring-up) ─────────────
   # Run under the "monitoring" profile — not started by dev-up.
   # Use on a laptop only when you need metrics; stop with make monitoring-down.
@@ -417,6 +475,8 @@ services:
       DASHBOARD_SECRET_KEY:      ${DASHBOARD_SECRET_KEY:?must be set in .env}
       DASHBOARD_PORT: "8099"
       CONTROL_PLANE_URL: http://control-plane:8002
+      AGENT_URL: http://agent:18004
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
       PUBLIC_CONTROL_PLANE_URL: http://${PUBLIC_HOST:-localhost}:18002
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -471,6 +531,8 @@ services:
       postgres:
         condition: service_healthy
       control-plane:
+        condition: service_healthy
+      agent:
         condition: service_healthy
       docker-socket-proxy:
         condition: service_started
@@ -688,6 +750,7 @@ volumes:
   tempo_data:
   jupyter_hub_data:
   control_plane_data:
+  agent_data:
   backups_data:
 
 networks:

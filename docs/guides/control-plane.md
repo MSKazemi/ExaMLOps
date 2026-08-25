@@ -1,12 +1,17 @@
 # Control Plane
 
-`platform/services/control_plane/app.py` is a thin FastAPI gateway in front of Prefect. It lets clients (and the synthetic dataplane simulator) request a retraining run for a registered model **without holding Prefect credentials themselves**. Phase 4 of the master rollout.
+`platform/services/control_plane/app.py` is the FastAPI command and approval gateway in front of
+Prefect. It lets clients request retraining without holding Prefect credentials themselves. Compose
+uses SQLite for local development; production can select the shared Postgres storage adapter.
 
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/health` | none | Liveness + Prefect URL + auth state + registered models + pending approval count |
+| GET | `/livez` | none | Process liveness for restart decisions; always 200 while the server can respond |
+| GET | `/readyz` | none | Traffic readiness; returns 503 when startup checks or the approval store are unhealthy |
+| GET | `/ready` | none | Compatibility alias for the original liveness endpoint |
+| GET | `/health` | none | Diagnostic verdict, dependencies, pending approvals, and runtime scaling capabilities |
 | GET | `/status` | none | Concurrent peer pings + pending approval count. Returns **exactly** `services` (`control_plane`/`mlflow`/`prefect`/`ray_serve`/`dashboard`, each `{ok, url}`) and `pending_approvals`. It carries **no** model list — `exa status` reads production models from the MLflow registry instead |
 | GET | `/models` | none | List `model_name → datasets` known to the auto-discovery registry |
 | POST | `/retrain` | **Bearer** | Validate + schedule a Prefect flow run |
@@ -19,7 +24,7 @@
 | POST | `/webhooks/modelzoo/github` | HMAC header | GitHub push webhook — same semantics as GitLab |
 | GET | `/modelzoo/status` | none | Per-model freshness: `current` / `stale` / `unknown` |
 | GET | `/modelzoo/events` | none | Recent push event history (`?limit=N`) |
-| POST | `/modelzoo/sync` | none | Manually trigger one GitLab poll cycle |
+| POST | `/modelzoo/sync` | **Bearer** | Manually trigger one GitLab poll cycle |
 | GET | `/modelzoo/config` | none | Show runtime ModelZoo config |
 | PUT | `/modelzoo/config` | **Bearer** | Update runtime config (takes effect immediately) |
 | GET | `/metrics` | none | Prometheus text-format metrics for the approval gate (Phase 13) |
@@ -73,7 +78,7 @@ Failure modes:
 
 ## Approval Gate (Phase 11)
 
-When a developer pushes to the modelzoo repo on GitHub, CI runs `ci/notify_model_changes.py`, which diffs the commits, extracts changed `model_id` values, and POSTs to `POST /api/changes`. The Control Plane stores these as `pending` rows in a SQLite database — **no training runs yet**.
+When a developer pushes to the modelzoo repo on GitHub, CI runs `ci/notify_model_changes.py`, which diffs the commits, extracts changed `model_id` values, and POSTs to `POST /api/changes`. The control plane stores these as `pending` rows in its configured state backend — **no training runs yet**.
 
 A sysadmin then approves or rejects each change:
 
@@ -154,15 +159,18 @@ exa retrain JPCP --dataset PM100Dataset --dummy
 
 ## Model Registry
 
-`GET /models` and `POST /retrain` validation both rely on knowing which models (and their datasets) are registered. The control plane reads this directly from `pipelines/models/*.yaml` — it does **not** import `pipeline_generator.py` or any modelzoo Python code.
+`GET /models` and `POST /retrain` validation both rely on the active use-case pack. The control plane
+resolves its model YAML directory from `EXAMLOPS_USECASE_DIR`/`usecases/seanergy/pack.toml`; it does
+**not** import model training classes.
 
-This approach (`_load_registry()` in `app.py`) avoids pulling PyTorch and the rest of the modelzoo's training dependencies into the lightweight control-plane container. The registry is re-read on every call (no in-process cache), so adding a new YAML file takes effect immediately on the next request without restarting the container.
+This approach (`_load_registry()` in `app.py`) avoids importing model training code. The parsed
+registry has a 60-second in-process TTL; `POST /admin/reload` invalidates it immediately.
 
 `model_meta.py` follows the same pattern: it scans YAML files for metadata (task type, schema, promotion rules, serving aliases) and locates the model's source directory by text-scanning the modelzoo for `class <ModelClass>` — never importing the class itself.
 
 ## ModelZoo Integration (Phase 12)
 
-The control plane is the authoritative hub for ModelZoo repository freshness tracking. It receives push events from GitLab/GitHub webhooks and from a background poller, records them in SQLite, and exposes freshness state via REST endpoints. The dashboard and `exa` CLI both consume these endpoints.
+The control plane is the authoritative hub for ModelZoo repository freshness tracking. It receives push events from GitLab/GitHub webhooks and from a background poller, records them in its configured state backend, and exposes freshness state via REST endpoints. The dashboard and `exa` CLI both consume these endpoints.
 
 ### How it works
 
@@ -182,7 +190,9 @@ The dashboard Config page (ModelZoo Integration section) shows the pre-filled we
 
 ### Background poller
 
-The poller runs as a daemon thread inside the control plane process. At startup `_start_poller()` is called (a FastAPI startup hook). It loops with `time.sleep(_modelzoo_config["poll_interval_seconds"])` — so interval changes via `PUT /modelzoo/config` take effect on the next sleep boundary without restarting the service.
+The poller runs as a daemon thread inside the control-plane process. FastAPI lifespan starts it, and
+an interruptible event wait applies interval changes on the next boundary and permits clean shutdown.
+Run one control-plane replica until distributed poller leadership is integrated.
 
 Disable polling with `MODELZOO_POLL_SECONDS=0` (env var) or `PUT /modelzoo/config {"poll_interval_seconds": 0}` at runtime.
 
@@ -252,7 +262,9 @@ Two tables are created on first startup alongside the existing `pending_approval
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
 | `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`) |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
-| `CONTROL_PLANE_DB` | `/data/approvals.db` | SQLite file path for the Phase 11 pending approval store; falls back to `./approvals.db` if `/data/` is not writable |
+| `EXAMLOPS_DB_BACKEND` | `sqlite` | Control-plane state engine: `sqlite` for local development or `postgres` for shared production state |
+| `EXAMLOPS_POSTGRES_DSN` | unset | Required when the state backend is `postgres` |
+| `CONTROL_PLANE_DB` | `/data/approvals.db` | Local SQLite path; an unwritable parent is a startup/readiness failure, never a silent fallback |
 | `MODELZOO_WEBHOOK_SECRET` | unset | Shared secret for webhook HMAC/token verification |
 | `MODELZOO_AUTO_RETRAIN` | `false` | Trigger auto-retrain on every push event |
 | `MODELZOO_POLL_SECONDS` | `300` | GitLab poller interval (seconds); `0` disables |
@@ -262,7 +274,11 @@ Two tables are created on first startup alongside the existing `pending_approval
 
 ## Operations
 
-* **Health probe:** `curl localhost:18002/health` — returns `{status, prefect_api_url, deployment, auth_configured, models}`. The compose health-check uses the same endpoint.
+* **Liveness:** `curl localhost:18002/livez` — process-only, suitable for restart decisions.
+* **Readiness:** `curl --fail localhost:18002/readyz` — non-2xx when the replica must not receive traffic.
+* **Diagnostics:** `curl localhost:18002/health` — detailed JSON verdict without probe semantics.
+  Its `runtime.horizontal_scaling_safe` field remains false while process-local coordination blocks
+  safe multi-replica operation.
 * **Polling a run:** `curl localhost:18002/retrain/<id>` returns `{flow_run_id, state_type, state_name, is_terminal}`. `is_terminal` is true for `COMPLETED / FAILED / CANCELLED / CRASHED`.
 * **Logs:** `make control-plane-logs` (or via Loki when the monitoring stack is up — labels: `compose_service="control-plane"`).
 

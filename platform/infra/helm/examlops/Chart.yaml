@@ -15,6 +15,5 @@ appVersion: "0.48.0"
 keywords: [mlops, hpc, kubernetes, ha]
 maintainers:
   - name: Mohsen Seyedkazemi Ardebili
-    email: mohsen.seyedkazemi@gmail.com
     url: https://mskazemi.github.io
 home: https://github.com/MSKazemi/ExaMLOps

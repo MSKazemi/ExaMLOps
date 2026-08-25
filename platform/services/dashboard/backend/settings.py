@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     minio_url: str = "http://localhost:19000"
     minio_console_url: str = "http://localhost:19001"
     control_plane_url: str = "http://localhost:18002"
+    agent_url: str = "http://localhost:18004"
+    agent_api_key: str = ""
     jupyterhub_url: str = "http://localhost:18888"
     loki_url: str = "http://localhost:13100"
     seanerbus_bridge_status_url: str = "http://localhost:8003"

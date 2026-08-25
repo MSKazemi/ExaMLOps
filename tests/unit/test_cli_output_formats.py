@@ -101,9 +101,9 @@ def test_invalid_output_format_rejected():
 
 
 # ── Rich markup in plain prose ────────────────────────────────────────────────
-# Callers pass prose, and prose contains brackets: `examlops[chat]`, a TOML
+# Callers pass prose, and prose contains brackets: `examlops[mcp]`, a TOML
 # `[project.entry-points]` header, a `[WARNING]` log line. Rich reads a bracketed word as a
-# style tag and *silently deletes it* — so `pip install examlops[chat]` reached the terminal
+# style tag and *silently deletes it* — so `pip install examlops[mcp]` reached the terminal
 # as `pip install examlops`, an instruction that installs the wrong thing without erroring.
 # `hint()` was escaped for exactly this reason; the rest of the family was not.
 
@@ -122,9 +122,9 @@ def test_bracketed_text_survives_to_the_terminal(fn, capture, capsys, monkeypatc
 
     monkeypatch.setattr(_output, "json_mode", False)
     monkeypatch.setattr(_output, "quiet_mode", False)
-    getattr(_output, fn)("run: pip install examlops[chat]")
+    getattr(_output, fn)("run: pip install examlops[mcp]")
     captured = capsys.readouterr()
-    assert "examlops[chat]" in (captured.out if capture == "out" else captured.err)
+    assert "examlops[mcp]" in (captured.out if capture == "out" else captured.err)
 
 
 def test_an_error_and_its_hint_both_survive(capsys, monkeypatch):

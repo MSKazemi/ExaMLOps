@@ -9,12 +9,14 @@ endpoint: proposals route through the existing authorized/approval/audited actio
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import copilot as copilot_lib
 from auth import require_role
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from settings import settings
 
 router = APIRouter(prefix="/v1/copilot", tags=["copilot"])
 _viewer = require_role("viewer")
@@ -33,7 +35,6 @@ class CopilotContext(BaseModel):
 class AskRequest(BaseModel):
     question: str
     context: CopilotContext | None = None
-    session: str = "dashboard-copilot"
 
 
 @router.post("/ask")
@@ -47,9 +48,11 @@ async def ask(req: AskRequest, claims: dict = Depends(_viewer)) -> dict[str, Any
     result = await copilot_lib.ask_copilot(
         question,
         ctx,
-        agent_url=os.getenv("AGENT_URL", "http://localhost:18004"),
-        token=os.getenv("AGENT_API_KEY", ""),
-        session=req.session,
+        agent_url=settings.agent_url,
+        token=settings.agent_api_key,
+        # Never trust a browser-supplied checkpoint key. The signed login id isolates users while
+        # preserving multi-turn context. Legacy tokens without a jti get a fresh, safe thread.
+        session=f"dashboard-copilot-{claims.get('jti') or uuid.uuid4().hex}",
     )
     actor = claims.get("role", "unknown")
     copilot_lib.audit_copilot(

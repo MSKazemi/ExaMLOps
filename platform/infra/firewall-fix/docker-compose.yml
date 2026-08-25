@@ -9,8 +9,7 @@
 # The ONLY thing that stops it is an explicit `make firewall-fix-down`.
 #
 # Requires Docker access only (no host sudo). See ensure-egress.sh for the why.
-# Durable replacement = a sysadmin-owned systemd unit; see the email draft in
-# .claude/plans/sysadmin-email-lxp-docker-egress.txt.
+# Durable replacement = a sysadmin-owned systemd unit.
 # ──────────────────────────────────────────────────────────────────────────────
 name: examlops-firewall-fix
 

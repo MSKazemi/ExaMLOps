@@ -21,7 +21,13 @@ def cfg_file(tmp_path, monkeypatch):
     path = tmp_path / "config.toml"
     monkeypatch.setattr(_config, "CONFIG_PATH", path)
     # Isolate from any ambient context / env overrides.
-    for var in ("EXAMLOPS_CONTEXT", "CONTROL_PLANE_URL", "MLFLOW_TRACKING_URI"):
+    for var in (
+        "EXAMLOPS_CONFIG",
+        "EXAMLOPS_CONTEXT",
+        "CONTROL_PLANE_URL",
+        "MLFLOW_TRACKING_URI",
+        "AGENT_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield path
 
@@ -77,10 +83,49 @@ def test_provenance_sources(cfg_file, monkeypatch):
 
 
 def test_provenance_redacts_secrets(cfg_file):
-    _config.write_config({"control_plane_token": "supersecret"})
+    _config.write_config({"control_plane_token": "supersecret", "agent_token": "agentsecret"})
     prov = {r["key"]: r["value"] for r in _config.resolve_with_provenance()}
     assert prov["control_plane_token"] == "***"
+    assert prov["agent_token"] == "***"
     assert "supersecret" not in json.dumps(prov)
+    assert "agentsecret" not in json.dumps(prov)
+
+
+def test_agent_token_can_be_scoped_per_context(cfg_file):
+    _config.write_config({"agent_token": "production-secret"}, context="production")
+    _config.set_active_context("production")
+    assert _config.load_config().agent_token == "production-secret"
+
+
+def test_cli_prompts_for_secret_and_never_echoes_it(cfg_file):
+    result = runner.invoke(
+        app,
+        ["config", "set", "agent_token", "--context", "production"],
+        input="production-secret\nproduction-secret\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "production-secret" not in result.output
+    assert "***" in result.output
+    _config.set_active_context("production")
+    assert _config.load_config().agent_token == "production-secret"
+
+
+def test_cli_redacts_a_secret_passed_as_an_argument(cfg_file):
+    result = runner.invoke(app, ["config", "set", "agent_token", "legacy-secret"])
+    assert result.exit_code == 0, result.output
+    assert "legacy-secret" not in result.output
+    assert "***" in result.output
+
+
+def test_config_file_is_owner_only(cfg_file):
+    _config.write_config({"agent_token": "private"})
+    assert cfg_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_agent_sessions_are_namespaced_by_active_project(cfg_file):
+    assert _config.scoped_agent_session("incident-42") == "incident-42"
+    _config.set_active_project("research")
+    assert _config.scoped_agent_session("incident-42") == "research:incident-42"
 
 
 # ── CLI wiring ────────────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ),
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
+    ("agent_token", "agent_token", "AGENT_API_KEY", "", True),
 ]
 
 _URL_KEYS = {
@@ -66,6 +67,7 @@ class Config:
     seanerbus_bridge_url: str = "http://localhost:18003"
     control_plane_token: str = ""
     dashboard_token: str = ""
+    agent_token: str = ""
 
 
 def _read_raw() -> dict:
@@ -158,6 +160,12 @@ def active_project(raw: dict | None = None) -> str | None:
     return raw.get("active_project")
 
 
+def scoped_agent_session(session_id: str, raw: dict | None = None) -> str:
+    """Namespace an agent checkpoint by the active ExaMLOps project."""
+    project = active_project(raw)
+    return f"{project}:{session_id}" if project else session_id
+
+
 def set_active_project(name: str | None) -> None:
     """Persist ``active_project`` in config.toml (``None`` clears it)."""
     existing = _read_raw()
@@ -203,6 +211,8 @@ def _write_raw(data: dict) -> None:
         path.write_text(tomli_w.dumps(data))
     except ImportError:
         path.write_text(_dumps_toml(data))
+    # Config may contain bearer tokens. Do not depend on the caller's umask.
+    path.chmod(0o600)
 
 
 def _toml_value(val: object) -> str:
