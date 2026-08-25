@@ -65,6 +65,14 @@ def test_deploy_does_not_mutate_the_legacy_checkout():
     assert "lxp_release.sh" in script
 
 
+def test_first_release_falls_back_to_the_legacy_checkout():
+    script = _script("deploy:lxp")
+    assert "if [ -L" in script
+    assert "${LXP_DEPLOY_PATH}-current" in script
+    assert "readlink -f" in script
+    assert "printf '%s\\\\n'" in script
+
+
 def test_rollback_reactivates_a_release_instead_of_resetting_git():
     script = _script("smoke:lxp")
     assert "git reset" not in script
