@@ -90,9 +90,14 @@ activate_release() {
     export PATH="$HOME/.local/bin:/localhome/${USER}/.local/bin:$PATH"
 
     cd "$release_path"
-    uv pip install -e . >/dev/null 2>&1 \
-        && echo "exa CLI refreshed: $(.venv/bin/exa --version 2>/dev/null)" \
-        || echo "warn: exa CLI refresh skipped (uv unavailable) — non-fatal"
+    if command -v uv >/dev/null 2>&1; then
+        uv venv --python 3.12 .venv >/dev/null \
+            && uv pip install -e . >/dev/null \
+            && echo "exa CLI refreshed: $(.venv/bin/exa --version 2>/dev/null)" \
+            || echo "warn: exa CLI refresh failed — non-fatal"
+    else
+        echo "warn: exa CLI refresh skipped (uv unavailable) — non-fatal"
+    fi
     setfacl -R -m u:1000:rwX -m d:u:1000:rwX usecases pipelines 2>/dev/null \
         && echo "workbench pipeline ACL set" \
         || echo "warn: pipeline ACL skipped — non-fatal"

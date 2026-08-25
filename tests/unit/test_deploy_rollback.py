@@ -95,3 +95,10 @@ def test_release_script_is_valid_under_bash_strict_mode():
     assert 'local sha="$1" archive="$2" release_path=' not in text
     assert 'local sha="$1" archive="$2"' in text
     assert 'local release_path="$RELEASE_ROOT/$sha"' in text
+
+
+def test_release_script_creates_the_host_cli_environment_before_installing():
+    text = RELEASE_SCRIPT.read_text()
+    create = text.index("uv venv --python 3.12 .venv")
+    install = text.index("uv pip install -e .")
+    assert create < install
