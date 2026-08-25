@@ -755,7 +755,7 @@ deploy:lxp:
   script:
     - |
       PREV_RELEASE=$(ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes "$LXP_USER@$LXP_HOST" \
-        "readlink -f -- \"${LXP_DEPLOY_PATH}-current\" 2>/dev/null || printf '%s\\n' \"$LXP_DEPLOY_PATH\"")
+        "if [ -L \"${LXP_DEPLOY_PATH}-current\" ]; then readlink -f -- \"${LXP_DEPLOY_PATH}-current\"; else printf '%s\\n' \"$LXP_DEPLOY_PATH\"; fi")
       echo "Previous production release: $PREV_RELEASE"
       printf '%s\n' "$PREV_RELEASE" > prev_release.txt
 
