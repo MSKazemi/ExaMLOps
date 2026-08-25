@@ -40,7 +40,8 @@ seed_state() {
 }
 
 prepare_release() {
-    local sha="$1" archive="$2" release_path="$RELEASE_ROOT/$sha"
+    local sha="$1" archive="$2"
+    local release_path="$RELEASE_ROOT/$sha"
     case "$sha" in
         *[!0-9a-f]*|'') echo "invalid release SHA: $sha" >&2; exit 2 ;;
     esac

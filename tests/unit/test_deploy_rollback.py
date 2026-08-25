@@ -20,6 +20,7 @@ import pytest
 yaml = pytest.importorskip("yaml")
 
 CI = Path(__file__).parents[2] / ".gitlab-ci.yml"
+RELEASE_SCRIPT = Path(__file__).parents[2] / "platform" / "ci" / "lxp_release.sh"
 
 
 def _script(job: str) -> str:
@@ -86,3 +87,11 @@ def test_rollback_still_fails_the_pipeline():
     assert script.rstrip().splitlines()[-1].startswith("exit 1"), (
         "smoke:lxp must end with `exit 1` so a rolled-back deploy still fails the pipeline"
     )
+
+
+def test_release_script_is_valid_under_bash_strict_mode():
+    """Assignments must not expand a local before Bash has initialized it."""
+    text = RELEASE_SCRIPT.read_text()
+    assert 'local sha="$1" archive="$2" release_path=' not in text
+    assert 'local sha="$1" archive="$2"' in text
+    assert 'local release_path="$RELEASE_ROOT/$sha"' in text
