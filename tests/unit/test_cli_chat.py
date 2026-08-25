@@ -97,7 +97,7 @@ def test_streaming_shows_tools_and_completes_hitl_round_trip(monkeypatch):
     sent = []
 
     def fake_sse(_url, body, **_kwargs):
-        sent.append(body["messages"][0]["content"])
+        sent.append(body)
         if len(sent) == 1:
             yield {"ki_event": {"type": "tool_call", "message": "trigger_retrain"}}
             yield {
@@ -105,6 +105,7 @@ def test_streaming_shows_tools_and_completes_hitl_round_trip(monkeypatch):
                     {
                         "delta": {"content": "Approval required"},
                         "hitl_required": True,
+                        "action_id": "act.opaque-retrain",
                     }
                 ]
             }
@@ -115,26 +116,88 @@ def test_streaming_shows_tools_and_completes_hitl_round_trip(monkeypatch):
     result = runner.invoke(app, ["chat", "-s", "ops"])
 
     assert result.exit_code == 0, result.output
-    assert sent == ["retrain JPCP", "approve"]
+    assert [body["messages"][0]["content"] for body in sent] == ["retrain JPCP", "/approve"]
+    assert "action" not in sent[0]
+    assert sent[1]["action"] == {
+        "action_id": "act.opaque-retrain",
+        "decision": "approve",
+    }
     assert "trigger_retrain" in result.output
     assert "type /approve" in result.output
     assert "Retrain started" in result.output
 
 
-@pytest.mark.parametrize(("command", "decision"), [("/approve", "approve"), ("/deny", "deny")])
-def test_hitl_commands_send_plain_decisions(monkeypatch, command, decision):
+@pytest.mark.parametrize("command", ("/approve", "/deny"))
+def test_hitl_commands_without_pending_action_do_not_contact_agent(monkeypatch, command):
     _info_and_no_other_get(monkeypatch)
     _inputs(monkeypatch, command, "/quit")
+    monkeypatch.setattr(_client, "post_sse", lambda *_a, **_k: pytest.fail("unexpected post"))
+    result = runner.invoke(app, ["chat", "-s", "approval"])
+    assert result.exit_code == 0, result.output
+    assert "No write action is awaiting approval" in result.output
+
+
+def test_pending_action_rejects_ordinary_text_in_the_client(monkeypatch):
+    _info_and_no_other_get(monkeypatch)
+    _inputs(monkeypatch, "retrain JPCP", "yes", "/deny", "/quit")
     sent = []
 
     def fake_sse(_url, body, **_kwargs):
-        sent.append(body["messages"][0]["content"])
-        yield {"choices": [{"delta": {"content": "Decision recorded"}}]}
+        sent.append(body)
+        if len(sent) == 1:
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": "Approval required"},
+                        "hitl_required": True,
+                        "action_id": "act.pending",
+                    }
+                ]
+            }
+        else:
+            yield {"choices": [{"delta": {"content": "Cancelled"}}]}
 
     monkeypatch.setattr(_client, "post_sse", fake_sse)
     result = runner.invoke(app, ["chat", "-s", "approval"])
+
     assert result.exit_code == 0, result.output
-    assert sent == [decision]
+    assert len(sent) == 2
+    assert sent[1]["action"] == {"action_id": "act.pending", "decision": "deny"}
+    assert "use /approve or /deny first" in result.output
+
+
+def test_non_stream_retains_action_id_for_typed_approval(monkeypatch):
+    _info_and_no_other_get(monkeypatch)
+    _inputs(monkeypatch, "promote JPCP", "/approve", "/quit")
+    sent = []
+
+    def fake_post(_url, body, **_kwargs):
+        sent.append(body)
+        if len(sent) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Approval required"},
+                        "hitl_required": True,
+                        "action_id": "act.promote",
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Promoted"},
+                    "hitl_required": False,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(_client, "post", fake_post)
+    result = runner.invoke(app, ["chat", "--no-stream", "-s", "approval"])
+
+    assert result.exit_code == 0, result.output
+    assert sent[1]["action"] == {"action_id": "act.promote", "decision": "approve"}
+    assert "Promoted" in result.output
 
 
 def test_no_stream_uses_json_completion_and_never_exposes_token(monkeypatch):

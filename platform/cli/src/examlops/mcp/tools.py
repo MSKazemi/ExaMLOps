@@ -650,14 +650,15 @@ def _agent_write_gate(action_kind: str, context: dict[str, Any]) -> dict[str, An
     against the ``agent_write`` policy. Returns an error dict when the write is disallowed, else
     ``None``. ``require_approval`` is treated as *disallowed for an agent* — there is no human at the
     tool-call boundary, so an approval-required action must not proceed autonomously. Policy being
-    unavailable never blocks (graceful): the write-gate has already applied.
+    unavailable blocks the write. A coarse feature flag is not an authorization decision, and an
+    agent must never gain permission because policy evaluation failed.
     """
     try:
         from examlops import policy
 
         decision = policy.decide("agent_write", {"action_kind": action_kind, **context})
-    except Exception:  # pragma: no cover - defensive
-        return None
+    except Exception:  # noqa: BLE001 - policy failures must become a safe tool response
+        return _err(f"policy unavailable; refusing agent write ({action_kind})")
     if decision.denied:
         return _err(f"policy denied agent write ({action_kind}): {decision.reason}")
     if decision.requires_approval:

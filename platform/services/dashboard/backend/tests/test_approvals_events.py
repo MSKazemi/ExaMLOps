@@ -35,6 +35,87 @@ class _FakeAsyncClient:
         return _FakeResp()
 
 
+class _ApprovalListResp:
+    is_success = True
+    status_code = 200
+    text = ""
+
+    @staticmethod
+    def json():
+        return [{"id": "approval-1", "model_id": "JPCP", "status": "pending"}]
+
+
+class _ApprovalListClient:
+    headers: dict[str, str] | None = None
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, _url, *, params, headers):
+        type(self).headers = headers
+        return _ApprovalListResp()
+
+
+@pytest.mark.asyncio
+async def test_list_forwards_configured_control_plane_token(client, monkeypatch):
+    async def configured_token(_db):
+        return "configured-control-plane-token"
+
+    monkeypatch.setattr("routers.approvals._get_control_plane_token", configured_token)
+    monkeypatch.setattr("routers.approvals.httpx.AsyncClient", _ApprovalListClient)
+    token = await _login(client, ADMIN_PW)
+
+    response = await client.get(
+        "/api/approvals?status=pending", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert _ApprovalListClient.headers == {"Authorization": "Bearer configured-control-plane-token"}
+
+
+@pytest.mark.asyncio
+async def test_list_hides_upstream_auth_error_body(client, monkeypatch):
+    class _DeniedResponse:
+        is_success = False
+        status_code = 401
+        text = "upstream credential detail must not reach the browser"
+
+    class _DeniedClient(_ApprovalListClient):
+        async def get(self, _url, *, params, headers):
+            return _DeniedResponse()
+
+    async def no_token(_db):
+        return None
+
+    monkeypatch.setattr("routers.approvals._get_control_plane_token", no_token)
+    monkeypatch.setattr("routers.approvals.httpx.AsyncClient", _DeniedClient)
+    token = await _login(client, ADMIN_PW)
+
+    response = await client.get("/api/approvals", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Control Plane returned an error"}
+    assert "credential detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_requires_dashboard_viewer_auth_before_using_service_token(client, monkeypatch):
+    async def must_not_read_token(_db):
+        raise AssertionError("unauthenticated requests must not resolve the service credential")
+
+    monkeypatch.setattr("routers.approvals._get_control_plane_token", must_not_read_token)
+
+    response = await client.get("/api/approvals")
+
+    assert response.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_approve_publishes_event(client, monkeypatch):
     monkeypatch.setattr("routers.approvals.httpx.AsyncClient", _FakeAsyncClient)

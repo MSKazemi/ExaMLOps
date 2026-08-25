@@ -31,10 +31,11 @@ def _token(text: str) -> dict:
     return {"choices": [{"index": 0, "delta": {"role": "assistant", "content": text}}]}
 
 
-def _stop(*, hitl: bool = False) -> dict:
+def _stop(*, hitl: bool = False, action_id: str | None = None) -> dict:
     choice: dict = {"index": 0, "delta": {}, "finish_reason": "stop"}
     if hitl:
         choice["hitl_required"] = True
+        choice["action_id"] = action_id
     return {"choices": [choice]}
 
 
@@ -164,11 +165,12 @@ class TestWhatTheUserSees:
         assert "JPCP is critical." in result.output
 
     def test_hitl_flag_on_the_final_chunk_still_prints_the_hint(self, stub_stream):
-        stub_stream([_token("Ready to retrain."), _stop(hitl=True)])
+        stub_stream([_token("Ready to retrain."), _stop(hitl=True, action_id="act.stream")])
         result = runner.invoke(app, ["ask", "--stream", "retrain jpcp", "--session", "s1"])
         assert result.exit_code == 0, result.output
         assert "approval" in result.output.lower()
         assert "--session s1" in result.output
+        assert "--approve act.stream" in result.output
 
     def test_answer_is_not_printed_twice(self, stub_stream):
         stub_stream([_token("unique-answer-token"), _stop()])

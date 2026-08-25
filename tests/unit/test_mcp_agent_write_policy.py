@@ -64,15 +64,17 @@ def test_trigger_retrain_blocked_by_policy(monkeypatch):
     assert "policy denied" in out["error"]
 
 
-def test_policy_unavailable_does_not_block(monkeypatch):
-    """If the policy layer errors, the gate degrades to allow (write-gate already applied)."""
+def test_policy_unavailable_fails_closed(monkeypatch):
+    """A broken policy layer must never grant an agent permission by accident."""
     import examlops.policy as policy
 
     def boom(*a, **k):
         raise RuntimeError("policy broken")
 
     monkeypatch.setattr(policy, "decide", boom)
-    assert tools._agent_write_gate("retrain", {"model": "JPCP"}) is None
+    out = tools._agent_write_gate("retrain", {"model": "JPCP"})
+    assert out is not None and out["ok"] is False
+    assert "policy unavailable" in out["error"]
 
 
 # ── the guard the tests above do not give: *every* mutating tool, not one of them ──────────

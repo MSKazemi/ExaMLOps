@@ -2,8 +2,8 @@
 
 > Enterprise-readiness Phase 1, item 1.1. Docker Compose stays **dev-only**; this chart is the
 > target production shape behind an ingress, with state in HA Postgres and distributed MinIO. The
-> control plane defaults to one replica until distributed coordination is integrated. It renders
-> and validates today (`helm lint`, `helm template`,
+> control plane defaults to one replica while its Prefect circuit breaker/runtime config remain
+> process-local and multi-replica failover is unverified. It renders and validates today (`helm lint`, `helm template`,
 > `kubectl apply --dry-run`); wiring it to a live cluster + the managed data services is the
 > operator step.
 
@@ -13,13 +13,33 @@
 |---|---|---|---|
 | control-plane | Deployment + Service | 1 replica (safe default) | readiness/liveness split, topology spread |
 | dashboard | Deployment + Service | `dashboard.replicaCount` (2) | PDB minAvailable 1 |
-| agent | Deployment + Service | `agent.replicaCount` (2) | topology spread |
+| agent | Deployment + Service | 2 replicas by default; optional CPU HPA | PDB minAvailable 1, topology spread |
 | ingress | Ingress (TLS) | — | terminates TLS; dashboard owns `/api`, explicit machine paths reach the control plane |
 
 Every pod is **non-root, read-only-rootfs, all caps dropped, no privilege escalation**
 (`podSecurityContext`/`containerSecurityContext`), spread across nodes (`topologySpreadConstraints`),
 and carries **no `container_name` pins or hostPath** — pods are freely schedulable and replaceable,
 which is exactly what the audit flagged the Compose topology could not do.
+
+The agent HPA is intentionally off by default, so `agent.replicaCount: 2` remains authoritative.
+Enable it only after sizing the agent and its external model backend; CPU utilization reflects the
+agent pod, not provider-side capacity:
+
+```yaml
+agent:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+```
+
+Conversation checkpoints use shared Postgres. Long-term semantic memory is still SQLite-only, so
+the chart sets `AGENT_MEMORY_ENABLED=false`; otherwise each replica would expose a different,
+ephemeral memory store. Keep it disabled until a shared long-term store is available.
 
 ## State lives outside the chart (by design)
 
@@ -37,31 +57,51 @@ Persistent state is provided by managed services referenced via `values.yaml`:
   ```
 - **MinIO (distributed):** run MinIO in distributed mode (4+ nodes, erasure coding) or point at any
   S3-compatible service; set `minio.endpoint`.
-- **Redis + NATS (coordination/events):** these remain multi-replica prerequisites. Do not enable the
-  control-plane HPA until the coordinator, poller leadership, and event consumers are integrated and
-  concurrency-tested. The chart therefore keeps the implemented `db` coordinator and `log` publisher
-  defaults today.
+- **Redis (coordination/events):** the control plane uses the selected coordinator for rate limits,
+  retrain locks, and singleton poller ownership, and its relay publishes the transactional outbox
+  through the selected publisher. For cross-host operation select Redis + Redis Streams instead of
+  the chart's dependency-free `db`/`log` defaults. Keep the HPA disabled until the remaining
+  process-local controls and failover behavior are resolved and tested. NATS/Kafka are placeholders.
 
 ## Secrets — never templated
 
-The chart references an **existing** Secret (`existingSecret`, default `examlops-secrets`); it never
-embeds secret values. Create it out-of-band (sealed-secrets / external-secrets / `kubectl`):
+The chart references existing Kubernetes Secrets and never embeds their values. Existing releases
+remain compatible: when the per-tier settings below are empty, every Deployment falls back to the
+global `existingSecret` (default `examlops-secrets`). For new deployments, use separate Secrets so a
+compromised pod cannot read credentials belonging only to another tier:
 
-```bash
-kubectl create secret generic examlops-secrets \
-  --from-literal=CONTROL_PLANE_TOKEN="$(openssl rand -hex 32)" \
-  --from-literal=AGENT_API_KEY="$(openssl rand -hex 32)" \
-  --from-literal=AGENT_POSTGRES_DSN="postgresql://…" \
-  --from-literal=DASHBOARD_JWT_SECRET="$(openssl rand -hex 32)" \
-  --from-literal=DASHBOARD_SECRET_KEY="$(python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')" \
-  --from-literal=DASHBOARD_ADMIN_PASSWORD=... --from-literal=DASHBOARD_VIEWER_PASSWORD=... \
-  --from-literal=EXAMLOPS_SECRETS_KEYS="k1:$(python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')" \
-  --from-literal=EXAMLOPS_POSTGRES_DSN="postgresql://…" \
-  --from-literal=DATABASE_URL="postgresql://…" \
-  --from-literal=AZURE_OPENAI_ENDPOINT="https://<resource>.services.ai.azure.com/openai/v1/" \
-  --from-literal=AZURE_OPENAI_API_KEY=... \
-  --from-literal=AZURE_OPENAI_DEPLOYMENT=...
+```yaml
+existingSecret: examlops-secrets # upgrade fallback; can remain during migration
+controlPlane:
+  existingSecret: examlops-control-plane-secrets
+dashboard:
+  existingSecret: examlops-dashboard-secrets
+agent:
+  existingSecret: examlops-agent-secrets
 ```
+
+Create these objects out-of-band with External Secrets, Sealed Secrets, or your cluster's secret
+manager. Never commit Secret data or place credentials in a values file. Start with only the keys
+needed by each enabled capability:
+
+| Secret | Baseline keys | Add only when enabled |
+|---|---|---|
+| Control plane | `CONTROL_PLANE_TOKEN` or `CONTROL_PLANE_CREDENTIALS_JSON`; `EXAMLOPS_POSTGRES_DSN` | Redis/event credentials, ModelZoo webhook secret, GitLab trigger credentials |
+| Dashboard | `DATABASE_URL`, `EXAMLOPS_POSTGRES_DSN`, `DASHBOARD_JWT_SECRET`, `DASHBOARD_SECRET_KEY`, `DASHBOARD_ADMIN_PASSWORD`, `DASHBOARD_VIEWER_PASSWORD`, `DASHBOARD_AGENT_API_KEY` | `CONTROL_PLANE_TOKEN`, `EXAMLOPS_SECRETS_KEYS`, MinIO/GitLab/JupyterHub credentials |
+| Agent | `AGENT_API_KEYS_JSON`, `AGENT_POSTGRES_DSN` | One cloud LLM provider credential set (none for Ollama), `CONTROL_PLANE_TOKEN` for write tools, `DASHBOARD_ADMIN_PASSWORD` for dashboard tools, `AGENT_ACTION_SIGNING_KEY` |
+
+`CONTROL_PLANE_CREDENTIALS_JSON` is keyed by bearer secret; each value declares a trusted
+`principal`, `tenant`, and `scopes` list containing `read` and/or `write`. Give the dashboard and
+each automation caller a distinct entry and place only that caller's bearer value in its own Secret.
+The legacy `CONTROL_PLANE_TOKEN` maps to `legacy/default` with both scopes. Malformed structured
+configuration fails closed, including for the legacy credential.
+
+For Azure, the provider set is `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and
+`AZURE_OPENAI_DEPLOYMENT`; Anthropic needs `ANTHROPIC_API_KEY`. Give the dashboard and each CLI
+operator different agent credentials. The keys in `AGENT_API_KEYS_JSON` are authenticated principal
+names used to own agent sessions and memory. Configure an operator's local CLI with the hidden
+`exa config set agent_token` prompt. Existing installations may keep `AGENT_API_KEY`; the dashboard
+uses it only when `DASHBOARD_AGENT_API_KEY` is absent.
 
 Use either the shown Azure credentials, `ANTHROPIC_API_KEY`, or override
 `agent.extraEnv` with a reachable Ollama URL. The agent pod's own `localhost` is not the host.
@@ -85,8 +125,9 @@ helm upgrade --install examlops platform/infra/helm/examlops \
   --set ingress.host=examlops.example.org --set global.cluster=prod
 ```
 
-Create the `examlops-secrets` Secret **before** installing (above): the Deployments reference it
-with a non-optional `envFrom.secretRef`, so without it the pods never start.
+Create every selected Secret **before** installing: each Deployment references its resolved Secret
+with a non-optional `envFrom.secretRef`, so a missing per-tier override or fallback prevents that pod
+from starting.
 
 `make helm-validate` runs the lint + render + dry-run gate, and it passes the registry — which is
 why it stayed green while the commands in this section did not work.

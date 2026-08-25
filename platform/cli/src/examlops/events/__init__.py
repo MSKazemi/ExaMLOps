@@ -9,15 +9,17 @@ Design (mirrors the ADR-0074 provider seam + the item-0.1 StorageBackend seam):
   * domain code calls :func:`publish` (or ``platform_db.enqueue_event`` inside an existing txn) —
     the event lands in the ``event_outbox`` table, committed atomically with the domain write;
   * a **relay** (:func:`relay_once`) claims unpublished rows and hands them to an
-    :class:`EventPublisher`, marking each published/failed — exactly-once, survives a crash;
+    :class:`EventPublisher`, marking each published/failed. Delivery is at-least-once: every
+    publication carries a stable outbox event ID so consumers can deduplicate crash replays;
   * the publisher is swappable via ``EXAMLOPS_EVENT_PUBLISHER``. The default ``log`` publisher is
-    dependency-free (works offline, in tests, single-node dev). ``nats``/``kafka``/``redis`` are
-    thin skeletons that fail loudly until their client lib + endpoint are configured — so the
-    outbox works everywhere and upgrades to a real broker with zero domain-code change.
+    dependency-free (works offline, in tests, single-node dev), and ``redis`` publishes a stable
+    envelope to Redis Streams. ``nats``/``kafka`` are placeholders that fail loudly instead of
+    silently dropping events.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Protocol, runtime_checkable
@@ -29,18 +31,18 @@ logger = logging.getLogger(__name__)
 class EventPublisher(Protocol):
     """Publish a single event to the backbone. Must raise on failure (the relay retries)."""
 
-    def publish(self, topic: str, payload: dict[str, Any]) -> None: ...
+    def publish(self, topic: str, payload: dict[str, Any], *, event_id: str) -> None: ...
 
 
 class LogPublisher:
     """Default, dependency-free publisher: emits the event to the platform log.
 
-    Single-node/dev/test appropriate — the outbox still gives durability + exactly-once relay
+    Single-node/dev/test appropriate — the outbox still gives durable, at-least-once relay
     semantics; only the fan-out is local. Swap in a broker publisher for multi-node fan-out.
     """
 
-    def publish(self, topic: str, payload: dict[str, Any]) -> None:
-        logger.info("event published topic=%s payload=%s", topic, payload)
+    def publish(self, topic: str, payload: dict[str, Any], *, event_id: str) -> None:
+        logger.info("event published id=%s topic=%s payload=%s", event_id, topic, payload)
 
 
 class _BrokerSkeleton:
@@ -49,7 +51,7 @@ class _BrokerSkeleton:
     _NAME = "broker"
     _ENV = "EXAMLOPS_EVENT_BROKER_URL"
 
-    def publish(self, topic: str, payload: dict[str, Any]) -> None:
+    def publish(self, topic: str, payload: dict[str, Any], *, event_id: str) -> None:
         raise RuntimeError(
             f"{self._NAME} event publisher is not configured — set {self._ENV} and install its "
             f"client library, or use EXAMLOPS_EVENT_PUBLISHER=log. The outbox row is retained "
@@ -67,9 +69,60 @@ class KafkaPublisher(_BrokerSkeleton):
     _ENV = "EXAMLOPS_KAFKA_BROKERS"
 
 
-class RedisStreamsPublisher(_BrokerSkeleton):
-    _NAME = "redis"
-    _ENV = "EXAMLOPS_REDIS_URL"
+class RedisStreamsPublisher:
+    """Publish durable event envelopes to a Redis Stream.
+
+    Redis assigns its own ordered stream entry ID; ``event_id`` is the stable outbox identifier
+    used by consumers for deduplication if a relay crashes after ``XADD`` but before acknowledging
+    the database row.
+    """
+
+    def __init__(self, client: Any | None = None) -> None:
+        self._stream = os.getenv("EXAMLOPS_REDIS_EVENT_STREAM", "examlops.events").strip()
+        if not self._stream:
+            raise RuntimeError("EXAMLOPS_REDIS_EVENT_STREAM must not be empty")
+        maxlen = os.getenv("EXAMLOPS_REDIS_EVENT_MAXLEN", "100000").strip()
+        try:
+            self._maxlen = int(maxlen)
+        except ValueError as exc:
+            raise RuntimeError("EXAMLOPS_REDIS_EVENT_MAXLEN must be an integer") from exc
+        if self._maxlen <= 0:
+            raise RuntimeError("EXAMLOPS_REDIS_EVENT_MAXLEN must be greater than zero")
+        if client is not None:
+            self._client = client
+            return
+
+        url = os.getenv("EXAMLOPS_REDIS_URL", "").strip()
+        if not url:
+            raise RuntimeError(
+                "redis event publisher is not configured — set EXAMLOPS_REDIS_URL or use "
+                "EXAMLOPS_EVENT_PUBLISHER=log"
+            )
+        try:
+            import redis
+        except ImportError as exc:
+            raise RuntimeError(
+                "redis event publisher requires the 'redis' package; install "
+                "'examlops[coordination]'"
+            ) from exc
+        self._client = redis.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
+
+    def publish(self, topic: str, payload: dict[str, Any], *, event_id: str) -> None:
+        self._client.xadd(
+            self._stream,
+            {
+                "event_id": event_id,
+                "topic": topic,
+                "payload": json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+            },
+            maxlen=self._maxlen,
+            approximate=True,
+        )
 
 
 _PUBLISHERS: dict[str, type] = {
@@ -87,7 +140,12 @@ def get_publisher() -> EventPublisher:
     global _publisher
     if _publisher is None:
         name = os.getenv("EXAMLOPS_EVENT_PUBLISHER", "log").strip().lower()
-        cls = _PUBLISHERS.get(name, LogPublisher)
+        cls = _PUBLISHERS.get(name)
+        if cls is None:
+            supported = ", ".join(sorted(_PUBLISHERS))
+            raise RuntimeError(
+                f"unsupported EXAMLOPS_EVENT_PUBLISHER={name!r}; expected one of: {supported}"
+            )
         _publisher = cls()
     return _publisher
 
@@ -122,14 +180,19 @@ def relay_once(limit: int = 100) -> dict[str, int]:
 
     init_db()
     publisher = get_publisher()
-    batch = claim_outbox_batch(limit)
-    import json
-
+    attempts_text = os.getenv("EXAMLOPS_EVENT_MAX_ATTEMPTS", "5").strip()
+    try:
+        max_attempts = int(attempts_text)
+    except ValueError as exc:
+        raise RuntimeError("EXAMLOPS_EVENT_MAX_ATTEMPTS must be an integer") from exc
+    if max_attempts <= 0:
+        raise RuntimeError("EXAMLOPS_EVENT_MAX_ATTEMPTS must be greater than zero")
+    batch = claim_outbox_batch(limit, max_attempts=max_attempts)
     published = failed = 0
     for row in batch:
         try:
             payload = json.loads(row["payload"])
-            publisher.publish(row["topic"], payload)
+            publisher.publish(row["topic"], payload, event_id=f"outbox:{row['id']}")
             mark_event_published(row["id"])
             published += 1
         except Exception as exc:  # noqa: BLE001 - relay must not crash on one bad event

@@ -41,7 +41,7 @@ def test_modelzoo_tables_created(tmp_path, monkeypatch):
 
 
 def test_modelzoo_status_returns_unknown_for_fresh_db(client):
-    resp = client.get("/modelzoo/status")
+    resp = client.get("/modelzoo/status", headers={"Authorization": "Bearer test-token"})
     assert resp.status_code == 200
     data = resp.json()
     assert "models" in data
@@ -260,7 +260,7 @@ def _auth(client):
 
 
 def test_modelzoo_events_empty_list(client):
-    resp = client.get("/modelzoo/events")
+    resp = client.get("/modelzoo/events", headers=_auth(client))
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -271,7 +271,7 @@ def test_modelzoo_events_after_webhook(client):
         json=_GITLAB_PUSH,
         headers={"X-Gitlab-Token": "webhook-secret"},
     )
-    resp = client.get("/modelzoo/events")
+    resp = client.get("/modelzoo/events", headers=_auth(client))
     assert resp.status_code == 200
     events = resp.json()
     assert len(events) >= 1
@@ -296,7 +296,7 @@ def test_modelzoo_sync_no_credentials(client, monkeypatch):
 
 
 def test_modelzoo_config_defaults(client):
-    resp = client.get("/modelzoo/config")
+    resp = client.get("/modelzoo/config", headers=_auth(client))
     assert resp.status_code == 200
     cfg = resp.json()
     assert cfg["auto_retrain"] is False

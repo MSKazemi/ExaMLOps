@@ -11,7 +11,9 @@ spec:
     rollingUpdate:
       maxUnavailable: 0   # readiness-gated: never drop below desired during upgrade
       maxSurge: 1
+  {{- if not .Values.agent.autoscaling.enabled }}
   replicas: {{ .Values.agent.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "examlops.name" . }}
@@ -39,18 +41,28 @@ spec:
             - configMapRef:
                 name: {{ include "examlops.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.existingSecret }}
+                name: {{ include "examlops.agentSecret" . | quote }}
           env:
             - name: AGENT_SERVER_PORT
               value: {{ .Values.agent.port | quote }}
             - name: AGENT_CHECKPOINT_BACKEND
               value: postgres
+            # Long-term semantic memory is SQLite-only today. Multiple pods would expose
+            # divergent ephemeral stores, so the HA chart keeps this tier disabled.
+            - name: AGENT_MEMORY_ENABLED
+              value: "false"
             - name: AGENT_REQUIRE_API_KEY
               value: "true"
+            - name: AGENT_API_KEYS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "examlops.agentSecret" . | quote }}
+                  key: AGENT_API_KEYS_JSON
+                  optional: true
             - name: AGENT_POSTGRES_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.existingSecret }}
+                  name: {{ include "examlops.agentSecret" . | quote }}
                   key: AGENT_POSTGRES_DSN
             - name: CONTROL_PLANE_URL
               value: http://{{ include "examlops.fullname" . }}-control-plane:{{ .Values.controlPlane.port }}
@@ -104,3 +116,42 @@ spec:
     app.kubernetes.io/component: agent
   ports:
     - {name: http, port: {{ .Values.agent.port }}, targetPort: http}
+{{- if .Values.agent.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "examlops.fullname" . }}-agent
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "examlops.fullname" . }}-agent
+  minReplicas: {{ .Values.agent.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.agent.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.agent.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.agent.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "examlops.fullname" . }}-agent
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.agent.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: agent
+{{- end }}

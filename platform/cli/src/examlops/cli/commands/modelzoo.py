@@ -34,7 +34,7 @@ def status():
     cfg = load_config()
     url = f"{cfg.control_plane_url}/modelzoo/status"
     try:
-        data = _client.get(url)
+        data = _client.get(url, token=cfg.control_plane_token)
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -73,7 +73,7 @@ def events(limit: int = typer.Option(10, "--limit", "-n", help="Number of events
     cfg = load_config()
     url = f"{cfg.control_plane_url}/modelzoo/events?limit={limit}"
     try:
-        data = _client.get(url)
+        data = _client.get(url, token=cfg.control_plane_token)
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -136,7 +136,7 @@ def show_config():
     cfg = load_config()
     url = f"{cfg.control_plane_url}/modelzoo/config"
     try:
-        data = _client.get(url)
+        data = _client.get(url, token=cfg.control_plane_token)
     except _client.ClientError as e:
         _output.error(str(e))
         return

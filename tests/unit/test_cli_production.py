@@ -8,6 +8,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
+from examlops.cli._config import Config
 from examlops.cli.commands import production
 from examlops.cli.main import app
 
@@ -64,6 +65,20 @@ def test_production_command_is_registered():
 
     assert result.exit_code == 0
     assert "verify" in result.output
+
+
+def test_production_modelzoo_helpers_forward_control_plane_token():
+    cfg = Config(control_plane_token="configured-control-plane-token")
+    with patch(
+        "examlops.cli.commands.production._safe_get",
+        return_value=(True, FAKE_MODELZOO, "reachable"),
+    ) as safe_get:
+        assert production._modelzoo_models(cfg)
+        production._check_modelzoo(cfg)
+
+    assert safe_get.call_count == 2
+    for call in safe_get.call_args_list:
+        assert call.kwargs["token"] == "configured-control-plane-token"
 
 
 def test_production_verify_reports_pass_with_stale_warning():

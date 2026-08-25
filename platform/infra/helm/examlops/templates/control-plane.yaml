@@ -51,7 +51,7 @@ spec:
             - configMapRef:
                 name: {{ include "examlops.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.existingSecret }}
+                name: {{ include "examlops.controlPlaneSecret" . | quote }}
           env:
             - name: CONTROL_PLANE_PORT
               value: {{ .Values.controlPlane.port | quote }}

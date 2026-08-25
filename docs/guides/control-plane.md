@@ -12,21 +12,21 @@ uses SQLite for local development; production can select the shared Postgres sto
 | GET | `/readyz` | none | Traffic readiness; returns 503 when startup checks or the approval store are unhealthy |
 | GET | `/ready` | none | Compatibility alias for the original liveness endpoint |
 | GET | `/health` | none | Diagnostic verdict, dependencies, pending approvals, and runtime scaling capabilities |
-| GET | `/status` | none | Concurrent peer pings + pending approval count. Returns **exactly** `services` (`control_plane`/`mlflow`/`prefect`/`ray_serve`/`dashboard`, each `{ok, url}`) and `pending_approvals`. It carries **no** model list — `exa status` reads production models from the MLflow registry instead |
+| GET | `/status` | **read** | Concurrent peer pings + pending approval count. Returns **exactly** `services` (`control_plane`/`mlflow`/`prefect`/`ray_serve`/`dashboard`, each `{ok, url}`) and `pending_approvals`. It carries **no** model list — `exa status` reads production models from the MLflow registry instead |
 | GET | `/models` | none | List `model_name → datasets` known to the auto-discovery registry |
-| POST | `/retrain` | **Bearer** | Validate + schedule a Prefect flow run |
-| GET | `/retrain/{flow_run_id}` | none | Poll Prefect for the run state |
-| POST | `/api/changes` | **Bearer** | CI webhook — record changed model IDs as pending approvals (no training yet) |
-| GET | `/approvals` | none | List approvals; filter by `?status=pending\|approved\|rejected` |
-| POST | `/approve/{model_id}` | **Bearer** | Approve a pending change — fires Prefect training run immediately |
-| POST | `/reject/{model_id}` | **Bearer** | Reject a pending change with optional `{"reason": "..."}` body |
+| POST | `/retrain` | **write** | Validate + schedule a Prefect flow run |
+| GET | `/retrain/{flow_run_id}` | **read** | Poll Prefect for a run owned by the credential's tenant; the legacy credential retains operator-wide lookup |
+| POST | `/api/changes` | **write** | CI webhook — record changed model IDs as tenant-scoped pending approvals (no training yet) |
+| GET | `/approvals` | **read** | List only the credential tenant's approvals; filter by `?status=pending\|approved\|rejected` |
+| POST | `/approve/{model_id}` | **write** | Approve a pending change in the credential tenant — fires Prefect training immediately |
+| POST | `/reject/{model_id}` | **write** | Reject a pending change in the credential tenant with optional `{"reason": "..."}` body |
 | POST | `/webhooks/modelzoo/gitlab` | token header | GitLab push webhook — mark models stale, optionally auto-retrain |
 | POST | `/webhooks/modelzoo/github` | HMAC header | GitHub push webhook — same semantics as GitLab |
-| GET | `/modelzoo/status` | none | Per-model freshness: `current` / `stale` / `unknown` |
-| GET | `/modelzoo/events` | none | Recent push event history (`?limit=N`) |
-| POST | `/modelzoo/sync` | **Bearer** | Manually trigger one GitLab poll cycle |
-| GET | `/modelzoo/config` | none | Show runtime ModelZoo config |
-| PUT | `/modelzoo/config` | **Bearer** | Update runtime config (takes effect immediately) |
+| GET | `/modelzoo/status` | **read** | Per-model freshness: `current` / `stale` / `unknown` |
+| GET | `/modelzoo/events` | **read** | Recent push event history (`?limit=N`) |
+| POST | `/modelzoo/sync` | **write** | Manually trigger one GitLab poll cycle |
+| GET | `/modelzoo/config` | **read** | Show runtime ModelZoo config |
+| PUT | `/modelzoo/config` | **write** | Update runtime config (takes effect immediately) |
 | GET | `/metrics` | none | Prometheus text-format metrics for the approval gate (Phase 13) |
 
 ## POST /retrain
@@ -64,7 +64,7 @@ Validation steps before the call to Prefect:
 
 1. `model_name` must be found in the YAML registry (see [Model Registry](#model-registry) below).
 2. `dataset_name` must be in that model's declared datasets.
-3. `Authorization: Bearer <token>` must match `CONTROL_PLANE_TOKEN`.
+3. The bearer credential must resolve to a configured principal with `write` scope.
 
 Failure modes:
 
@@ -73,8 +73,21 @@ Failure modes:
 | 400 | Unknown `model_name` or unsupported `dataset_name` |
 | 401 | Missing `Authorization` header |
 | 403 | Wrong bearer token |
-| 503 | `CONTROL_PLANE_TOKEN` env var is unset (fail-closed, no silent allow) |
+| 503 | No usable credentials are configured, or `CONTROL_PLANE_CREDENTIALS_JSON` is malformed |
 | 502 | Prefect API unreachable / 5xx |
+
+### Durable dispatch and event delivery
+
+Each retrain or approval dispatch is claimed in `control_plane_commands` before the Prefect call.
+The control plane sends the same stable idempotency key to Prefect, stores the successful response,
+and can replay it for a repeated caller key. An expired dispatch lease can be recovered after a
+process failure. Completion also updates its admission record and enqueues a domain event in the
+same database transaction.
+
+The built-in relay publishes the outbox through the configured publisher; operators can also run
+`exa events relay` manually. `log` is the local default, while Redis Streams is the implemented
+shared broker. Delivery is **at least once**, with a stable event ID for consumer deduplication.
+NATS and Kafka selectors remain fail-loud placeholders.
 
 ## Approval Gate (Phase 11)
 
@@ -85,7 +98,8 @@ A sysadmin then approves or rejects each change:
 ```bash
 # List pending approvals
 exa approvals list
-curl http://localhost:18002/approvals?status=pending
+curl http://localhost:18002/approvals?status=pending \
+  -H "Authorization: Bearer $CONTROL_PLANE_TOKEN"
 
 # Approve — fires Prefect training immediately
 exa approvals approve JPCP
@@ -113,6 +127,9 @@ Each approval record carries:
 | `changed_files` | JSON list of changed file paths |
 | `prefect_run_id` | Prefect flow run ID (set on approval) |
 | `reject_reason` | Rejection reason (set on rejection) |
+| `tenant` | Verified credential tenant that owns the approval |
+| `requested_by` | Verified principal that requested the approval |
+| `resolved_by` | Verified principal that approved or rejected it |
 | `requested_at` | ISO 8601 timestamp of the CI push |
 | `resolved_at` | ISO 8601 timestamp of approve/reject |
 
@@ -131,9 +148,35 @@ Required GitHub secrets: `CONTROL_PLANE_URL` and `CONTROL_PLANE_TOKEN`.
 
 ## Auth model
 
-`CONTROL_PLANE_TOKEN` is the shared secret. Set it in the docker-compose `.env` file (or pass it via env on a real deployment) and in any client / dataplane that calls `POST /retrain`. Read-only endpoints (`/health`, `/models`, `/retrain/{flow_run_id}`) require no auth.
+`CONTROL_PLANE_CREDENTIALS_JSON` is a JSON object keyed by bearer secret. Each value defines a
+server-trusted principal, tenant, and non-empty list containing `read`, `write`, or both:
 
-If the env var is missing, `POST /retrain` always returns 503 — the service refuses to silently allow unauthenticated writes.
+```json
+{
+  "change-me-operator-token": {
+    "principal": "release-operator",
+    "tenant": "team-a",
+    "scopes": ["read", "write"]
+  },
+  "change-me-auditor-token": {
+    "principal": "auditor",
+    "tenant": "team-a",
+    "scopes": ["read"]
+  }
+}
+```
+
+The literal example secrets above are rejected as placeholders; generate distinct random values.
+Identity and tenant are never accepted from request bodies or caller-chosen headers. Approval rows,
+durable commands, idempotency keys, and emitted events use the verified context. Cross-tenant
+approval access returns no matching record, and structured credentials cannot inspect another
+tenant's flow run.
+
+`CONTROL_PLANE_TOKEN` remains a migration-compatible operator credential. It maps to principal
+`legacy`, tenant `default`, with both scopes and keeps operator-wide flow-status lookup. If the
+structured JSON is malformed or reuses the legacy secret, authentication fails closed for every
+credential. `/health`, readiness/liveness, metrics, `/models`, and model metadata/assets remain
+public; `/status`, approval, flow-status, and ModelZoo operational reads require `read`.
 
 ## Wiring with the dataplane simulator
 
@@ -178,7 +221,10 @@ The control plane is the authoritative hub for ModelZoo repository freshness tra
 2. **Event recorded** — a row is inserted into `modelzoo_events` (commit SHA, branch, pushed_by, timestamp, source).
 3. **All models marked stale** — every model in the auto-discovery registry gets an upserted row in `model_freshness` with `is_stale=1` and the current timestamp as `stale_since`.
 4. **Optional auto-retrain** — if `_modelzoo_config["auto_retrain"]` is true, `POST /retrain` fires for each model with its first supported dataset.
-5. **Freshness cleared** — when a model is approved and trained, its `model_freshness` row is updated with `is_stale=0` and `last_retrain_commit` set to the latest ModelZoo commit.
+5. **Freshness update** — the current automatic path clears `is_stale` after Prefect accepts the
+   retrain request and stores that commit as `last_retrain_commit`. This records dispatch, not
+   successful training completion. The manual approval path does not currently reconcile freshness;
+   consumers must not treat `current` as proof that a training run completed successfully.
 
 ### Webhook registration
 
@@ -192,7 +238,8 @@ The dashboard Config page (ModelZoo Integration section) shows the pre-filled we
 
 The poller runs as a daemon thread inside the control-plane process. FastAPI lifespan starts it, and
 an interruptible event wait applies interval changes on the next boundary and permits clean shutdown.
-Run one control-plane replica until distributed poller leadership is integrated.
+Only the replica holding the coordinator lease polls. Keep one replica until failover is tested and
+the remaining process-local circuit-breaker/runtime-config blockers are removed.
 
 Disable polling with `MODELZOO_POLL_SECONDS=0` (env var) or `PUT /modelzoo/config {"poll_interval_seconds": 0}` at runtime.
 
@@ -227,9 +274,10 @@ exa modelzoo sync                 # trigger one poll cycle, print result
 exa modelzoo config               # show auto_retrain, poll_interval_seconds, watch_branch
 ```
 
-### SQLite tables
+### State tables
 
-Two tables are created on first startup alongside the existing `pending_approvals` table:
+Two tables are created on first startup alongside `pending_approvals` in the configured SQLite or
+Postgres state backend:
 
 **`modelzoo_events`**
 
@@ -248,7 +296,7 @@ Two tables are created on first startup alongside the existing `pending_approval
 |---|---|---|
 | `model_id` | TEXT PK | e.g. `JPCP` |
 | `latest_modelzoo_commit` | TEXT | Latest push SHA |
-| `last_retrain_commit` | TEXT | SHA at last successful retrain |
+| `last_retrain_commit` | TEXT | SHA attached to the last accepted automatic retrain dispatch; not completion proof |
 | `is_stale` | INTEGER | 1 = stale, 0 = current |
 | `stale_since` | TEXT | ISO 8601 when stale flag was set |
 | `retrain_triggered_at` | TEXT | ISO 8601 of last auto-retrain trigger |
@@ -258,7 +306,8 @@ Two tables are created on first startup alongside the existing `pending_approval
 | Variable | Default | Purpose |
 |---|---|---|
 | `CONTROL_PLANE_PORT` | `8002` | HTTP port |
-| `CONTROL_PLANE_TOKEN` | unset (required) | Bearer token for `POST /retrain` |
+| `CONTROL_PLANE_TOKEN` | unset | Legacy `legacy/default` bearer credential with `read` + `write`; optional when the structured map is configured |
+| `CONTROL_PLANE_CREDENTIALS_JSON` | unset | Token-keyed JSON map of `principal`, `tenant`, and `scopes`; malformed input fails all bearer authentication closed |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
 | `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`) |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
@@ -277,9 +326,9 @@ Two tables are created on first startup alongside the existing `pending_approval
 * **Liveness:** `curl localhost:18002/livez` — process-only, suitable for restart decisions.
 * **Readiness:** `curl --fail localhost:18002/readyz` — non-2xx when the replica must not receive traffic.
 * **Diagnostics:** `curl localhost:18002/health` — detailed JSON verdict without probe semantics.
-  Its `runtime.horizontal_scaling_safe` field remains false while process-local coordination blocks
-  safe multi-replica operation.
-* **Polling a run:** `curl localhost:18002/retrain/<id>` returns `{flow_run_id, state_type, state_name, is_terminal}`. `is_terminal` is true for `COMPLETED / FAILED / CANCELLED / CRASHED`.
+  Its runtime block identifies the selected coordinator/publisher, poller lease state, relay result,
+  outbox `pending`/`published`/`poison` counts, and remaining horizontal-scaling blockers.
+* **Polling a run:** `curl -H "Authorization: Bearer $CONTROL_PLANE_TOKEN" localhost:18002/retrain/<id>` returns `{flow_run_id, state_type, state_name, is_terminal}`. `is_terminal` is true for `COMPLETED / FAILED / CANCELLED / CRASHED`.
 * **Logs:** `make control-plane-logs` (or via Loki when the monitoring stack is up — labels: `compose_service="control-plane"`).
 
 ## Prometheus Metrics (Phase 13)

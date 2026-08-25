@@ -100,7 +100,7 @@ def record_procedure(
     Only record procedures that actually succeeded. Gated behind operator
     confirmation (SM3, ADR 0034) unless AGENT_MEMORY_REQUIRE_CONFIRM=false. When
     AGENT_MEMORY_REVIEW_QUEUE is set, the write is queued for batch operator review
-    instead (approve/reject via `python -m skipper.memory_admin review`).
+    instead (approve/reject via `exa agent memory review`).
 
     Args:
         task_class: The kind of task (e.g. 'safe-promote', 'drift-response').
@@ -113,7 +113,7 @@ def record_procedure(
         rid = enqueue(task_class, steps, success_conditions, operator=config.AGENT_ACTOR)
         return (
             f"Queued procedure for '{task_class}' as review #{rid} — pending operator approval "
-            f"(`python -m skipper.memory_admin review approve {rid}`)."
+            f"(`exa agent memory review approve {rid}`)."
         )
     if config.AGENT_MEMORY_REQUIRE_CONFIRM:
         # Exclude the injected store from the interrupt payload — it is not

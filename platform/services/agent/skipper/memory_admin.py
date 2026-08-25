@@ -1,14 +1,17 @@
-"""SM3 — Skipper long-term memory admin: enumerate / export / erase / stats.
+"""SM3 — local/offline Skipper memory recovery and administration.
 
 Run:  python -m skipper.memory_admin {stats|list|export|delete} [...]
 
-Operates on ``AGENT_MEMORY_DB``. Enumeration/deletion do not need the embedding
+This is the explicit local compatibility path behind ``exa agent memory ... --local``.
+Normal administration uses the authenticated agent HTTP API so the server can enforce
+principal and tenant ownership. This module operates directly on ``AGENT_MEMORY_DB``;
+enumeration/deletion do not need the embedding
 backend (the store is opened without an index), so this works offline. Deletions
 cascade to derived memories and are audited to ``platform_db.audit_events`` (ADR
 0034). The immutable audit log is a separate store and is untouched by erasure.
 
-This admin surface lives in the agent package (which owns the memory store), not in
-the ``exa`` CLI, to keep the platform CLI free of a langgraph dependency.
+Because direct file access has no authenticated request identity, do not use it as a
+multi-user remote administration surface.
 """
 
 from __future__ import annotations

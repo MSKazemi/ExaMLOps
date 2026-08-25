@@ -39,12 +39,18 @@ spec:
             - configMapRef:
                 name: {{ include "examlops.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.existingSecret }}
+                name: {{ include "examlops.dashboardSecret" . | quote }}
           env:
             - name: CONTROL_PLANE_URL
               value: http://{{ include "examlops.fullname" . }}-control-plane:{{ .Values.controlPlane.port }}
             - name: AGENT_URL
               value: http://{{ include "examlops.fullname" . }}-agent:{{ .Values.agent.port }}
+            - name: DASHBOARD_AGENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "examlops.dashboardSecret" . | quote }}
+                  key: DASHBOARD_AGENT_API_KEY
+                  optional: true
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:

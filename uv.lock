@@ -1519,6 +1519,9 @@ analysis = [
 backup = [
     { name = "boto3" },
 ]
+coordination = [
+    { name = "redis" },
+]
 finops = [
     { name = "simpleeval" },
 ]
@@ -1562,6 +1565,7 @@ requires-dist = [
     { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3.3" },
     { name = "pyjwt", marker = "extra == 'oidc'", specifier = ">=2.10" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "redis", marker = "extra == 'coordination'", specifier = ">=5.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.11" },
     { name = "sdv", marker = "extra == 'synth'", specifier = ">=1.37" },
@@ -1571,7 +1575,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "vllm", marker = "extra == 'serving-vllm'", specifier = ">=0.8" },
 ]
-provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "synth"]
+provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "coordination", "synth"]
 
 [[package]]
 name = "examlops-pipelines"

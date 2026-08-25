@@ -57,10 +57,17 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` | `2.0` | Seconds to wait for the datastore before declaring it unreachable. Bounds one probe per process, before the pool is built, so a downed datastore costs a moment rather than the driver's 30 s default on every command. Unix-socket and multi-host DSNs skip the probe. |
 | `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | How long an "unreachable" verdict is cached, so one command probes once. It expires, so a long-lived process recovers when the server returns. |
 | `EXAMLOPS_COORDINATOR` | `db` | Cross-process coordination backend: `db` (via the datastore) or `redis` (cross-host HA). |
-| `EXAMLOPS_EVENT_PUBLISHER` | `log` | Event-backbone publisher: `log` (dependency-free), `nats`, `kafka`, `redis`. Drain the outbox with `exa events relay`. |
+| `EXAMLOPS_EVENT_PUBLISHER` | `log` | Event publisher: `log` (dependency-free) or `redis` (Redis Streams). `nats` and `kafka` are reserved fail-loud placeholders, not operational backends. Drain the outbox with `exa events relay`. |
+| `EXAMLOPS_NATS_URL` | unset | Reserved NATS endpoint. Selecting the NATS publisher fails loudly until its transport is implemented. |
+| `EXAMLOPS_KAFKA_BROKERS` | unset | Reserved comma-separated Kafka brokers. Selecting the Kafka publisher fails loudly until its transport is implemented. |
+| `EXAMLOPS_REDIS_PREFIX` | `examlops:coord` | Namespace prefix for Redis coordination keys; use a distinct value per installation sharing a Redis database. |
+| `EXAMLOPS_REDIS_EVENT_STREAM` | `examlops.events` | Redis Stream name used by the implemented event publisher. |
+| `EXAMLOPS_REDIS_EVENT_MAXLEN` | `100000` | Approximate maximum Redis Stream length; must be a positive integer. |
+| `EXAMLOPS_EVENT_MAX_ATTEMPTS` | `5` | Maximum automatic outbox publication attempts. Exhausted rows remain as poison evidence for operator inspection. |
 | `EXAMLOPS_CONFIG` | `~/.config/examlops/config.toml` | Overrides the CLI config path so containers and CI can pin a config and tests run hermetically. |
+| `EXAMLOPS_PROJECT` | active CLI context or `default` | Explicit project/tenant context for CLI commands and trusted server-side agent scoping. Request callers cannot override an authenticated agent tenant with payload data. |
 | `EXAMLOPS_USECASE_DIR` | `usecases/seanergy` | Selects the use-case pack (ADR 0094). The platform core names no concrete model or dataset; this is how it reaches content. |
-| `EXAMLOPS_AGENT_DIR` | derived from the repo | Where the Skipper agent package lives, for `exa agent memory …` when the agent is outside the repo. |
+| `EXAMLOPS_AGENT_DIR` | derived from the repo | Where the Skipper package lives for explicit `exa agent memory … --local` recovery. Normal memory administration uses `AGENT_URL`. |
 | `EXAMLOPS_PROJECTS_BUCKET` | `examlops-projects` | MinIO bucket holding per-project `artifacts/`, `datasets/`, `cache/`. |
 
 ### Governance & secrets
@@ -95,7 +102,7 @@ the usual cause of "it works from the CLI but not in the dashboard".
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_EVENT_BROKER_URL` | unset | Broker URL for the selected `EXAMLOPS_EVENT_PUBLISHER`. Per-broker overrides: `EXAMLOPS_NATS_URL`, `EXAMLOPS_KAFKA_BROKERS`, `EXAMLOPS_REDIS_URL`. |
+| `EXAMLOPS_EVENT_BROKER_URL` | unset | Broker URL for the selected publisher. The implemented Redis path also accepts `EXAMLOPS_REDIS_URL`; NATS/Kafka variables are reserved for future backends. |
 | `EXAMLOPS_ADMISSION_MAX_RUNNING` | `4` | Global cap on concurrently running admitted jobs. |
 | `EXAMLOPS_ADMISSION_PER_TENANT` | `2` | Per-tenant fair-share cap. |
 
@@ -163,9 +170,10 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 
 !!! warning "Authenticate deliberate network exposure"
 
-    The server defaults to loopback. If you bind another interface, set `AGENT_API_KEY` to protect
-    completions, status, history, and WebSocket tools, and put the endpoint behind TLS. The built-in
-    browser exchanges the key for an HttpOnly, same-site session cookie.
+    The server defaults to loopback. If you bind another interface, configure distinct principals
+    with `AGENT_API_KEYS_JSON` (or the legacy `AGENT_API_KEY`) and put the endpoint behind TLS.
+    Memory administration always requires a configured credential. The built-in browser exchanges
+    its key for an HttpOnly, same-site session cookie.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -174,6 +182,10 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 | `AGENT_POSTGRES_DSN` | falls back to `DATABASE_URL` | DSN for the Postgres checkpointer. |
 | `AGENT_GRAPH_TIMEOUT` | `300.0` | Seconds one LangGraph run may take before it is abandoned. |
 | `AGENT_STREAM_IDLE_TIMEOUT` | `120.0` | Seconds of silence on a streaming response before it is closed. |
+| `AGENT_TURN_LEASE_SECONDS` | `AGENT_GRAPH_TIMEOUT + 30` (minimum) | Renewable cross-replica lease for one active turn per authenticated session. A smaller configured value is raised to the timeout-derived minimum. |
+| `AGENT_ACTION_SIGNING_KEY` | falls back to `CONTROL_PLANE_TOKEN` or configured agent credentials | Server-only key for signed, owner-bound HITL action IDs and browser sessions. Configure an independent random key in production. |
+| `AGENT_ACTION_TTL_SECONDS` | `600` | Lifetime of a typed approve/deny action ID. Expired IDs cannot resume a mutation. |
+| `AGENT_BROWSER_SESSION_TTL_SECONDS` | `28800` | Lifetime in seconds of the HttpOnly browser session cookie issued after agent authentication. |
 | `AGENT_MEMORY_REVIEW_QUEUE` | `false` | Queue memory writes for human review instead of applying them. |
 | `AGENT_MEMORY_REVIEW_DB` | `./skipper_review.db` | Where that review queue lives — separate from `AGENT_MEMORY_DB`. |
 
@@ -339,15 +351,22 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | Variable | Default | Purpose |
 |---|---|---|
 | `CONTROL_PLANE_PORT` | `8002` | HTTP port for the retrain API (host-exposed as `18002`) |
-| `CONTROL_PLANE_TOKEN` | **required** | Bearer token for `POST /retrain` and approval endpoints; unset causes write endpoints to return 503 |
+| `CONTROL_PLANE_TOKEN` | unset | Legacy operator bearer credential. It maps to principal `legacy`, tenant `default`, with `read` and `write` scopes; optional when the structured credential map is configured. |
+| `CONTROL_PLANE_CREDENTIALS_JSON` | unset | JSON object keyed by bearer secret. Each value requires `principal`, `tenant`, and non-empty `scopes` containing only `read` and/or `write`. Malformed input or a secret duplicated from `CONTROL_PLANE_TOKEN` fails all bearer authentication closed. |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Control plane URL used by the dataplane simulator and CI notify script |
-| `CONTROL_PLANE_DB` | `/data/approvals.db` | SQLite path for control-plane approvals and ModelZoo freshness when `EXAMLOPS_DB_BACKEND=sqlite`; an unwritable parent fails readiness |
+| `CONTROL_PLANE_DB` | `PLATFORM_DB`, else `/data/approvals.db` | SQLite path for commands, approvals, admission, outbox, and ModelZoo state. Inside the service this becomes the shared `PLATFORM_DB`, keeping transactions and the relay on one file. |
+| `CONTROL_PLANE_COMMAND_LEASE_SECONDS` | `300` | Time before an interrupted durable Prefect dispatch can be reclaimed with the same idempotency key. |
+| `CONTROL_PLANE_RETRAIN_LOCK_SECONDS` | command lease (minimum `60`) | Coordinator lease for one tenant/model/dataset retrain dispatch. |
+| `CONTROL_PLANE_POLLER_LEASE_SECONDS` | `30` (minimum `3`) | Coordinator lease used to elect the singleton ModelZoo poller. |
+| `CONTROL_PLANE_EVENT_RELAY_SECONDS` | `1` | In-process outbox relay interval; `0` disables it. |
+| `CONTROL_PLANE_EVENT_RELAY_BATCH_SIZE` | `100` | Maximum outbox rows claimed per relay pass. |
+| `RETRAIN_RATE_LIMIT_PER_MIN` | `20` | Per-tenant write limit enforced by the selected `EXAMLOPS_COORDINATOR`. |
 
 ### ModelZoo Integration (Phase 12)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODELZOO_WEBHOOK_SECRET` | unset | Shared secret for GitLab/GitHub push webhook verification. GitLab: plain equality check (`X-Gitlab-Token` header). GitHub: HMAC-SHA256 (`X-Hub-Signature-256`). Unset disables signature verification (not recommended for production). |
+| `MODELZOO_WEBHOOK_SECRET` | unset | Shared secret for GitLab/GitHub push webhook verification. GitLab compares `X-Gitlab-Token` in constant time; GitHub verifies `X-Hub-Signature-256` HMAC-SHA256. Unset makes both webhook routes return 503. |
 | `MODELZOO_AUTO_RETRAIN` | `false` | When `true`, a confirmed push event automatically triggers `POST /retrain` for every registered model. Takes effect at runtime — changes via `PUT /modelzoo/config` are picked up immediately without restart. |
 | `MODELZOO_POLL_SECONDS` | `300` | Background GitLab poller interval in seconds. The poller checks for new commits on `MODELZOO_WATCH_BRANCH` and records them as push events. Set to `0` to disable polling entirely. Changes via `PUT /modelzoo/config` take effect immediately. |
 | `MODELZOO_WATCH_BRANCH` | `main` | Branch that both the poller and webhooks watch. Push events for other branches are silently ignored. |
@@ -417,7 +436,11 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 
 ## Management Agent
 
-The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skipper` (CLI) or `agent_server.py` (HTTP/WebSocket, port 18004). The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using `ollama-tunnel` (Omega server, port 11436), start the tunnel first. Vars are set in `.env` and sourced automatically.
+The LangGraph agent (`platform/services/agent/`) runs as a developer REPL with `make skipper` or as
+the HTTP/WebSocket service with `make skipper-server` (`skipper.server`, port 18004). The LLM backend
+is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using
+`ollama-tunnel` (Omega server, port 11436), start the tunnel first. Vars are set in `.env` and sourced
+automatically.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -431,8 +454,10 @@ The LangGraph ReAct agent (`platform/services/agent/`) launched via `make skippe
 | `AGENT_CONTAINER_OLLAMA_URL` | `http://host.docker.internal:11436` | Compose-only Ollama URL. This avoids treating the agent container's own loopback as the host's Ollama server. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids reload latency on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | Disable (`false`) / force (`true`) / leave-default (`default`) thinking models' extra reasoning tokens. |
-| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
-| `AGENT_API_KEY` | unset | Optional credential protecting completions, agent status, conversation history, and WebSocket tools. Native clients send `Authorization: Bearer <key>`; the browser uses an HttpOnly session cookie. |
+| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
+| `AGENT_API_KEY` | unset | Legacy single credential protecting completions, status, history, and WebSocket tools. It remains the dashboard fallback and maps to the `primary` principal. Prefer distinct caller credentials in `AGENT_API_KEYS_JSON`. |
+| `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. |
+| `DASHBOARD_AGENT_API_KEY` | unset | Dashboard BFF credential forwarded to the agent. Its value must appear under the `dashboard` principal (or another intentionally named dashboard principal) in `AGENT_API_KEYS_JSON`. The dashboard prefers this over legacy `AGENT_API_KEY`. |
 | `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
 | `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve endpoint for the `predict` / inference tools |
@@ -449,7 +474,7 @@ Cross-session memory for the agent (procedures / incidents / preferences / KB). 
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENT_MEMORY_ENABLED` | `true` | Master switch for long-term memory. `false` ⇒ short-term (conversation) memory only. |
-| `AGENT_MEMORY_DB` | `./skipper_memory.db` | SQLite file for the long-term `SqliteStore` (separate from `AGENT_DB` and `platform.db`). |
+| `AGENT_MEMORY_DB` | `./skipper_memory.db` | Server-side SQLite file for the long-term `SqliteStore` (separate from `AGENT_DB` and `platform.db`). `exa agent memory` accesses it remotely by default; `--local` opts into direct file recovery. |
 | `AGENT_EMBED_BACKEND` | `ollama` | Local embedding backend: `ollama` (via `AGENT_OLLAMA_URL`) or `sentence-transformers` (fully offline, in-process). No cloud. |
 | `AGENT_EMBED_MODEL` | `nomic-embed-text` | Embedding model name. Must match `AGENT_EMBED_DIMS`. |
 | `AGENT_EMBED_DIMS` | `768` | Embedding dimension. Must match the model (nomic-embed-text=768, bge-m3=1024, all-MiniLM-L6-v2=384). Mismatch ⇒ logged + long-term memory disabled. |
@@ -460,7 +485,7 @@ Cross-session memory for the agent (procedures / incidents / preferences / KB). 
 | `AGENT_PROC_DEPRECATE_THRESHOLD` | `0.5` | (Phase 7, ADR 0106) Success rate below which a tool is "failing"; procedures relying on it are deprecated by `skipper.consolidate`. |
 | `AGENT_PROC_DEPRECATE_MIN_CALLS` | `3` | Minimum recorded calls before a tool's success rate is trusted for deprecation. |
 | `AGENT_CONSOLIDATE_MIN_EPISODES` | `3` | Incidents per model before consolidation promotes a candidate procedure to the HITL review queue. |
-| `AGENT_MEMORY_TENANT_SCOPED` | `false` | (Phase 8, ADR 0105) Prefix memory namespaces with the active tenant (`EXAMLOPS_PROJECT`) so operators recall only their project's memory + the shared bucket. Off ⇒ single-tenant, unchanged. |
+| `AGENT_MEMORY_TENANT_SCOPED` | `false` | Enables legacy environment-derived tenant prefixes for local/background memory operations. Authenticated HTTP requests are always isolated by their verified principal and server tenant, independently of this flag. |
 | `AGENT_MEMORY_SHARED_BUCKET` | `global` | Tenant name of the shared memory bucket every project can read (cross-project tribal knowledge). |
 | `AGENT_ACTOR` | `$EXAMLOPS_ACTOR`/`$USER`/`operator` | Actor recorded in preference memory + memory audit events. |
 

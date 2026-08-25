@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import sqlite3
 from collections.abc import Callable
+from contextlib import ExitStack
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -16,6 +18,8 @@ except Exception:  # pragma: no cover - examlops always present in the agent ima
     _rdb = None
 
 log = logging.getLogger("skipper.memory")
+_CHECKPOINTER_CONTEXTS = ExitStack()
+atexit.register(_CHECKPOINTER_CONTEXTS.close)
 
 
 def _harden(conn: sqlite3.Connection) -> None:
@@ -75,7 +79,10 @@ def _build_postgres_checkpointer(dsn: str | None):
     try:  # pragma: no cover - requires langgraph postgres extra + live PG
         from langgraph.checkpoint.postgres import PostgresSaver
 
-        saver = PostgresSaver.from_conn_string(dsn)
+        # ``from_conn_string`` owns a live connection through a context manager. Keep that
+        # context open for the process lifetime; returning the manager itself is not a saver and
+        # closing it here would hand LangGraph a dead connection.
+        saver = _CHECKPOINTER_CONTEXTS.enter_context(PostgresSaver.from_conn_string(dsn))
         saver.setup()
         log.info("using Postgres LangGraph checkpointer (agent HA)")
         return saver

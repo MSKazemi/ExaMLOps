@@ -176,6 +176,7 @@ def test_ha_agent_uses_shared_checkpoint_backend_and_requires_api_key():
         for item in agent["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert env["AGENT_CHECKPOINT_BACKEND"] == "postgres"
+    assert env["AGENT_MEMORY_ENABLED"] == "false"
     assert env["AGENT_REQUIRE_API_KEY"] == "true"
     assert env["AGENT_POSTGRES_DSN"] is None  # sourced from a Secret, never chart values
     assert env["CONTROL_PLANE_URL"] == "http://rel-examlops-control-plane:8002"
@@ -200,12 +201,13 @@ def test_control_plane_defaults_do_not_claim_unsafe_horizontal_scaling():
     control_plane = _values()["controlPlane"]
     assert control_plane["replicaCount"] == 1
     assert control_plane["autoscaling"]["enabled"] is False
+    assert control_plane["pdb"]["minAvailable"] == 1
 
 
 def test_control_plane_image_contains_the_shared_postgres_backend():
     dockerfile = (REPO / "platform" / "services" / "control_plane" / "Dockerfile").read_text()
     assert "COPY platform/cli /app/platform/cli" in dockerfile
-    assert "platform/cli[postgres]" in dockerfile
+    assert "platform/cli[coordination,postgres]" in dockerfile
 
 
 @needs_helm

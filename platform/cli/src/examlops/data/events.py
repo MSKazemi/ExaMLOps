@@ -7,6 +7,7 @@ implementation physically relocated. ``platform_db`` re-exports them for back-co
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Any
 
@@ -67,26 +68,37 @@ def enqueue_event(
     return write_retry(_insert)
 
 
-def claim_outbox_batch(limit: int = 100, *, visibility_s: int = 300) -> list[dict[str, Any]]:
+def claim_outbox_batch(
+    limit: int = 100, *, visibility_s: int = 300, max_attempts: int = 5
+) -> list[dict[str, Any]]:
     """Atomically claim up to ``limit`` unpublished events for one relay worker (item 1.3).
 
     Under a RESERVED write lock: select rows that are unpublished AND not currently claimed (or
     whose claim has expired past ``visibility_s`` — a crashed relay's rows become reclaimable),
     stamp ``claimed_at = now`` + bump ``attempts`` on exactly those, and return them. Because the
-    claim hides rows from other relays until they're published or the lease expires, two concurrent
-    relays never publish the same event. The relay calls :func:`mark_event_published` (done) or
-    :func:`mark_event_failed` (clears the claim for immediate retry) per row.
+    claim hides rows from other relays until they're published or the lease expires, two healthy
+    concurrent relays do not publish the same event. A relay crash after broker publication can
+    cause a replay after the lease expires; consumers deduplicate the stable outbox event ID. The
+    relay calls :func:`mark_event_published` (done) or :func:`mark_event_failed` (clears the claim
+    for immediate retry) per row. Rows at ``max_attempts`` remain in the outbox as poison evidence
+    but are not claimed again automatically.
     """
+
+    if limit <= 0:
+        return []
+    if max_attempts <= 0:
+        raise ValueError("max_attempts must be greater than zero")
 
     def _claim() -> list[dict[str, Any]]:
         with _immediate_write() as conn:
             rows = conn.execute(
                 "SELECT id, topic, payload, attempts FROM event_outbox "
                 "WHERE published_at IS NULL "
+                "  AND attempts < ? "
                 "  AND (claimed_at IS NULL "
                 "       OR claimed_at <= datetime(CURRENT_TIMESTAMP, ?)) "
                 "ORDER BY id ASC LIMIT ?",
-                (f"-{max(0, int(visibility_s))} seconds", limit),
+                (max_attempts, f"-{max(0, int(visibility_s))} seconds", limit),
             ).fetchall()
             ids = [r["id"] for r in rows]
             if ids:
@@ -126,15 +138,22 @@ def mark_event_failed(event_id: int, error: str) -> None:
     write_retry(_mark)
 
 
-def outbox_stats() -> dict[str, int]:
+def outbox_stats(*, max_attempts: int | None = None) -> dict[str, int]:
     """Counts for monitoring the relay: pending vs published vs poison (attempts exhausted)."""
+    if max_attempts is None:
+        try:
+            max_attempts = int(os.getenv("EXAMLOPS_EVENT_MAX_ATTEMPTS", "5"))
+        except ValueError:
+            max_attempts = 5
+    max_attempts = max(1, max_attempts)
     with get_db() as conn:
         row = conn.execute(
             "SELECT "
             "  SUM(CASE WHEN published_at IS NULL THEN 1 ELSE 0 END) AS pending, "
             "  SUM(CASE WHEN published_at IS NOT NULL THEN 1 ELSE 0 END) AS published, "
-            "  SUM(CASE WHEN published_at IS NULL AND attempts >= 5 THEN 1 ELSE 0 END) AS poison "
-            "FROM event_outbox"
+            "  SUM(CASE WHEN published_at IS NULL AND attempts >= ? THEN 1 ELSE 0 END) AS poison "
+            "FROM event_outbox",
+            (max_attempts,),
         ).fetchone()
     return {
         "pending": row["pending"] or 0,

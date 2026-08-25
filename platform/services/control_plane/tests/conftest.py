@@ -69,6 +69,19 @@ def _peers_point_nowhere():
                 os.environ[var] = value
 
 
+@pytest.fixture(autouse=True)
+def _restore_platform_db_env():
+    """Do not leak the control plane's process-local SQLite alignment across tests."""
+    saved = os.environ.get("PLATFORM_DB")
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("PLATFORM_DB", None)
+        else:
+            os.environ["PLATFORM_DB"] = saved
+
+
 class LiveServiceContacted(BaseException):
     """Raised when a test reaches a platform service port on this host.
 

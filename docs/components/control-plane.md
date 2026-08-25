@@ -1,124 +1,87 @@
 # Control Plane
 
-The ExaMLOps control plane (`platform/services/control_plane/app.py`) is a **thin coordination layer** that sits between external event sources — CI webhooks, operator commands, drift triggers — and the Prefect training orchestrator.
+The ExaMLOps control plane (`platform/services/control_plane/app.py`) is the command and approval
+gateway in front of Prefect. It validates retrain requests, persists approval and ModelZoo freshness
+state, and dispatches accepted work. Training, inference, model promotion, and most platform domain
+state remain outside this service.
 
-It does not perform training, inference, or model management. It authorizes, routes, and records retrain requests.
+## Responsibilities
 
-## What it owns
+- Validate model and dataset names against the active use-case registry before calling Prefect.
+- Store and resolve pending model-change approvals.
+- Receive authenticated GitLab/GitHub ModelZoo webhooks and track model freshness.
+- Poll ModelZoo when enabled, expose service diagnostics, and publish approval/retrain metrics.
+- Serve read-only model metadata and README/image assets without importing training code.
 
-### 1. Approval workflow state machine
+State is selected with `EXAMLOPS_DB_BACKEND`. SQLite at `CONTROL_PLANE_DB` is the local default;
+Postgres uses `EXAMLOPS_POSTGRES_DSN` and shares approvals, events, and freshness across processes.
+Postgres removes the private SQLite persistence island, but it does **not** by itself permit safe
+multi-replica control-plane operation.
 
-When a GitLab CI pipeline calls `POST /api/changes` after a ModelZoo merge, the control plane creates a `pending_approvals` row in its own SQLite DB. Human operators approve or reject via the dashboard or CLI:
+## Runtime topology and maturity
 
+```text
+CLI / dashboard / CI webhooks
+             │
+             ▼
+     Control Plane :18002
+       ├─ SQLite or Postgres state
+       ├─ durable command claims, dispatch records, admission records, and event outbox
+       ├─ configured DB/Redis coordinator for rate limits and leases
+       ├─ leased ModelZoo poller and in-process Prefect circuit breaker
+       ├─ transactional outbox relay to the configured publisher
+       └─ PrefectGateway ──► Prefect ──► training flows
 ```
-POST /approve/{model_id}   →  resolves Prefect deployment → fires flow run → records outcome
-POST /reject/{model_id}    →  marks row rejected
-```
 
-### 2. ModelZoo freshness tracking
+Retrain and approval dispatches use durable command keys, expiring dispatch leases, and Prefect
+idempotency keys. A completed command can replay its stored response, and a replacement process can
+recover an expired dispatch without deliberately creating a second flow run. Command completion,
+approval state, its admission record, and its outbox event are committed together. The outbox relay
+is at least once; consumers deduplicate with the stable event ID.
 
-A background daemon thread polls the GitLab API every 5 minutes (configurable) for new commits to the ModelZoo repo. On new commit detection it marks all models stale in the `model_freshness` table and optionally fires automatic retrains when `MODELZOO_AUTO_RETRAIN=true`.
+Rate limiting and retrain/poller ownership use the configured shared coordinator. SQLite with the DB
+coordinator is host-local; Postgres or Redis is required for cross-host coordination. The Prefect
+circuit breaker and runtime ModelZoo configuration remain process-local, and retrains without a
+caller idempotency key intentionally create a new command. `/health` therefore reports
+`runtime.horizontal_scaling_safe: false` and names the active blockers. Keep the Helm control-plane
+replica count at one until failover behavior is tested and the remaining blockers are removed.
 
-GitLab and GitHub webhooks (`POST /api/changes`) provide the push-triggered path for the same logic.
+## Health and readiness
 
-### 3. Retrain request authorization and forwarding
-
-`POST /retrain` is the **single authorized entry point** for initiating training runs. The CLI (`exa retrain`), the dashboard Trigger button, and the drift auto-retrain subsystem all POST to this endpoint.
-
-It validates the model and dataset against the YAML registry, then creates a Prefect flow run via `PrefectGateway` (plain `urllib`, no SDK).
-
-### 4. Platform health aggregation
-
-`GET /status` probes MLflow, Prefect, Ray Serve, and the Dashboard with 5-second timeouts and returns a unified service health dict. This is the primary data source for `exa status`.
-
-### 5. Model metadata surface
-
-Read-only endpoints serve YAML-derived model schemas, README content, and bundled images from the modelzoo filesystem — decoupling consumers from the raw filesystem layout.
-
-| Endpoint | What it returns |
+| Endpoint | Meaning |
 |---|---|
-| `GET /modelzoo/status` | Freshness state per model (stale / current) |
-| `GET /modelzoo/config` | Poller config: `auto_retrain`, `poll_interval_seconds` |
-| `PUT /modelzoo/config` | Update poller config (in-memory only, resets on restart) |
-| `GET /models/{name}/readme` | Raw model README from the YAML-adjacent file |
-| `GET /models/{name}/schema` | Input/output schema from the model YAML |
+| `GET /livez` | Process liveness. Use for restart decisions. |
+| `GET /readyz` | Traffic readiness. Returns 503 when startup checks, approval storage, or an enabled poller are unhealthy. |
+| `GET /ready` | Compatibility alias for the original liveness endpoint. |
+| `GET /health` | Diagnostic JSON. Always inspect its `status`, `startup_checks`, `poller`, and `runtime` fields. |
+| `GET /status` | Concurrent peer-service probes plus the pending-approval count. |
 
-### 6. Approval Prometheus metrics
+`/health` returns HTTP 200 even when its JSON verdict is `starting` or `degraded`; it is a diagnostic
+surface. Orchestrators must use `/readyz`, which encodes the verdict in the HTTP status. The Compose
+healthcheck currently probes `/health`, while the Helm chart correctly separates `/livez` and
+`/readyz`; use the latter pair for production scheduling.
 
-Three metrics are computed from SQLite on each `/metrics` scrape:
+## API and authentication
 
-| Metric | Type | Description |
-|---|---|---|
-| `examlops_control_plane_pending_approvals` | Gauge | Count of pending approvals |
-| `examlops_control_plane_approval_events_total` | Counter | Approvals + rejections, labelled by action |
-| `examlops_control_plane_oldest_pending_age_seconds` | Gauge | Age of the oldest pending approval |
+`CONTROL_PLANE_CREDENTIALS_JSON` maps bearer secrets to a server-verified `principal`, `tenant`, and
+`scopes` list. `read` authorizes sensitive status, approval, and ModelZoo reads; `write` authorizes
+mutations. Approval queries and mutations are tenant-filtered, and structured credentials may read
+only flow runs dispatched for their tenant. The legacy `CONTROL_PLANE_TOKEN` remains compatible as
+principal `legacy` in tenant `default` with both scopes. Malformed structured configuration fails
+closed, including for the legacy credential. Public operational and registry surfaces are limited
+to health/readiness, metrics, `/models`, and model metadata/assets.
 
-## What it does NOT do
+ModelZoo webhooks use their separate `MODELZOO_WEBHOOK_SECRET`: GitLab sends `X-Gitlab-Token`, while
+GitHub sends an `X-Hub-Signature-256` HMAC.
 
-| Responsibility | Where it actually lives |
-|---|---|
-| Write to `platform.db` (audit, drift, traffic, costs) | CLI commands and SeanerBUS bridge |
-| MLflow registry operations (alias promotion, version listing) | CLI-side only |
-| Ray Serve beyond a liveness probe | CLI (`exa serve *`) and Ray Serve itself |
-| SeanerBUS bridge state or inference stats | SeanerBUS bridge (`platform/clients/seanerbus_bridge.py`) |
-| Drift detection or auto-retrain scheduling | `platform_db.py` drift tables + `exa drift *` CLI |
-| Traffic split management | `platform_db.py` `traffic_rules` + `exa serve traffic` |
-| Persisting its own config across restarts | Not implemented; `PUT /modelzoo/config` is in-memory |
-
-## Integration topology
-
-```
-External triggers
-  ├─ GitLab CI webhook       POST /api/changes
-  ├─ GitHub webhook          POST /api/github/changes
-  ├─ exa retrain             POST /retrain
-  ├─ exa approvals approve   POST /approve/{model}
-  └─ drift auto-retrain      POST /retrain  (via exa drift trigger)
-          │
-          ▼
-    Control Plane (:18002)
-    ├─ approvals SQLite (control_plane.db)
-    ├─ modelzoo freshness SQLite (same DB)
-    └─ PrefectGateway
-          │
-          ▼
-    Prefect Orchestrator (:14200)
-          │  runs training_flow
-          ▼
-    MLflow (:15000) ← artifact + metric storage
-          │  aliases read by
-          ▼
-    Ray Serve (:18001) ← production inference
-```
-
-The control plane is purely a write-path forwarder and approval gate. It never reads trained model artifacts.
-
-## API reference
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| `GET` | `/health` | none | Liveness + `db_ok` + `poller.alive` + pending approvals count |
-| `GET` | `/status` | token | Full service health (MLflow, Prefect, Ray, Dashboard) |
-| `GET` | `/metrics` | none | Prometheus metrics |
-| `POST` | `/retrain` | token | Trigger a training run via Prefect |
-| `POST` | `/api/changes` | none | GitLab CI webhook — mark models stale, queue approval |
-| `POST` | `/api/github/changes` | none | GitHub webhook — same as above |
-| `GET` | `/approvals` | token | List pending approvals |
-| `POST` | `/approve/{model_id}` | token | Approve → fire Prefect run |
-| `POST` | `/reject/{model_id}` | token | Reject with reason |
-| `DELETE` | `/approvals/{approval_id}` | token | Delete a pending approval by UUID |
-| `GET` | `/modelzoo/status` | token | Model freshness state |
-| `GET` | `/modelzoo/config` | token | Poller configuration |
-| `PUT` | `/modelzoo/config` | token | Update poller config (in-memory) |
-
-Authentication is a `Bearer` token from `CONTROL_PLANE_TOKEN`. If unset the service returns 503 on token-required endpoints.
+See the [Control Plane guide](../guides/control-plane.md) for the complete endpoint table, examples,
+configuration, and Prometheus metrics.
 
 ## Local development
 
 ```bash
 make control-plane-up
+curl http://localhost:18002/livez
+curl --fail http://localhost:18002/readyz
 make control-plane-logs
-make control-plane-down
 ```
-
-URL: http://localhost:18002

@@ -28,11 +28,11 @@ import os
 import re
 import uuid
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import typer
 
-from examlops.cli import _client, _output
+from examlops.cli import _agent_transport, _client, _output
 from examlops.cli._config import active_project, load_config, scoped_agent_session
 
 _EXAMPLES = (
@@ -276,66 +276,45 @@ def _print_chat_status(base: str, session_id: str, info: dict) -> None:
     _output.print_table("Skipper chat", ["", ""], rows)
 
 
-def _chat_completion(base: str, token: str, session_id: str, text: str, stream: bool) -> bool:
-    """Send one turn, render it, and return whether a write is awaiting approval."""
-    body = {
-        "model": "examlops-agent",
-        "messages": [{"role": "user", "content": text}],
-        "stream": stream,
-        # The bridge uses this as the thread id when X-Session-ID is absent. Keeping the
-        # identifier in the JSON body lets the shared HTTP client remain generic.
-        "user": scoped_agent_session(session_id),
-        "metadata": {"project": active_project()},
-    }
-    url = f"{base}/v1/chat/completions"
-    if not stream:
-        data = _client.post(url, body, token=token, timeout=300.0)
-        if not isinstance(data, dict):
-            raise _client.ClientError("the agent returned an invalid completion")
-        if "error" in data:
-            error = data["error"]
-            message = error.get("message") if isinstance(error, dict) else str(error)
-            raise _client.ClientError(str(message))
-        choices = data.get("choices") or []
-        if not choices or not isinstance(choices[0], dict):
-            raise _client.ClientError("the agent returned a completion with no answer")
-        choice = choices[0]
-        message = choice.get("message") or {}
-        answer = message.get("content", "") if isinstance(message, dict) else ""
-        if not str(answer).strip():
-            raise _client.ClientError("the agent returned an empty answer")
-        _output.console.print(str(answer), markup=False, highlight=False)
-        return bool(choice.get("hitl_required"))
-
-    parts: list[str] = []
-    hitl = False
-    remote_error = ""
-    for frame in _client.post_sse(url, body, token=token, timeout=300.0):
-        event = frame.get("ki_event")
-        if isinstance(event, dict):
-            kind = event.get("type")
-            message = str(event.get("message", ""))
-            if kind == "tool_call":
-                _output.console.print(f"[dim]· {message}[/dim]")
-            elif kind == "error":
-                remote_error = message or "the agent reported an error"
-            continue
-        choices = frame.get("choices") or []
-        if not choices or not isinstance(choices[0], dict):
-            continue
-        choice = choices[0]
-        hitl = hitl or bool(choice.get("hitl_required"))
-        piece = (choice.get("delta") or {}).get("content") or ""
-        if piece:
-            parts.append(str(piece))
-            _output.console.print(str(piece), end="", markup=False, highlight=False)
-    if parts:
+def _chat_completion(
+    base: str,
+    token: str,
+    session_id: str,
+    text: str,
+    stream: bool,
+    *,
+    action: _agent_transport.AgentAction | None = None,
+) -> str | None:
+    """Send one turn and return the opaque id of any write awaiting approval."""
+    # The bridge uses the user value as the thread id when X-Session-ID is absent. Keeping it in
+    # the JSON body lets the shared HTTP client remain generic.
+    body = _agent_transport.build_request(
+        text,
+        scoped_agent_session(session_id),
+        stream=stream,
+        action=action,
+        metadata={"project": active_project()},
+    )
+    result = _agent_transport.request_completion(
+        base,
+        token,
+        body,
+        timeout=300.0,
+        on_event=_print_chat_event if stream else None,
+    )
+    if stream and result.answer:
         _output.console.print()
-    if remote_error:
-        raise _client.ClientError(remote_error)
-    if not parts and not hitl:
-        raise _client.ClientError("the agent returned an empty answer")
-    return hitl
+    result.require_valid()
+    if not stream:
+        _output.console.print(result.answer, markup=False, highlight=False)
+    return result.action_id if result.hitl_required else None
+
+
+def _print_chat_event(event: _agent_transport.AgentEvent) -> None:
+    if event.kind == "content":
+        _output.console.print(event.text, end="", markup=False, highlight=False)
+    elif event.kind == "tool":
+        _output.console.print(f"[dim]· {event.text}[/dim]")
 
 
 def _print_sessions(base: str, token: str) -> None:
@@ -411,6 +390,7 @@ def chat(
     if project := active_project():
         _output.console.print(f"[dim]  project {project}[/dim]")
     _output.console.print("[dim]Type /help for commands; /quit to leave.[/dim]")
+    pending_action_id: str | None = None
 
     while True:
         try:
@@ -461,24 +441,37 @@ def chat(
                 )
                 continue
             session_id = candidate
+            pending_action_id = None
             verb = "Resuming" if command == "/resume" else "Started"
             _output.info(f"{verb} conversation {session_id}.")
             continue
         if command == "/approve":
-            text = "approve"
+            if pending_action_id is None:
+                _output.warning("No write action is awaiting approval.")
+                continue
+            action = _agent_transport.AgentAction(pending_action_id, "approve")
         elif command == "/deny":
-            text = "deny"
+            if pending_action_id is None:
+                _output.warning("No write action is awaiting approval.")
+                continue
+            action = _agent_transport.AgentAction(pending_action_id, "deny")
         elif command.startswith("/"):
             _output.warning(f"Unknown chat command: {command}")
             _output.hint("Type /help to list available commands.")
             continue
+        elif pending_action_id is not None:
+            _output.warning("A write is awaiting a decision; use /approve or /deny first.")
+            continue
+        else:
+            action = None
 
         try:
-            hitl = _chat_completion(base, token, session_id, text, stream)
+            next_action_id = _chat_completion(base, token, session_id, text, stream, action=action)
         except _client.ClientError as exc:
             _chat_request_error(base, exc)
             continue
-        if hitl:
+        pending_action_id = next_action_id
+        if pending_action_id:
             _output.hint("Approval required: type /approve to continue or /deny to cancel.")
 
 
@@ -493,21 +486,13 @@ def _chat_request_error(base: str, exc: _client.ClientError) -> None:
 
 
 # ---------------------------------------------------------------------------
-# exa agent memory — the erasure surface ADR 0034 accepted
+# exa agent memory — authenticated remote governance, with explicit legacy local mode
 # ---------------------------------------------------------------------------
 # ADR 0034 (Accepted) makes a governance promise: an operator can *enumerate, export and
 # erase* what the agent remembers, and it names `exa agent memory` as the surface. The
-# capability shipped — `skipper.memory_admin` does all three, with cascade and an audit
-# event — but only as `python -m skipper.memory_admin` run from inside the agent package.
-# A right-to-erasure control that requires knowing where the service's source tree lives
-# is not a control an operator has; the accepted decision was never actually delivered.
-#
-# It was not an oversight. This module's own docstring gives the reason: nothing here may
-# import `skipper`, because `exa` ships wherever the agent does not and a hard dependency
-# on langgraph would break the CLI everywhere else. That constraint is right, and it does
-# not require the command to be missing — only that the import happen *inside* the command
-# body, the same way `exa mcp` treats fastmcp. Absent the agent, this fails with a sentence
-# that says so; present, it is the surface the ADR described.
+# The default path talks to the running agent, so the server can derive ownership from the
+# authenticated credential and enforce the same principal + tenant boundary as chat. Direct
+# file access remains available only when the operator explicitly asks for ``--local``.
 
 _MEMORY_EXAMPLES = (
     "Examples:\n\n"
@@ -520,19 +505,24 @@ _MEMORY_EXAMPLES = (
     "  [dim]# Export the whole store (subject access request)[/dim]\n"
     "  exa agent memory export --out memories.json\n\n"
     "  [dim]# Erase it, with cascade to derived memories (audited)[/dim]\n"
-    "  exa agent memory delete pref --scope alice"
+    "  exa agent memory delete pref --scope alice\n\n"
+    "  [dim]# Inspect an old local store explicitly[/dim]\n"
+    "  exa agent memory stats --local"
 )
 
 memory_app = typer.Typer(
-    help="Enumerate, export and erase the agent's long-term memory (ADR 0034)",
+    help="Govern authenticated, owner-scoped agent memory (ADR 0034)",
     no_args_is_help=True,
     epilog=_MEMORY_EXAMPLES,
     rich_markup_mode="rich",
 )
 
 
-def _memory_admin():
-    """Import the agent's memory admin, or explain precisely why it is unavailable.
+_MEMORY_KINDS = ("proc", "episode", "pref", "kb")
+
+
+def _local_memory_admin():
+    """Import the agent's memory admin for an explicitly requested local operation.
 
     Returns the module. Raises ``typer.Exit(1)`` after printing an actionable error, so
     every caller here can treat a return value as usable.
@@ -552,22 +542,22 @@ def _memory_admin():
         _output.error(
             f"The Skipper agent package is not importable from here ({exc}).",
             hint=(
-                "This command reads the agent's own memory store, so it must run where the "
-                "agent is installed. Point at it with EXAMLOPS_AGENT_DIR=<repo>/platform/"
-                "services/agent, or install the agent's requirements."
+                "Local mode must run where the agent is installed. Point at it with "
+                "EXAMLOPS_AGENT_DIR=<repo>/platform/services/agent, or omit --local to use "
+                "the authenticated remote API."
             ),
         )
         raise typer.Exit(1) from None
 
 
-def _store():
-    """Open the memory store and report which file was opened.
+def _local_store():
+    """Open the legacy local memory store only after ``--local`` was supplied.
 
     Naming the path is not decoration. The store is a local file (``AGENT_MEMORY_DB``) and
     the agent usually runs somewhere else, so an operator who erases on the wrong host gets
     a success message and keeps the data. Saying which file was touched makes that visible.
     """
-    admin = _memory_admin()
+    admin = _local_memory_admin()
     try:
         return admin, admin.open_store()
     except Exception as exc:  # sqlite/langgraph both surface here
@@ -578,19 +568,54 @@ def _store():
         raise typer.Exit(1) from None
 
 
-@memory_app.command("stats", epilog=_MEMORY_EXAMPLES)
-def memory_stats() -> None:
-    """Summarise what the agent remembers, by memory kind."""
-    admin, store = _store()
-    from skipper import config as _cfg  # noqa: PLC0415
-    from skipper import memory_types
+def _remote_memory_get(path: str) -> object:
+    cfg = load_config()
+    try:
+        return _client.get(f"{cfg.agent_url.rstrip('/')}{path}", token=cfg.agent_token)
+    except _client.ClientError as exc:
+        _output.error(f"Agent memory request failed: {exc}")
 
-    data = memory_types.stats(store)
+
+def _remote_memory_post(path: str, body: dict) -> object:
+    cfg = load_config()
+    try:
+        return _client.post(
+            f"{cfg.agent_url.rstrip('/')}{path}", body, token=cfg.agent_token, timeout=30.0
+        )
+    except _client.ClientError as exc:
+        _output.error(f"Agent memory request failed: {exc}")
+
+
+def _require_memory_kind(kind: str) -> None:
+    if kind not in _MEMORY_KINDS:
+        _output.error(
+            f"Unknown memory kind {kind!r}.", hint=f"Choose one of: {', '.join(_MEMORY_KINDS)}"
+        )
+
+
+@memory_app.command("stats", epilog=_MEMORY_EXAMPLES)
+def memory_stats(
+    local: bool = typer.Option(False, "--local", help="Read AGENT_MEMORY_DB on this machine"),
+) -> None:
+    """Summarise memory owned by the authenticated principal and tenant."""
+    if local:
+        _admin, store = _local_store()
+        from skipper import config as _cfg  # noqa: PLC0415
+        from skipper import memory_types
+
+        data = memory_types.stats(store)
+        source = _cfg.AGENT_MEMORY_DB
+    else:
+        response = _remote_memory_get("/api/memory/stats")
+        data = response.get("counts") if isinstance(response, dict) else None
+        if not isinstance(data, dict):
+            _output.error("The agent returned invalid memory statistics.")
+        source = load_config().agent_url
     if _output.json_mode:
-        _output.print_json({"db": _cfg.AGENT_MEMORY_DB, **data})
+        _output.print_json({"mode": "local" if local else "remote", "source": source, **data})
         return
     rows = [[str(k), str(v)] for k, v in sorted(data.items())]
-    _output.print_table(f"Agent memory — {_cfg.AGENT_MEMORY_DB}", ["Kind", "Items"], rows)
+    _output.print_table(f"Agent memory — {source}", ["Kind", "Items"], rows)
 
 
 @memory_app.command("list", epilog=_MEMORY_EXAMPLES)
@@ -598,18 +623,26 @@ def memory_list(
     kind: str = typer.Argument(..., help="Memory kind: proc | episode | pref | kb"),
     scope: str = typer.Option(None, "--scope", help="Task-class / model / operator scope"),
     limit: int = typer.Option(50, "--limit", help="Maximum items to show"),
+    local: bool = typer.Option(False, "--local", help="Read AGENT_MEMORY_DB on this machine"),
 ) -> None:
-    """Enumerate stored memories of one kind."""
-    admin, store = _store()
-    from skipper import memory_types  # noqa: PLC0415
+    """Enumerate owner-scoped memories of one kind."""
+    _require_memory_kind(kind)
+    if limit < 1 or limit > 500:
+        _output.error("--limit must be between 1 and 500.")
+    if local:
+        _admin, store = _local_store()
+        from skipper import memory_types  # noqa: PLC0415
 
-    if kind not in memory_types.KINDS:
-        _output.error(
-            f"Unknown memory kind {kind!r}.", hint=f"Choose one of: {', '.join(memory_types.KINDS)}"
+        items = memory_types.list_kind(store, kind, scope=scope, limit=limit)
+        records = [{"key": it.key, "text": it.value.get("text", "")} for it in items]
+    else:
+        query = urlencode(
+            {k: v for k, v in {"scope": scope, "limit": limit}.items() if v is not None}
         )
-        raise typer.Exit(1)
-    items = memory_types.list_kind(store, kind, scope=scope, limit=limit)
-    records = [{"key": it.key, "text": it.value.get("text", "")} for it in items]
+        response = _remote_memory_get(f"/api/memory/list/{quote(kind)}?{query}")
+        records = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(records, list):
+            _output.error("The agent returned an invalid memory list.")
     if _output.json_mode:
         _output.print_json(records)
         return
@@ -626,17 +659,34 @@ def memory_list(
 @memory_app.command("export", epilog=_MEMORY_EXAMPLES)
 def memory_export(
     out: str = typer.Option(None, "--out", help="Write JSON here instead of stdout"),
+    local: bool = typer.Option(False, "--local", help="Read AGENT_MEMORY_DB on this machine"),
 ) -> None:
-    """Export every stored memory as JSON — the subject-access half of ADR 0034."""
-    admin, store = _store()
-    from skipper import memory_types  # noqa: PLC0415
+    """Export authenticated owner-scoped memory as JSON."""
+    if local:
+        _admin, store = _local_store()
+        from skipper import memory_types  # noqa: PLC0415
 
-    data = memory_types.export_all(store)
+        data = memory_types.export_all(store)
+    else:
+        response = _remote_memory_get("/api/memory/export")
+        data = response.get("memories") if isinstance(response, dict) else None
+        if not isinstance(data, dict):
+            _output.error("The agent returned an invalid memory export.")
     # export_all is keyed by memory kind, so len(data) is the number of kinds, not of
     # memories — count what the operator actually asked to see leave the building.
     total = sum(len(v) for v in data.values()) if isinstance(data, dict) else len(data)
     if out:
-        Path(out).write_text(json.dumps(data, indent=2, default=str))
+        destination = Path(out)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(destination, flags, 0o600)
+        except OSError as exc:
+            _output.error(f"Could not create private export {destination}: {exc}")
+            return
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, default=str)
+            handle.write("\n")
+        destination.chmod(0o600)
         _output.ok(f"Exported {total} memory item(s) to {out}")
         return
     _output.print_json(data)
@@ -649,23 +699,18 @@ def memory_delete(
         None, "--scope", help="Limit erasure to one scope (e.g. an operator)"
     ),
     operator: str = typer.Option(
-        None, "--operator", help="Who is performing the erasure (audited)"
+        None, "--operator", help="Local-mode audit actor (remote mode uses verified principal)"
     ),
+    local: bool = typer.Option(False, "--local", help="Erase AGENT_MEMORY_DB on this machine"),
 ) -> None:
     """Erase memories, cascading to derived ones. Audited to ``audit_events``.
 
     The immutable audit log is a separate store and is deliberately *not* erased — ADR 0034
     keeps the record that an erasure happened while removing what was remembered.
     """
-    admin, store = _store()
-    from skipper import config as _cfg  # noqa: PLC0415
-    from skipper import memory_types
-
-    if kind not in memory_types.KINDS:
-        _output.error(
-            f"Unknown memory kind {kind!r}.", hint=f"Choose one of: {', '.join(memory_types.KINDS)}"
-        )
-        raise typer.Exit(1)
+    _require_memory_kind(kind)
+    if operator and not local:
+        _output.error("--operator is only valid with --local; remote audit identity is verified.")
     target = f"all {kind} memories" + (f" for scope {scope!r}" if scope else "")
     # `_output.confirm` returns True under --json as well as --yes, which is right for the
     # mutations it was written for: a script that asked to promote a model meant it. Erasure
@@ -677,14 +722,90 @@ def memory_delete(
             hint="Erasure is irreversible, so --json alone is not taken as a yes. Add --yes.",
         )
         raise typer.Exit(1)
-    if not _output.confirm(f"Erase {target} from {_cfg.AGENT_MEMORY_DB}? This cannot be undone."):
+    destination = "the local memory file" if local else load_config().agent_url
+    if not _output.confirm(f"Erase {target} from {destination}? This cannot be undone."):
         _output.detail("Nothing erased.")
         return
-    n = memory_types.erase(store, kind, scope=scope, operator=operator or _cfg.AGENT_ACTOR)
+    if local:
+        _admin, store = _local_store()
+        from skipper import config as _cfg  # noqa: PLC0415
+        from skipper import memory_types
+
+        n = memory_types.erase(store, kind, scope=scope, operator=operator or _cfg.AGENT_ACTOR)
+    else:
+        response = _remote_memory_post(
+            "/api/memory/delete",
+            {"kind": kind, "scope": scope, "confirmation": "erase-owned-memory"},
+        )
+        n = response.get("erased") if isinstance(response, dict) else None
+        if not isinstance(n, int):
+            _output.error("The agent returned an invalid memory deletion result.")
     if _output.json_mode:
-        _output.print_json({"erased": n, "kind": kind, "scope": scope, "db": _cfg.AGENT_MEMORY_DB})
+        _output.print_json(
+            {"erased": n, "kind": kind, "scope": scope, "mode": "local" if local else "remote"}
+        )
         return
     _output.ok(f"Erased {n} {kind} memory item(s)" + (f" for {scope}" if scope else ""))
 
 
+review_app = typer.Typer(help="List, approve, or reject queued procedure memories")
+
+
+@review_app.command("list")
+def memory_review_list(
+    local: bool = typer.Option(False, "--local", help="Read the local review database"),
+) -> None:
+    """List pending procedure reviews for the authenticated owner."""
+    if local:
+        _local_memory_admin()
+        from skipper import memory_review  # noqa: PLC0415
+
+        reviews = memory_review.list_pending()
+    else:
+        response = _remote_memory_get("/api/memory/reviews")
+        reviews = response.get("reviews") if isinstance(response, dict) else None
+        if not isinstance(reviews, list):
+            _output.error("The agent returned an invalid memory review list.")
+    _output.print_json(reviews)
+
+
+@review_app.command("approve")
+def memory_review_approve(
+    review_id: int = typer.Argument(..., help="Pending review ID"),
+    local: bool = typer.Option(False, "--local", help="Update the local review database"),
+) -> None:
+    """Approve one queued procedure memory."""
+    if local:
+        _admin, store = _local_store()
+        from skipper import memory_review  # noqa: PLC0415
+
+        message = memory_review.approve(review_id, store)
+        _output.ok(message)
+        return
+    response = _remote_memory_post(f"/api/memory/reviews/{review_id}/approve", {})
+    if not isinstance(response, dict) or response.get("status") != "approved":
+        _output.error("The agent returned an invalid memory review result.")
+    _output.ok(f"Approved memory review #{review_id}.")
+
+
+@review_app.command("reject")
+def memory_review_reject(
+    review_id: int = typer.Argument(..., help="Pending review ID"),
+    reason: str = typer.Option("", "--reason", help="Reason recorded with the rejection"),
+    local: bool = typer.Option(False, "--local", help="Update the local review database"),
+) -> None:
+    """Reject one queued procedure memory."""
+    if local:
+        _local_memory_admin()
+        from skipper import memory_review  # noqa: PLC0415
+
+        _output.ok(memory_review.reject(review_id, reason=reason))
+        return
+    response = _remote_memory_post(f"/api/memory/reviews/{review_id}/reject", {"reason": reason})
+    if not isinstance(response, dict) or response.get("status") != "rejected":
+        _output.error("The agent returned an invalid memory review result.")
+    _output.ok(f"Rejected memory review #{review_id}.")
+
+
+memory_app.add_typer(review_app, name="review")
 app.add_typer(memory_app, name="memory")

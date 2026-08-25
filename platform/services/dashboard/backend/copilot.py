@@ -219,8 +219,9 @@ async def ask_copilot(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (401, 403):
             return _degraded(
-                "The Skipper agent rejected the dashboard credential. Ensure AGENT_API_KEY "
-                "matches in both services, then try again.",
+                "The Skipper agent rejected the dashboard credential. Ensure "
+                "DASHBOARD_AGENT_API_KEY is registered in the agent's AGENT_API_KEYS_JSON "
+                "credential map (or that the legacy AGENT_API_KEY matches), then try again.",
                 "agent_auth",
             )
         return _degraded(

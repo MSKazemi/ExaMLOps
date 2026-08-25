@@ -10,7 +10,7 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 | Install path | What it is | Status |
 |---|---|---|
 | **A — Single node (Docker Compose)** | `make bootstrap` → uv venv + `docker compose up` | **Production-in-use** (this is what runs on `lxp-cpu01`). Best path today for a new machine or single VM. |
-| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis/NATS, and **the container images are not published yet**, so you must build and push them to a registry you control first. |
+| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis, and **the container images are not published yet**, so you must build and push them to a registry you control first. |
 | **C — CI auto-deploy (GitLab → node)** | `deploy:lxp` SSHes to the node, `git pull`, rebuilds, smoke-gated auto-rollback | **Production-in-use, single-node.** Deploy-from-HEAD to one NFS host; no image registry, no canary. |
 
 **Bottom line:** for a *new computer or single server* you can be fully running in ~15 minutes via
@@ -73,15 +73,16 @@ docker-socket-proxy (least-privilege Docker API), enable the `backup` profile + 
 The chart at `platform/infra/helm/examlops/` ships an enterprise **pod posture** — non-root
 (uid 10001), read-only rootfs, drop-ALL caps, seccomp RuntimeDefault, PDBs, topology spread, and an
 nginx Ingress with TLS. **It deploys only control-plane + dashboard + agent** and expects stateful
-services externally. The control plane deliberately defaults to one replica until distributed
-coordination and poller leadership are integrated; its HPA must remain disabled until those gates pass.
+services externally. The control plane deliberately defaults to one replica: rate limits, retrain
+locks, and poller ownership now use the configured coordinator, but the Prefect circuit breaker and
+runtime ModelZoo configuration remain process-local and multi-replica failover is not yet verified.
 
 ### Prerequisites (bring-your-own managed services)
 - A Kubernetes cluster (1.27+), an ingress controller, and cert-manager (or pre-provisioned TLS).
 - **Postgres** (the chart references CloudNativePG — `postgres.host/readHost/database`).
 - **Object storage** (MinIO or S3 — `minio.endpoint/bucket`).
-- **Redis** and **NATS** are future requirements for multi-replica coordination and event delivery.
-  Their current interfaces are not yet wired into every control-plane call path.
+- **Redis** for the implemented cross-host coordinator and Redis Streams event publisher. NATS and
+  Kafka selectors remain fail-loud placeholders, not supported deployment backends.
 - An external **Secret** holding the app secrets (never templated into the chart).
 
 ### Install
@@ -100,6 +101,12 @@ make helm-validate                       # lint + refusal check + render (+ kube
 helm install examlops platform/infra/helm/examlops -f my-values.yaml \
   --set global.imageRegistry=<your-registry>/          # REQUIRED — note the trailing slash
 ```
+
+`CONTROL_PLANE_TOKEN` is the legacy `legacy/default` operator credential. For tenant isolation,
+store a `CONTROL_PLANE_CREDENTIALS_JSON` token map in the control-plane Secret and give the
+dashboard only its corresponding bearer value as `CONTROL_PLANE_TOKEN`. Each map entry declares a
+trusted `principal`, `tenant`, and `read`/`write` scopes; never place the JSON or token values in a
+values file.
 
 > **`global.imageRegistry` is required, and the chart refuses to render without it.** It used to
 > default to empty, which composed references like `examlops-agent:0.48.0`. Kubernetes resolves an
@@ -154,10 +161,10 @@ These are the flags that flip ExaMLOps from single-tenant dev to multi-tenant HA
 | Concern | Env / setting | Notes |
 |---|---|---|
 | **Data backend** | `EXAMLOPS_DB_BACKEND=postgres` + `EXAMLOPS_POSTGRES_DSN` | Working: all helpers reach it through `platform_db.get_db()`, which the backend now fronts (`examlops.storage.pg`), and the dashboard through `dbconn.connect()`. Verified live on Postgres 16 — schema, audit hash chain, append-only triggers — with the whole unit suite green against it. Connections are pooled (`EXAMLOPS_POSTGRES_POOL_MAX`, default 10 per process): see [Postgres backend](postgres-backend.md). |
-| **Coordination** | `EXAMLOPS_COORDINATOR=redis` + `EXAMLOPS_REDIS_URL` | Cross-host leader/lease election; `db` (default) works cross-process on one node. |
-| **Event backbone** | `EXAMLOPS_EVENT_PUBLISHER=nats` (or `kafka`/`redis`) | Transactional outbox; drain with `exa events relay`. `log` is the dependency-free default. |
-| **Identity / SSO** | `EXAMLOPS_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` (`examlops[oidc]`) | RS256 access-token validation. **Off by default** → the only identity is the two dashboard passwords + control-plane token. Turn this on for enterprise. |
-| **Multi-tenancy** | `EXAMLOPS_MULTITENANCY=1` | Default-deny relationship RBAC (`owner⊇editor⊇viewer`) over `authz_relations`; OpenFGA is a swap-in. Off by default (single-tenant allow). |
+| **Coordination** | `EXAMLOPS_COORDINATOR=redis` + `EXAMLOPS_REDIS_URL` | Implemented atomic cross-host leases, deduplication, and rate limits. `db` is the dependency-free default for processes sharing one datastore. |
+| **Event backbone** | `EXAMLOPS_EVENT_PUBLISHER=redis` + `EXAMLOPS_REDIS_URL` | Implemented Redis Streams relay from the transactional outbox. Delivery is at least once with stable event IDs; consumers deduplicate. `log` is the dependency-free default. NATS/Kafka are placeholders. |
+| **Identity / SSO** | `EXAMLOPS_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS` (`examlops[oidc]`) | RS256 access-token validation. **Off by default** → dashboard passwords and static service bearer maps remain the trust roots. Turn this on for enterprise user identity. |
+| **Multi-tenancy** | `EXAMLOPS_MULTITENANCY=1`; `CONTROL_PLANE_CREDENTIALS_JSON` | Platform relationship RBAC is default-deny when enabled. Independently, the control plane derives principal/tenant/scopes from its credential map and tenant-filters approvals and flow-status access. Static bearer tenancy is not a substitute for SSO. |
 | **Secrets** | `EXAMLOPS_VAULT_ADDR` **or** `EXAMLOPS_SECRETS_KEYS`/`_ACTIVE_KEY` | Vault/OpenBao KV → else envelope-encrypted keyring with online KEK rotation (`exa secrets rewrap`). `DASHBOARD_SECRET_KEY` is the legacy decrypt-only fallback. |
 | **Config location** | `EXAMLOPS_CONFIG` (file) / `EXAMLOPS_CONFIG_DIR` (dir) | Point CLI + services at a shared, mounted config dir (`config.toml`, `finops.yaml`, `policy.yaml`). |
 | **Host scoping** | `CONTROL_PLANE_ALLOWED_HOSTS` | Lock the control plane's Host-header allow-list (default `*` = dev). |
@@ -203,18 +210,21 @@ partial Helm chart and a turnkey, HA, multi-tenant cluster install:
    already wheel-buildable via setuptools, just not distributed.)*
 2. **Complete the Helm chart.** Add the missing tiers (MLflow, Prefect, Ray Serve, MinIO, JupyterHub),
    `NetworkPolicy`, `ServiceMonitor`/`PrometheusRule`, agent HPA/PDB, and either bundle the stateful
-   services as subcharts (Postgres/Redis/NATS operators) or ship an **umbrella chart** so the data
+   services as subcharts (Postgres/Redis operators) or ship an **umbrella chart** so the data
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
 3. **Finish multi-replica control-plane coordination.** The platform, dashboard, and control-plane
-   state can use the Postgres adapter, but rate limits, idempotency, breaker state, runtime config,
-   and poller ownership are still process-local. Wire a real Redis coordinator and one supported
-   event transport, then pass concurrent-replica and failover tests before enabling the HPA. See
-   `docs/guides/postgres-backend.md`.
+   state can use Postgres, and durable command claims plus Prefect idempotency keys protect dispatch.
+   Rate limits, retrain locks, and singleton poller ownership already use the selected DB/Redis
+   coordinator, and the in-service relay can publish the shared outbox through Redis Streams.
+   Prefect circuit-breaker state and runtime ModelZoo configuration are still process-local;
+   requests without a client idempotency key intentionally create new commands. Add shared/runtime
+   configuration semantics and pass concurrent-replica and failover tests before enabling the HPA.
+   See `docs/guides/postgres-backend.md`.
 4. **Identity on by default.** Wire the OIDC dependency across control-plane/dashboard/agent routes and
    ship multi-tenancy as the enterprise default, replacing the two-shared-passwords model.
 5. **A cluster bootstrapper.** A Terraform module / operator (or the umbrella chart above) that stands
    up the managed data services + secret store, so "install on a brand-new cluster" is one documented
-   command — not manual Postgres/MinIO/Redis/NATS provisioning.
+   command — not manual Postgres/MinIO/Redis provisioning.
 6. **Secure-by-default.** Remove the `minioadmin` defaults, plaintext HTTP, and wildcard
    CORS/allowed-hosts from the compose path so a copy-paste install isn't insecure.
 

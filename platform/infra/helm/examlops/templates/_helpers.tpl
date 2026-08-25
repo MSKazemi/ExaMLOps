@@ -24,6 +24,19 @@ examlops.io/tenant: {{ .Values.global.tenant | quote }}
 {{- end -}}
 {{- end -}}
 
+{{/* Per-tier Secret names. Empty service values preserve the legacy global Secret. */}}
+{{- define "examlops.controlPlaneSecret" -}}
+{{- default .Values.existingSecret .Values.controlPlane.existingSecret -}}
+{{- end -}}
+
+{{- define "examlops.dashboardSecret" -}}
+{{- default .Values.existingSecret .Values.dashboard.existingSecret -}}
+{{- end -}}
+
+{{- define "examlops.agentSecret" -}}
+{{- default .Values.existingSecret .Values.agent.existingSecret -}}
+{{- end -}}
+
 {{/* Image ref: global.imageRegistry + repository + (tag|AppVersion).
 
      The registry is REQUIRED, and that is a deliberate change from a silent default.

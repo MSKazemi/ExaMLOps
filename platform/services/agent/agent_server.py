@@ -9,19 +9,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
-def exposure_warning(host: str, api_key: str) -> str | None:
+def exposure_warning(host: str, configured_credentials: str) -> str | None:
     """Warn when an operator deliberately exposes the agent beyond loopback."""
     if host in _LOOPBACK:
         return None
-    if api_key:
+    if configured_credentials:
         return (
-            f"WARNING: binding {host} exposes the agent to the network. AGENT_API_KEY protects "
+            f"WARNING: binding {host} exposes the agent to the network. Credential auth protects "
             "chat, history, and WebSocket routes, but the token must be transported over TLS. "
             "Prefer a TLS reverse proxy or bind AGENT_SERVER_HOST=127.0.0.1 and use a secure tunnel."
         )
     return (
-        f"WARNING: binding {host} with AGENT_API_KEY unset exposes chat, tools, and conversation "
-        "history without authentication. Set AGENT_API_KEY, or bind "
+        f"WARNING: binding {host} without agent credentials exposes chat, tools, and conversation "
+        "history without authentication. Set AGENT_API_KEY or AGENT_API_KEYS_JSON, or bind "
         "AGENT_SERVER_HOST=127.0.0.1 and use a secure tunnel."
     )
 
@@ -38,9 +38,14 @@ if __name__ == "__main__":
         "yes",
         "on",
     }
-    if require_key and not os.environ.get("AGENT_API_KEY"):
-        raise SystemExit("AGENT_API_KEY is required when AGENT_REQUIRE_API_KEY=true")
+    configured_credentials = os.environ.get("AGENT_API_KEY") or os.environ.get(
+        "AGENT_API_KEYS_JSON"
+    )
+    if require_key and not configured_credentials:
+        raise SystemExit(
+            "AGENT_API_KEY or AGENT_API_KEYS_JSON is required when AGENT_REQUIRE_API_KEY=true"
+        )
     print(f"Skipper (ExaMLOps agent)  →  http://{host}:{port}")
-    if (warning := exposure_warning(host, os.environ.get("AGENT_API_KEY", ""))) is not None:
+    if (warning := exposure_warning(host, configured_credentials or "")) is not None:
         print(warning, file=sys.stderr)
     uvicorn.run(app, host=host, port=port)

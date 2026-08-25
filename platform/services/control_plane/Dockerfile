@@ -1,6 +1,6 @@
 # ExaMLOps Control Plane — retraining trigger service.
-# Lightweight FastAPI image; only depends on uvicorn + fastapi + the local
-# pipeline code (for registry validation).
+# FastAPI image with the local pipeline registry plus shared storage, coordination, and event
+# publisher implementations from the CLI package.
 
 FROM python:3.12-slim
 
@@ -23,7 +23,7 @@ COPY usecases /app/usecases
 
 RUN pip install --upgrade pip \
     && pip install -e /app/pipelines \
-    && pip install -e '/app/platform/cli[postgres]' \
+    && pip install -e '/app/platform/cli[coordination,postgres]' \
     && pip install fastapi uvicorn[standard] \
        opentelemetry-distro==0.63b1 \
        opentelemetry-exporter-otlp-proto-grpc==1.42.1 \

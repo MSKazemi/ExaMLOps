@@ -190,10 +190,9 @@ Honest status, so you can decide whether this fits your deployment:
   longer end up on different stores. It needs `platform/cli/src` on `PYTHONPATH` (the container sets
   this); if the import fails it keeps serving on SQLite and logs an error saying it is not reading
   platform state, rather than failing to start.
-- The dashboard's **own** test suite is still SQLite-shaped and remains a SQLite-tier gate: 34 of its
-  modules seed a temporary `platform.db` file with raw `sqlite3`, so on Postgres they assert against
-  a store the routers no longer read (450 pass on SQLite; 338/450 on Postgres, all remaining failures
-  fixture-shaped, no engine errors). Porting those fixtures to the seam is a tracked step.
+- The dashboard suite runs against both configured engines: **453/453 tests pass on Postgres with
+  pooling enabled and 453/453 pass on SQLite**. Shared fixture helpers isolate Postgres rows between
+  tests, and connection-scope guards prevent new pooled-connection leaks.
 - `exa data retention-prune --vacuum` and `exa doctor`'s DB checks are SQLite-specific.
 
 Progress and remaining public work are summarized in this guide and the linked architecture records.

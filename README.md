@@ -13,7 +13,8 @@ make bootstrap  # one-shot: start dev stack + install all deps
 
 The pipeline auto-discovers all registered models and executes train → evaluate → MLflow log → promote for every model × dataset combination.
 
-**Start infrastructure** (MLflow, Postgres, Prefect, Ray Serve, MinIO, Dashboard):
+**Start infrastructure** (Postgres, MLflow, Prefect, Ray Serve, MinIO, control plane, agent,
+and dashboard):
 ```bash
 make stack-up
 ```
@@ -98,7 +99,7 @@ exa approvals approve JPCP
 exa approvals reject JPCP --reason "x"
 
 # Management agent
-make skipper                   # start LangGraph management agent (platform/services/agent/)
+make skipper-server            # start the agent HTTP service on :18004
 exa chat                       # open the native interactive Skipper client
 exa chat --session incident-42 # continue a named investigation
 
@@ -133,6 +134,7 @@ exa status                  # show services, approvals, and production state
 | Ray Serve API | http://localhost:18001 |
 | Ray Dashboard | http://localhost:18265 |
 | Control Plane | http://localhost:18002 |
+| Skipper agent | http://localhost:18004 |
 | SeanerBUS Bridge Status | http://localhost:18003 |
 | JupyterHub | http://localhost:18888 |
 | MinIO Console | http://localhost:19001 |

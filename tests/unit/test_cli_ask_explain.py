@@ -16,7 +16,7 @@ runner = CliRunner()
 # ── exa ask ───────────────────────────────────────────────────────────────────
 
 
-def _fake_completion(content: str, hitl: bool = False) -> dict:
+def _fake_completion(content: str, hitl: bool = False, action_id: str | None = None) -> dict:
     return {
         "choices": [
             {
@@ -24,6 +24,7 @@ def _fake_completion(content: str, hitl: bool = False) -> dict:
                 "message": {"role": "assistant", "content": content},
                 "finish_reason": "stop",
                 "hitl_required": hitl,
+                "action_id": action_id,
             }
         ]
     }
@@ -55,10 +56,37 @@ def test_ask_json_mode(monkeypatch):
 
 
 def test_ask_hitl_hint(monkeypatch):
-    monkeypatch.setattr(_client, "post", lambda *a, **k: _fake_completion("Ready.", hitl=True))
+    monkeypatch.setattr(
+        _client,
+        "post",
+        lambda *a, **k: _fake_completion("Ready.", hitl=True, action_id="act.opaque"),
+    )
     result = runner.invoke(app, ["ask", "retrain jpcp", "--session", "s1"])
     assert result.exit_code == 0, result.output
     assert "needs approval" in result.output.lower()
+    assert "--approve act.opaque" in result.output
+
+
+def test_ask_sends_typed_approval(monkeypatch):
+    captured = {}
+
+    def fake_post(url, body, token="", timeout=10.0):
+        captured["body"] = body
+        return _fake_completion("Approved.")
+
+    monkeypatch.setattr(_client, "post", fake_post)
+    result = runner.invoke(
+        app, ["ask", "--no-stream", "--session", "s1", "--approve", "act.opaque"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["body"]["action"] == {"action_id": "act.opaque", "decision": "approve"}
+
+
+def test_ask_typed_decision_requires_session(monkeypatch):
+    monkeypatch.setattr(_client, "post", lambda *a, **k: None)
+    result = runner.invoke(app, ["ask", "--approve", "act.opaque"])
+    assert result.exit_code == 1
+    assert "requires --session" in result.output
 
 
 def test_ask_agent_unreachable(monkeypatch):

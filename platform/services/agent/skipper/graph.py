@@ -5,6 +5,7 @@ from typing import Any
 from langchain.agents import create_agent
 
 from skipper import config, supervisor
+from skipper.capabilities import read_only_local_tools, tool_name
 from skipper.llm import build_llm
 from skipper.memory import build_checkpointer, build_store, build_trim_middleware
 from skipper.prompts import SYSTEM_PROMPT
@@ -13,21 +14,18 @@ from skipper.tools import memory as memory_tools
 
 
 def _tool_name(tool: Any) -> str:
-    return getattr(tool, "name", getattr(tool, "__name__", ""))
+    """Compatibility alias for callers that inspect graph tool names."""
+
+    return tool_name(tool)
 
 
 def read_only_tools() -> list[Any]:
-    """Build the dashboard-safe tool set with mutating and memory-write tools excluded."""
-    from skipper.confirm import WRITE_TOOLS
+    """Build the dashboard-safe tool set from explicit read capabilities only."""
     from skipper.tools.mcp_bridge import mcp_tools
 
     tools: list[Any] = mcp_tools(include_writes=False)
     known = {_tool_name(tool) for tool in tools}
-    tools.extend(
-        tool
-        for tool in TOOLS
-        if _tool_name(tool) not in WRITE_TOOLS and _tool_name(tool) not in known
-    )
+    tools.extend(tool for tool in read_only_local_tools(TOOLS) if _tool_name(tool) not in known)
     return tools
 
 

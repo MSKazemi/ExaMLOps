@@ -6,8 +6,8 @@ Reliability improvements batch 1 (2026-06-12 round 1):
   2.  SQLite WAL mode + indices — better concurrency and faster hot queries
   3.  Prefect gateway retry (3 attempts, exponential backoff) — tolerates blips
   4.  Concurrent /status pings — worst-case 5 s instead of 25 s
-  5.  Retrain deduplication — 409 on concurrent same-model/dataset requests
-  6.  Write-endpoint rate limiting — token bucket, 429 with Retry-After
+  5.  Retrain deduplication — shared lease plus durable command idempotency
+  6.  Write-endpoint rate limiting — shared fixed window, 429 with Retry-After
   7.  Poller health tracking — last-ok timestamp in /health
   8.  lifespan context manager + graceful shutdown — replaces deprecated on_event
   9.  Startup validation — db/registry/token checks exposed in /health
@@ -27,11 +27,15 @@ Production-grade improvements batch 2 (2026-06-12 round 2):
 
 Env vars (all existing + new):
     CONTROL_PLANE_PORT                default: 8002
-    CONTROL_PLANE_TOKEN               REQUIRED — bearer token for write endpoints
+    CONTROL_PLANE_TOKEN               legacy operator bearer token (read + write, default tenant)
+    CONTROL_PLANE_CREDENTIALS_JSON    optional token-keyed principal/tenant/scopes credential map
     PREFECT_API_URL                   default: http://localhost:14200/api  (the host port;
                                       compose sets http://orchestrator:4200/api itself)
     PREFECT_DEPLOYMENT_NAME           default: examlops_scheduled_training/nightly
     CONTROL_PLANE_DB                  default: /data/approvals.db
+    EXAMLOPS_COORDINATOR              default: db  (redis for cross-host coordination)
+    EXAMLOPS_EVENT_PUBLISHER          default: log
+    CONTROL_PLANE_EVENT_RELAY_SECONDS default: 1  (0 disables the relay)
     RETRAIN_RATE_LIMIT_PER_MIN        default: 20
     LOG_FORMAT                        default: text  (set to "json" in production)
     APPROVAL_EXPIRY_HOURS             default: 72  (0 = disabled)
@@ -70,6 +74,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from examlops.admission import max_running as admission_max_running
+from examlops.admission import per_tenant_cap as admission_per_tenant_cap
+from examlops.coordination import get_coordinator as _selected_coordinator
+from examlops.data.events import enqueue_event
+from examlops.data.events import outbox_stats as _shared_outbox_stats
+from examlops.events import get_publisher as _selected_publisher
+from examlops.events import relay_once as _shared_relay_once
 from examlops.storage import PostgresBackend, SqliteBackend
 
 T = TypeVar("T")
@@ -199,10 +210,76 @@ _WEAK_MARKERS = (
 
 def _token_is_usable() -> bool:
     """True only when a real token is configured — not unset and not a known placeholder."""
-    t = CONTROL_PLANE_TOKEN.strip().lower()
+    return _secret_is_usable(CONTROL_PLANE_TOKEN)
+
+
+def _secret_is_usable(value: str) -> bool:
+    t = value.strip().lower()
     if not t or t in _WEAK_TOKENS:
         return False
     return not any(m in t for m in _WEAK_MARKERS)
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    principal: str
+    tenant: str
+    scopes: frozenset[str]
+    is_legacy: bool = False
+
+
+def _parse_credentials(raw: str) -> tuple[dict[str, RequestContext], str | None]:
+    if not raw.strip():
+        return {}, None
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError("must be a non-empty JSON object keyed by bearer token")
+        credentials: dict[str, RequestContext] = {}
+        for token, value in parsed.items():
+            if not isinstance(token, str) or not _secret_is_usable(token):
+                raise ValueError("each bearer token must be a non-placeholder string")
+            if not isinstance(value, dict):
+                raise ValueError("each credential value must be an object")
+            principal = value.get("principal")
+            tenant = value.get("tenant")
+            scopes = value.get("scopes")
+            if not isinstance(principal, str) or not principal.strip():
+                raise ValueError("each credential requires a non-empty principal")
+            if not isinstance(tenant, str) or not tenant.strip():
+                raise ValueError("each credential requires a non-empty tenant")
+            if not isinstance(scopes, list) or not scopes:
+                raise ValueError("each credential requires a non-empty scopes list")
+            scope_set = frozenset(scopes)
+            if any(not isinstance(scope, str) for scope in scopes) or not scope_set <= {
+                "read",
+                "write",
+            }:
+                raise ValueError("credential scopes must contain only 'read' and/or 'write'")
+            credentials[token] = RequestContext(
+                principal=principal.strip(), tenant=tenant.strip(), scopes=scope_set
+            )
+        return credentials, None
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {}, str(exc)
+
+
+_structured_credentials, _credential_config_error = _parse_credentials(
+    os.getenv("CONTROL_PLANE_CREDENTIALS_JSON", "")
+)
+if (
+    _credential_config_error is None
+    and _token_is_usable()
+    and any(_hmac.compare_digest(token, CONTROL_PLANE_TOKEN) for token in _structured_credentials)
+):
+    _structured_credentials = {}
+    _credential_config_error = "legacy and structured bearer credentials must be distinct"
+
+
+def _auth_is_usable() -> bool:
+    return _credential_config_error is None and (
+        bool(_structured_credentials) or _token_is_usable()
+    )
 
 
 # 4200 is Prefect's *container* port. On this host the stack publishes it as 14200
@@ -215,8 +292,13 @@ PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:14200/api").rst
 PREFECT_DEPLOYMENT_NAME = os.getenv(
     "PREFECT_DEPLOYMENT_NAME", "examlops_scheduled_training/nightly"
 )
-CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB", "/data/approvals.db")
 CONTROL_PLANE_STATE_BACKEND = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
+CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB") or os.getenv("PLATFORM_DB") or "/data/approvals.db"
+# Shared DB-backed coordination and the stock outbox relay resolve SQLite through PLATFORM_DB.
+# This service owns one transactional state boundary, so make its explicit database authoritative
+# inside this process. Postgres ignores file paths and already converges on DSN + schema.
+if CONTROL_PLANE_STATE_BACKEND == "sqlite":
+    os.environ["PLATFORM_DB"] = CONTROL_PLANE_DB
 MODELZOO_WEBHOOK_SECRET = os.getenv("MODELZOO_WEBHOOK_SECRET", "")
 MODELZOO_AUTO_RETRAIN = os.getenv("MODELZOO_AUTO_RETRAIN", "false").lower() == "true"
 MODELZOO_POLL_SECONDS = int(os.getenv("MODELZOO_POLL_SECONDS", "300"))
@@ -235,6 +317,16 @@ PREFECT_CB_FAIL_MAX = int(os.getenv("PREFECT_CB_FAIL_MAX", "5"))
 PREFECT_CB_RESET_TIMEOUT = float(os.getenv("PREFECT_CB_RESET_TIMEOUT", "30.0"))
 # Improvement 17
 IDEMPOTENCY_TTL_SECONDS = float(os.getenv("IDEMPOTENCY_TTL_SECONDS", "300"))
+# A process may disappear after claiming a command but before recording Prefect's response. The
+# replacement process may reclaim it after this lease and re-submit with the same Prefect
+# idempotency key, which is safe even when the first POST reached Prefect before the crash.
+COMMAND_LEASE_SECONDS = max(1, int(os.getenv("CONTROL_PLANE_COMMAND_LEASE_SECONDS", "300")))
+RETRAIN_LOCK_SECONDS = max(
+    60, int(os.getenv("CONTROL_PLANE_RETRAIN_LOCK_SECONDS", str(COMMAND_LEASE_SECONDS)))
+)
+POLLER_LEASE_SECONDS = max(3, int(os.getenv("CONTROL_PLANE_POLLER_LEASE_SECONDS", "30")))
+EVENT_RELAY_SECONDS = max(0.0, float(os.getenv("CONTROL_PLANE_EVENT_RELAY_SECONDS", "1")))
+EVENT_RELAY_BATCH_SIZE = max(1, int(os.getenv("CONTROL_PLANE_EVENT_RELAY_BATCH_SIZE", "100")))
 # When set, a modelzoo push event triggers the ai-production CI pipeline automatically.
 AI_PROD_PROJECT_ID = os.getenv("AI_PROD_GITLAB_PROJECT_ID", "")
 AI_PROD_PIPELINE_TOKEN = os.getenv("AI_PROD_PIPELINE_TRIGGER_TOKEN", "")
@@ -244,6 +336,7 @@ _modelzoo_config: dict[str, Any] = {
     "poll_interval_seconds": MODELZOO_POLL_SECONDS,
     "watch_branch": MODELZOO_WATCH_BRANCH,
 }
+_instance_id = uuid.uuid4().hex
 
 
 # ─── Improvement 14: Request-ID context var ──────────────────────────────────
@@ -251,34 +344,12 @@ _modelzoo_config: dict[str, Any] = {
 _request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
 
 
-# ─── Rate limiter (improvement 6) ────────────────────────────────────────────
+# ─── Shared coordination (rate limits, retrain locks, poller lease) ──────────
 
 
-class _TokenBucket:
-    def __init__(self, capacity: int, refill_rate: float) -> None:
-        self._capacity = float(capacity)
-        self._refill_rate = refill_rate
-        self._tokens = float(capacity)
-        self._last_refill = time.monotonic()
-        self._lock = threading.Lock()
-
-    def consume(self, n: float = 1.0) -> bool:
-        with self._lock:
-            now = time.monotonic()
-            self._tokens = min(
-                self._capacity, self._tokens + (now - self._last_refill) * self._refill_rate
-            )
-            self._last_refill = now
-            if self._tokens >= n:
-                self._tokens -= n
-                return True
-            return False
-
-
-_rate_limiter = _TokenBucket(
-    capacity=RETRAIN_RATE_LIMIT_PER_MIN,
-    refill_rate=RETRAIN_RATE_LIMIT_PER_MIN / 60.0,
-)
+def _get_coordinator() -> Any:
+    """Return the configured shared coordinator (DB or Redis)."""
+    return _selected_coordinator()
 
 
 # ─── Improvement 12: Prefect circuit breaker ─────────────────────────────────
@@ -425,6 +496,9 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     status        TEXT NOT NULL DEFAULT 'pending',
     prefect_run_id TEXT,
     reject_reason  TEXT,
+    tenant         TEXT NOT NULL DEFAULT 'default',
+    requested_by   TEXT NOT NULL DEFAULT 'legacy',
+    resolved_by    TEXT,
     requested_at  TEXT NOT NULL,
     resolved_at   TEXT
 )
@@ -453,10 +527,95 @@ CREATE TABLE IF NOT EXISTS model_freshness (
 )
 """
 
+_CREATE_COMMANDS_SQL = """
+CREATE TABLE IF NOT EXISTS control_plane_commands (
+    command_key    TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    request_hash   TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    state          TEXT NOT NULL DEFAULT 'pending',
+    response       TEXT,
+    prefect_run_id TEXT,
+    approval_id    TEXT,
+    admission_id   INTEGER,
+    actor          TEXT NOT NULL DEFAULT 'system',
+    tenant         TEXT NOT NULL DEFAULT 'default',
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+)
+"""
+
+# These are the same durable queue and transactional-outbox contracts exposed by
+# ``examlops.admission`` and ``examlops.events``. They live in the control-plane state database so
+# the command, queue transition, approval transition, and emitted event can share one transaction
+# on both SQLite and Postgres. ``enqueue_event(..., conn=...)`` below uses the shared outbox helper.
+_CREATE_ADMISSION_SQL = """
+CREATE TABLE IF NOT EXISTS admission_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant      TEXT NOT NULL DEFAULT 'default',
+    project     TEXT,
+    kind        TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    priority    INTEGER NOT NULL DEFAULT 0,
+    state       TEXT NOT NULL DEFAULT 'queued',
+    enqueued_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at  DATETIME,
+    finished_at DATETIME,
+    reason      TEXT
+)
+"""
+
+_CREATE_OUTBOX_SQL = """
+CREATE TABLE IF NOT EXISTS event_outbox (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    published_at DATETIME,
+    claimed_at   DATETIME,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    actor        TEXT NOT NULL DEFAULT 'system',
+    tenant       TEXT NOT NULL DEFAULT 'default'
+)
+"""
+
+_SCHEMA_COLUMNS = {
+    "pending_approvals": {
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        "requested_by": "TEXT NOT NULL DEFAULT 'legacy'",
+        "resolved_by": "TEXT",
+    },
+    "control_plane_commands": {
+        "actor": "TEXT NOT NULL DEFAULT 'system'",
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+    },
+    "event_outbox": {
+        "actor": "TEXT NOT NULL DEFAULT 'system'",
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+    },
+}
+
 _CREATE_INDICES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pa_model_status ON pending_approvals(model_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_pa_tenant_model_status "
+    "ON pending_approvals(tenant, model_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_me_sha ON modelzoo_events(commit_sha)",
+    "CREATE INDEX IF NOT EXISTS idx_cp_commands_state ON control_plane_commands(state, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_admission_state_tenant ON admission_queue(state, tenant, priority, id)",
+    "CREATE INDEX IF NOT EXISTS idx_event_outbox_unpublished ON event_outbox(published_at, id)",
 ]
+
+
+def _apply_schema_migrations(conn: Any) -> None:
+    """Add identity columns without replacing existing SQLite or PostgreSQL tables."""
+    for table, definitions in _SCHEMA_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for column, definition in definitions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _get_db() -> Any:
@@ -472,6 +631,10 @@ def _get_db() -> Any:
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
         conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
+        conn.execute(_CREATE_COMMANDS_SQL)
+        conn.execute(_CREATE_ADMISSION_SQL)
+        conn.execute(_CREATE_OUTBOX_SQL)
+        _apply_schema_migrations(conn)
         for idx_sql in _CREATE_INDICES_SQL:
             conn.execute(idx_sql)
         conn.commit()
@@ -499,6 +662,10 @@ def _get_db() -> Any:
             conn.execute(_CREATE_TABLE_SQL)
             conn.execute(_CREATE_MODELZOO_EVENTS_SQL)
             conn.execute(_CREATE_MODEL_FRESHNESS_SQL)
+            conn.execute(_CREATE_COMMANDS_SQL)
+            conn.execute(_CREATE_ADMISSION_SQL)
+            conn.execute(_CREATE_OUTBOX_SQL)
+            _apply_schema_migrations(conn)
             for idx_sql in _CREATE_INDICES_SQL:
                 conn.execute(idx_sql)
             conn.commit()
@@ -538,17 +705,40 @@ def _run_startup_checks() -> None:
         logger.error("Startup check FAILED — registry: %s", exc)
         checks["registry"] = f"fail: {exc}"
 
-    if _token_is_usable():
+    if _credential_config_error is not None:
+        checks["token"] = (
+            f"fail: malformed CONTROL_PLANE_CREDENTIALS_JSON: {_credential_config_error}"
+        )
+        logger.error("Startup check FAILED — credential map is malformed")
+    elif _auth_is_usable():
         checks["token"] = "ok"
     elif CONTROL_PLANE_TOKEN.strip():
         checks["token"] = "weak"
         logger.error(
             "Startup check FAILED — CONTROL_PLANE_TOKEN is a known placeholder "
-            "(e.g. 'changeme'); write endpoints return 503 until a real token is set"
+            "(e.g. 'changeme'); protected endpoints return 503 until a real credential is set"
         )
     else:
         checks["token"] = "missing"
-        logger.error("Startup check FAILED — CONTROL_PLANE_TOKEN unset; POST /retrain returns 503")
+        logger.error("Startup check FAILED — no control-plane bearer credential is configured")
+
+    try:
+        coordinator = _get_coordinator()
+        probe_key = f"control-plane:startup:{_instance_id}"
+        if not coordinator.try_lock(probe_key, _instance_id, 5):
+            raise RuntimeError("startup coordination probe was not acquired")
+        coordinator.unlock(probe_key, _instance_id)
+        checks["coordinator"] = "ok"
+    except Exception as exc:
+        logger.error("Startup check FAILED — coordinator: %s", exc)
+        checks["coordinator"] = f"fail: {exc}"
+
+    try:
+        _selected_publisher()
+        checks["event_publisher"] = "ok"
+    except Exception as exc:
+        logger.error("Startup check FAILED — event publisher: %s", exc)
+        checks["event_publisher"] = f"fail: {exc}"
 
     _startup_checks = checks
     ok = all(v == "ok" for v in checks.values())
@@ -558,7 +748,12 @@ def _run_startup_checks() -> None:
 # ─── Improvement 7 + 8: Poller state ─────────────────────────────────────────
 
 _poller_last_ok_ts: float = 0.0
+_poller_has_lease = False
+_poller_coordination_error: str | None = None
+_relay_last_result: dict[str, int] | None = None
+_relay_last_error: str | None = None
 _stop_event = threading.Event()
+_background_threads: list[threading.Thread] = []
 
 
 def _is_poller_stale() -> bool:
@@ -617,6 +812,9 @@ class ApprovalEntry(BaseModel):
     status: str
     prefect_run_id: str | None
     reject_reason: str | None
+    tenant: str
+    requested_by: str
+    resolved_by: str | None
     requested_at: str
     resolved_at: str | None
 
@@ -662,8 +860,12 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     _get_registry()
     _stop_event.clear()
     _start_poller()
+    _start_event_relay()
     yield
     _stop_event.set()
+    for thread in list(_background_threads):
+        thread.join(timeout=5)
+    _background_threads.clear()
     logger.info("Control plane shutting down")
 
 
@@ -723,21 +925,72 @@ if _allowed_hosts and _allowed_hosts != ["*"]:
 # ─── Auth & rate limiting ─────────────────────────────────────────────────────
 
 
-def _require_token(authorization: str | None = Header(default=None)) -> None:
-    if not _token_is_usable():
+def _request_context(authorization: str | None = Header(default=None)) -> RequestContext:
+    """Authenticate one configured bearer credential and return its trusted identity context."""
+    if _credential_config_error is not None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Control plane not configured (CONTROL_PLANE_TOKEN unset or a known placeholder)",
+            "Control plane credential map is malformed",
+        )
+    if not _auth_is_usable():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Control plane authentication is not configured",
         )
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
-    # Constant-time compare — avoid leaking the token via response timing.
-    if not _hmac.compare_digest(authorization.removeprefix("Bearer ").strip(), CONTROL_PLANE_TOKEN):
+    supplied = authorization.removeprefix("Bearer ").strip()
+    matched: RequestContext | None = None
+    # Scan every configured secret so credential selection does not expose a direct dictionary
+    # lookup timing oracle. Never derive identity or tenancy from request-controlled headers/body.
+    for token, context in _structured_credentials.items():
+        if _hmac.compare_digest(supplied, token):
+            matched = context
+    if _token_is_usable() and _hmac.compare_digest(supplied, CONTROL_PLANE_TOKEN):
+        matched = RequestContext("legacy", "default", frozenset({"read", "write"}), is_legacy=True)
+    if matched is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid bearer token")
+    return matched
 
 
-def _check_rate_limit() -> None:
-    if not _rate_limiter.consume():
+def _require_scope(required: str) -> Callable[[RequestContext], RequestContext]:
+    def dependency(context: RequestContext = Depends(_request_context)) -> RequestContext:
+        if required not in context.scopes:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"Missing {required!r} scope")
+        return context
+
+    return dependency
+
+
+_require_read_context = _require_scope("read")
+_require_write_context = _require_scope("write")
+
+
+def _require_token(authorization: str | None = Header(default=None)) -> RequestContext:
+    """Compatibility alias for older direct callers; write routes use scoped dependencies."""
+    return _request_context(authorization)
+
+
+def _check_rate_limit(
+    context: RequestContext = Depends(_require_write_context),
+) -> None:
+    if RETRAIN_RATE_LIMIT_PER_MIN <= 0:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Rate limit exceeded",
+            headers={"Retry-After": "60"},
+        )
+    try:
+        allowed = _get_coordinator().allow(
+            f"control-plane:writes:{context.tenant}", RETRAIN_RATE_LIMIT_PER_MIN, 60.0
+        )
+    except Exception as exc:
+        logger.error("Shared rate limiter unavailable: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Shared rate limiter unavailable",
+        ) from exc
+    if not allowed:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Rate limit exceeded",
@@ -816,30 +1069,45 @@ def _record_push_event(
 
 
 def _auto_retrain_model(model_id: str, dataset_name: str, commit_sha: str) -> None:
-    gateway = _get_gateway()
-    deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
-    flow_run_id = gateway.create_flow_run(
-        deployment_id,
-        {
-            "model_name": model_id,
-            "dataset_cls_name": dataset_name,
-            "is_dummy": False,
-            "backend_name": None,
-        },
+    parameters = {
+        "model_name": model_id,
+        "dataset_cls_name": dataset_name,
+        "is_dummy": False,
+        "backend_name": None,
+    }
+    command_key = f"modelzoo:{commit_sha}:{model_id}:{dataset_name}"
+    claim = _claim_command(
+        command_key,
+        "modelzoo_retrain",
+        parameters,
+        actor="system:modelzoo",
+        tenant="default",
     )
-    now = datetime.utcnow().isoformat()
-    with _DB_LOCK:
-        conn = _get_db()
-        try:
-            conn.execute(
-                "INSERT INTO model_freshness (model_id, latest_modelzoo_commit, last_retrain_commit, is_stale, retrain_triggered_at) "
-                "VALUES (?, ?, ?, 0, ?) ON CONFLICT(model_id) DO UPDATE SET "
-                "last_retrain_commit=excluded.latest_modelzoo_commit, is_stale=0, retrain_triggered_at=excluded.retrain_triggered_at",
-                (model_id, commit_sha, commit_sha, now),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    if claim.outcome != "claimed":
+        logger.info("ModelZoo retrain already %s for model=%s", claim.outcome, model_id)
+        return
+
+    gateway = _get_gateway()
+    try:
+        deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
+        flow_run_id = gateway.create_flow_run(
+            deployment_id, parameters, idempotency_key=command_key
+        )
+        _complete_command(
+            command_key,
+            {"flow_run_id": flow_run_id, "model_id": model_id},
+            event_topic="modelzoo.retrain_scheduled",
+            event_payload={
+                "model_id": model_id,
+                "commit_sha": commit_sha,
+                "flow_run_id": flow_run_id,
+            },
+            attempt=claim.attempt or 0,
+            freshness=(model_id, commit_sha),
+        )
+    except Exception as exc:
+        _fail_command(command_key, exc, attempt=claim.attempt or 0)
+        raise
     logger.info("Auto-retrain triggered model=%s flow_run_id=%s", model_id, flow_run_id)
 
 
@@ -915,35 +1183,98 @@ def _run_poll_cycle() -> dict[str, Any]:
     return {"new": True, "commit_sha": latest_sha, "event_id": event_id}
 
 
+def _run_leased_poll_cycle(holder: str) -> bool:
+    """Renew/acquire poller leadership and run one cycle only for the lease owner."""
+    global _poller_coordination_error, _poller_has_lease, _poller_last_ok_ts
+    interval = max(1, int(_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)))
+    lease_seconds = max(POLLER_LEASE_SECONDS, interval * 3)
+    try:
+        _poller_has_lease = _get_coordinator().try_lock(
+            "control-plane:modelzoo-poller", holder, lease_seconds
+        )
+        _poller_coordination_error = None
+    except Exception as exc:
+        _poller_has_lease = False
+        _poller_coordination_error = str(exc)
+        logger.warning("ModelZoo poller coordination failed: %s", exc)
+        return False
+    if not _poller_has_lease:
+        return False
+    try:
+        result = _run_poll_cycle()
+        _expire_old_approvals()
+        # Only count the cycle as healthy if the GitLab fetch did not error. A network/DNS
+        # failure must surface as a stale poller rather than masquerading as a successful no-op.
+        if result.get("error"):
+            logger.warning("ModelZoo poll cycle failed: %s", result["error"])
+        else:
+            _poller_last_ok_ts = time.time()
+    except Exception as exc:
+        logger.warning("Poll cycle error: %s", exc)
+    return True
+
+
 def _start_poller() -> None:
     if MODELZOO_POLL_SECONDS <= 0:
         logger.info("ModelZoo poller disabled (MODELZOO_POLL_SECONDS=0)")
         return
 
     def _loop() -> None:
-        global _poller_last_ok_ts
+        global _poller_has_lease
+        lock_key = "control-plane:modelzoo-poller"
+        holder = f"{_instance_id}:poller"
         logger.info(
             "ModelZoo poller started (interval=%ds)",
             _modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS),
         )
-        while not _stop_event.wait(
-            timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
-        ):
+        try:
+            while not _stop_event.wait(
+                timeout=_modelzoo_config.get("poll_interval_seconds", MODELZOO_POLL_SECONDS)
+            ):
+                _run_leased_poll_cycle(holder)
+        finally:
             try:
-                result = _run_poll_cycle()
-                _expire_old_approvals()
-                # Only count the cycle as healthy if the GitLab fetch did not
-                # error. A network/DNS failure must surface as a stale poller in
-                # /health rather than masquerading as a successful "no-op" cycle.
-                if result.get("error"):
-                    logger.warning("ModelZoo poll cycle failed: %s", result["error"])
-                else:
-                    _poller_last_ok_ts = time.time()
+                _get_coordinator().unlock(lock_key, holder)
             except Exception as exc:
-                logger.warning("Poll cycle error: %s", exc)
-        logger.info("ModelZoo poller stopped")
+                logger.warning("Could not release ModelZoo poller lease: %s", exc)
+            _poller_has_lease = False
+            logger.info("ModelZoo poller stopped")
 
-    threading.Thread(target=_loop, daemon=True, name="modelzoo-poller").start()
+    thread = threading.Thread(target=_loop, daemon=True, name="modelzoo-poller")
+    _background_threads.append(thread)
+    thread.start()
+
+
+def _relay_outbox_once() -> dict[str, int]:
+    """Relay the control-plane outbox through the configured publisher."""
+    # Resolve eagerly so a bad publisher selection fails before touching durable claims. The
+    # shared relay resolves the same cached instance and reads PLATFORM_DB, aligned above with the
+    # control-plane SQLite database (or the common Postgres schema).
+    _selected_publisher()
+    return _shared_relay_once(EVENT_RELAY_BATCH_SIZE)
+
+
+def _start_event_relay() -> None:
+    if EVENT_RELAY_SECONDS <= 0:
+        logger.info("Event relay disabled (CONTROL_PLANE_EVENT_RELAY_SECONDS=0)")
+        return
+
+    def _loop() -> None:
+        global _relay_last_error, _relay_last_result
+        logger.info("Event relay started (interval=%.1fs)", EVENT_RELAY_SECONDS)
+        while not _stop_event.wait(timeout=EVENT_RELAY_SECONDS):
+            try:
+                _relay_last_result = _relay_outbox_once()
+                failed = _relay_last_result.get("failed", 0)
+                _relay_last_error = f"{failed} event(s) failed to publish" if failed else None
+            except Exception as exc:
+                _relay_last_error = str(exc)
+                logger.warning("Event relay cycle failed: %s", exc)
+        logger.info("Event relay stopped")
+
+    thread = threading.Thread(target=_loop, daemon=True, name="event-outbox-relay")
+    _background_threads.append(thread)
+    thread.start()
 
 
 def _trigger_ci_pipeline(commit_sha: str) -> bool:
@@ -1045,9 +1376,18 @@ class PrefectGateway:
             raise HTTPException(502, f"Prefect returned no id for {deployment_name!r}")
         return dep_id
 
-    def create_flow_run(self, deployment_id: str, parameters: dict[str, Any]) -> str:
+    def create_flow_run(
+        self,
+        deployment_id: str,
+        parameters: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
         url = f"{self.api_url}/deployments/{deployment_id}/create_flow_run"
-        payload = _prefect_breaker.call(lambda: self._post(url, {"parameters": parameters}))
+        body: dict[str, Any] = {"parameters": parameters}
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+        payload = _prefect_breaker.call(lambda: self._post(url, body))
         run_id = payload.get("id")
         if not run_id:
             raise HTTPException(502, "Prefect create_flow_run returned no id")
@@ -1153,6 +1493,269 @@ def _retrain_key(model_name: str, dataset_name: str) -> str:
     return f"{model_name}:{dataset_name}"
 
 
+def _release_retrain_guards(local_key: str, coordinator: Any, lock_key: str, holder: str) -> None:
+    with _RETRAIN_LOCK:
+        _inflight_retrains.discard(local_key)
+    try:
+        coordinator.unlock(lock_key, holder)
+    except Exception as exc:
+        # The lease expires even if the backend is temporarily unavailable during release.
+        logger.warning("Could not release retrain lease %s: %s", lock_key, exc)
+
+
+@dataclass(frozen=True)
+class _CommandClaim:
+    outcome: str  # claimed | busy | succeeded
+    response: dict[str, Any] | None = None
+    attempt: int | None = None
+
+
+def _command_payload(kind: str, parameters: dict[str, Any]) -> tuple[str, str]:
+    payload = json.dumps(
+        {"kind": kind, "parameters": parameters}, sort_keys=True, separators=(",", ":")
+    )
+    return payload, hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _claim_command(
+    command_key: str,
+    kind: str,
+    parameters: dict[str, Any],
+    *,
+    approval_id: str | None = None,
+    actor: str = "system",
+    tenant: str = "default",
+) -> _CommandClaim:
+    """Create or atomically claim a durable Prefect command.
+
+    A completed key replays its stored response. A key reused for different input is rejected.
+    Dispatch claims have a lease, so a process crash cannot strand a command indefinitely.
+    """
+    payload, request_hash = _command_payload(kind, parameters)
+    now = datetime.utcnow().isoformat()
+    stale_before = (datetime.utcnow() - timedelta(seconds=COMMAND_LEASE_SECONDS)).isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            # Serialize the read-modify-write claim across processes. The shared Postgres adapter
+            # translates this to a transaction-scoped advisory lock.
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO control_plane_commands "
+                "(command_key, kind, request_hash, payload, state, approval_id, actor, tenant, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                (command_key, kind, request_hash, payload, approval_id, actor, tenant, now, now),
+            )
+            row = conn.execute(
+                "SELECT request_hash, state, response, admission_id, attempts, actor, tenant "
+                "FROM control_plane_commands "
+                "WHERE command_key = ?",
+                (command_key,),
+            ).fetchone()
+            if row is None:  # pragma: no cover - the insert/select are one transaction
+                raise RuntimeError("durable command disappeared after insert")
+            if row[0] != request_hash:
+                raise HTTPException(409, "Idempotency key was already used for different input")
+            if row[5] != actor or row[6] != tenant:
+                raise HTTPException(403, "Command belongs to a different principal or tenant")
+            if row[1] == "succeeded":
+                return _CommandClaim("succeeded", json.loads(row[2]))
+
+            admission_id = row[3]
+            if admission_id is None:
+                cursor = conn.execute(
+                    "INSERT INTO admission_queue "
+                    "(tenant, kind, payload, state) VALUES (?, ?, ?, 'queued')",
+                    (tenant, kind, payload),
+                )
+                admission_id = int(cursor.lastrowid or 0)
+                conn.execute(
+                    "UPDATE control_plane_commands SET admission_id = ? WHERE command_key = ?",
+                    (admission_id, command_key),
+                )
+
+            reclaimable = row[1] in ("pending", "failed") or (
+                row[1] == "dispatching"
+                and conn.execute(
+                    "SELECT 1 FROM control_plane_commands WHERE command_key=? AND updated_at <= ?",
+                    (command_key, stale_before),
+                ).fetchone()
+                is not None
+            )
+            if not reclaimable:
+                conn.commit()
+                return _CommandClaim("busy")
+
+            # Re-enter failed/stale work through the existing admission-queue contract. The HTTP
+            # caller acts as the worker for this synchronous API, but it may claim only when global
+            # and per-tenant capacity permit and when this is the next queued item.
+            conn.execute(
+                "UPDATE admission_queue SET state='queued', started_at=NULL, finished_at=NULL, "
+                "reason=NULL WHERE id=?",
+                (admission_id,),
+            )
+            running_total = conn.execute(
+                "SELECT COUNT(*) FROM admission_queue WHERE state='running'"
+            ).fetchone()[0]
+            running_tenant = conn.execute(
+                "SELECT COUNT(*) FROM admission_queue WHERE state='running' AND tenant=?",
+                (tenant,),
+            ).fetchone()[0]
+            next_row = conn.execute(
+                "SELECT id FROM admission_queue WHERE state='queued' AND tenant=? "
+                "ORDER BY priority DESC, id ASC LIMIT 1",
+                (tenant,),
+            ).fetchone()
+            if (
+                int(running_total) >= admission_max_running()
+                or int(running_tenant) >= admission_per_tenant_cap()
+                or next_row is None
+                or next_row[0] != admission_id
+            ):
+                conn.commit()
+                return _CommandClaim("busy")
+
+            claimed = conn.execute(
+                "UPDATE control_plane_commands "
+                "SET state='dispatching', attempts=attempts+1, last_error=NULL, updated_at=? "
+                "WHERE command_key=? AND "
+                "(state IN ('pending', 'failed') OR (state='dispatching' AND updated_at <= ?))",
+                (now, command_key, stale_before),
+            ).rowcount
+            if claimed:
+                conn.execute(
+                    "UPDATE admission_queue SET state='running', started_at=CURRENT_TIMESTAMP, "
+                    "finished_at=NULL, reason=NULL WHERE id=?",
+                    (admission_id,),
+                )
+                if approval_id is not None:
+                    approval_claimed = conn.execute(
+                        "UPDATE pending_approvals SET status='approving' "
+                        "WHERE id=? AND tenant=? AND status IN ('pending', 'approving')",
+                        (approval_id, tenant),
+                    ).rowcount
+                    if not approval_claimed:
+                        raise HTTPException(409, "Approval is no longer pending")
+            conn.commit()
+            if not claimed:
+                return _CommandClaim("busy")
+            return _CommandClaim("claimed", attempt=int(row[4]) + 1)
+        finally:
+            conn.close()
+
+
+def _complete_command(
+    command_key: str,
+    response: dict[str, Any],
+    *,
+    event_topic: str,
+    event_payload: dict[str, Any],
+    attempt: int,
+    approval_id: str | None = None,
+    freshness: tuple[str, str] | None = None,
+) -> None:
+    """Commit command success, queue completion, approval state, and outbox event atomically."""
+    now = datetime.utcnow().isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT admission_id, actor, tenant FROM control_plane_commands WHERE command_key=?",
+                (command_key,),
+            ).fetchone()
+            if row is None:  # pragma: no cover - command keys are created before dispatch
+                raise RuntimeError("durable command disappeared before completion")
+            actor, tenant = row[1], row[2]
+            completed = conn.execute(
+                "UPDATE control_plane_commands SET state='succeeded', response=?, prefect_run_id=?, "
+                "last_error=NULL, updated_at=? "
+                "WHERE command_key=? AND state='dispatching' AND attempts=?",
+                (
+                    json.dumps(response, sort_keys=True),
+                    response.get("flow_run_id"),
+                    now,
+                    command_key,
+                    attempt,
+                ),
+            ).rowcount
+            if not completed:
+                raise RuntimeError("durable command lease was superseded before completion")
+            if row and row[0] is not None:
+                conn.execute(
+                    "UPDATE admission_queue SET state='done', finished_at=CURRENT_TIMESTAMP, reason=NULL "
+                    "WHERE id=?",
+                    (row[0],),
+                )
+            if approval_id is not None:
+                conn.execute(
+                    "UPDATE pending_approvals SET status='approved', prefect_run_id=?, "
+                    "resolved_by=?, resolved_at=? WHERE id=? AND tenant=?",
+                    (response.get("flow_run_id"), actor, now, approval_id, tenant),
+                )
+            if freshness is not None:
+                model_id, commit_sha = freshness
+                conn.execute(
+                    "INSERT INTO model_freshness "
+                    "(model_id, latest_modelzoo_commit, last_retrain_commit, is_stale, "
+                    "retrain_triggered_at) VALUES (?, ?, ?, 0, ?) "
+                    "ON CONFLICT(model_id) DO UPDATE SET "
+                    "last_retrain_commit=excluded.latest_modelzoo_commit, is_stale=0, "
+                    "retrain_triggered_at=excluded.retrain_triggered_at",
+                    (model_id, commit_sha, commit_sha, now),
+                )
+            event_id = enqueue_event(
+                event_topic,
+                {"command_key": command_key, **event_payload, "actor": actor, "tenant": tenant},
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE event_outbox SET actor=?, tenant=? WHERE id=?",
+                (actor, tenant, event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _fail_command(
+    command_key: str, exc: Exception, *, attempt: int, approval_id: str | None = None
+) -> None:
+    """Persist a retryable command failure and release an approval claim."""
+    now = datetime.utcnow().isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT admission_id, tenant FROM control_plane_commands WHERE command_key=?",
+                (command_key,),
+            ).fetchone()
+            failed = conn.execute(
+                "UPDATE control_plane_commands SET state='failed', last_error=?, updated_at=? "
+                "WHERE command_key=? AND state='dispatching' AND attempts=?",
+                (str(exc)[:1000], now, command_key, attempt),
+            ).rowcount
+            if not failed:
+                conn.commit()
+                return
+            if row and row[0] is not None:
+                conn.execute(
+                    "UPDATE admission_queue SET state='failed', finished_at=CURRENT_TIMESTAMP, reason=? "
+                    "WHERE id=?",
+                    (str(exc)[:1000], row[0]),
+                )
+            if approval_id is not None:
+                conn.execute(
+                    "UPDATE pending_approvals SET status='pending' "
+                    "WHERE id=? AND tenant=? AND status='approving'",
+                    (approval_id, row[1]),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -1187,22 +1790,35 @@ def _pending_approvals_count() -> int | None:
 
 def _runtime_capabilities() -> dict[str, Any]:
     """Describe the controls this process actually uses, not only configured target backends."""
-    blockers = [
-        "rate_limit_process_local",
-        "idempotency_process_local",
-        "retrain_dedup_process_local",
-        "circuit_breaker_process_local",
-    ]
-    if MODELZOO_POLL_SECONDS > 0:
-        blockers.append("poller_leader_not_externalized")
+    coordinator_name = os.getenv("EXAMLOPS_COORDINATOR", "db").strip().lower()
+    publisher_name = os.getenv("EXAMLOPS_EVENT_PUBLISHER", "log").strip().lower()
+    blockers = ["retrain_dedup_requires_client_key", "circuit_breaker_process_local"]
     if CONTROL_PLANE_STATE_BACKEND != "postgres":
         blockers.append("state_not_shared")
+    if coordinator_name == "db" and CONTROL_PLANE_STATE_BACKEND != "postgres":
+        blockers.append("coordination_not_cross_host")
+    if EVENT_RELAY_SECONDS <= 0:
+        blockers.append("event_relay_disabled")
+    if publisher_name == "log":
+        blockers.append("event_publisher_process_local")
+    elif publisher_name in {"nats", "kafka"}:
+        blockers.append("event_publisher_not_implemented")
+    try:
+        outbox: dict[str, Any] = _shared_outbox_stats()
+    except Exception as exc:  # noqa: BLE001 - health must report an unreadable outbox, not fail
+        logger.warning("Could not read event outbox statistics: %s", exc)
+        outbox = {"pending": None, "published": None, "poison": None, "error": "unavailable"}
     return {
         "state_backend": CONTROL_PLANE_STATE_BACKEND,
-        "configured_coordinator": os.getenv("EXAMLOPS_COORDINATOR", "db").strip().lower(),
-        "configured_event_publisher": os.getenv("EXAMLOPS_EVENT_PUBLISHER", "log").strip().lower(),
-        "active_coordination": "process-local",
+        "configured_coordinator": coordinator_name,
+        "configured_event_publisher": publisher_name,
+        "active_coordination": coordinator_name,
         "poller_enabled": MODELZOO_POLL_SECONDS > 0,
+        "poller_has_lease": _poller_has_lease,
+        "event_relay_enabled": EVENT_RELAY_SECONDS > 0,
+        "event_relay_last_result": _relay_last_result,
+        "event_relay_error": _relay_last_error,
+        "outbox": outbox,
         "horizontal_scaling_safe": False,
         "horizontal_scaling_blockers": blockers,
     }
@@ -1231,6 +1847,8 @@ def health() -> dict[str, Any]:
             int(time.time() - _poller_last_ok_ts) if _poller_last_ok_ts else None
         )
         poller_info["stale"] = _is_poller_stale()
+        poller_info["leader"] = _poller_has_lease
+        poller_info["coordination_error"] = _poller_coordination_error
 
     # `all()` over an empty dict is vacuously true, so an unpopulated `_startup_checks`
     # used to publish `status: "ok"` — a machine-readable all-clear from a process that had
@@ -1247,11 +1865,13 @@ def health() -> dict[str, Any]:
     # nobody could see.
     if pending_count is None:
         status = "degraded"
+    if poller_enabled and _poller_coordination_error:
+        status = "degraded"
     return {
         "status": status,
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
-        "auth_configured": _token_is_usable(),
+        "auth_configured": _auth_is_usable(),
         "models": _get_registry(),
         "pending_approvals": pending_count,
         "startup_checks": _startup_checks,
@@ -1287,7 +1907,7 @@ def readyz() -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=payload)
 
 
-@app.get("/status")
+@app.get("/status", dependencies=[Depends(_require_read_context)])
 def platform_status() -> dict[str, Any]:
     """Improvement 4: all pings concurrent via ThreadPoolExecutor."""
     import urllib.request  # noqa: PLC0415
@@ -1356,20 +1976,14 @@ def list_models() -> list[ModelEntry]:
 @app.post(
     "/retrain",
     response_model=RetrainResponse,
-    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+    dependencies=[Depends(_check_rate_limit)],
 )
 def trigger_retrain(
     req: RetrainRequest,
     x_idempotency_key: str | None = Header(default=None),
+    context: RequestContext = Depends(_require_write_context),
 ) -> RetrainResponse:
     """Improvements 5 (dedup), 13 (metrics), 17 (idempotency), 12 (circuit breaker)."""
-    # Improvement 17: idempotency
-    if x_idempotency_key:
-        cached = _check_idempotency(x_idempotency_key)
-        if cached:
-            logger.info("Returning cached response for idempotency key %s", x_idempotency_key)
-            return RetrainResponse(**cached)
-
     registry = _get_registry()
     if req.model_name not in registry:
         raise HTTPException(400, f"Unknown model {req.model_name!r}. Known: {sorted(registry)}")
@@ -1380,13 +1994,30 @@ def trigger_retrain(
             f"Supported: {registry[req.model_name]}",
         )
 
-    # Improvement 5: deduplication
-    key = _retrain_key(req.model_name, req.dataset_name)
+    # Improvement 5: process-local fast-path deduplication. The durable command claim below is the
+    # cross-process authority; this set only avoids needless database traffic within one worker.
+    key = f"{context.tenant}:{_retrain_key(req.model_name, req.dataset_name)}"
     with _RETRAIN_LOCK:
         if key in _inflight_retrains:
             _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
             raise HTTPException(409, f"Retrain already in-flight for {key}")
         _inflight_retrains.add(key)
+
+    lock_key = f"control-plane:retrain:{key}"
+    holder = f"{_instance_id}:retrain:{uuid.uuid4().hex}"
+    try:
+        coordinator = _get_coordinator()
+        acquired = coordinator.try_lock(lock_key, holder, RETRAIN_LOCK_SECONDS)
+    except Exception as exc:
+        with _RETRAIN_LOCK:
+            _inflight_retrains.discard(key)
+        logger.error("Shared retrain coordination unavailable: %s", exc)
+        raise HTTPException(503, "Shared retrain coordination unavailable") from exc
+    if not acquired:
+        with _RETRAIN_LOCK:
+            _inflight_retrains.discard(key)
+        _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
+        raise HTTPException(409, f"Retrain already in-flight for {key}")
 
     parameters: dict[str, Any] = {
         "model_name": req.model_name,
@@ -1396,18 +2027,68 @@ def trigger_retrain(
         **req.parameters,
     }
 
+    # Every outbound POST gets a stable key. A caller-supplied key survives process restarts and
+    # replica changes; an omitted key preserves the historical "new request" semantics while still
+    # making the gateway's own retries safe.
+    external_key = (
+        "retrain:"
+        + hashlib.sha256(
+            f"{context.tenant}\0{context.principal}\0{x_idempotency_key}".encode()
+        ).hexdigest()
+        if x_idempotency_key
+        else f"retrain:{uuid.uuid4().hex}"
+    )
+    try:
+        claim = _claim_command(
+            external_key,
+            "retrain",
+            parameters,
+            actor=context.principal,
+            tenant=context.tenant,
+        )
+    except Exception:
+        _release_retrain_guards(key, coordinator, lock_key, holder)
+        raise
+    if claim.outcome == "succeeded" and claim.response is not None:
+        _release_retrain_guards(key, coordinator, lock_key, holder)
+        _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
+        return RetrainResponse(**claim.response)
+    if claim.outcome == "busy":
+        _release_retrain_guards(key, coordinator, lock_key, holder)
+        _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
+        raise HTTPException(409, "An identical retrain command is already being dispatched")
+
     # Improvement 13: retrain metrics
     start_ts = time.monotonic()
     try:
         gateway = _get_gateway()
         deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
-        flow_run_id = gateway.create_flow_run(deployment_id, parameters)
-    except Exception:
+        flow_run_id = gateway.create_flow_run(
+            deployment_id, parameters, idempotency_key=external_key
+        )
+        response_data: dict[str, Any] = {
+            "flow_run_id": flow_run_id,
+            "deployment": PREFECT_DEPLOYMENT_NAME,
+            "status_url": f"/retrain/{flow_run_id}",
+            "parameters": parameters,
+        }
+        _complete_command(
+            external_key,
+            response_data,
+            event_topic="retrain.scheduled",
+            event_payload={
+                "model_name": req.model_name,
+                "dataset_name": req.dataset_name,
+                "flow_run_id": flow_run_id,
+            },
+            attempt=claim.attempt or 0,
+        )
+    except Exception as exc:
+        _fail_command(external_key, exc, attempt=claim.attempt or 0)
         _metrics.record_retrain(req.model_name, req.dataset_name, "error")
         raise
     finally:
-        with _RETRAIN_LOCK:
-            _inflight_retrains.discard(key)
+        _release_retrain_guards(key, coordinator, lock_key, holder)
         duration = time.monotonic() - start_ts
         _metrics.observe_retrain_duration(req.model_name, req.dataset_name, duration)
 
@@ -1419,20 +2100,30 @@ def trigger_retrain(
         flow_run_id,
     )
 
-    response_data: dict[str, Any] = {
-        "flow_run_id": flow_run_id,
-        "deployment": PREFECT_DEPLOYMENT_NAME,
-        "status_url": f"/retrain/{flow_run_id}",
-        "parameters": parameters,
-    }
-    if x_idempotency_key:
-        _store_idempotency(x_idempotency_key, response_data)
-
     return RetrainResponse(**response_data)
 
 
-@app.get("/retrain/{flow_run_id}", response_model=FlowRunStatus)
-def retrain_status(flow_run_id: str) -> FlowRunStatus:
+@app.get(
+    "/retrain/{flow_run_id}",
+    response_model=FlowRunStatus,
+)
+def retrain_status(
+    flow_run_id: str,
+    context: RequestContext = Depends(_require_read_context),
+) -> FlowRunStatus:
+    # Structured credentials may inspect only runs dispatched for their verified tenant. The
+    # legacy credential keeps its historical operator-wide lookup behavior during migration.
+    if not context.is_legacy:
+        conn = _get_db()
+        try:
+            owned = conn.execute(
+                "SELECT 1 FROM control_plane_commands WHERE prefect_run_id=? AND tenant=?",
+                (flow_run_id, context.tenant),
+            ).fetchone()
+        finally:
+            conn.close()
+        if owned is None:
+            raise HTTPException(404, "Flow run not found")
     payload = _get_gateway().get_flow_run(flow_run_id)
     state = payload.get("state") or {}
     state_type = state.get("type")
@@ -1551,9 +2242,12 @@ def get_model_bundled_image(name: str, filename: str) -> Response:
 
 @app.post(
     "/api/changes",
-    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+    dependencies=[Depends(_check_rate_limit)],
 )
-def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
+def notify_changes(
+    notification: ChangeNotification,
+    context: RequestContext = Depends(_require_write_context),
+) -> dict[str, Any]:
     created: list[str] = []
     created_model_ids: list[str] = []
     now = datetime.utcnow().isoformat()
@@ -1564,8 +2258,9 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
         try:
             for model_id in notification.model_ids:
                 existing = conn.execute(
-                    "SELECT id FROM pending_approvals WHERE model_id = ? AND status = 'pending'",
-                    (model_id,),
+                    "SELECT id FROM pending_approvals "
+                    "WHERE tenant = ? AND model_id = ? AND status = 'pending'",
+                    (context.tenant, model_id),
                 ).fetchone()
                 if existing:
                     logger.info(
@@ -1576,14 +2271,17 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
                     continue
                 row_id = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT INTO pending_approvals (id, model_id, commit_sha, commit_msg, changed_files, status, requested_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                    "INSERT INTO pending_approvals "
+                    "(id, model_id, commit_sha, commit_msg, changed_files, status, tenant, "
+                    "requested_by, requested_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                     (
                         row_id,
                         model_id,
                         notification.commit_sha,
                         notification.commit_msg,
                         changed_files_json,
+                        context.tenant,
+                        context.principal,
                         now,
                     ),
                 )
@@ -1597,7 +2295,8 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
                 )
             conn.commit()
             pending_count: int = conn.execute(
-                "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+                "SELECT COUNT(*) FROM pending_approvals WHERE tenant=? AND status='pending'",
+                (context.tenant,),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -1608,18 +2307,27 @@ def notify_changes(notification: ChangeNotification) -> dict[str, Any]:
 
 
 @app.get("/approvals", response_model=list[ApprovalEntry])
-def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
+def list_approvals(
+    status: str | None = None,
+    context: RequestContext = Depends(_require_read_context),
+) -> list[ApprovalEntry]:
     conn = _get_db()
     try:
         sql = (
             "SELECT id, model_id, commit_sha, commit_msg, changed_files, "
-            "status, prefect_run_id, reject_reason, requested_at, resolved_at "
+            "status, prefect_run_id, reject_reason, tenant, requested_by, resolved_by, "
+            "requested_at, resolved_at "
             "FROM pending_approvals"
         )
         rows = (
-            conn.execute(sql + " WHERE status = ? ORDER BY requested_at DESC", (status,)).fetchall()
+            conn.execute(
+                sql + " WHERE tenant = ? AND status = ? ORDER BY requested_at DESC",
+                (context.tenant, status),
+            ).fetchall()
             if status
-            else conn.execute(sql + " ORDER BY requested_at DESC").fetchall()
+            else conn.execute(
+                sql + " WHERE tenant = ? ORDER BY requested_at DESC", (context.tenant,)
+            ).fetchall()
         )
     finally:
         conn.close()
@@ -1635,6 +2343,9 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
             row_status,
             prefect_run_id,
             reject_reason,
+            tenant,
+            requested_by,
+            resolved_by,
             requested_at,
             resolved_at,
         ) = row
@@ -1652,6 +2363,9 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
                 status=row_status,
                 prefect_run_id=prefect_run_id,
                 reject_reason=reject_reason,
+                tenant=tenant,
+                requested_by=requested_by,
+                resolved_by=resolved_by,
                 requested_at=requested_at,
                 resolved_at=resolved_at,
             )
@@ -1659,58 +2373,38 @@ def list_approvals(status: str | None = None) -> list[ApprovalEntry]:
     return entries
 
 
-def _set_approval_status(row_id: str, new_status: str) -> None:
-    """Best-effort status transition used to release a claim on a failed approval."""
-    with _DB_LOCK:
-        conn = _get_db()
-        try:
-            conn.execute(
-                "UPDATE pending_approvals SET status = ? WHERE id = ?", (new_status, row_id)
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-
 @app.post(
     "/approve/{model_id}",
-    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+    dependencies=[Depends(_check_rate_limit)],
 )
-def approve_model(model_id: str) -> dict[str, Any]:
+def approve_model(
+    model_id: str,
+    context: RequestContext = Depends(_require_write_context),
+) -> dict[str, Any]:
     # Improvement 16: reject expired entries before approving
     _expire_old_approvals()
 
-    # Atomically CLAIM the latest pending approval (pending → approving) BEFORE
-    # calling Prefect, so two concurrent approvals for the same model can't each
-    # create a flow run. The conditional UPDATE is the real cross-process guard
-    # (SQLite serializes writes); the loser sees rowcount 0 → 409.
+    # Find either a new approval or a previously interrupted dispatch. The durable command lease
+    # below decides whether an ``approving`` row is still owned or is safe to recover.
     with _DB_LOCK:
         conn = _get_db()
         try:
             row = conn.execute(
-                "SELECT id FROM pending_approvals WHERE model_id = ? AND status = 'pending' "
+                "SELECT id, status FROM pending_approvals "
+                "WHERE tenant = ? AND model_id = ? AND status IN ('pending', 'approving') "
                 "ORDER BY requested_at DESC LIMIT 1",
-                (model_id,),
+                (context.tenant, model_id),
             ).fetchone()
             if not row:
                 raise HTTPException(404, f"No pending approval found for model {model_id!r}")
             row_id = row[0]
-            claimed = conn.execute(
-                "UPDATE pending_approvals SET status = 'approving' "
-                "WHERE id = ? AND status = 'pending'",
-                (row_id,),
-            ).rowcount
-            conn.commit()
+            approval_status = row[1]
         finally:
             conn.close()
-
-    if not claimed:
-        raise HTTPException(409, f"Approval for model {model_id!r} is already in progress")
 
     registry = _get_registry()
     datasets = registry.get(model_id, [])
     if not datasets:
-        _set_approval_status(row_id, "pending")  # release the claim
         raise HTTPException(400, f"Model {model_id!r} has no registered datasets")
     dataset_name = datasets[0]
 
@@ -1721,62 +2415,97 @@ def approve_model(model_id: str) -> dict[str, Any]:
         "backend_name": None,
     }
 
+    command_key = f"approval:{row_id}"
+    if approval_status == "approving":
+        conn = _get_db()
+        try:
+            command_exists = conn.execute(
+                "SELECT 1 FROM control_plane_commands WHERE command_key=?", (command_key,)
+            ).fetchone()
+        finally:
+            conn.close()
+        # An ``approving`` row created by an older release has no stable Prefect idempotency key.
+        # Retrying it automatically could duplicate a flow, so leave it for explicit reconciliation.
+        if command_exists is None:
+            raise HTTPException(409, f"Approval for model {model_id!r} is already in progress")
+    claim = _claim_command(
+        command_key,
+        "approval",
+        parameters,
+        approval_id=row_id,
+        actor=context.principal,
+        tenant=context.tenant,
+    )
+    if claim.outcome == "succeeded" and claim.response is not None:
+        return claim.response
+    if claim.outcome == "busy":
+        raise HTTPException(409, f"Approval for model {model_id!r} is already in progress")
+
     gateway = _get_gateway()
     try:
         deployment_id = gateway.find_deployment_id(PREFECT_DEPLOYMENT_NAME)
-        flow_run_id: str = gateway.create_flow_run(deployment_id, parameters)
-    except Exception:
-        _set_approval_status(row_id, "pending")  # release claim so it can be retried
+        flow_run_id: str = gateway.create_flow_run(
+            deployment_id, parameters, idempotency_key=command_key
+        )
+        response = {
+            "flow_run_id": flow_run_id,
+            "status_url": f"/retrain/{flow_run_id}",
+            "model_id": model_id,
+        }
+        _complete_command(
+            command_key,
+            response,
+            event_topic="approval.approved",
+            event_payload={
+                "approval_id": row_id,
+                "model_id": model_id,
+                "flow_run_id": flow_run_id,
+            },
+            attempt=claim.attempt or 0,
+            approval_id=row_id,
+        )
+    except Exception as exc:
+        _fail_command(command_key, exc, attempt=claim.attempt or 0, approval_id=row_id)
         raise
 
-    pending_count = 0
-    with _DB_LOCK:
-        conn = _get_db()
-        try:
-            conn.execute(
-                "UPDATE pending_approvals SET status = 'approved', prefect_run_id = ?, resolved_at = ? WHERE id = ?",
-                (flow_run_id, datetime.utcnow().isoformat(), row_id),
-            )
-            conn.commit()
-            pending_count = conn.execute(
-                "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
-            ).fetchone()[0]
-        finally:
-            conn.close()
+    pending_count = _pending_approvals_count() or 0
 
     _metrics.record_approved(model_id, pending_count)
     logger.info("Approved model=%s approval_id=%s flow_run_id=%s", model_id, row_id, flow_run_id)
-    return {
-        "flow_run_id": flow_run_id,
-        "status_url": f"/retrain/{flow_run_id}",
-        "model_id": model_id,
-    }
+    return response
 
 
 @app.post(
     "/reject/{model_id}",
-    dependencies=[Depends(_require_token), Depends(_check_rate_limit)],
+    dependencies=[Depends(_check_rate_limit)],
 )
-def reject_model(model_id: str, body: RejectRequest = RejectRequest()) -> dict[str, Any]:
+def reject_model(
+    model_id: str,
+    body: RejectRequest = RejectRequest(),
+    context: RequestContext = Depends(_require_write_context),
+) -> dict[str, Any]:
     pending_count = 0
     with _DB_LOCK:
         conn = _get_db()
         try:
             row = conn.execute(
-                "SELECT id FROM pending_approvals WHERE model_id = ? AND status = 'pending' "
+                "SELECT id FROM pending_approvals "
+                "WHERE tenant = ? AND model_id = ? AND status = 'pending' "
                 "ORDER BY requested_at DESC LIMIT 1",
-                (model_id,),
+                (context.tenant, model_id),
             ).fetchone()
             if not row:
                 raise HTTPException(404, f"No pending approval found for model {model_id!r}")
             row_id = row[0]
             conn.execute(
-                "UPDATE pending_approvals SET status = 'rejected', reject_reason = ?, resolved_at = ? WHERE id = ?",
-                (body.reason, datetime.utcnow().isoformat(), row_id),
+                "UPDATE pending_approvals SET status='rejected', reject_reason=?, resolved_by=?, "
+                "resolved_at=? WHERE id=?",
+                (body.reason, context.principal, datetime.utcnow().isoformat(), row_id),
             )
             conn.commit()
             pending_count = conn.execute(
-                "SELECT COUNT(*) FROM pending_approvals WHERE status = 'pending'"
+                "SELECT COUNT(*) FROM pending_approvals WHERE tenant=? AND status='pending'",
+                (context.tenant,),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -1816,7 +2545,7 @@ def metrics_endpoint() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/modelzoo/status")
+@app.get("/modelzoo/status", dependencies=[Depends(_require_read_context)])
 def modelzoo_status() -> dict[str, Any]:
     conn = _get_db()
     try:
@@ -1870,7 +2599,7 @@ def modelzoo_status() -> dict[str, Any]:
     }
 
 
-@app.get("/modelzoo/events")
+@app.get("/modelzoo/events", dependencies=[Depends(_require_read_context)])
 def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
     conn = _get_db()
     try:
@@ -1894,7 +2623,7 @@ def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
     ]
 
 
-@app.post("/modelzoo/sync", dependencies=[Depends(_require_token)])
+@app.post("/modelzoo/sync", dependencies=[Depends(_require_write_context)])
 def modelzoo_sync() -> dict[str, Any]:
     result = _run_poll_cycle()
     if result.get("error"):
@@ -1909,7 +2638,7 @@ def modelzoo_sync() -> dict[str, Any]:
     }
 
 
-@app.get("/modelzoo/config")
+@app.get("/modelzoo/config", dependencies=[Depends(_require_read_context)])
 def get_modelzoo_config() -> dict[str, Any]:
     with _CONFIG_LOCK:
         return dict(_modelzoo_config)
@@ -1920,7 +2649,7 @@ class ModelzooConfigUpdate(BaseModel):
     poll_interval_seconds: int | None = None
 
 
-@app.put("/modelzoo/config", dependencies=[Depends(_require_token)])
+@app.put("/modelzoo/config", dependencies=[Depends(_require_write_context)])
 def update_modelzoo_config(body: ModelzooConfigUpdate) -> dict[str, Any]:
     with _CONFIG_LOCK:
         if body.auto_retrain is not None:
@@ -1933,7 +2662,7 @@ def update_modelzoo_config(body: ModelzooConfigUpdate) -> dict[str, Any]:
 # ─── Improvement 19: Config hot-reload ───────────────────────────────────────
 
 
-@app.post("/admin/reload", dependencies=[Depends(_require_token)])
+@app.post("/admin/reload", dependencies=[Depends(_require_write_context)])
 def admin_reload() -> dict[str, Any]:
     """Invalidate the registry cache and re-run startup checks without restarting.
 

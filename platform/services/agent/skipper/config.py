@@ -52,6 +52,15 @@ DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")
 # Optional credential gating the OpenAI-compatible bridge, agent status/history APIs, and
 # WebSocket tools. Unset means open access on the loopback-only development default.
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+# Optional JSON object mapping stable principal names to distinct bearer credentials. The legacy
+# single key remains principal "primary" so existing CLI/dashboard deployments keep working.
+AGENT_API_KEYS_JSON = os.getenv("AGENT_API_KEYS_JSON", "")
+AGENT_TENANT = os.getenv("EXAMLOPS_PROJECT", "default")
+# Human approval tokens are short-lived and signed with a server-only secret. Configured service
+# credentials provide a stable cross-replica fallback; unauthenticated development is process-local.
+AGENT_ACTION_SIGNING_KEY = os.getenv("AGENT_ACTION_SIGNING_KEY", "")
+AGENT_ACTION_TTL_SECONDS = int(os.getenv("AGENT_ACTION_TTL_SECONDS", "600"))
+AGENT_BROWSER_SESSION_TTL_SECONDS = int(os.getenv("AGENT_BROWSER_SESSION_TTL_SECONDS", "28800"))
 
 AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
@@ -169,3 +178,9 @@ HTTP_TIMEOUT = float(os.getenv("AGENT_HTTP_TIMEOUT", "10.0"))
 AGENT_STREAM_IDLE_TIMEOUT = float(os.getenv("AGENT_STREAM_IDLE_TIMEOUT", "120.0"))
 # Overall ceiling for a non-streaming graph run.
 AGENT_GRAPH_TIMEOUT = float(os.getenv("AGENT_GRAPH_TIMEOUT", "300.0"))
+# Distributed per-session turn locks are renewed while a graph is active. The finite lease lets a
+# different replica recover a session if the serving process disappears without releasing it.
+AGENT_TURN_LEASE_SECONDS = max(
+    AGENT_GRAPH_TIMEOUT + 30.0,
+    float(os.getenv("AGENT_TURN_LEASE_SECONDS", str(AGENT_GRAPH_TIMEOUT + 30.0))),
+)

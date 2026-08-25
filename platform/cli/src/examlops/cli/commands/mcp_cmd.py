@@ -154,7 +154,7 @@ def serve(
     ),
 ) -> None:
     """Run the MCP server so agents can drive ExaMLOps."""
-    from examlops.mcp.server import FastMCPNotInstalled
+    from examlops.mcp.server import FastMCPNotInstalled, UnsafeMCPBind
     from examlops.mcp.server import serve as _serve
 
     transport_value = transport.value if hasattr(transport, "value") else str(transport)
@@ -177,7 +177,7 @@ def serve(
             port=port,
             include_writes=include_writes,
         )
-    except FastMCPNotInstalled as exc:
+    except (FastMCPNotInstalled, UnsafeMCPBind) as exc:
         _output.error(str(exc))
     except KeyboardInterrupt:  # pragma: no cover
         _output.info("MCP server stopped.")

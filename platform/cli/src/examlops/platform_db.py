@@ -770,7 +770,8 @@ def init_db(*, force: bool = False) -> None:
                 ON admission_queue (state, tenant, priority, id);
             -- Phase 1 item 1.3 — transactional outbox for the NovaFabric event backbone. A domain
             -- write and its event enqueue commit together (same DB txn); a relay then publishes each
-            -- row exactly once to the broker (NATS/Kafka/Redis-Streams) and stamps published_at.
+            -- row at least once to the broker and stamps published_at. Consumers deduplicate using
+            -- the stable outbox row ID carried in every broker envelope.
             -- Replaces O(models×replicas) polling + the in-process realtime singleton.
             CREATE TABLE IF NOT EXISTS event_outbox (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -780,7 +781,9 @@ def init_db(*, force: bool = False) -> None:
                 published_at DATETIME,                -- NULL until relayed
                 claimed_at   DATETIME,                -- set when a relay claims it (visibility lease)
                 attempts     INTEGER NOT NULL DEFAULT 0,
-                last_error   TEXT
+                last_error   TEXT,
+                actor        TEXT NOT NULL DEFAULT 'system',
+                tenant       TEXT NOT NULL DEFAULT 'default'
             );
             CREATE INDEX IF NOT EXISTS ix_event_outbox_unpublished
                 ON event_outbox (published_at, id);
@@ -1665,6 +1668,12 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "synthetic": "INTEGER NOT NULL DEFAULT 0",
         "source_revision": "TEXT",
         "generator": "TEXT",
+    },
+    # P1/P3 durable command events carry their trusted actor and tenant through the outbox. Keep
+    # existing installations additive while matching the canonical control-plane declaration.
+    "event_outbox": {
+        "actor": "TEXT NOT NULL DEFAULT 'system'",
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
     },
     # Track V / ADR 0107: a *running* vLLM endpoint, not just its declared shape. The
     # pre-existing columns describe what to serve; these describe where it is, who started

@@ -131,6 +131,14 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _verified_operator(fallback: str) -> str:
+    """Prefer the request identity; callers cannot forge the audited memory actor."""
+    from skipper import scoping
+
+    identity = scoping.request_identity()
+    return identity.principal if identity is not None else fallback
+
+
 # --- Store I/O (pure functions over a BaseStore) ------------------------------
 
 
@@ -158,6 +166,7 @@ def record_procedure(
     operator: str = "operator",
     session_id: str | None = None,
 ) -> str:
+    operator = _verified_operator(operator)
     proc = Procedure(
         task_class=task_class,
         steps=steps,
@@ -182,6 +191,7 @@ def record_incident(
     operator: str = "operator",
     session_id: str | None = None,
 ) -> str:
+    operator = _verified_operator(operator)
     inc = Incident(
         model=model,
         symptom=symptom,
@@ -204,6 +214,7 @@ def record_preference(
     context: str | None = None,
     session_id: str | None = None,
 ) -> str:
+    operator = _verified_operator(operator)
     pref = Preference(
         operator=operator,
         topic=topic,
@@ -223,6 +234,7 @@ def record_kb_fact(
     operator: str = "operator",
     session_id: str | None = None,
 ) -> str:
+    operator = _verified_operator(operator)
     kb = KBFact(
         fact=fact, tags=tags or [], provenance=Provenance(operator=operator, session_id=session_id)
     )
@@ -269,18 +281,29 @@ def list_kind(store: Any, kind: str, scope: str | None = None, limit: int = 50) 
 
 
 def stats(store: Any) -> dict[str, int]:
-    """Count of memories per kind."""
-    return {k: len(store.search((k,), limit=100000)) for k in KINDS}
+    """Count readable memories per kind in the active owner scope."""
+    from skipper import scoping
+
+    return {
+        kind: sum(
+            len(store.search((*prefix, kind), limit=100000)) for prefix in scoping.read_prefixes()
+        )
+        for kind in KINDS
+    }
 
 
 def export_all(store: Any, kinds: tuple[str, ...] | None = None) -> dict[str, list[dict]]:
-    """Dump all memories (for GDPR export / inspection)."""
+    """Dump readable memories in the active owner scope (GDPR export / inspection)."""
+    from skipper import scoping
+
     out: dict[str, list[dict]] = {}
     for k in kinds or KINDS:
-        out[k] = [
-            {"namespace": list(it.namespace), "key": it.key, "value": it.value}
-            for it in store.search((k,), limit=100000)
-        ]
+        out[k] = []
+        for prefix in scoping.read_prefixes():
+            out[k].extend(
+                {"namespace": list(it.namespace), "key": it.key, "value": it.value}
+                for it in store.search((*prefix, k), limit=100000)
+            )
     return out
 
 

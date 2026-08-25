@@ -61,21 +61,34 @@ def validate(env: Mapping[str, str]) -> list[Finding]:
         if v and len(v) < 32:
             warn(key, "shorter than 32 chars — use a strong random value")
 
-    # Coordinator ↔ its backend.
-    if env.get("EXAMLOPS_COORDINATOR", "db").lower() == "redis" and not env.get(
-        "EXAMLOPS_REDIS_URL"
-    ):
+    # Coordinator ↔ its backend. Unknown values must fail here just as they do at runtime.
+    coordinator = env.get("EXAMLOPS_COORDINATOR", "db").lower()
+    if coordinator not in {"db", "redis"}:
+        err("EXAMLOPS_COORDINATOR", f"unsupported backend: {coordinator!r}")
+    elif coordinator == "redis" and not env.get("EXAMLOPS_REDIS_URL"):
         err("EXAMLOPS_COORDINATOR", "set to 'redis' but EXAMLOPS_REDIS_URL is unset")
 
     # Event publisher ↔ its broker endpoint.
     pub = env.get("EXAMLOPS_EVENT_PUBLISHER", "log").lower()
-    broker_env = {
-        "nats": "EXAMLOPS_NATS_URL",
-        "kafka": "EXAMLOPS_KAFKA_BROKERS",
-        "redis": "EXAMLOPS_REDIS_URL",
-    }
-    if pub in broker_env and not env.get(broker_env[pub]):
-        err("EXAMLOPS_EVENT_PUBLISHER", f"set to '{pub}' but {broker_env[pub]} is unset")
+    if pub not in {"log", "redis", "nats", "kafka"}:
+        err("EXAMLOPS_EVENT_PUBLISHER", f"unsupported publisher: {pub!r}")
+    elif pub in {"nats", "kafka"}:
+        err(
+            "EXAMLOPS_EVENT_PUBLISHER",
+            f"'{pub}' is a reserved fail-loud placeholder; use 'log' or implemented 'redis'",
+        )
+    elif pub == "redis" and not env.get("EXAMLOPS_REDIS_URL"):
+        err("EXAMLOPS_EVENT_PUBLISHER", "set to 'redis' but EXAMLOPS_REDIS_URL is unset")
+
+    for key in ("EXAMLOPS_REDIS_EVENT_MAXLEN", "EXAMLOPS_EVENT_MAX_ATTEMPTS"):
+        value = env.get(key)
+        if value:
+            try:
+                valid = int(value) > 0
+            except ValueError:
+                valid = False
+            if not valid:
+                err(key, "must be a positive integer")
 
     # DB backend ↔ DSN.
     if env.get("EXAMLOPS_DB_BACKEND", "sqlite").lower() == "postgres" and not (

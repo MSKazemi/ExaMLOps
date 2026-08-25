@@ -25,10 +25,11 @@ kq  ──HTTP + SSE──▶  skipper /v1/chat/completions  ──▶  LangGrap
 The bridge lives in `skipper/oai_compat.py` and is mounted by the agent server
 (`make skipper-server`, port 18004). It implements `POST /v1/chat/completions`
 (SSE or JSON) and `GET /healthz`, with conversation state keyed by the
-`X-Session-ID` header → LangGraph `thread_id`.
+verified bearer principal, server-configured tenant, and client `X-Session-ID` label. A caller
+cannot enumerate or resume another principal's LangGraph thread.
 
-This is deliberately a limited compatibility surface. Basic chat, streaming,
-session IDs, and approval work; kube-q features that call other backend endpoints
+This is deliberately a limited, read-only compatibility surface. Basic chat, streaming,
+and session IDs work; kube-q features that call other backend endpoints
 or inspect Kubernetes context do not. In particular, do not assume commands such
 as findings, digest, replay, postmortem, detector, preferences, namespaces, or
 Kubernetes context are provided by Skipper.
@@ -49,11 +50,12 @@ Single-shot / pipe-friendly:
 kq --url http://localhost:18004 --query "which models are in production?" --output plain
 ```
 
-## Human-in-the-loop
+## Write actions and approval
 
-Write tools (delete/promote/retrain) trip a LangGraph `interrupt()`. `kq` shows an
-approval panel and switches its prompt to `HITL>`. Type `/approve` to proceed or
-`/deny` to cancel — these are relayed to the graph as `Command(resume=…)`.
+Use the first-party `exa chat` or `exa ask` client for write proposals. ExaMLOps approvals require
+an opaque, expiring action ID and a typed `approve` or `deny` decision; conversational text cannot
+authorize a mutation. The generic kube-q protocol does not carry this ExaMLOps extension, so do not
+enable write tools for kube-q sessions.
 
 ## Authentication (optional)
 

@@ -33,6 +33,7 @@ install rather than failing with a traceback:
 |---|---|
 | `examlops[analysis]` | Statistical A/B analysis — `exa serve ab analyze` |
 | `examlops[backup]` | Object-store and off-site backup tiers — `exa backup` |
+| `examlops[coordination]` | Redis-backed cross-host locks, rate limits, deduplication, and event streams |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
 | `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |

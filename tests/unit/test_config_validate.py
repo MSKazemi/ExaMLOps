@@ -29,12 +29,31 @@ def test_redis_coordinator_without_url_is_error():
     assert has_errors(findings)
 
 
-def test_nats_publisher_without_endpoint_is_error():
+def test_nats_publisher_is_rejected_until_implemented():
     findings = validate({"EXAMLOPS_EVENT_PUBLISHER": "nats"})
     assert has_errors(findings)
-    # ...but with the endpoint it's fine.
-    assert not has_errors(
+    assert has_errors(
         validate({"EXAMLOPS_EVENT_PUBLISHER": "nats", "EXAMLOPS_NATS_URL": "nats://n:4222"})
+    )
+
+
+def test_redis_publisher_requires_endpoint_and_is_implemented():
+    assert has_errors(validate({"EXAMLOPS_EVENT_PUBLISHER": "redis"}))
+    assert not has_errors(
+        validate({"EXAMLOPS_EVENT_PUBLISHER": "redis", "EXAMLOPS_REDIS_URL": "redis://r:6379"})
+    )
+
+
+def test_unknown_coordination_and_event_backends_are_errors():
+    assert has_errors(validate({"EXAMLOPS_COORDINATOR": "typo"}))
+    assert has_errors(validate({"EXAMLOPS_EVENT_PUBLISHER": "typo"}))
+
+
+def test_event_limits_must_be_positive_integers():
+    assert has_errors(validate({"EXAMLOPS_EVENT_MAX_ATTEMPTS": "0"}))
+    assert has_errors(validate({"EXAMLOPS_REDIS_EVENT_MAXLEN": "many"}))
+    assert not has_errors(
+        validate({"EXAMLOPS_EVENT_MAX_ATTEMPTS": "3", "EXAMLOPS_REDIS_EVENT_MAXLEN": "100"})
     )
 
 

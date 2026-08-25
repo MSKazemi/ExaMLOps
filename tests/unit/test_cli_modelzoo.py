@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from examlops.cli import _client
 from examlops.cli.main import app
 
 runner = CliRunner()
@@ -58,6 +59,12 @@ def _mock_get(url: str, token: str = ""):
 def _mock_post(url: str, body: dict, token: str = "", timeout: float = 10.0):
     if "/modelzoo/sync" in url:
         return {"new_commit": True, "commit_sha": "abc12345", "models_marked_stale": 3}
+    raise ValueError(f"Unexpected URL: {url}")
+
+
+def _mock_put(url: str, body: dict, token: str = ""):
+    if "/modelzoo/config" in url:
+        return {**body, "watch_branch": "main"}
     raise ValueError(f"Unexpected URL: {url}")
 
 
@@ -115,3 +122,36 @@ def test_modelzoo_config_show(_mock):
     result = runner.invoke(app, ["modelzoo", "config"])
     assert result.exit_code == 0
     assert "auto_retrain" in result.output or "false" in result.output.lower()
+
+
+def test_modelzoo_commands_forward_configured_control_plane_token(monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "configured-control-plane-token")
+    with (
+        patch("examlops.cli._client.get", side_effect=_mock_get) as get,
+        patch("examlops.cli._client.post", side_effect=_mock_post) as post,
+        patch("examlops.cli._client.put", side_effect=_mock_put) as put,
+    ):
+        assert runner.invoke(app, ["modelzoo", "status"]).exit_code == 0
+        assert runner.invoke(app, ["modelzoo", "events"]).exit_code == 0
+        assert runner.invoke(app, ["modelzoo", "config"]).exit_code == 0
+        assert runner.invoke(app, ["modelzoo", "sync"]).exit_code == 0
+        assert runner.invoke(app, ["modelzoo", "config-set", "auto_retrain", "true"]).exit_code == 0
+
+    assert all(
+        call.kwargs["token"] == "configured-control-plane-token" for call in get.call_args_list
+    )
+    assert post.call_args.kwargs["token"] == "configured-control-plane-token"
+    assert put.call_args.kwargs["token"] == "configured-control-plane-token"
+
+
+def test_modelzoo_read_auth_error_is_reported(monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "configured-control-plane-token")
+    with patch(
+        "examlops.cli._client.get",
+        side_effect=_client.ClientError("HTTP 403: forbidden"),
+    ):
+        result = runner.invoke(app, ["modelzoo", "status"])
+
+    assert result.exit_code == 1
+    assert "403" in result.output
+    assert "forbidden" in result.output.lower()

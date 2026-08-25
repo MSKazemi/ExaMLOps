@@ -8,9 +8,8 @@ each enforces its own rate limit. This is the seam that fixes that: coordination
   * ``db`` (default) — backed by ``platform_db`` tables, so it already coordinates across every
     **process** sharing ``platform.db`` (CLI, control plane, agent, bridge). Correct for single-host
     multi-process today; no new dependency.
-  * ``redis`` — the cross-**host** HA backend for multiple replicas on different machines. A thin
-    skeleton that fails loudly until ``redis`` + ``EXAMLOPS_REDIS_URL`` are configured, so callers can
-    adopt the interface now and flip the backend when Redis is stood up — zero call-site change.
+  * ``redis`` — the cross-**host** HA backend for multiple replicas on different machines. It uses
+    atomic Redis operations for leases, deduplication, and fixed-window rate limits.
 
 Same degrade-gracefully DNA as the event publisher (1.3) and StorageBackend (0.1) seams.
 """
@@ -18,7 +17,7 @@ Same degrade-gracefully DNA as the event publisher (1.3) and StorageBackend (0.1
 from __future__ import annotations
 
 import os
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -65,30 +64,104 @@ class DbCoordinator:
 
 
 class RedisCoordinator:
-    """Cross-host HA coordinator — skeleton until ``redis`` + ``EXAMLOPS_REDIS_URL`` are wired.
+    """Cross-host coordinator built from atomic Redis primitives.
 
-    Fails loudly rather than silently degrading to no coordination (which would reintroduce the
-    double-fire bug). Implement with ``SET NX PX`` locks, ``SET NX`` idempotency keys, and an
-    ``INCR``+``EXPIRE`` rate limiter when Redis is available.
+    Lock renewal and release compare the holder value inside Lua scripts; one replica therefore
+    cannot extend or delete another replica's lease after its own lease expires. Keys are namespaced
+    so a shared Redis cluster can safely serve more than one ExaMLOps installation.
     """
 
-    def _unavailable(self) -> RuntimeError:
-        return RuntimeError(
-            "redis coordinator is not configured — set EXAMLOPS_REDIS_URL and install redis, "
-            "or use EXAMLOPS_COORDINATOR=db (default). Refusing to run without coordination."
+    _LOCK_SCRIPT = """
+    if redis.call('get', KEYS[1]) == ARGV[1] then
+      redis.call('pexpire', KEYS[1], ARGV[2])
+      return 1
+    end
+    if redis.call('set', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) then
+      return 1
+    end
+    return 0
+    """
+    _UNLOCK_SCRIPT = """
+    if redis.call('get', KEYS[1]) == ARGV[1] then
+      return redis.call('del', KEYS[1])
+    end
+    return 0
+    """
+    _RATE_SCRIPT = """
+    local count = redis.call('incr', KEYS[1])
+    if count == 1 then
+      redis.call('pexpire', KEYS[1], ARGV[1])
+    end
+    return count
+    """
+
+    def __init__(self, client: Any | None = None) -> None:
+        self._prefix = os.getenv("EXAMLOPS_REDIS_PREFIX", "examlops:coord").strip(":")
+        if client is not None:
+            self._client = client
+            return
+
+        url = os.getenv("EXAMLOPS_REDIS_URL", "").strip()
+        if not url:
+            raise RuntimeError(
+                "redis coordinator is not configured — set EXAMLOPS_REDIS_URL or use "
+                "EXAMLOPS_COORDINATOR=db. Refusing to run without coordination."
+            )
+        try:
+            import redis
+        except ImportError as exc:
+            raise RuntimeError(
+                "redis coordinator requires the 'redis' package; install 'examlops[coordination]'"
+            ) from exc
+        self._client = redis.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
         )
 
+    @staticmethod
+    def _ttl_ms(ttl_s: float) -> int:
+        if ttl_s <= 0:
+            raise ValueError("coordination TTL/window must be greater than zero")
+        return max(1, int(ttl_s * 1000))
+
+    def _key(self, kind: str, value: str) -> str:
+        return f"{self._prefix}:{kind}:{value}"
+
     def try_lock(self, key: str, holder: str, ttl_s: float) -> bool:
-        raise self._unavailable()
+        result = self._client.eval(
+            self._LOCK_SCRIPT,
+            1,
+            self._key("lock", key),
+            holder,
+            self._ttl_ms(ttl_s),
+        )
+        return bool(result)
 
     def unlock(self, key: str, holder: str) -> None:
-        raise self._unavailable()
+        self._client.eval(self._UNLOCK_SCRIPT, 1, self._key("lock", key), holder)
 
     def first_seen(self, key: str, ttl_s: float) -> bool:
-        raise self._unavailable()
+        return bool(
+            self._client.set(
+                self._key("seen", key),
+                "1",
+                nx=True,
+                px=self._ttl_ms(ttl_s),
+            )
+        )
 
     def allow(self, bucket: str, limit: int, window_s: float) -> bool:
-        raise self._unavailable()
+        if limit <= 0:
+            return False
+        count = self._client.eval(
+            self._RATE_SCRIPT,
+            1,
+            self._key("rate", bucket),
+            self._ttl_ms(window_s),
+        )
+        return int(count) <= limit
 
 
 _BACKENDS: dict[str, type] = {"db": DbCoordinator, "redis": RedisCoordinator}
@@ -100,7 +173,13 @@ def get_coordinator() -> Coordinator:
     global _coordinator
     if _coordinator is None:
         name = os.getenv("EXAMLOPS_COORDINATOR", "db").strip().lower()
-        _coordinator = _BACKENDS.get(name, DbCoordinator)()
+        cls = _BACKENDS.get(name)
+        if cls is None:
+            supported = ", ".join(sorted(_BACKENDS))
+            raise RuntimeError(
+                f"unsupported EXAMLOPS_COORDINATOR={name!r}; expected one of: {supported}"
+            )
+        _coordinator = cls()
     return _coordinator
 
 

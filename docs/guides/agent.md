@@ -1,12 +1,18 @@
 # Skipper — the ExaMLOps management agent
 
-Skipper — the ExaMLOps management agent — lets operators manage, monitor, and control the ExaMLOps platform through natural language. It is built on **LangGraph's ReAct loop** (`langgraph.prebuilt.create_react_agent`) and exposes **45 tools across 10 groups** that query the MLflow model registry, run live inference via Ray Serve, pull Prometheus metrics, inspect drift and audit history, set traffic splits, promote versions, and trigger Prefect retraining runs — all from a single prompt interface. It fits into the platform as an operator-facing layer on top of the same HTTP APIs used by the dashboard and control plane, plus the shared `platform_db` SQLite store, requiring no additional services of its own.
+Skipper — the ExaMLOps management agent — lets operators manage, monitor, and control the platform
+through natural language. It uses LangGraph and grouped tools to query the MLflow registry, run live
+inference, inspect metrics and governance state, and request controlled platform changes. It is an
+operator-facing service over the same APIs and data-access layer used by the CLI and dashboard.
 
 Operators normally use Skipper through the native CLI, backed by the agent server:
 
 - **Native client** — `exa chat`, with streaming, session management, and explicit write approval.
-- **HTTP server** — a FastAPI service (`agent_server.py`, default port **18004**) serving a streaming WebSocket chat at `/ws/chat/{thread_id}`, a REST history/info API at `/api/*`, and an embedded HTML chat UI at `/`.
+- **HTTP server** — a FastAPI service (`skipper/server.py`, default port **18004**) serving a streaming WebSocket chat at `/ws/chat/{thread_id}`, a REST history/info API at `/api/*`, and an embedded HTML chat UI at `/`.
 - **Developer REPL** — `make skipper` runs the agent process directly for local debugging.
+
+`make stack-up` includes the agent service and connects the dashboard to it as `http://agent:18004`.
+Use `make skipper-server` when running the HTTP service directly outside Compose.
 
 ## Architecture
 
@@ -296,7 +302,8 @@ AGENT_OLLAMA_URL=http://localhost:11434 AGENT_MODEL=llama3.1 make skipper
 
 ## Available Tools
 
-The agent exposes **45 tools across 10 groups**. The LLM selects the appropriate tool(s) automatically based on your prompt.
+The agent exposes grouped tools across the platform domains below. The LLM selects the appropriate
+tool or tools from the active specialist's scoped set.
 
 | Group | Tools | Description |
 |---|---|---|
@@ -340,7 +347,10 @@ Write and destructive tools pause before acting. When the agent is about to perf
 Proceed? [y/N]
 ```
 
-Type `y` or `yes` to proceed (accepted: `y/yes/ok/okay/approve/confirm/true/1`); anything else cancels and returns `Cancelled — no action taken.`. The confirmation gate is implemented via LangGraph's `interrupt()` mechanism and the SQLite checkpointer, so the same gate works transparently for the WebSocket server (it emits an `{"type": "interrupt", "payload": ...}` event and resumes with a `Command`) and for any future API or UI caller that implements the LangGraph interrupt protocol.
+The local developer REPL accepts an affirmative answer at this prompt. Network clients use a
+stricter protocol: the server returns a signed, expiring, one-use action ID, and resumes only when
+the same session submits that ID with an explicit `approve` or `deny` decision. Ordinary chat text,
+mismatched IDs, expired IDs, and replayed decisions are rejected.
 
 The **14 write tools**: `trigger_retrain`, `approve_model`, `reject_model`, `reload_models`, `modelzoo_sync`, `modelzoo_set_config`, `start_service`, `stop_service`, `restart_service`, `scaffold_create`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `record_procedure` (durable memory write).
 
@@ -352,7 +362,7 @@ something downstream is broken:
 | | Guarantee |
 |---|---|
 | **Exposure** | Mutating tools are not registered at all unless `EXAMLOPS_MCP_ALLOW_WRITES` is truthy. With writes off the surface is read-only — 46 tools, none mutating. |
-| **Policy** | Each call is checked against the `agent_write` policy. `require_approval` counts as *denied* for an agent: there is no human at the tool-call boundary. |
+| **Policy** | Each call is checked against the `agent_write` policy. `require_approval` counts as *denied* for an agent, and a policy-engine error fails closed. |
 | **Audit** | A successful write leaves an `audit_events` row (`source=mcp`). |
 | **Audit failure** | The tool still reports `ok: true` — the action happened, and saying otherwise would send the caller to retry something already done — but the reply carries an `audit_warning` so an unaudited governance write is never silent. |
 | **Refusal** | When the target service refuses, the tool returns `ok: false` with the *service's own reason*, not just a status code — an agent asked to retrain an unknown dataset is told which datasets exist, so it can correct itself instead of guessing. |
@@ -420,25 +430,33 @@ Beyond per-conversation history, Skipper has **cross-session long-term memory** 
 - **Enumerate / export / erase** memory (GDPR) — deletions cascade and are audited; the immutable audit log is a separate store, untouched by erasure:
 
 ```bash
-exa agent memory stats                          # counts per kind, and which store file
+exa agent memory stats                          # counts for your authenticated identity
 exa agent memory list proc                      # list procedures
-exa agent memory list pref --scope alice        # everything attached to one operator
+exa agent memory list pref --scope preferences  # optionally narrow the memory namespace
 exa agent memory export --out memory-backup.json
-exa agent memory delete pref --scope alice      # erase alice's preferences (audited)
+exa agent memory delete pref --scope preferences # erase owned preferences (audited)
+exa agent memory review list                    # inspect your queued procedure writes
+exa agent memory review approve 42              # approve one owned review
 ```
 
-`exa agent memory` is the surface ADR 0034 specified. It imports the agent package lazily,
-so it works wherever the agent is installed and says so plainly where it is not (set
-`EXAMLOPS_AGENT_DIR` if the agent lives outside this repo). Because erasure is
-irreversible, `--json` on its own is **not** taken as consent the way it is for other
-mutating commands — `exa --json agent memory delete` refuses unless you also pass `--yes`.
+`exa agent memory` calls the running agent by default. The bearer credential is resolved to a
+server-configured principal and tenant; callers cannot select another owner, and list, export,
+delete, and review operations remain inside that owner namespace. Configure distinct credentials
+with `AGENT_API_KEYS_JSON` and store the CLI credential with `exa config set agent_token`. Unlike
+development chat, memory administration is disabled when the server has no API credential.
 
-The same operations are also reachable without the CLI, which is what the agent container
-uses:
+Because erasure is irreversible, `--json` on its own is **not** consent:
+`exa --json agent memory delete` refuses unless you also pass `--yes`. The server independently
+requires an explicit deletion confirmation and records the verified principal in the audit event.
+Files created by `memory export --out` are restricted to the current operating-system user.
+
+Direct file administration remains available only as an explicit compatibility mode. Use it for
+offline migration or recovery, not routine remote administration:
 
 ```bash
-make skipper-memory ARGS=stats
-# or, from platform/services/agent/:
+exa agent memory stats --local
+exa agent memory export --local --out legacy-memory.json
+# low-level equivalent, from platform/services/agent/:
 python -m skipper.memory_admin stats
 ```
 
@@ -446,12 +464,13 @@ python -m skipper.memory_admin stats
 
 ## HTTP Server & Web UI
 
-Besides the CLI, the agent ships a FastAPI server (`agent_server.py`) that serves the same ReAct graph over HTTP — useful for embedding the agent in a browser or driving it programmatically.
+Besides the CLI, the agent ships a FastAPI server (`skipper.server`) that serves the same graph over
+HTTP — useful for the dashboard, the native client, or programmatic integrations.
 
 ```bash
-python platform/services/agent/agent_server.py     # binds 127.0.0.1:18004 by default
-# or:
-uvicorn skipper.server:app --port 18004
+make skipper-server                               # binds 127.0.0.1:18004 by default
+# or, from platform/services/agent:
+uvicorn skipper.server:app --host 127.0.0.1 --port 18004
 ```
 
 | Surface | Path | Description |
@@ -494,7 +513,8 @@ The interactive commands are:
 | `/quit` | Exit the client; the session remains resumable. |
 
 Write tools pause before execution. Review the proposed action, then use `/approve` or `/deny`.
-For a single scriptable question, use `exa ask`.
+For a single scriptable question, use `exa ask`; when it returns an action ID, continue with
+`exa ask --session SESSION --approve ACTION_ID` or `--deny ACTION_ID`.
 
 ### Optional kube-q compatibility
 
@@ -505,9 +525,11 @@ ExaMLOps client, and kube-q commands that require Kubernetes context or addition
 are not implemented by Skipper. See `platform/services/agent/kube-q/README.md` for the supported
 workflow.
 
-Set `AGENT_API_KEY` to protect completions, status, conversation history, and WebSocket tools. The
-server defaults to `127.0.0.1`; deliberate network exposure should use TLS. The built-in browser
-exchanges the key for an HttpOnly, same-site session cookie.
+Set `AGENT_API_KEYS_JSON` to give each CLI, dashboard, or operator a distinct principal. The legacy
+`AGENT_API_KEY` maps to the `primary` principal. These credentials protect completions, status,
+conversation history, memory governance, and WebSocket tools. The server defaults to `127.0.0.1`;
+deliberate network exposure should use TLS. The built-in browser exchanges a key for an HttpOnly,
+same-site session cookie.
 
 ## Environment Variables
 
@@ -522,8 +544,9 @@ exchanges the key for an HttpOnly, same-site session cookie.
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel Omega; `11434` for local `ollama serve`. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids 30–60 s reloads on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | `false` disables thinking models' extra reasoning tokens (snappier); `true` forces it on; `default`/`none` leaves the model default. |
-| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`agent_server.py`). |
-| `AGENT_API_KEY` | unset | Optional credential protecting completions, status, history, and WebSocket tools. Compatible clients send `Authorization: Bearer <key>`; the browser uses a session cookie. |
+| `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
+| `AGENT_API_KEY` | unset | Legacy single credential protecting the agent HTTP surface; maps to the `primary` principal. |
+| `AGENT_API_KEYS_JSON` | unset | Principal-to-credential JSON map. Verified principal and tenant scope conversations and remote memory administration. |
 | `AGENT_DB` | `./agent_memory.db` | Path to the SQLite file used by the LangGraph `SqliteSaver` checkpointer for persistent conversation threads. |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs tools (`search_docs`, `read_doc`, `list_docs`, `get_howto`) search. Defaults to the `docs/` folder at repo root. |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | Shared with the rest of the stack — controls where registry tools query MLflow. |

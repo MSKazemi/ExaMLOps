@@ -54,7 +54,12 @@ def test_a_readable_store_still_reports_its_real_count(cp):
     _seed_pending(cp, 3)
     client = TestClient(cp.app)
     assert client.get("/health").json()["pending_approvals"] == 3
-    assert client.get("/status").json()["pending_approvals"] == 3
+    assert (
+        client.get("/status", headers={"Authorization": "Bearer test-token"}).json()[
+            "pending_approvals"
+        ]
+        == 3
+    )
 
 
 def test_an_empty_store_reports_zero_and_not_unknown(cp):
@@ -62,7 +67,12 @@ def test_an_empty_store_reports_zero_and_not_unknown(cp):
     them."""
     client = TestClient(cp.app)
     assert client.get("/health").json()["pending_approvals"] == 0
-    assert client.get("/status").json()["pending_approvals"] == 0
+    assert (
+        client.get("/status", headers={"Authorization": "Bearer test-token"}).json()[
+            "pending_approvals"
+        ]
+        == 0
+    )
 
 
 def test_health_reports_an_unreadable_store_as_unknown_not_empty(cp):
@@ -78,10 +88,20 @@ def test_health_reports_an_unreadable_store_as_unknown_not_empty(cp):
 def test_status_reports_an_unreadable_store_as_unknown_not_empty(cp):
     _seed_pending(cp, 5)
     client = TestClient(cp.app)
-    assert client.get("/status").json()["pending_approvals"] == 5
+    assert (
+        client.get("/status", headers={"Authorization": "Bearer test-token"}).json()[
+            "pending_approvals"
+        ]
+        == 5
+    )
 
     cp._get_db = _boom
-    assert client.get("/status").json()["pending_approvals"] is None
+    assert (
+        client.get("/status", headers={"Authorization": "Bearer test-token"}).json()[
+            "pending_approvals"
+        ]
+        is None
+    )
 
 
 def test_a_control_plane_that_cannot_read_its_queue_is_not_ok(cp):

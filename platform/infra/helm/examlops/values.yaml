@@ -1,7 +1,7 @@
 # ExaMLOps enterprise reference values (Phase 1 item 1.1).
 # Stateful dependencies live in HA Postgres + distributed MinIO. The control-plane defaults to one
-# replica until its process-local coordination controls are fully externalized; enabling its HPA
-# before that integration is complete can duplicate commands and poller work.
+# replica while its Prefect circuit breaker/runtime config remain process-local and multi-replica
+# failover is unverified. Rate limits, retrain locks, and poller ownership use the coordinator.
 # NO container_name pins, NO hostPath, NO privileged — pods are schedulable + replaceable anywhere.
 
 global:
@@ -13,8 +13,10 @@ global:
 
 # ── shared secret (created out-of-band; NEVER templated with real values) ──────────────────────
 # Provide a Kubernetes Secret with these keys and reference it here. The chart never embeds secrets.
-existingSecret: examlops-secrets   # keys: CONTROL_PLANE_TOKEN, EXAMLOPS_POSTGRES_DSN,
-                                   #       AGENT_API_KEY, AGENT_POSTGRES_DSN,
+existingSecret: examlops-secrets   # keys: CONTROL_PLANE_TOKEN or CONTROL_PLANE_CREDENTIALS_JSON,
+                                   #       EXAMLOPS_POSTGRES_DSN,
+                                   #       AGENT_API_KEY (legacy) or AGENT_API_KEYS_JSON,
+                                   #       DASHBOARD_AGENT_API_KEY, AGENT_POSTGRES_DSN,
                                    #       one LLM credential,
                                    #       DASHBOARD_JWT_SECRET,
                                    #       DASHBOARD_SECRET_KEY, DASHBOARD_ADMIN_PASSWORD,
@@ -42,8 +44,10 @@ ingress:
 
 # ── control plane (the write API — must scale + survive host loss) ─────────────────────────────
 controlPlane:
-  # Safe default while rate limits, idempotency, breaker state, and poller leadership are local.
-  # Raise this only after the distributed-coordination integration gates in the roadmap pass.
+  # Optional least-privilege Secret. Empty preserves the global existingSecret for upgrades.
+  existingSecret: ""
+  # Safe default while breaker state/runtime config remain local and failover is unverified.
+  # Durable commands plus coordinator-backed rate limits, retrain locks, and poller leases are wired.
   replicaCount: 1
   image:
     repository: examlops-control-plane
@@ -60,7 +64,7 @@ controlPlane:
     targetCPUUtilizationPercentage: 70
   pdb:
     enabled: true
-    minAvailable: 2
+    minAvailable: 1
   env:
     # Safe implemented defaults. Switch only after the selected external implementations are wired
     # into the control-plane call paths and their endpoint variables are present in the Secret.
@@ -69,6 +73,8 @@ controlPlane:
   extraEnv: []
 
 dashboard:
+  # Optional least-privilege Secret. Empty preserves the global existingSecret for upgrades.
+  existingSecret: ""
   replicaCount: 2
   image:
     repository: examlops-dashboard
@@ -83,6 +89,8 @@ dashboard:
     minAvailable: 1
 
 agent:
+  # Optional least-privilege Secret. Empty preserves the global existingSecret for upgrades.
+  existingSecret: ""
   replicaCount: 2
   image:
     repository: examlops-agent
@@ -99,6 +107,14 @@ agent:
   resources:
     requests: {cpu: 100m, memory: 512Mi}
     limits: {cpu: "1", memory: 1Gi}
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
 
 # ── pod hardening applied to every tier ────────────────────────────────────────────────────────
 podSecurityContext:

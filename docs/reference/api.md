@@ -308,12 +308,14 @@ Snapshot tokens are scoped, read-only, and expiring — there is no write path a
 
 ### `POST /api/v1/copilot/ask` (Embedded copilot, F11)
 
-Ask the grounded copilot a question; it proxies the existing Skipper agent bridge and returns an answer
-plus **propose-only** `exa` actions (never executed) and an agent trace. Requires `viewer`. Every query
-is audited (`source=dashboard-copilot`, D4).
+Ask the grounded copilot a question; it proxies the existing Skipper agent bridge through a read-only
+agent graph and returns an answer plus **propose-only** `exa` actions (never executed) and an agent
+trace. Requires `viewer`. The backend attempts to audit each query (`source=dashboard-copilot`); an
+audit-store failure does not fail the response.
 
-**Body:** `{"question": "why is jpcp drifting?", "context": {"page": "/models/jpcp", "entity": {...}, "filters": {...}}, "session": "dashboard-copilot"}`
-— page context is treated as **untrusted** data server-side (R6).
+**Body:** `{"question": "why is jpcp drifting?", "context": {"page": "/models/jpcp", "entity": {...}, "filters": {...}}}`
+— page context is treated as **untrusted** data server-side (R6). The server derives the conversation
+ID from the signed login token; clients cannot choose another user's checkpoint key.
 
 **Response:** `{"answer": "…", "hitl_required": false, "proposals": [{"command": "exa retrain jpcp …", "requiresApproval": true}], "trace": [{"kind","name","detail"}]}`.
 When the agent is unreachable the same shape is returned with `"_partial": ["agent"]` (never a 500).
@@ -549,24 +551,65 @@ Returns raw markdown content of a documentation file. `path` is relative to the 
 
 Endpoints for retraining, the Phase 11 approval gate, and Phase 12 ModelZoo integration. See [Control Plane guide](../guides/control-plane.md) for the full workflow.
 
-### `GET /health`
+### Bearer identity and scopes
+
+Sensitive reads require a bearer credential with `read`; mutations require `write`.
+`CONTROL_PLANE_CREDENTIALS_JSON` maps each bearer secret to its trusted `principal`, `tenant`, and
+scope list. The server never accepts actor or tenant identity from a request body or ad hoc header.
+Approvals and durable commands are tenant-scoped, and structured credentials can poll only flow
+runs dispatched for their tenant.
+
+The legacy `CONTROL_PLANE_TOKEN` remains valid as principal `legacy`, tenant `default`, with both
+scopes and operator-wide flow lookup. Malformed structured JSON—or reuse of the legacy secret in the
+map—fails all bearer authentication closed. Health/readiness, metrics, registry listing, and model
+metadata/assets remain public. ModelZoo webhooks use their separate webhook secret.
+
+### `GET /livez`, `GET /readyz`, and `GET /health`
+
+`/livez` is process liveness. `/readyz` returns 200 only when startup checks, the approval store,
+and the enabled ModelZoo poller are healthy; otherwise it returns 503. `/ready` remains a
+compatibility alias for liveness.
+
+`/health` is diagnostic and returns HTTP 200 even for a `starting` or `degraded` verdict. Use
+`/readyz`, not `/health`, as the traffic-readiness probe.
 
 **Response 200:**
 ```json
 {
   "status": "ok",
-  "prefect_api_url": "http://localhost:4200/api",
+  "prefect_api_url": "http://localhost:14200/api",
   "auth_configured": true,
-  "models": ["JPCP", "MACK", "MCBound"],
-  "pending_approvals": 1
+  "models": {"JPCP": ["PM100Dataset"]},
+  "pending_approvals": 1,
+  "startup_checks": {"db": "ok", "registry": "ok", "token": "ok", "coordinator": "ok"},
+  "poller": {"enabled": true, "last_ok_seconds_ago": 12, "stale": false, "leader": true},
+  "runtime": {
+    "state_backend": "postgres",
+    "configured_coordinator": "db",
+    "active_coordination": "db",
+    "configured_event_publisher": "redis",
+    "event_relay_enabled": true,
+    "outbox": {"pending": 2, "published": 41, "poison": 0},
+    "horizontal_scaling_safe": false,
+    "horizontal_scaling_blockers": [
+      "retrain_dedup_requires_client_key",
+      "circuit_breaker_process_local"
+    ]
+  }
 }
 ```
+
+The runtime block reports what this process actually uses. Durable command records and Prefect
+idempotency keys protect retrain dispatch across processes sharing the state backend. The selected
+coordinator owns rate limits, retrain locks, and the singleton poller lease. The event relay drains
+the same state database and reports pending, published, and poison rows. Circuit-breaker state and
+runtime configuration remain local, so do not infer multi-replica safety from Postgres alone.
 
 ---
 
 ### `POST /retrain`
 
-**Auth:** `Authorization: Bearer <CONTROL_PLANE_TOKEN>`
+**Auth:** bearer credential with `write` scope.
 
 **Request:**
 ```json
@@ -589,11 +632,19 @@ Endpoints for retraining, the Phase 11 approval gate, and Phase 12 ModelZoo inte
 
 ---
 
+### `GET /retrain/{flow_run_id}`
+
+**Auth:** bearer credential with `read` scope. Structured credentials receive 404 for a flow run
+outside their verified tenant. The legacy credential retains operator-wide lookup compatibility.
+
+---
+
 ### `POST /api/changes` (Phase 11)
 
 CI webhook — records changed model IDs as pending approvals. Does not fire training.
 
-**Auth:** `Authorization: Bearer <CONTROL_PLANE_TOKEN>`
+**Auth:** bearer credential with `write` scope. Created approvals inherit its verified tenant and
+principal.
 
 **Request:**
 ```json
@@ -607,7 +658,7 @@ CI webhook — records changed model IDs as pending approvals. Does not fire tra
 
 **Response 200:**
 ```json
-{"created": 2}
+{"created": ["<approval-uuid-1>", "<approval-uuid-2>"]}
 ```
 
 ---
@@ -616,16 +667,21 @@ CI webhook — records changed model IDs as pending approvals. Does not fire tra
 
 List approval records. Filter with `?status=pending|approved|rejected`.
 
+**Auth:** bearer credential with `read` scope. Only records owned by its verified tenant are listed.
+
 **Response 200:**
 ```json
 [
   {
-    "id": 1,
+    "id": "<approval-uuid>",
     "model_id": "JPCP",
     "status": "pending",
     "commit_sha": "abc123",
     "commit_msg": "feat: improve JPCP features",
     "changed_files": ["pipelines/model_configs/jpcp_config.py"],
+    "tenant": "team-a",
+    "requested_by": "release-bot",
+    "resolved_by": null,
     "requested_at": "2026-05-21T10:00:00Z",
     "resolved_at": null,
     "prefect_run_id": null,
@@ -640,11 +696,11 @@ List approval records. Filter with `?status=pending|approved|rejected`.
 
 Approve a pending change — fires Prefect training immediately.
 
-**Auth:** `Authorization: Bearer <CONTROL_PLANE_TOKEN>`
+**Auth:** bearer credential with `write` scope. Resolution is limited to its verified tenant.
 
 **Response 200:**
 ```json
-{"model_id": "JPCP", "status": "approved", "flow_run_id": "xyz789"}
+{"model_id": "JPCP", "flow_run_id": "xyz789", "status_url": "/retrain/xyz789"}
 ```
 
 **Errors:**
@@ -660,7 +716,7 @@ Approve a pending change — fires Prefect training immediately.
 
 Reject a pending change. No training runs.
 
-**Auth:** `Authorization: Bearer <CONTROL_PLANE_TOKEN>`
+**Auth:** bearer credential with `write` scope. Resolution is limited to its verified tenant.
 
 **Request (optional):**
 ```json
@@ -680,7 +736,8 @@ Reject a pending change. No training runs.
 
 Receive a GitLab push event. Marks all registered models stale, records a push event, and optionally triggers auto-retrain.
 
-**Auth:** `X-Gitlab-Token: <MODELZOO_WEBHOOK_SECRET>` header (plain equality; optional if secret not configured)
+**Auth:** `X-Gitlab-Token: <MODELZOO_WEBHOOK_SECRET>` header. The endpoint returns 503 when the
+secret is not configured and compares configured values in constant time.
 
 **Request body:** GitLab push webhook payload (JSON)
 
@@ -701,7 +758,8 @@ Returns `{"skipped": true, "reason": "..."}` if the push is to a non-watched bra
 
 Receive a GitHub push event. Same semantics as the GitLab endpoint.
 
-**Auth:** `X-Hub-Signature-256: sha256=<HMAC-SHA256>` header (HMAC verification; optional if secret not configured)
+**Auth:** `X-Hub-Signature-256: sha256=<HMAC-SHA256>` header. The endpoint returns 503 when the
+secret is not configured.
 
 **Request body:** GitHub push webhook payload (JSON)
 
@@ -712,6 +770,8 @@ Receive a GitHub push event. Same semantics as the GitLab endpoint.
 ### `GET /modelzoo/status`
 
 Per-model freshness snapshot.
+
+**Auth:** bearer credential with `read` scope.
 
 **Response 200:**
 ```json
@@ -750,6 +810,8 @@ Per-model freshness snapshot.
 
 Recent push event history. Accepts `?limit=N` (default 20).
 
+**Auth:** bearer credential with `read` scope.
+
 **Response 200:**
 ```json
 [
@@ -772,6 +834,8 @@ Recent push event history. Accepts `?limit=N` (default 20).
 
 Manually trigger one GitLab poll cycle. Useful for testing poller connectivity or forcing a freshness check without waiting for the next scheduled interval.
 
+**Auth:** bearer credential with `write` scope.
+
 **Response 200:**
 ```json
 {"new_commit": true, "commit_sha": "abc12345", "models_marked_stale": 3}
@@ -784,6 +848,8 @@ or `{"new_commit": false}` when already up-to-date.
 ### `GET /modelzoo/config`
 
 Show current runtime ModelZoo integration config.
+
+**Auth:** bearer credential with `read` scope.
 
 **Response 200:**
 ```json
@@ -800,7 +866,7 @@ Show current runtime ModelZoo integration config.
 
 Update runtime config. Changes take effect immediately (poller sleep and auto-retrain flag both read from this config at runtime — no restart needed).
 
-**Auth:** `Authorization: Bearer <CONTROL_PLANE_TOKEN>`
+**Auth:** bearer credential with `write` scope.
 
 **Request:**
 ```json

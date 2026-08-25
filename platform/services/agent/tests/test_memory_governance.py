@@ -84,7 +84,9 @@ def test_dangerous_tools_all_confirmation_gated():
         TOOLS,  # noqa: F401 — import populates WRITE_TOOLS
         memory,  # noqa: F401
     )
+    from skipper.tools.mcp_bridge import mcp_tools
 
+    mcp_tools(include_writes=True)  # registers every MCP write wrapper with the HITL gate
     assert memory_eval.unguarded_write_tools(confirm.WRITE_TOOLS) == []
 
 

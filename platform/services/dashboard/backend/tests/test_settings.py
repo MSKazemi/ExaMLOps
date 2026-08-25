@@ -53,6 +53,19 @@ def test_settings_load_with_required_env(monkeypatch):
     assert not hasattr(mod.settings, "dashboard_token")
 
 
+def test_copilot_credential_prefers_dashboard_key_and_keeps_legacy_fallback(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_AGENT_API_KEY", "dashboard-key")
+    monkeypatch.setenv("AGENT_API_KEY", "legacy-key")
+    monkeypatch.chdir(Path("/tmp"))
+
+    mod = _reload_settings()
+    assert mod.settings.copilot_agent_api_key == "dashboard-key"
+
+    monkeypatch.delenv("DASHBOARD_AGENT_API_KEY")
+    mod = _reload_settings()
+    assert mod.settings.copilot_agent_api_key == "legacy-key"
+
+
 def test_settings_fail_fast_on_missing_required(monkeypatch):
     for k in (
         "DASHBOARD_VIEWER_PASSWORD",

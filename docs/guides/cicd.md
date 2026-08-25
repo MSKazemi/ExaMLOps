@@ -221,12 +221,21 @@ red without stopping either. Both now require it.
 
 ```bash
 .venv/bin/pytest tests/integration/ -v --tb=short
+# after the Redis service passes its readiness probe:
+EXAMLOPS_REDIS_TEST_URL=redis://redis:6379/15 \
+  .venv/bin/pytest tests/integration/test_redis_coordination_live.py -v --tb=short
 ```
 
 Runs `test_inference_pipeline_e2e.py`, which:
 1. Starts a real Ray + Serve cluster with three deployments (`InferencePipelineIngress → FeatureTransformer → ModelRouter`)
 2. Spins up a threading HTTP mock server as a stand-in for the downstream `MultiModelServer`
 3. Sends live HTTP POST requests and verifies prediction responses, 422 validation errors, and 404 model-not-found cases
+
+It then runs the opt-in Redis contract against an ephemeral `redis:7.4-alpine` service. A bounded
+PING loop must succeed first. The live checks cover lock contention, lease expiry/failover,
+concurrent idempotency deduplication, and the Redis Streams event envelope. The URL is exported only
+for this second invocation, so the normal integration suite remains offline and the live module
+still skips when run locally without `EXAMLOPS_REDIS_TEST_URL`.
 
 **Timeout:** 15 minutes.
 

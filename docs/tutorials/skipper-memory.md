@@ -88,14 +88,19 @@ Enumerate, export, and erase memory (deletions cascade and are audited; the audi
 itself is a separate store and is preserved):
 
 ```bash
-exa agent memory stats                             # counts per kind
+exa agent memory stats                             # authenticated, remote counts per kind
 exa agent memory list proc                         # list procedures
 exa agent memory export --out memory-backup.json   # GDPR export
-exa agent memory delete pref --scope alice         # erase alice's preferences
-# the same thing without the CLI, from platform/services/agent/:
-make skipper-memory ARGS=stats
-python -m skipper.memory_admin stats
+exa agent memory delete pref                       # erase owned preferences (audited)
+exa agent memory review list                       # owned pending procedures
+exa agent memory review approve 42                 # approve and audit one proposal
 ```
+
+These commands use `AGENT_URL` and the configured bearer token. The server derives the principal
+and tenant from that verified credential, so one caller cannot enumerate or mutate another
+caller's memory. Use `--local` only for offline recovery of a legacy `AGENT_MEMORY_DB`, for example
+`exa agent memory stats --local`; local mode has no authenticated principal boundary. Export files
+can contain personal data and should be protected accordingly.
 
 ## 6. Safety notes
 

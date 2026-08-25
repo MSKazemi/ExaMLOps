@@ -513,7 +513,7 @@ models, HPC jobs, audit events, and pages.
 
 Context-aware assistant in the shell (bottom-right). Answers grounded questions and
 **suggests** `exa` commands as copy-only cards — it never executes anything. Thin proxy to
-the existing Skipper agent (no paid API).
+the existing Skipper agent; provider cost depends on the backend configured for Skipper.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|

@@ -37,19 +37,23 @@ class RejectBody(BaseModel):
 @router.get(
     "",
     summary="List approvals from the Control Plane",
-    description="Proxies GET /approvals to the Control Plane. No auth required for reads.",
+    description="Proxies GET /approvals with the configured Control Plane credential.",
 )
 async def list_approvals(
     status: str | None = Query(None, description="Filter by status, e.g. 'pending'"),
+    _claims: dict = Depends(require_role("viewer")),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     url = f"{settings.control_plane_url}/approvals"
     params: dict[str, str] = {}
     if status is not None:
         params["status"] = status
+    token = await _get_control_plane_token(db)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=headers)
         except httpx.HTTPError as exc:
             raise HTTPException(
                 status_code=502, detail=f"Control Plane unavailable: {exc}"

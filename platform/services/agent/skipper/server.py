@@ -7,7 +7,6 @@ Start with:  uvicorn skipper.server:app --port 18004
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import threading
 from typing import Any
@@ -17,13 +16,36 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import HTMLResponse, RedirectResponse
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from skipper import config, instrument
-from skipper.confirm import _is_affirmative
+from skipper.auth import (
+    AgentIdentity,
+    auth_required,
+    authenticate,
+    authenticate_key,
+    issue_cookie,
+    scope_thread_id,
+    unscoped_thread_id,
+)
 from skipper.graph import build_graph
 from skipper.llm import check_backend
+from skipper.turns import TurnBusy, TurnCoordinationUnavailable, TurnLease, acquire_turn
 
 app = FastAPI(title="Skipper (ExaMLOps agent)", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Keep authenticated conversations and memory responses out of intermediary caches."""
+
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
 
 _graph: Any = None
 _readonly_graph: Any = None
@@ -33,7 +55,14 @@ _graph_lock = threading.Lock()
 # OpenAI-compatible bridge (/v1/chat/completions + /healthz) used by the native CLI and optional
 # third-party clients. Imported after `app` so its lazy imports of
 # `_get_graph`/`_extract_text` resolve without a circular import.
-from skipper.oai_compat import router as oai_router  # noqa: E402
+from skipper.oai_compat import (  # noqa: E402
+    _consume_action_id,
+    _issue_action_id,
+    _pending_interrupt,
+)
+from skipper.oai_compat import (  # noqa: E402
+    router as oai_router,
+)
 
 app.include_router(oai_router)
 
@@ -49,30 +78,38 @@ def _token_matches(candidate: str | None) -> bool:
     )
 
 
-def _browser_cookie_value() -> str:
-    """Derive a session value so the browser never stores the API key itself."""
-    return hmac.new(
-        config.AGENT_API_KEY.encode(), b"examlops-browser-session-v1", hashlib.sha256
-    ).hexdigest()
-
-
 def _authorized(authorization: str | None, cookie: str | None) -> bool:
-    """Authenticate either an API bearer token or the browser's HttpOnly session cookie."""
-    if not config.AGENT_API_KEY:
-        return True
-    scheme, _, credential = (authorization or "").partition(" ")
-    bearer = credential if scheme.lower() == "bearer" else None
-    cookie_ok = bool(cookie and hmac.compare_digest(cookie, _browser_cookie_value()))
-    return _token_matches(bearer) or cookie_ok
+    """Whether bearer or browser-cookie authentication resolves to a trusted principal."""
+    return authenticate(authorization, cookie) is not None
+
+
+def _identity(authorization: str | None, cookie: str | None) -> AgentIdentity | None:
+    return authenticate(authorization, cookie)
+
+
+def _request_identity(request: Request) -> AgentIdentity | None:
+    return _identity(request.headers.get("authorization"), request.cookies.get(_AUTH_COOKIE))
 
 
 def _request_authorized(request: Request) -> bool:
-    return _authorized(request.headers.get("authorization"), request.cookies.get(_AUTH_COOKIE))
+    return _request_identity(request) is not None
 
 
-async def _require_agent_auth(request: Request) -> None:
-    if not _request_authorized(request):
+async def _require_agent_auth(request: Request) -> AgentIdentity:
+    identity = _request_identity(request)
+    if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return identity
+
+
+async def _require_memory_auth(request: Request) -> AgentIdentity:
+    """Memory administration never falls back to anonymous local-development identity."""
+    if not auth_required():
+        raise HTTPException(
+            status_code=401,
+            detail="Memory administration requires a configured agent API credential",
+        )
+    return await _require_agent_auth(request)
 
 
 def _login_page(*, invalid: bool = False) -> str:
@@ -141,11 +178,35 @@ def stream_messages(graph, inp, cfg):
             yield payload
 
 
+class MemoryDeleteRequest(BaseModel):
+    kind: str
+    scope: str | None = None
+    confirmation: str
+
+
+class MemoryReviewRejectRequest(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+
+
+def _memory_store():
+    """Return the live graph's memory store without opening a second database handle."""
+    store = getattr(_get_graph(), "store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Long-term memory is not attached")
+    return store
+
+
+def _memory_scope(identity: AgentIdentity):
+    from skipper import scoping
+
+    return scoping.identity_scope(identity.principal, identity.tenant)
+
+
 # ── REST endpoints ────────────────────────────────────────────────────────────
 
 
 @app.get("/api/info")
-async def api_info(_auth: None = Depends(_require_agent_auth)):
+async def api_info(_auth: AgentIdentity = Depends(_require_agent_auth)):
     info = check_backend()
     # `active` is the honest answer to "does this agent remember anything across threads?" — the
     # compiled graph either got a store or it did not. The rest is what was *asked* for, so a
@@ -169,19 +230,24 @@ async def api_info(_auth: None = Depends(_require_agent_auth)):
 
 
 @app.get("/api/threads")
-async def list_threads(_auth: None = Depends(_require_agent_auth)):
+async def list_threads(identity: AgentIdentity = Depends(_require_agent_auth)):
     graph = _get_graph()
     try:
-        seen = list({c.config["configurable"]["thread_id"] for c in graph.checkpointer.list(None)})
+        stored = {c.config["configurable"]["thread_id"] for c in graph.checkpointer.list(None)}
+        seen = {
+            client_id
+            for thread_id in stored
+            if (client_id := unscoped_thread_id(identity, thread_id)) is not None
+        }
     except Exception:
-        seen = []
+        seen = set()
     return {"threads": sorted(seen)}
 
 
 @app.get("/api/threads/{thread_id}/history")
-async def thread_history(thread_id: str, _auth: None = Depends(_require_agent_auth)):
+async def thread_history(thread_id: str, identity: AgentIdentity = Depends(_require_agent_auth)):
     graph = _get_graph()
-    cfg = {"configurable": {"thread_id": thread_id}}
+    cfg = {"configurable": {"thread_id": scope_thread_id(identity, thread_id)}}
     try:
         state = graph.get_state(cfg)
         messages = state.values.get("messages", [])
@@ -207,29 +273,223 @@ async def thread_history(thread_id: str, _auth: None = Depends(_require_agent_au
         return {"messages": []}
 
 
+# ── Authenticated memory governance ──────────────────────────────────────────
+
+
+@app.get("/api/memory/stats")
+async def memory_stats(identity: AgentIdentity = Depends(_require_memory_auth)):
+    from skipper import memory_types
+
+    with _memory_scope(identity):
+        counts = memory_types.stats(_memory_store())
+    return {"counts": counts}
+
+
+@app.get("/api/memory/list/{kind}")
+async def memory_list(
+    kind: str,
+    scope: str | None = None,
+    limit: int = 50,
+    identity: AgentIdentity = Depends(_require_memory_auth),
+):
+    from skipper import memory_types
+
+    if kind not in memory_types.KINDS:
+        raise HTTPException(status_code=422, detail="Unknown memory kind")
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    with _memory_scope(identity):
+        items = memory_types.list_kind(_memory_store(), kind, scope=scope, limit=limit)
+    return {"items": [{"key": item.key, "text": item.value.get("text", "")} for item in items]}
+
+
+@app.get("/api/memory/export")
+async def memory_export(identity: AgentIdentity = Depends(_require_memory_auth)):
+    from skipper import memory_types
+
+    with _memory_scope(identity):
+        data = memory_types.export_all(_memory_store())
+    return {"memories": data}
+
+
+@app.post("/api/memory/delete")
+async def memory_delete(
+    request: MemoryDeleteRequest,
+    identity: AgentIdentity = Depends(_require_memory_auth),
+):
+    from skipper import memory_types
+
+    if request.kind not in memory_types.KINDS:
+        raise HTTPException(status_code=422, detail="Unknown memory kind")
+    if request.confirmation != "erase-owned-memory":
+        raise HTTPException(
+            status_code=409, detail="Explicit memory deletion confirmation required"
+        )
+    with _memory_scope(identity):
+        erased = memory_types.erase(
+            _memory_store(), request.kind, scope=request.scope, operator=identity.principal
+        )
+    return {"erased": erased, "kind": request.kind, "scope": request.scope}
+
+
+@app.get("/api/memory/reviews")
+async def memory_reviews(identity: AgentIdentity = Depends(_require_memory_auth)):
+    from skipper import memory_review
+
+    return {
+        "reviews": memory_review.list_pending(principal=identity.principal, tenant=identity.tenant)
+    }
+
+
+@app.post("/api/memory/reviews/{review_id}/approve")
+async def memory_review_approve(
+    review_id: int,
+    identity: AgentIdentity = Depends(_require_memory_auth),
+):
+    from skipper import memory_review
+
+    pending = memory_review.get(review_id, principal=identity.principal, tenant=identity.tenant)
+    if pending is None or pending.get("status") != "pending":
+        raise HTTPException(status_code=404, detail="Pending memory review not found")
+    memory_review.approve(
+        review_id,
+        _memory_store(),
+        reviewer=identity.principal,
+        principal=identity.principal,
+        tenant=identity.tenant,
+    )
+    return {"review_id": review_id, "status": "approved"}
+
+
+@app.post("/api/memory/reviews/{review_id}/reject")
+async def memory_review_reject(
+    review_id: int,
+    request: MemoryReviewRejectRequest,
+    identity: AgentIdentity = Depends(_require_memory_auth),
+):
+    from skipper import memory_review
+
+    pending = memory_review.get(review_id, principal=identity.principal, tenant=identity.tenant)
+    if pending is None or pending.get("status") != "pending":
+        raise HTTPException(status_code=404, detail="Pending memory review not found")
+    memory_review.reject(
+        review_id,
+        reviewer=identity.principal,
+        reason=request.reason,
+        principal=identity.principal,
+        tenant=identity.tenant,
+    )
+    return {"review_id": review_id, "status": "rejected"}
+
+
 # ── WebSocket streaming chat ──────────────────────────────────────────────────
+
+
+async def _websocket_turn_lease(websocket: WebSocket, thread_id: str) -> TurnLease | None:
+    """Acquire one graph turn or send a fail-closed, retryable socket error."""
+    try:
+        return await asyncio.to_thread(acquire_turn, thread_id)
+    except TurnBusy:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": "session_busy",
+                "message": "Another request is already running for this session; wait and retry.",
+            }
+        )
+    except TurnCoordinationUnavailable:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": "coordination_unavailable",
+                "message": "Agent turn coordination is unavailable; no turn was started.",
+            }
+        )
+    return None
 
 
 @app.websocket("/ws/chat/{thread_id}")
 async def chat_websocket(websocket: WebSocket, thread_id: str):
-    if not _authorized(websocket.headers.get("authorization"), websocket.cookies.get(_AUTH_COOKIE)):
+    identity = _identity(
+        websocket.headers.get("authorization"), websocket.cookies.get(_AUTH_COOKIE)
+    )
+    if identity is None:
         # Browser WebSocket constructors cannot attach an Authorization header. The built-in UI
         # authenticates through the HttpOnly, same-site cookie issued by POST / below.
         await websocket.close(code=1008, reason="Invalid or missing API key")
         return
     await websocket.accept()
     graph = _get_graph()
+    thread_id = scope_thread_id(identity, thread_id)
+    await _send_pending_interrupt(websocket, graph, thread_id)
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
             if msg_type == "message":
+                lease = await _websocket_turn_lease(websocket, thread_id)
+                if lease is None:
+                    continue
+                if (
+                    _pending_interrupt(graph, {"configurable": {"thread_id": thread_id}})
+                    is not None
+                ):
+                    try:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "A write is awaiting approval; use its action controls.",
+                            }
+                        )
+                    finally:
+                        await asyncio.to_thread(lease.release)
+                    continue
                 inp: Any = {"messages": [HumanMessage(content=data.get("text", ""))]}
-                await _stream_response(websocket, graph, thread_id, inp)
+                await _stream_response(websocket, graph, thread_id, inp, identity, lease)
+            elif msg_type == "action":
+                lease = await _websocket_turn_lease(websocket, thread_id)
+                if lease is None:
+                    continue
+                cfg = {"configurable": {"thread_id": thread_id}}
+                intr = _pending_interrupt(graph, cfg)
+                if intr is None:
+                    try:
+                        await websocket.send_json(
+                            {"type": "error", "message": "Approval action is no longer pending."}
+                        )
+                    finally:
+                        await asyncio.to_thread(lease.release)
+                    continue
+                action_id = data.get("action_id")
+                decision = data.get("decision")
+                if not isinstance(action_id, str) or decision not in {"approve", "deny"}:
+                    try:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "A valid action_id and approve/deny decision are required.",
+                            }
+                        )
+                    finally:
+                        await asyncio.to_thread(lease.release)
+                    continue
+                try:
+                    _consume_action_id(thread_id, intr, action_id)
+                except HTTPException as exc:
+                    try:
+                        await websocket.send_json({"type": "error", "message": str(exc.detail)})
+                    finally:
+                        await asyncio.to_thread(lease.release)
+                    continue
+                inp = Command(resume=decision)
+                await _stream_response(websocket, graph, thread_id, inp, identity, lease)
             elif msg_type == "resume":
-                answer = data.get("answer", "no")
-                inp = Command(resume=answer if _is_affirmative(answer) else "no")
-                await _stream_response(websocket, graph, thread_id, inp)
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "Plain-text resume is disabled; use the typed action response.",
+                    }
+                )
     except WebSocketDisconnect:
         pass
     except Exception as exc:
@@ -239,43 +499,68 @@ async def chat_websocket(websocket: WebSocket, thread_id: str):
             pass
 
 
-async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any) -> None:
+async def _stream_response(
+    websocket: WebSocket,
+    graph,
+    thread_id: str,
+    inp: Any,
+    identity: AgentIdentity,
+    lease: TurnLease,
+) -> None:
     cfg = {"configurable": {"thread_id": thread_id}}
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    instr = instrument.start(thread_id)
-    call_args = instrument.ToolCallArgs()
+    try:
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        instr = instrument.start(thread_id)
+        call_args = instrument.ToolCallArgs()
+    except Exception:
+        lease.release()
+        raise
 
     def _run() -> None:
+        from skipper import scoping
+
         try:
-            for msg, _meta in stream_messages(graph, inp, cfg):
-                if isinstance(msg, AIMessageChunk):
-                    call_args.observe_ai(msg)
-                    text = _extract_text(msg.content)
-                    if text:
-                        loop.call_soon_threadsafe(queue.put_nowait, {"type": "token", "text": text})
-                    usage = getattr(msg, "usage_metadata", None)
-                    if usage:
+            with scoping.identity_scope(identity.principal, identity.tenant):
+                for msg, _meta in stream_messages(graph, inp, cfg):
+                    if isinstance(msg, AIMessageChunk):
+                        call_args.observe_ai(msg)
+                        text = _extract_text(msg.content)
+                        if text:
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, {"type": "token", "text": text}
+                            )
+                        usage = getattr(msg, "usage_metadata", None)
+                        if usage:
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, {"type": "usage", "usage": usage}
+                            )
+                    elif isinstance(msg, ToolMessage):
                         loop.call_soon_threadsafe(
-                            queue.put_nowait, {"type": "usage", "usage": usage}
+                            queue.put_nowait, {"type": "tool", "name": msg.name}
                         )
-                elif isinstance(msg, ToolMessage):
-                    loop.call_soon_threadsafe(queue.put_nowait, {"type": "tool", "name": msg.name})
-                    ok, err = instrument.tool_status(msg)
-                    if instr.observe(
-                        msg.name or "tool", args=call_args.args_for(msg), ok=ok, error=err
-                    ):
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait, {"type": "error", "message": instr.abort_message}
-                        )
-                        break
+                        ok, err = instrument.tool_status(msg)
+                        if instr.observe(
+                            msg.name or "tool", args=call_args.args_for(msg), ok=ok, error=err
+                        ):
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait,
+                                {"type": "error", "message": instr.abort_message},
+                            )
+                            break
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(exc)})
         finally:
             instr.finish()
+            lease.release()
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    fut = loop.run_in_executor(None, _run)
+    lease.claim_by_worker()
+    try:
+        fut = loop.run_in_executor(None, _run)
+    except Exception:
+        lease.release()
+        raise
 
     timed_out = False
     while True:
@@ -299,17 +584,26 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
     if not timed_out:
         await fut  # on timeout the worker thread may still be blocked; don't join it
 
-    # Check for pending interrupt
-    try:
-        tasks = graph.get_state(cfg).tasks or []
-        intr = next((i for t in tasks for i in getattr(t, "interrupts", [])), None)
-        if intr is not None:
-            await websocket.send_json({"type": "interrupt", "payload": intr.value})
-            return
-    except Exception:
-        pass
+    if await _send_pending_interrupt(websocket, graph, thread_id):
+        return
 
     await websocket.send_json({"type": "done"})
+
+
+async def _send_pending_interrupt(websocket: WebSocket, graph, thread_id: str) -> bool:
+    """Send a typed, expiring approval action when this thread is interrupted."""
+    cfg = {"configurable": {"thread_id": thread_id}}
+    intr = _pending_interrupt(graph, cfg)
+    if intr is None:
+        return False
+    await websocket.send_json(
+        {
+            "type": "interrupt",
+            "payload": intr.value,
+            "action_id": _issue_action_id(thread_id, intr),
+        }
+    )
+    return True
 
 
 # ── Chat UI (served as HTML) ──────────────────────────────────────────────────
@@ -319,7 +613,7 @@ async def _stream_response(websocket: WebSocket, graph, thread_id: str, inp: Any
 async def index(request: Request):
     from skipper.chat_html import CHAT_HTML
 
-    if config.AGENT_API_KEY and not _request_authorized(request):
+    if auth_required() and not _request_authorized(request):
         return HTMLResponse(_login_page())
     return CHAT_HTML
 
@@ -332,17 +626,19 @@ async def browser_login(request: Request):
     access logs. The cookie is HttpOnly and SameSite=Strict; HTTPS deployments also receive the
     Secure attribute.
     """
-    if not config.AGENT_API_KEY:
+    if not auth_required():
         return RedirectResponse(url="/", status_code=303)
     body = (await request.body())[:8192].decode("utf-8", errors="replace")
     candidate = (parse_qs(body).get("api_key") or [""])[0]
-    if not _token_matches(candidate):
+    identity = authenticate_key(candidate)
+    if identity is None:
         return HTMLResponse(_login_page(invalid=True), status_code=401)
     response = RedirectResponse(url="/", status_code=303)
     response.set_cookie(
         _AUTH_COOKIE,
-        _browser_cookie_value(),
+        issue_cookie(identity),
         httponly=True,
+        max_age=max(1, config.AGENT_BROWSER_SESSION_TTL_SECONDS),
         secure=request.url.scheme == "https",
         samesite="strict",
     )

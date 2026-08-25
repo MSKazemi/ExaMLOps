@@ -33,6 +33,7 @@ FAKE_REGISTRY = {
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     """TestClient with a fixed token, fake registry, and mocked Prefect gateway."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "control-plane.db"))
     monkeypatch.setattr(cp, "CONTROL_PLANE_TOKEN", "test-token")
     monkeypatch.setattr(cp, "CONTROL_PLANE_DB", str(tmp_path / "control-plane.db"))
     monkeypatch.setattr(cp, "_load_registry", lambda: FAKE_REGISTRY)
@@ -94,6 +95,7 @@ class TestRetrainAuth:
         assert r.status_code == 403
 
     def test_unset_token_is_503(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "control-plane.db"))
         monkeypatch.setattr(cp, "CONTROL_PLANE_TOKEN", "")
         monkeypatch.setattr(cp, "CONTROL_PLANE_DB", str(tmp_path / "control-plane.db"))
         monkeypatch.setattr(cp, "_load_registry", lambda: FAKE_REGISTRY)
@@ -165,7 +167,7 @@ class TestRetrainValidation:
 
 class TestRetrainStatus:
     def test_running_state(self, client):
-        r = client.get("/retrain/run-abc")
+        r = client.get("/retrain/run-abc", headers={"Authorization": "Bearer test-token"})
         assert r.status_code == 200
         body = r.json()
         assert body["state_type"] == "RUNNING"
@@ -177,7 +179,7 @@ class TestRetrainStatus:
             "id": "run-z",
             "state": {"type": "COMPLETED", "name": "Completed"},
         }
-        r = client.get("/retrain/run-z")
+        r = client.get("/retrain/run-z", headers={"Authorization": "Bearer test-token"})
         assert r.status_code == 200
         assert r.json()["is_terminal"] is True
 
@@ -186,7 +188,7 @@ class TestRetrainStatus:
             "id": "run-f",
             "state": {"type": "FAILED", "name": "Failed"},
         }
-        r = client.get("/retrain/run-f")
+        r = client.get("/retrain/run-f", headers={"Authorization": "Bearer test-token"})
         assert r.json()["is_terminal"] is True
 
 

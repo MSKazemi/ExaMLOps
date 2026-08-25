@@ -587,6 +587,10 @@ Inside the client, use `/help`, `/status`, `/sessions`, `/history`, `/new`, `/re
 human confirmation. The OpenAI-compatible endpoint remains available for optional third-party
 clients, but their extra commands are not part of the `exa chat` contract.
 
+`exa ask` returns the same opaque action ID when a one-shot request pauses. Continue only with the
+typed form `exa ask --session SESSION --approve ACTION_ID` (or `--deny`). Ordinary replies such as
+`yes` never authorize a write, and action IDs expire and cannot be replayed.
+
 ### `exa agent` — is the agent up, and which brain is it using?
 
 Interrogates the running Skipper agent over the same HTTP surface `exa ask` uses, reporting what
@@ -600,10 +604,16 @@ answering, with empty strings, so it read as a weak model rather than a dead cre
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa agent status` | Reachability, LLM backend, model, and whether the long-term memory store actually attached. Prints the exact environment variable to repair when the backend is rejected. | First thing to run when the agent gives strange or empty answers — it separates "not running", "running with a dead key", and "running fine but with no long-term memory". | `exa agent status`<br>`exa --json agent status`<br>`exa -c lxp agent status` |
-| `exa agent memory stats` | How many memories the agent holds, by kind (`proc`, `episode`, `pref`, `kb`), and which store file was read. | Answering "what does this agent actually remember?" before you trust — or erase — anything. The path is printed because the store is a local file and the agent often runs on another host. | `exa agent memory stats`<br>`exa --json agent memory stats` |
-| `exa agent memory list` | Enumerate the stored memories of one kind, optionally narrowed to a scope (an operator, a model, a task class). | Reviewing what the agent learned about one person or one model — the enumerate half of the ADR 0034 governance promise. | `exa agent memory list pref`<br>`exa agent memory list pref --scope alice` |
-| `exa agent memory export` | Export every stored memory as JSON, to stdout or a file. | Answering a subject-access request, or taking a copy before an erasure. | `exa agent memory export --out memories.json` |
-| `exa agent memory delete` | Erase memories of one kind, cascading to derived memories, and write a `memory_erase` event to the audit chain. | The right-to-erasure control (ADR 0034). The audit record of the erasure survives; what was remembered does not. Irreversible, so `--json` alone is not consent — add `--yes`. | `exa agent memory delete pref --scope alice`<br>`exa --json --yes agent memory delete pref` |
+| `exa agent memory stats` | Count the authenticated principal's remote memories by kind (`proc`, `episode`, `pref`, `kb`). | Verify what the currently selected agent identity owns before review or erasure. | `exa agent memory stats`<br>`exa --json agent memory stats` |
+| `exa agent memory list` | Enumerate one memory kind inside the server-verified principal and tenant namespace. | Review learned procedures or preferences without granting access to another caller's memory. | `exa agent memory list pref`<br>`exa agent memory list proc --limit 20` |
+| `exa agent memory export` | Export the authenticated owner's memory as JSON, to stdout or a file. | Fulfil a subject-access request or take a copy before erasure. Protect the resulting file as personal data. | `exa agent memory export --out memories.json` |
+| `exa agent memory delete` | Delete owned memories of one kind and write a `memory_erase` audit event under the verified principal. | The right-to-erasure control (ADR 0034). The retained audit record contains metadata/digests, not the deleted content. `--json` alone is not consent; add `--yes`. | `exa agent memory delete pref`<br>`exa --json --yes agent memory delete pref` |
+| `exa agent memory review` | List, approve, or reject queued procedure memories owned by the authenticated principal and tenant. Approvals and rejections are audited. | Batch-govern proposed durable procedures without accessing another principal's queue. | `exa agent memory review list`<br>`exa agent memory review approve 42`<br>`exa agent memory review reject 43 --reason incomplete` |
+
+Remote mode is the default and uses `AGENT_URL` plus the configured agent token. The server refuses
+memory administration when no API credential is configured. Add `--local` to a specific memory
+command only for offline migration or recovery against `AGENT_MEMORY_DB`; local mode does not
+provide the remote principal boundary.
 
 ### `exa ask` — natural-language front door to Skipper
 
@@ -658,6 +668,10 @@ Exposes ExaMLOps platform capabilities as agent-callable MCP tools/resources/pro
 | `exa mcp prompts` | Lists the MCP prompts (reusable agent workflows, e.g. `diagnose_drift`). | Discover packaged agent workflows | `exa mcp prompts` |
 | `exa mcp agent-card` | Prints the A2A Agent Card describing this platform's agent skills; `--url` sets the public base URL, `--all` advertises mutating tools. | Publish an A2A discovery card | `exa mcp agent-card --url https://exa.example.com` |
 | `exa mcp serve` | Runs the MCP server so agents can drive ExaMLOps; `--transport`, `--host`, `--port`, `--allow-writes`. **(mutation, long-running, outward)** | Host the platform as an agent-callable server | `exa mcp serve --transport stdio` |
+
+The HTTP transport has no built-in authentication and therefore refuses non-loopback bind
+addresses. For remote clients, keep it on `127.0.0.1` and place an authenticated TLS reverse proxy
+in front of it. Enabling write tools does not bypass this restriction.
 
 ## Monitoring & Quality
 
@@ -1037,7 +1051,9 @@ Snapshots and restores the platform. A bare `create` writes a single `platform.d
 
 ### `exa events` — NovaFabric event backbone (transactional outbox)
 
-A durable transactional outbox: events are enqueued locally, then relayed to the configured broker (`EXAMLOPS_EVENT_PUBLISHER`: `log`/`nats`/`kafka`/`redis`).
+A durable transactional outbox: events are enqueued locally, then relayed through `log` or the
+implemented Redis Streams publisher. Delivery is **at least once** with a stable event ID, so
+consumers must deduplicate. `nats` and `kafka` remain fail-loud placeholders.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|

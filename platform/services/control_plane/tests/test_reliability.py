@@ -102,6 +102,41 @@ def test_postgres_backend_is_selected_for_control_plane_state(cp, monkeypatch):
     connection.commit.assert_called_once_with()
 
 
+def test_postgres_state_migration_adds_identity_columns(cp, monkeypatch):
+    """The backend-neutral migration must upgrade pre-identity PostgreSQL tables in place."""
+    connection = MagicMock()
+    connection.execute.return_value.fetchall.return_value = []
+    backend = MagicMock()
+    backend.connect.return_value = connection
+    monkeypatch.setattr(cp, "CONTROL_PLANE_STATE_BACKEND", "postgres")
+    monkeypatch.setattr(cp, "PostgresBackend", lambda: backend)
+
+    cp._get_db()
+
+    statements = [call.args[0] for call in connection.execute.call_args_list]
+    assert (
+        "ALTER TABLE pending_approvals ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'"
+        in statements
+    )
+    assert (
+        "ALTER TABLE pending_approvals ADD COLUMN requested_by TEXT NOT NULL DEFAULT 'legacy'"
+        in statements
+    )
+    assert "ALTER TABLE pending_approvals ADD COLUMN resolved_by TEXT" in statements
+    assert (
+        "ALTER TABLE control_plane_commands ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'"
+        in statements
+    )
+    assert (
+        "ALTER TABLE control_plane_commands ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'"
+        in statements
+    )
+    assert "ALTER TABLE event_outbox ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'" in statements
+    assert (
+        "ALTER TABLE event_outbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'" in statements
+    )
+
+
 def test_unknown_control_plane_state_backend_fails_closed(cp, monkeypatch):
     monkeypatch.setattr(cp, "CONTROL_PLANE_STATE_BACKEND", "mystery")
     with pytest.raises(RuntimeError, match="Unsupported EXAMLOPS_DB_BACKEND"):
@@ -121,7 +156,7 @@ def test_status_runs_concurrently(cp, monkeypatch):
 
     with patch("urllib.request.urlopen", return_value=mock_resp):
         client = TestClient(cp.app)
-        resp = client.get("/status")
+        resp = client.get("/status", headers=_auth())
 
     assert resp.status_code == 200
     data = resp.json()
@@ -139,7 +174,7 @@ def test_status_runs_concurrently(cp, monkeypatch):
 
 def test_retrain_dedup_returns_409_on_duplicate(cp):
     """A second /retrain for the same model+dataset while one is in-flight returns 409."""
-    key = cp._retrain_key("JPCP", "PM100Dataset")
+    key = f"default:{cp._retrain_key('JPCP', 'PM100Dataset')}"
     with cp._RETRAIN_LOCK:
         cp._inflight_retrains.add(key)
 
@@ -180,34 +215,35 @@ def test_retrain_key_inflight_cleared_on_prefect_error(cp, monkeypatch):
 # ─── Round 1: Improvement 7 — Rate limiting ──────────────────────────────────
 
 
-def test_rate_limiter_allows_under_limit(cp):
-    """Requests within the burst capacity should all succeed."""
-    bucket = cp._TokenBucket(capacity=5, refill_rate=5 / 60)
-    for _ in range(5):
-        assert bucket.consume() is True
+def test_rate_limiter_allows_under_limit(cp, monkeypatch):
+    """The write limiter delegates to the selected shared coordinator."""
+    coordinator = MagicMock()
+    coordinator.allow.return_value = True
+    monkeypatch.setattr(cp, "_get_coordinator", lambda: coordinator)
+
+    cp._check_rate_limit(cp.RequestContext("tester", "default", frozenset({"write"})))
+
+    coordinator.allow.assert_called_once_with(
+        "control-plane:writes:default", cp.RETRAIN_RATE_LIMIT_PER_MIN, 60.0
+    )
 
 
-def test_rate_limiter_rejects_over_limit(cp):
-    """Requests beyond burst capacity should be rejected."""
-    bucket = cp._TokenBucket(capacity=3, refill_rate=3 / 60)
-    for _ in range(3):
-        bucket.consume()
-    assert bucket.consume() is False
+def test_rate_limiter_rejects_over_limit(cp, monkeypatch):
+    """A shared coordinator denial becomes HTTP 429."""
+    coordinator = MagicMock()
+    coordinator.allow.return_value = False
+    monkeypatch.setattr(cp, "_get_coordinator", lambda: coordinator)
 
-
-def test_rate_limiter_refills_over_time(cp):
-    """After waiting, the bucket should have tokens again."""
-    bucket = cp._TokenBucket(capacity=1, refill_rate=100.0)  # 100 tokens/sec refill
-    bucket.consume()  # drain
-    assert bucket.consume() is False
-    time.sleep(0.02)  # 20 ms — should refill ~2 tokens at 100/s
-    assert bucket.consume() is True
+    with pytest.raises(cp.HTTPException) as caught:
+        cp._check_rate_limit(cp.RequestContext("tester", "default", frozenset({"write"})))
+    assert caught.value.status_code == 429
 
 
 def test_rate_limit_endpoint_returns_429(cp, monkeypatch):
-    """When the bucket is drained, write endpoints should return 429."""
-    monkeypatch.setattr(cp._rate_limiter, "_tokens", 0.0)
-    monkeypatch.setattr(cp._rate_limiter, "_refill_rate", 0.0)
+    """A shared coordinator denial protects write endpoints."""
+    coordinator = MagicMock()
+    coordinator.allow.return_value = False
+    monkeypatch.setattr(cp, "_get_coordinator", lambda: coordinator)
 
     client = TestClient(cp.app)
     resp = client.post(
@@ -525,9 +561,10 @@ def test_readyz_fails_closed_when_store_becomes_unreadable(cp, monkeypatch):
 def test_health_reports_actual_horizontal_scaling_capabilities(cp):
     runtime = TestClient(cp.app).get("/health").json()["runtime"]
     assert runtime["state_backend"] == "sqlite"
-    assert runtime["active_coordination"] == "process-local"
+    assert runtime["active_coordination"] == "db"
     assert runtime["horizontal_scaling_safe"] is False
-    assert "rate_limit_process_local" in runtime["horizontal_scaling_blockers"]
+    assert "rate_limit_process_local" not in runtime["horizontal_scaling_blockers"]
+    assert "coordination_not_cross_host" in runtime["horizontal_scaling_blockers"]
     assert "state_not_shared" in runtime["horizontal_scaling_blockers"]
 
 
@@ -608,14 +645,34 @@ def test_idempotency_cache_expires_after_ttl(cp, monkeypatch):
 
 
 def test_idempotency_header_returns_cached_response(cp, monkeypatch):
-    """POST /retrain with a repeated X-Idempotency-Key should return the same response."""
+    """POST /retrain with a completed durable key should return the same response."""
+    parameters = {
+        "model_name": "JPCP",
+        "dataset_cls_name": "PM100Dataset",
+        "is_dummy": False,
+        "backend_name": None,
+    }
     cached_payload = {
         "flow_run_id": "cached-run-id",
         "deployment": "examlops_scheduled_training/nightly",
         "status_url": "/retrain/cached-run-id",
-        "parameters": {},
+        "parameters": parameters,
     }
-    cp._store_idempotency("idem-key-001", cached_payload)
+    identity_key = b"default\0legacy\0idem-key-001"
+    command_key = f"retrain:{cp.hashlib.sha256(identity_key).hexdigest()}"
+    claim = cp._claim_command(command_key, "retrain", parameters, actor="legacy")
+    assert claim.outcome == "claimed"
+    cp._complete_command(
+        command_key,
+        cached_payload,
+        event_topic="retrain.scheduled",
+        event_payload={
+            "model_name": "JPCP",
+            "dataset_name": "PM100Dataset",
+            "flow_run_id": "cached-run-id",
+        },
+        attempt=claim.attempt or 0,
+    )
 
     # Patch the registry so the request isn't blocked at validation
     monkeypatch.setattr(cp, "_get_registry", lambda: {"JPCP": ["PM100Dataset"]})
@@ -815,7 +872,7 @@ def test_status_reports_the_address_it_probed(cp):
     map, which is a different address entirely.
     """
     client = TestClient(cp.app)
-    services = client.get("/status").json()["services"]
+    services = client.get("/status", headers=_auth()).json()["services"]
 
     assert set(services) == {"control_plane", "mlflow", "prefect", "ray_serve", "dashboard"}
     for name, svc in services.items():

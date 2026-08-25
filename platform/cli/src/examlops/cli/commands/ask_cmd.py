@@ -20,7 +20,7 @@ import uuid
 
 import typer
 
-from examlops.cli import _client, _output
+from examlops.cli import _agent_transport, _client, _output
 from examlops.cli._config import load_config, scoped_agent_session
 
 _EXAMPLES = (
@@ -29,6 +29,8 @@ _EXAMPLES = (
     '  exa ask "which models are drifting and why?"\n\n'
     "  [dim]# Keep context across turns with a session id[/dim]\n"
     '  exa ask "now retrain the worst one" --session mysession\n\n'
+    "  [dim]# Approve exactly the pending action returned for that session[/dim]\n"
+    "  exa ask --session mysession --approve ACTION_ID\n\n"
     "  [dim]# Machine-readable answer for scripting[/dim]\n"
     '  exa --json ask "list production models"\n\n'
     "  [dim]# Wait for the whole answer instead of streaming it[/dim]\n"
@@ -37,8 +39,8 @@ _EXAMPLES = (
 
 
 def ask(
-    question: list[str] = typer.Argument(
-        ..., help="Your question in plain English (quote it or pass as words)"
+    question: list[str] | None = typer.Argument(
+        None, help="Your question in plain English (quote it or pass as words)"
     ),
     session: str | None = typer.Option(
         None,
@@ -51,10 +53,24 @@ def ask(
         "--stream/--no-stream",
         help="Print the answer as it is generated (default: on at a terminal, off when piped)",
     ),
+    approve: str | None = typer.Option(
+        None, "--approve", metavar="ACTION_ID", help="Approve one pending action in this session"
+    ),
+    deny: str | None = typer.Option(
+        None, "--deny", metavar="ACTION_ID", help="Deny one pending action in this session"
+    ),
 ) -> None:
     """Ask the Skipper agent a question in natural language."""
-    text = " ".join(question).strip()
-    if not text:
+    if approve and deny:
+        _output.error("Choose only one of --approve or --deny.")
+        return
+    action_id = approve or deny
+    if action_id and not session:
+        _output.error("--approve/--deny requires --session so the action cannot cross sessions.")
+        return
+
+    text = " ".join(question or []).strip()
+    if not text and not action_id:
         _output.error("Empty question.", hint='Try: exa ask "which models are in production?"')
         return
 
@@ -65,21 +81,36 @@ def ask(
     # single object, and a piped consumer generally wants the whole answer at once.
     if stream is None:
         stream = not _output.json_mode and _is_terminal()
-    body = {
-        "model": "examlops-agent",
-        "messages": [{"role": "user", "content": text}],
-        "stream": stream,
-        "user": scoped_agent_session(session),
-    }
-    url = f"{cfg.agent_url.rstrip('/')}/v1/chat/completions"
+    action = (
+        _agent_transport.AgentAction(action_id, "approve" if approve else "deny")
+        if action_id
+        else None
+    )
+    body = _agent_transport.build_request(
+        # The compatibility schema requires a user message even for a typed resume. The server
+        # ignores this marker when `action` is present and resumes only the bound interrupt.
+        text or "[approval decision]",
+        scoped_agent_session(session),
+        stream=stream,
+        action=action,
+    )
 
     try:
         if stream:
-            answer, hitl = _stream_answer(url, body, token)
+            result = _agent_transport.request_completion(
+                cfg.agent_url,
+                token,
+                body,
+                timeout=120.0,
+                on_event=_print_stream_event,
+            )
+            if result.answer:
+                _output.console.print()
         else:
             with _output.spinner("Thinking…"):
-                data = _client.post(url, body, token=token, timeout=120.0)
-            answer, hitl = _extract_answer(data)
+                result = _agent_transport.request_completion(
+                    cfg.agent_url, token, body, timeout=120.0
+                )
     except _client.ClientError as exc:
         if exc.status is not None:
             # The agent answered, so it is running — telling the operator to start it sends them
@@ -97,8 +128,20 @@ def ask(
             )
         return
 
+    answer = (
+        f"[error] {result.remote_error}" if result.remote_error and not stream else result.answer
+    )
+    hitl = result.hitl_required
+    pending_action_id = result.action_id
     if _output.json_mode:
-        _output.print_json({"answer": answer, "hitl_required": hitl, "session": session})
+        _output.print_json(
+            {
+                "answer": answer,
+                "hitl_required": hitl,
+                "action_id": pending_action_id,
+                "session": session,
+            }
+        )
         return
 
     if not answer:
@@ -107,27 +150,12 @@ def ask(
     if not stream:  # streaming already put the text on screen as it arrived
         _output.console.print(answer)
     if hitl:
-        _output.hint(
-            "This action needs approval. Reply in the same session to confirm, "
-            f'e.g. exa ask "yes" --session {session}'
-        )
-
-
-def _extract_answer(data: object) -> tuple[str, bool]:
-    """Pull the assistant text + HITL flag out of an OpenAI-style completion body."""
-    if not isinstance(data, dict):
-        return "", False
-    if "error" in data:
-        err = data["error"]
-        msg = err.get("message") if isinstance(err, dict) else str(err)
-        return f"[error] {msg}", False
-    choices = data.get("choices") or []
-    if not choices:
-        return "", False
-    choice = choices[0] if isinstance(choices[0], dict) else {}
-    message = choice.get("message") or {}
-    content = message.get("content", "") if isinstance(message, dict) else ""
-    return str(content), bool(choice.get("hitl_required", False))
+        if not pending_action_id:
+            _output.error("The agent requested approval without an action ID; refusing to resume.")
+            return
+        _output.hint("This action needs approval; use the exact one-use action ID below.")
+        _output.hint(f"Approve: exa ask --session {session} --approve {pending_action_id}")
+        _output.hint(f"Deny:    exa ask --session {session} --deny {pending_action_id}")
 
 
 def _is_terminal() -> bool:
@@ -140,36 +168,11 @@ def _is_terminal() -> bool:
     return sys.stdout.isatty()
 
 
-def _stream_answer(url: str, body: dict, token: str) -> tuple[str, bool]:
-    """Print an SSE answer as it arrives; return the assembled text and the HITL flag.
-
-    The bridge interleaves two kinds of frame: OpenAI ``choices[0].delta.content`` tokens, and
-    its own ``ki_event`` frames announcing a tool call or an error. The tool events are the only
-    sign of life during the part of the answer that takes longest — the agent's tool loop before
-    it has written a word — so they are shown rather than dropped.
-    """
-    parts: list[str] = []
-    hitl = False
-    for frame in _client.post_sse(url, body, token=token, timeout=120.0):
-        event = frame.get("ki_event")
-        if isinstance(event, dict):
-            kind, message = event.get("type"), str(event.get("message", ""))
-            if kind == "tool_call":
-                _output.console.print(f"[dim]· {message}[/dim]")
-            elif kind == "error":
-                _output.console.print(f"[red]· {message}[/red]")
-            continue
-        choices = frame.get("choices") or []
-        if not choices or not isinstance(choices[0], dict):
-            continue
-        choice = choices[0]
-        if choice.get("hitl_required"):
-            hitl = True
-        piece = (choice.get("delta") or {}).get("content") or ""
-        if piece:
-            parts.append(str(piece))
-            # markup=False: the answer is model output, and a stray "[" in it is text, not a tag.
-            _output.console.print(str(piece), end="", markup=False, highlight=False)
-    if parts:
-        _output.console.print()
-    return "".join(parts), hitl
+def _print_stream_event(event: _agent_transport.AgentEvent) -> None:
+    """Render typed stream events while preserving the one-shot command's UX."""
+    if event.kind == "content":
+        _output.console.print(event.text, end="", markup=False, highlight=False)
+    elif event.kind == "tool":
+        _output.console.print(f"[dim]· {event.text}[/dim]")
+    elif event.kind == "error":
+        _output.console.print(f"[red]· {event.text}[/red]")

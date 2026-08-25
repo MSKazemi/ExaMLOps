@@ -1,3 +1,4 @@
+from contextlib import ExitStack, contextmanager
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -15,6 +16,32 @@ def test_build_graph_binds_tools_and_checkpointer(tmp_path, monkeypatch):
     assert g is not None  # compiled graph with tools + checkpointer (no LLM call made)
 
 
+def test_postgres_checkpointer_retains_its_connection_context(monkeypatch):
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from skipper import memory
+
+    lifecycle: list[str] = []
+
+    class Saver:
+        def setup(self):
+            lifecycle.append("setup")
+
+    @contextmanager
+    def fake_from_conn_string(_dsn):
+        lifecycle.append("enter")
+        try:
+            yield Saver()
+        finally:
+            lifecycle.append("exit")
+
+    monkeypatch.setattr(PostgresSaver, "from_conn_string", fake_from_conn_string)
+    with ExitStack() as stack:
+        monkeypatch.setattr(memory, "_CHECKPOINTER_CONTEXTS", stack)
+        assert memory._build_postgres_checkpointer("postgresql://example.invalid/db") is not None
+        assert lifecycle == ["enter", "setup"]
+    assert lifecycle == ["enter", "setup", "exit"]
+
+
 def test_dashboard_read_only_toolset_excludes_every_confirmed_write():
     from skipper import graph
 
@@ -22,6 +49,22 @@ def test_dashboard_read_only_toolset_excludes_every_confirmed_write():
     assert names
     assert names.isdisjoint(confirm.WRITE_TOOLS)
     assert "search_knowledge" in names
+
+
+def test_every_local_tool_has_an_explicit_capability():
+    from skipper.capabilities import unclassified_tool_names
+    from skipper.tools import TOOLS
+
+    assert unclassified_tool_names(TOOLS) == set()
+
+
+def test_unclassified_tool_is_not_available_to_read_only_graph():
+    from skipper.capabilities import read_only_local_tools
+
+    def newly_added_tool():
+        return None
+
+    assert read_only_local_tools([newly_added_tool]) == []
 
 
 def test_interrupt_resume_roundtrip(tmp_path):

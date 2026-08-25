@@ -4,7 +4,7 @@ import copilot
 import dbconn
 import httpx
 import pytest
-from settings import settings as dashboard_settings
+from routers import copilot as copilot_router
 
 from examlops import platform_db as pdb
 from examlops.storage.testing import empty_datastore
@@ -135,7 +135,8 @@ async def test_ask_copilot_reports_agent_auth_mismatch_without_leaking_response(
         "hi", None, agent_url="http://agent", transport=httpx.MockTransport(handler)
     )
     assert out["error_code"] == "agent_auth"
-    assert "AGENT_API_KEY" in out["answer"]
+    assert "DASHBOARD_AGENT_API_KEY" in out["answer"]
+    assert "AGENT_API_KEYS_JSON" in out["answer"]
     assert "sensitive" not in out["answer"]
 
 
@@ -212,6 +213,29 @@ async def test_copilot_endpoint_ignores_browser_session_and_uses_login_scoped_th
 
 
 @pytest.mark.asyncio
+async def test_copilot_endpoint_prefers_dedicated_agent_credential(client, monkeypatch):
+    credentials = []
+
+    async def fake_ask(question, ctx, *, agent_url, token, session, **kwargs):
+        credentials.append(token)
+        return {"answer": "ok", "hitl_required": False, "proposals": [], "trace": []}
+
+    monkeypatch.setattr(copilot, "ask_copilot", fake_ask)
+    monkeypatch.setattr(copilot_router.settings, "dashboard_agent_api_key", "dashboard-key")
+    monkeypatch.setattr(copilot_router.settings, "agent_api_key", "legacy-key")
+    token = await _login(client, VIEWER_PW)
+
+    response = await client.post(
+        "/api/v1/copilot/ask",
+        json={"question": "status"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert credentials == ["dashboard-key"]
+
+
+@pytest.mark.asyncio
 async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path, monkeypatch):
     # No agent running in the test env → graceful envelope, never a 500 (still audited).
     db = tmp_path / "p.db"
@@ -220,7 +244,7 @@ async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path
     conn = dbconn.connect(db, row_factory=None)
     conn.commit()
     conn.close()
-    monkeypatch.setattr(dashboard_settings, "agent_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(copilot_router.settings, "agent_url", "http://127.0.0.1:9")
     token = await _login(client, VIEWER_PW)
     r = await client.post(
         "/api/v1/copilot/ask",

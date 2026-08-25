@@ -63,7 +63,9 @@ def _count_stale_models(modelzoo: dict[str, Any]) -> int:
 
 
 def _modelzoo_models(cfg) -> list[dict[str, Any]]:
-    reachable, data, message = _safe_get(f"{cfg.control_plane_url}/modelzoo/status")
+    reachable, data, message = _safe_get(
+        f"{cfg.control_plane_url}/modelzoo/status", token=cfg.control_plane_token
+    )
     if not reachable or not isinstance(data, dict):
         _output.error(f"Unable to read ModelZoo status: {message}")
     models = data.get("models", [])
@@ -370,7 +372,9 @@ def _check_ray_serve(cfg) -> CheckResult:
 
 
 def _check_modelzoo(cfg) -> CheckResult:
-    reachable, data, message = _safe_get(f"{cfg.control_plane_url}/modelzoo/status")
+    reachable, data, message = _safe_get(
+        f"{cfg.control_plane_url}/modelzoo/status", token=cfg.control_plane_token
+    )
     stale = _count_stale_models(data) if isinstance(data, dict) else 0
     total = len(data.get("models", [])) if isinstance(data, dict) else 0
     ok = reachable and isinstance(data, dict)

@@ -2,7 +2,8 @@
 
 The dashboard has a context-aware **copilot** in the shell. It answers grounded questions about the
 platform and can **suggest** `exa` commands — but it never runs anything. It is a thin proxy to the
-**existing** Skipper agent (the same one `exa ask` uses), so there is no new model and no paid API.
+**existing** Skipper agent (the same one `exa ask` and `exa chat` use), so it does not create a
+second agent backend. Provider cost depends on the backend configured for Skipper.
 
 - **Feature:** F11 · **Design:** ADR 0065 (`design/adr/0065-dashboard-embedded-copilot.md`) ·
   **Spec:** `design/vision/specs/F11-embedded-copilot.md`
@@ -37,7 +38,7 @@ the model's prose doesn't say so.
 | Tool authorization (R5) | dashboard calls run on an enforced read-only tool graph in a login-scoped thread |
 | Output sanitization (R1) | answers render through `sanitizeMarkdown` (F16) — scripts/handlers/js: URIs stripped |
 | Transparency (R6) | the agent's tool-call trace is shown in a collapsible panel |
-| Audit (D4) | every query writes a `copilot_query` event to `audit_events` (`source = dashboard-copilot`) |
+| Audit (D4) | the backend attempts to write a `copilot_query` event to `audit_events`; audit-store failure does not fail the answer |
 | Availability | if the agent is down the copilot returns a graceful fallback (`_partial: ["agent"]`), never a 500 |
 
 ## Endpoint
@@ -48,8 +49,18 @@ the model's prose doesn't say so.
 
 The standard Compose and Helm deployments wire `AGENT_URL` to their internal `agent` service. For a
 custom dashboard deployment, set `AGENT_URL` in the **dashboard process environment**; `exa config set
-agent <url>` configures CLI clients only. `AGENT_API_KEY` is forwarded as a bearer token and must
-match the agent. Helm requires it in the chart's existing Secret.
+agent <url>` configures CLI clients only. The dashboard prefers `DASHBOARD_AGENT_API_KEY` and falls
+back to `AGENT_API_KEY` for existing deployments. Register the dedicated key on the agent as a named
+principal, for example
+`AGENT_API_KEYS_JSON='{"dashboard":"<dashboard-key>","cli-operator":"<different-cli-key>"}'`.
+Give each CLI operator only their corresponding value with the hidden `exa config set agent_token`
+prompt; never put a real key in shell history. Helm reads the three variables from the chart's
+existing Secret, while Compose reads them from the ignored `.env`.
+
+The dashboard chooses the Skipper conversation ID server-side from the signed login token and sends
+the request to an enforced read-only graph. This prevents a browser from selecting another login's
+checkpoint. The current dashboard authentication model still uses shared viewer/admin roles rather
+than per-user enterprise identity, so this is session isolation, not a multi-tenant identity claim.
 
 ## Notes & limits
 

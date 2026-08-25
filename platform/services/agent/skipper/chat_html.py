@@ -629,6 +629,7 @@ let currentBubble = null;       // the .bubble element being streamed into
 let currentToolGroup = null;    // the .tool-group shown during streaming
 let currentRaw = '';            // raw markdown accumulator for current message
 let typingIndicatorRow = null;  // the typing dots row
+let pendingActionId = null;      // opaque server-issued id for the current HITL decision
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -782,7 +783,7 @@ function handleEvent(data) {
     case 'interrupt':
       removeTypingIndicator();
       finishCurrentBubble();
-      showInterruptModal(data.payload);
+      showInterruptModal(data.payload, data.action_id);
       break;
     case 'done':
       removeTypingIndicator();
@@ -1016,7 +1017,8 @@ function removeTypingIndicator() {
 }
 
 // ── Interrupt modal ───────────────────────────────────────────────────────────
-function showInterruptModal(payload) {
+function showInterruptModal(payload, actionId) {
+  pendingActionId = actionId;
   disableInput();
   document.getElementById('interrupt-action').textContent =
     `Action: ${payload.action || ''}`;
@@ -1027,13 +1029,15 @@ function showInterruptModal(payload) {
 
 function replyInterrupt(confirmed) {
   document.getElementById('interrupt-overlay').classList.remove('visible');
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const answer = confirmed ? 'yes' : 'no';
+  if (!pendingActionId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const decision = confirmed ? 'approve' : 'deny';
+  const actionId = pendingActionId;
+  pendingActionId = null;
   isStreaming = true;
   showTypingIndicator();
   currentBubble = null;
   currentRaw = '';
-  ws.send(JSON.stringify({ type: 'resume', answer }));
+  ws.send(JSON.stringify({ type: 'action', action_id: actionId, decision }));
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

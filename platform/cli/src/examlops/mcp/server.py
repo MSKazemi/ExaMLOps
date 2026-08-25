@@ -7,6 +7,7 @@ are always registered; mutating tools are only registered when writes are enable
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 
 from examlops.mcp.prompts import iter_prompts
@@ -24,6 +25,19 @@ class FastMCPNotInstalled(RuntimeError):
             "or:\n"
             "    pip install fastmcp"
         )
+
+
+class UnsafeMCPBind(RuntimeError):
+    """Raised when the unauthenticated HTTP transport would be exposed remotely."""
+
+
+def _is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _import_fastmcp() -> Any:
@@ -71,8 +85,15 @@ def serve(
         port: Bind port for the ``http`` transport.
         include_writes: Register mutating tools. ``None`` => env-driven.
     """
-    server = build_server(include_writes=include_writes)
     if transport == "stdio":
+        server = build_server(include_writes=include_writes)
         server.run(transport="stdio")
     else:
+        if not _is_loopback(host):
+            raise UnsafeMCPBind(
+                "MCP HTTP has no built-in authentication and may bind only to loopback. "
+                "Keep --host 127.0.0.1 and place an authenticated TLS reverse proxy in front "
+                "for remote access."
+            )
+        server = build_server(include_writes=include_writes)
         server.run(transport="http", host=host, port=port)

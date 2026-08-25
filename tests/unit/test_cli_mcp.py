@@ -175,6 +175,32 @@ def test_cli_mcp_serve_without_fastmcp_errors_cleanly(monkeypatch):
     assert "FastMCP is not installed" in result.output
 
 
+def test_cli_mcp_refuses_unauthenticated_remote_http_bind(monkeypatch):
+    import examlops.mcp.server as srv
+
+    called = False
+
+    def should_not_build(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(srv, "build_server", should_not_build)
+    result = runner.invoke(app, ["mcp", "serve", "--transport", "http", "--host", "0.0.0.0"])
+    assert result.exit_code == 1
+    assert "may bind only to loopback" in result.output
+    assert called is False
+
+
+def test_mcp_loopback_detection():
+    from examlops.mcp.server import _is_loopback
+
+    assert _is_loopback("127.0.0.1") is True
+    assert _is_loopback("::1") is True
+    assert _is_loopback("localhost") is True
+    assert _is_loopback("0.0.0.0") is False
+    assert _is_loopback("10.0.0.5") is False
+
+
 def test_fleet_simulate_tool(db):
     from examlops.mcp.tools import fleet_simulate
 

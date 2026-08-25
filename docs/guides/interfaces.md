@@ -285,11 +285,16 @@ From a JupyterLab session you can reach MLflow, MinIO, Ray Serve, and the Contro
 A conversational interface backed by LangGraph's ReAct loop. The LLM backend is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**.
 
 ```bash
-make skipper                                   # interactive CLI REPL
-python platform/services/agent/agent_server.py   # HTTP/WebSocket chat + web UI on :18004
+make skipper                                   # lower-level developer REPL
+make skipper-server                            # HTTP/WebSocket service on :18004
+exa chat                                       # canonical interactive client
 ```
 
-The agent exposes **45 tools across 10 groups** — registry, inference, metrics/health, training, approvals, modelzoo, services, pipelines, docs/knowledge, and platform_ops (version diff, lineage, prediction + input-embedding drift, audit log, traffic split, metric-gated promotion, auto-retrain trigger, serving smoke-test, platform summary/diagnosis). Use natural language to inspect the platform, kick off operations, or ask how things work; the 13 mutating tools pause for a `Proceed? [y/N]` confirmation, and conversations persist across sessions (resume with `/resume <id>`). See [the agent guide](agent.md) for the full tool list, backends, slash-commands, and the HTTP/WebSocket API.
+The agent groups tools for registry, inference, metrics, training, approvals, ModelZoo, services,
+pipelines, documentation, and platform operations. Use natural language to inspect the platform,
+request controlled operations, or ask how things work. Mutating tools pause for explicit approval;
+named conversations persist across client runs (`exa chat --session <id>` or `/resume <id>`). See the
+[agent guide](agent.md) for the current tool surface, backends, client commands, and HTTP/WebSocket API.
 
 Example prompts:
 - *"What is the current production version of JPCP?"*

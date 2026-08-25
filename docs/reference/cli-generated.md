@@ -33,7 +33,7 @@ Skipper agent — health, backend and memory
 
 ### `exa agent memory`
 
-Enumerate, export and erase the agent's long-term memory (ADR 0034)
+Govern authenticated, owner-scoped agent memory (ADR 0034)
 
 #### `exa agent memory delete`
 
@@ -43,24 +43,52 @@ The immutable audit log is a separate store and is deliberately *not* erased —
 keeps the record that an erasure happened while removing what was remembered.
 
 - `--scope` — Limit erasure to one scope (e.g. an operator)
-- `--operator` — Who is performing the erasure (audited)
+- `--operator` — Local-mode audit actor (remote mode uses verified principal)
+- `--local` — Erase AGENT_MEMORY_DB on this machine
 
 #### `exa agent memory export`
 
-Export every stored memory as JSON — the subject-access half of ADR 0034.
+Export authenticated owner-scoped memory as JSON.
 
 - `--out` — Write JSON here instead of stdout
+- `--local` — Read AGENT_MEMORY_DB on this machine
 
 #### `exa agent memory list`
 
-Enumerate stored memories of one kind.
+Enumerate owner-scoped memories of one kind.
 
 - `--scope` — Task-class / model / operator scope
 - `--limit` — Maximum items to show
+- `--local` — Read AGENT_MEMORY_DB on this machine
+
+#### `exa agent memory review`
+
+List, approve, or reject queued procedure memories
+
+##### `exa agent memory review approve`
+
+Approve one queued procedure memory.
+
+- `--local` — Update the local review database
+
+##### `exa agent memory review list`
+
+List pending procedure reviews for the authenticated owner.
+
+- `--local` — Read the local review database
+
+##### `exa agent memory review reject`
+
+Reject one queued procedure memory.
+
+- `--reason` — Reason recorded with the rejection
+- `--local` — Update the local review database
 
 #### `exa agent memory stats`
 
-Summarise what the agent remembers, by memory kind.
+Summarise memory owned by the authenticated principal and tenant.
+
+- `--local` — Read AGENT_MEMORY_DB on this machine
 
 ### `exa agent status`
 
@@ -133,6 +161,8 @@ Ask the Skipper agent a question in natural language.
 
 - `--session, -s` — Session id to preserve conversational context (default: isolated one-shot)
 - `--stream` — Print the answer as it is generated (default: on at a terminal, off when piped)
+- `--approve` — Approve one pending action in this session
+- `--deny` — Deny one pending action in this session
 
 ## `exa assets`
 
