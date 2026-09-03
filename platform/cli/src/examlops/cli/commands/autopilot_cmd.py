@@ -18,6 +18,7 @@ Design notes (ADR 0085):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -160,8 +161,29 @@ def _get_staging_metrics(model: str) -> dict[str, float] | None:
 
         client = mlflow.MlflowClient()
         mv = client.get_model_version_by_alias(model.lower(), "Staging")
+        if not mv.run_id:
+            # A registered version can exist without a run behind it (registered by hand, or
+            # the run was deleted). There are no metrics to compare, which is not the same as
+            # metrics that compare badly, so the caller's "unavailable" branch is the honest one.
+            return None
         run = client.get_run(mv.run_id)
         return {k: float(v) for k, v in run.data.metrics.items()}
+    except Exception:
+        return None
+
+
+def _staging_version(model: str) -> str | None:
+    """The Staging alias's version number, or None if it cannot be resolved.
+
+    The cycle otherwise never learns a version — ``_do_promote`` re-resolves the alias — but the
+    C3 gate compares *a candidate version* against a baseline alias, so it needs one.
+    """
+    try:
+        import mlflow
+
+        return str(
+            mlflow.MlflowClient().get_model_version_by_alias(model.lower(), "Staging").version
+        )
     except Exception:
         return None
 
@@ -176,6 +198,40 @@ def _do_promote(model: str, from_alias: str = "Staging", to_alias: str = "Produc
 
 
 # ── core cycle logic ─────────────────────────────────────────────────────────
+
+
+def _classify_anomaly_for(model: str, drift_signal: dict[str, Any]):
+    """Classify the anomaly behind a drift breach (ADR 0114), or ``None`` if it cannot be.
+
+    Returning ``None`` on failure keeps a broken detector from taking the whole loop down;
+    the failure is written to the audit trail so it is not merely absent.
+    """
+    from examlops.corruption import assess_model
+
+    try:
+        _signal, classification = assess_model(model, drift_signal)
+        return classification
+    except Exception as exc:  # pragma: no cover - defensive
+        write_audit_event(
+            "autopilot", _actor(), "corruption_detection_error", model, {"error": str(exc)}
+        )
+        return None
+
+
+def _record_suppression(actor: str, model: str, z: float, classification) -> None:
+    """Record a suppressed retrain — a retrain that does not happen leaves no other trace."""
+    from examlops.data.drift import record_drift_event
+
+    detail = {"z_score": z, **classification.as_dict()}
+    record_drift_event(
+        model,
+        "corruption",
+        severity="CRITICAL" if classification.klass == "suspected_hardware" else "WARNING",
+        score=z,
+        metric="anomaly_class",
+        detail=detail,
+    )
+    write_audit_event("autopilot", actor, "autopilot_retrain_suppressed", model, detail)
 
 
 def run_cycle(
@@ -243,6 +299,7 @@ def run_cycle(
         blocks: list[dict[str, Any]] = []
         hitl: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        suppressed: list[dict[str, Any]] = []
 
         cfg = load_config()
 
@@ -301,6 +358,22 @@ def run_cycle(
                         continue
                 except ValueError:
                     pass
+
+            # ADR 0114: classify before remediating. The autopilot promotes on its own
+            # road, so the suppression has to hold here too — otherwise the closed loop is
+            # the one path that can still retrain on a hardware fault.
+            classification = _classify_anomaly_for(model, {"z_score": z, "status": status})
+            if classification is not None and not classification.autonomous_remediation_allowed:
+                _record_suppression(actor, model, z, classification)
+                suppressed.append(
+                    {
+                        "model": model,
+                        "class": classification.klass,
+                        "reason": classification.reason,
+                        "remediation": classification.remediation,
+                    }
+                )
+                continue
 
             # Policy check: autopilot_trigger
             outcome, reason = _policy_decide(
@@ -461,6 +534,56 @@ def run_cycle(
                 )
                 continue
 
+            # C3 — the eval regression gate. `exa eval gate set --mode block` reads as "this
+            # guards promotion of this model", and it guarded `exa pipeline promote` only: the
+            # autopilot promotes the same model to the same alias and never met it. The
+            # promotion *rule* above is an absolute threshold on one metric; the C3 gate is the
+            # only check that compares the candidate against the baseline alias, so a model can
+            # clear `rmse < 5.0` while having regressed from 2.0 — refused on one road,
+            # promoted on the other.
+            from examlops.data.evaluation import get_eval_gate
+
+            if get_eval_gate(model) is not None:
+                version = _staging_version(model)
+                if version is None:
+                    reason = (
+                        "eval gate is configured but the Staging version could not be resolved, "
+                        "so the gate could not be evaluated"
+                    )
+                    blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autopilot_promote_blocked",
+                        model,
+                        {"gate": "autopilot_promote", "reason": reason},
+                    )
+                    continue
+                from examlops.evaluation.gate import run_eval_gate
+
+                gate_result = run_eval_gate(
+                    model,
+                    version,
+                    higher_is_better=rule["operator"] in ("gt", "gte"),
+                )
+                if gate_result is not None and not gate_result.passed:
+                    failing = [m.name for m in gate_result.metrics if m.failed]
+                    reason = f"eval gate FAILED ({gate_result.mode}): {', '.join(failing)}"
+                    blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autopilot_promote_blocked",
+                        model,
+                        {
+                            "gate": "autopilot_promote",
+                            "version": version,
+                            "failing_metrics": failing,
+                            "mode": gate_result.mode,
+                        },
+                    )
+                    continue
+
             # Policy check: autopilot_promote. Expose synthetic-only training as context so a
             # D5 policy rule can refuse to auto-promote a synthetic-only model (A7 spec R5/GWT-5).
             from examlops.promotion_gates import synthetic_only_training
@@ -570,6 +693,7 @@ def run_cycle(
             "policy_blocks": blocks,
             "human_required": hitl,
             "skipped": skipped,
+            "suppressed": suppressed,
         }
         update_autopilot_run(
             run_id,
@@ -592,6 +716,7 @@ def run_cycle(
                 "promotions": len(promotions),
                 "policy_blocks": len(blocks),
                 "human_required": len(hitl),
+                "suppressed": len(suppressed),
             },
         )
         # Publish to the NovaFabric event backbone (item 1.3) so subscribers (dashboard SSE,
@@ -650,6 +775,7 @@ def run(
     promotions = result.get("promotions", [])
     blocks = result.get("policy_blocks", [])
     hitl = result.get("human_required", [])
+    suppressed = result.get("suppressed", [])
     suffix = " [dry-run]" if dry_run else ""
 
     if retrains:
@@ -685,13 +811,19 @@ def run(
             ["Model", "Gate", "Reason"],
             [[b["model"], b["gate"], b.get("reason") or "—"] for b in blocks],
         )
+    if suppressed:
+        _output.print_table(
+            "Suppressed — classification did not permit an autonomous retrain (ADR 0114)",
+            ["Model", "Class", "Remediation", "Reason"],
+            [[s["model"], s["class"], s["remediation"], s["reason"]] for s in suppressed],
+        )
     if hitl:
         for h in hitl:
             _output.warning(
                 f"HUMAN ACTION REQUIRED — model {h['model']} gate {h['gate']} "
                 "blocked by require_approval policy. See: exa audit"
             )
-    if not retrains and not promotions and not hitl:
+    if not retrains and not promotions and not hitl and not suppressed:
         _output.ok("Autopilot cycle complete — no actions needed")
     elif not dry_run:
         _output.ok(
@@ -699,6 +831,17 @@ def run(
             f"{len(retrains)} retrains · {len(promotions)} promotions · "
             f"{len(blocks)} policy blocks · {len(hitl)} HITL"
         )
+
+
+def _suppressed_count(run: dict[str, Any]) -> int:
+    """How many models a recorded cycle suppressed, read from its stored summary."""
+    raw = run.get("summary")
+    if not raw:
+        return 0
+    try:
+        return len(json.loads(raw).get("suppressed", []) or [])
+    except (ValueError, TypeError, AttributeError):
+        return 0
 
 
 @app.command("status", epilog=_EXAMPLES_STATUS)
@@ -718,7 +861,7 @@ def status_cmd(
         return
     _output.print_table(
         "Recent Autopilot Runs",
-        ["ID", "Run At", "Dry-run", "Retrains", "Promotions", "Blocks", "HITL"],
+        ["ID", "Run At", "Dry-run", "Retrains", "Promotions", "Blocks", "HITL", "Suppressed"],
         [
             [
                 str(r["id"]),
@@ -728,6 +871,11 @@ def status_cmd(
                 str(r["promotions_made"]),
                 str(r["policy_blocks"]),
                 str(r["human_required"]),
+                # ADR 0114 suppressions have no column of their own — they live in the run's
+                # summary. Without this a cycle that suppressed three models reads exactly like
+                # a quiet one, which is the failure mode of every guard whose only success
+                # signal is silence.
+                str(_suppressed_count(r)),
             ]
             for r in runs
         ],

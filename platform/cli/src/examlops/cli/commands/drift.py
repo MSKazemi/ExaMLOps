@@ -26,7 +26,7 @@ from examlops.drift_providers import resolve_drift_score_fn
 _PANELS: list[tuple[str, list[str]]] = [
     ("Detection", ["status", "snapshots", "concept", "estimate", "profile", "forecast", "events"]),
     ("Baselines", ["baseline", "reset"]),
-    ("Response", ["trigger", "auto-retrain", "input"]),
+    ("Response", ["trigger", "auto-retrain", "input", "corruption"]),
 ]
 
 app = typer.Typer(
@@ -249,7 +249,7 @@ _EXAMPLES_TRIGGER = (
 @auto_retrain_app.command("enable", epilog=_EXAMPLES_AR_ENABLE)
 def auto_retrain_enable(
     model: str = typer.Argument(..., help="Model name"),
-    dataset: str = typer.Option(
+    dataset: str | None = typer.Option(
         None, "--dataset", "-d", help="Dataset class name (default: model's primary dataset)"
     ),
     min_z: float = typer.Option(3.0, "--min-z", help="Z-score threshold to trigger retrain"),
@@ -333,6 +333,72 @@ def auto_retrain_status():
 # ---------------------------------------------------------------------------
 
 
+def _corruption_signal_or_none(model: str):
+    """The corruption signal, or ``None`` if it cannot be computed.
+
+    A detector that raises takes the retrain path down with it, so a failure here is
+    reported and the caller falls back to the pre-ADR-0114 gates rather than blocking
+    every model on a broken read. It is logged, not swallowed silently — a guard whose
+    only success signal is silence is exactly what this platform keeps getting wrong.
+    """
+    from examlops.corruption import signal_for_model
+
+    try:
+        return signal_for_model(model)
+    except Exception as exc:  # pragma: no cover - defensive
+        _output.warning(f"corruption detection unavailable for {model}: {exc}")
+        return None
+
+
+def _classification_from_corruption(signal):
+    from examlops.corruption import AnomalyClassification
+
+    return AnomalyClassification(
+        klass="suspected_hardware",
+        reason="; ".join(signal.reasons) or "corruption signal positive",
+        remediation="quarantine_node",
+        autonomous_remediation_allowed=False,
+        operator_event=True,
+        evidence=signal.evidence,
+    )
+
+
+def _classify_or_none(model: str, drift_row: dict):
+    """Classify one drifting model, or ``None`` when classification itself failed."""
+    from examlops.corruption import classify_anomaly
+
+    signal = _corruption_signal_or_none(model)
+    if signal is None:
+        return None
+    try:
+        rows = _input_drift_rows(model)
+    except Exception as exc:  # pragma: no cover - defensive
+        _output.warning(f"input-drift evidence unavailable for {model}: {exc}")
+        return None
+    return classify_anomaly(drift_row, signal, rows[0] if rows else None)
+
+
+def _record_suppression(source: str, actor: str, model: str, score: float, classification) -> None:
+    """Record a suppressed remediation in the evidence chain (ADR 0114 decision 4).
+
+    A retrain that does not happen leaves no trace of its own, which is what would make
+    this invisible; the audit event and the operator drift event are that trace, and they
+    are also the denominator G4.11 needs.
+    """
+    from examlops.data.drift import record_drift_event
+
+    detail = {"score": score, **classification.as_dict()}
+    record_drift_event(
+        model,
+        "corruption",
+        severity="CRITICAL" if classification.klass == "suspected_hardware" else "WARNING",
+        score=score,
+        metric="anomaly_class",
+        detail=detail,
+    )
+    write_audit_event(source, actor, "drift_retrain_suppressed", model, detail)
+
+
 @app.command(epilog=_EXAMPLES_TRIGGER)
 def trigger(
     dry_run: bool = typer.Option(
@@ -359,6 +425,7 @@ def trigger(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     triggered = []
     skipped = []
+    suppressed: list[dict] = []
 
     for row in drift_rows:
         model = row["model"]
@@ -377,6 +444,23 @@ def trigger(
                     {"model": model, "reason": f"cooldown {elapsed:.0f}/{ar['cooldown_s']}s"}
                 )
                 continue
+        # ADR 0114: classify before remediating. A z-score threshold and a cooldown were the
+        # only gates here, and silent data corruption perturbs exactly the statistic the
+        # z-score is computed from — so a hardware fault fired an autonomous retrain and
+        # trained a model on corrupt data. Only `data_drift` may retrain autonomously.
+        classification = _classify_or_none(model, row)
+        if classification is not None and not classification.autonomous_remediation_allowed:
+            _record_suppression("cli", actor, model, z, classification)
+            suppressed.append(
+                {
+                    "model": model,
+                    "class": classification.klass,
+                    "reason": classification.reason,
+                    "remediation": classification.remediation,
+                }
+            )
+            continue
+
         if dry_run:
             triggered.append({"model": model, "z": z, "action": "would retrain"})
             continue
@@ -409,6 +493,23 @@ def trigger(
             continue
         ev = latest_drift_event(model, "concept")
         if not ev or ev["severity"] != "CRITICAL":
+            continue
+        # The concept path is the second door into an autonomous retrain, so ADR 0114's
+        # suppression has to hold here as well. Only the corruption axis is consulted:
+        # a concept breach *is* an input→output relationship change, so input-drift
+        # quietness does not carry the same meaning it does for prediction drift.
+        corr_signal = _corruption_signal_or_none(model)
+        if corr_signal is not None and corr_signal.suspected_sdc:
+            cls = _classification_from_corruption(corr_signal)
+            _record_suppression("cli", actor, model, float(ev.get("score") or 0.0), cls)
+            suppressed.append(
+                {
+                    "model": model,
+                    "class": cls.klass,
+                    "reason": f"concept: {cls.reason}",
+                    "remediation": cls.remediation,
+                }
+            )
             continue
         if ar["last_triggered"]:
             last = datetime.datetime.fromisoformat(ar["last_triggered"])
@@ -450,7 +551,7 @@ def trigger(
             _output.error(f"Failed to trigger concept-drift retrain for {model}: {e}")
 
     if _output.json_mode:
-        _output.print_json({"triggered": triggered, "skipped": skipped})
+        _output.print_json({"triggered": triggered, "skipped": skipped, "suppressed": suppressed})
         return
     if triggered:
         cols = ["Model", "Z-Score", "Flow Run ID"]
@@ -459,11 +560,226 @@ def trigger(
             cols,
             [[t["model"], f"{t['z']:.2f}", t.get("flow_run_id") or "—"] for t in triggered],
         )
+    if suppressed:
+        _output.print_table(
+            "Suppressed — classification did not permit an autonomous retrain (ADR 0114)",
+            ["Model", "Class", "Remediation", "Reason"],
+            [[s["model"], s["class"], s["remediation"], s["reason"]] for s in suppressed],
+        )
     if skipped:
         cols = ["Model", "Reason"]
         _output.print_table("Skipped", cols, [[s["model"], s["reason"]] for s in skipped])
-    if not triggered and not skipped:
+    if not triggered and not skipped and not suppressed:
         _output.ok("All enabled models below drift threshold — no retrains triggered")
+
+
+# ---------------------------------------------------------------------------
+# corruption sub-group (ADR 0114 — is this the data, or the machine?)
+# ---------------------------------------------------------------------------
+
+corruption_app = typer.Typer(
+    no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
+)
+app.add_typer(corruption_app, name="corruption")
+
+_CORRUPTION_BASELINE_WINDOW = 500
+
+_EXAMPLES_CORRUPTION_STATUS = (
+    "Examples:\n\n"
+    "  exa drift corruption status\n\n"
+    "  exa drift corruption status JPCP\n\n"
+    "  exa --json drift corruption status"
+)
+_EXAMPLES_CORRUPTION_BASELINE = "Examples:\n\n  exa drift corruption baseline JPCP"
+_EXAMPLES_CLASSIFY = (
+    "Examples:\n\n  exa drift corruption classify\n\n  exa drift corruption classify JPCP"
+)
+_EXAMPLES_SELFTEST = "Examples:\n\n  exa drift corruption selftest JPCP"
+
+
+def _corruption_models(model_filter: str | None) -> list[str]:
+    init_db()
+    if model_filter:
+        return [model_filter]
+    with get_db() as conn:
+        rows = conn.execute("SELECT DISTINCT model FROM drift_snapshots").fetchall()
+    return [r["model"] for r in rows]
+
+
+@corruption_app.command("status", epilog=_EXAMPLES_CORRUPTION_STATUS)
+def corruption_status(
+    model: str | None = typer.Argument(None, help="Model name filter (default: all models)"),
+):
+    """Show the corruption signal per model — NaN/Inf **and** unexpected zeros.
+
+    A NaN/Inf guard alone sees about 1% of silent data corruption, so it is never reported
+    on its own here (ADR 0114 decision 1).
+    """
+    from examlops.corruption import signal_for_model
+
+    models_list = _corruption_models(model)
+    rows = []
+    for name in models_list:
+        sig = signal_for_model(name)
+        rows.append({"model": name, **sig.as_dict()})
+    if not rows:
+        _output.ok("No prediction snapshots — nothing to check for corruption")
+        return
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    _output.print_table(
+        "Corruption Signal",
+        ["Model", "NaN/Inf", "Zero Rate", "Baseline", "Shift", "Suspected SDC", "N"],
+        [
+            [
+                r["model"],
+                f"{r['nan_inf_rate']:.3f}",
+                f"{r['zero_rate']:.3f}",
+                "—" if r["zero_rate_baseline"] is None else f"{r['zero_rate_baseline']:.3f}",
+                f"{r['distribution_shift']:.2f}",
+                "YES" if r["suspected_sdc"] else "no",
+                str(r["n"]),
+            ]
+            for r in rows
+        ],
+    )
+    for r in rows:
+        for reason in r["reasons"]:
+            _output.detail(f"{r['model']}: {reason}")
+
+
+@corruption_app.command("baseline", epilog=_EXAMPLES_CORRUPTION_BASELINE)
+def corruption_baseline(
+    model: str = typer.Argument(..., help="Model name"),
+    reason: str | None = reason_option(),
+):
+    """Store the current zero-rate and spread as this model's corruption baseline.
+
+    Zero rates drift legitimately (a genuinely sparser input distribution), so like
+    ``exa drift baseline`` this is an explicit, audited act rather than a rolling window.
+    """
+    from examlops.corruption import corruption_stats
+    from examlops.data.drift import set_corruption_baseline
+
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC "
+            "LIMIT ?",
+            (model, _CORRUPTION_BASELINE_WINDOW),
+        ).fetchall()
+    preds = [r["prediction"] for r in rows]
+    if not preds:
+        _output.error(f"No prediction snapshots for {model} — nothing to baseline")
+    stats = corruption_stats(preds)
+    set_corruption_baseline(model, stats)
+    write_audit_event(
+        "cli",
+        os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown",
+        "corruption_baseline_set",
+        model,
+        audit_details(dict(stats), reason),
+    )
+    if _output.json_mode:
+        _output.print_json({"model": model, **stats})
+        return
+    _output.ok(
+        f"Corruption baseline set for {model}: zero_rate={stats['zero_rate']:.4f} "
+        f"std={stats['std']:.4g} over {int(stats['n'])} predictions"
+    )
+
+
+@corruption_app.command("classify", epilog=_EXAMPLES_CLASSIFY)
+def corruption_classify(
+    model: str | None = typer.Argument(None, help="Model name filter (default: all models)"),
+):
+    """Name the anomaly — data drift, hardware, regression, or undetermined.
+
+    The remediation follows from the class, never from the z-score (ADR 0114 decision 2).
+    """
+    rows = _drift_rows(model)
+    if not rows:
+        _output.ok("No prediction snapshots — nothing to classify")
+        return
+    out = []
+    for row in rows:
+        cls = _classify_or_none(row["model"], row)
+        if cls is None:
+            continue
+        out.append({"model": row["model"], "z_score": row["z_score"], **cls.as_dict()})
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.print_table(
+        "Anomaly Classification",
+        ["Model", "Z-Score", "Class", "Remediation", "Auto?", "Reason"],
+        [
+            [
+                r["model"],
+                f"{r['z_score']:.2f}",
+                r["class"],
+                r["remediation"],
+                "yes" if r["autonomous_remediation_allowed"] else "no",
+                r["reason"],
+            ]
+            for r in out
+        ],
+    )
+
+
+@corruption_app.command("selftest", epilog=_EXAMPLES_SELFTEST)
+def corruption_selftest(
+    model: str = typer.Argument(..., help="Model whose recent predictions are the clean signal"),
+    rate: float = typer.Option(0.20, "--rate", help="Fraction of values to corrupt per trial"),
+    trials: int = typer.Option(20, "--trials", help="Injection trials per corruption class"),
+):
+    """Measure this detector against injected corruption and publish the rate (R-ef).
+
+    A detector may not be credited with classes it was not tested against, so this injects
+    each class into the model's own recent predictions and reports what was caught. A class
+    the detector does not gate on is expected to score ~0 — printing that is the point.
+    """
+    from examlops.corruption import DETECTOR_COVERAGE, measure_detection_rate
+    from examlops.data.drift import get_corruption_baseline
+
+    init_db()
+    baseline = get_corruption_baseline(model)
+    if baseline is None:
+        _output.error(
+            f"No corruption baseline for {model}",
+            hint=f"exa drift corruption baseline {model}",
+        )
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC, rowid DESC "
+            "LIMIT ?",
+            (model, _CORRUPTION_BASELINE_WINDOW),
+        ).fetchall()
+    clean = [r["prediction"] for r in rows]
+    if not clean:
+        _output.error(f"No prediction snapshots for {model}")
+    measured = measure_detection_rate(clean, baseline, rate=rate, trials=trials)
+    if _output.json_mode:
+        _output.print_json({"model": model, "coverage": DETECTOR_COVERAGE, "measured": measured})
+        return
+    _output.print_table(
+        f"Detection Rate — {model} (injected {rate:.0%}, {trials} trials/class)",
+        ["Corruption Class", "Gating", "Detection Rate", "Detected By"],
+        [
+            [
+                name,
+                "yes" if measured[name]["gating"] else "no (reported only)",
+                f"{measured[name]['detection_rate']:.0%}",
+                str(DETECTOR_COVERAGE[name]["detected_by"]),
+            ]
+            for name in DETECTOR_COVERAGE
+        ],
+    )
+    _output.detail(
+        "False positive on the clean signal: "
+        + ("YES" if measured["_clean"]["false_positive"] else "no")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -488,61 +804,12 @@ _EXAMPLES_INPUT_BASELINE = "Examples:\n\n  exa drift input baseline JPCP"
 
 
 def _input_drift_rows(model_filter: str | None) -> list[dict]:
-    init_db()
-    with get_db() as conn:
-        if model_filter:
-            models_list = [model_filter]
-        else:
-            rows = conn.execute("SELECT DISTINCT model FROM input_snapshots").fetchall()
-            models_list = [r["model"] for r in rows]
+    """Input-drift rows. One implementation, in ``examlops.corruption``, because the
+    ADR-0114 anomaly classifier consults exactly this statistic — a second copy here
+    would be a second thing to keep in step with it."""
+    from examlops.corruption import input_drift_rows
 
-    results = []
-    for model in models_list:
-        with get_db() as conn:
-            snap_rows = conn.execute(
-                f"SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
-                f"ORDER BY ts DESC LIMIT {_INPUT_WINDOW}",
-                (model,),
-            ).fetchall()
-        if not snap_rows:
-            continue
-        norms = [r["emb_norm"] for r in snap_rows]
-        means = [r["emb_mean"] for r in snap_rows]
-        stds = [r["emb_std"] for r in snap_rows]
-        live = {
-            "norm_mean": sum(norms) / len(norms),
-            "mean_mean": sum(means) / len(means),
-            "std_mean": sum(stds) / len(stds),
-        }
-        baseline = get_input_baseline(model)
-        if baseline is None:
-            status = "OK (no baseline)"
-            max_z = 0.0
-        else:
-            zs = []
-            for metric in ("norm_mean", "mean_mean", "std_mean"):
-                bstd = baseline.get(f"{metric}_std", 0.0)
-                if bstd > 0:
-                    zs.append(abs(live[metric] - baseline[metric]) / bstd)
-            max_z = max(zs) if zs else 0.0
-            if max_z >= _CRIT_Z:
-                status = "CRITICAL"
-            elif max_z >= _WARN_Z:
-                status = "WARNING"
-            else:
-                status = "OK"
-        results.append(
-            {
-                "model": model,
-                "live_norm_mean": round(live["norm_mean"], 3),
-                "live_emb_mean": round(live["mean_mean"], 4),
-                "live_emb_std": round(live["std_mean"], 4),
-                "max_z": round(max_z, 2),
-                "status": status,
-                "n_snapshots": len(snap_rows),
-            }
-        )
-    return results
+    return input_drift_rows(model_filter, window=_INPUT_WINDOW)
 
 
 @input_app.command("status", epilog=_EXAMPLES_INPUT_STATUS)

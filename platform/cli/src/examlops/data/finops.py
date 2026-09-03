@@ -182,12 +182,22 @@ def write_carbon_record(
     co2e_g: float | None,
     grid_intensity: float | None = None,
     provider: str | None = None,
+    signal_type: str | None = None,
+    signal_method: str | None = None,
 ) -> None:
+    """Persist one carbon figure, with the kind of signal that produced it (ADR 0112 decision 6).
+
+    ``signal_type``/``signal_method`` default to ``None`` so every existing caller is unchanged;
+    a row without them is a figure whose provenance was never recorded, which is visible rather
+    than assumed.
+    """
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO carbon_records (run_id, model, kwh, co2e_g, grid_intensity, provider)
-               VALUES (?,?,?,?,?,?)""",
-            (run_id, model, kwh, co2e_g, grid_intensity, provider),
+            """INSERT INTO carbon_records
+                   (run_id, model, kwh, co2e_g, grid_intensity, provider,
+                    signal_type, signal_method)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (run_id, model, kwh, co2e_g, grid_intensity, provider, signal_type, signal_method),
         )
 
 

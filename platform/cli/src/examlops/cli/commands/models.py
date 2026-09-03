@@ -27,7 +27,7 @@ _PANELS: list[tuple[str, list[str]]] = [
     ("Registry", ["list", "info", "diff", "lineage", "card"]),
     ("Promotion", ["rollback"]),
     ("Cost", ["cost", "cost-list"]),
-    ("Supply chain & Packaging", ["sign", "verify", "bom", "quantize", "engine"]),
+    ("Supply chain & Packaging", ["sign", "verify", "bom", "quantize", "parity", "engine"]),
 ]
 
 app = typer.Typer(

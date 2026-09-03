@@ -11,12 +11,39 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 from typer.testing import CliRunner
 
 from examlops.cli.main import app
+from examlops.data.drift import set_corruption_baseline, set_input_baseline, write_input_snapshot
 from examlops.platform_db import (
     get_drift_auto_retrain,
     init_db,
     set_drift_baseline,
     write_drift_snapshot,
 )
+
+
+def seed_data_drift_evidence(model: str, preds: list[float]) -> None:
+    """Give `model` the *second* axis ADR 0114 requires before an autonomous retrain.
+
+    Prediction drift alone now classifies as `undetermined`, so a test that means "this model
+    is genuinely drifting" has to say so on both axes: inputs 4σ from their baseline, and a
+    corruption baseline that matches the predictions.
+    """
+    from examlops.corruption import corruption_stats
+
+    set_corruption_baseline(model, corruption_stats(preds))
+    set_input_baseline(
+        model,
+        {
+            "norm_mean": 1.0,
+            "norm_mean_std": 0.1,
+            "mean_mean": 0.0,
+            "mean_mean_std": 0.1,
+            "std_mean": 1.0,
+            "std_mean_std": 0.1,
+        },
+    )
+    for _ in range(50):
+        write_input_snapshot(model, "Production", 1.4, 0.0, 1.0, None)
+
 
 runner = CliRunner()
 
@@ -93,6 +120,7 @@ def test_trigger_dry_run_below_threshold():
     for _ in range(20):
         write_drift_snapshot("JPCP", "Production", random.gauss(0, 0.1), None)
     set_drift_baseline("JPCP", {"mean": 0.0, "std": 1.0, "n": 100.0})
+    seed_data_drift_evidence("JPCP", [10.0] * 20)
     runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "3.0"])
     result = runner.invoke(app, ["drift", "trigger", "--dry-run"])
     assert result.exit_code == 0, result.output
@@ -109,6 +137,7 @@ def test_trigger_dry_run_above_threshold():
     for _ in range(20):
         write_drift_snapshot("JPCP", "Production", 10.0, None)
     set_drift_baseline("JPCP", {"mean": 0.0, "std": 1.0, "n": 100.0})
+    seed_data_drift_evidence("JPCP", [10.0] * 20)
     runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "3.0"])
     result = runner.invoke(app, ["drift", "trigger", "--dry-run"])
     assert result.exit_code == 0, result.output
@@ -124,6 +153,7 @@ def test_trigger_fires_retrain(tmp_path):
     for _ in range(20):
         write_drift_snapshot("JPCP", "Production", 10.0, None)
     set_drift_baseline("JPCP", {"mean": 0.0, "std": 1.0, "n": 100.0})
+    seed_data_drift_evidence("JPCP", [10.0] * 20)
     runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "3.0"])
     mock_result = {"flow_run_id": "test-flow-123"}
     with patch("examlops.cli._client.post", return_value=mock_result) as mock_post:

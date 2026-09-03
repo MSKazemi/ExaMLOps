@@ -15,6 +15,7 @@ from examlops.platform_db import get_db, init_db, install_write_retry, write_ret
 
 __all__ = [
     "claim_drift_trigger",
+    "get_corruption_baseline",
     "get_drift_auto_retrain",
     "get_drift_baseline",
     "get_input_baseline",
@@ -23,6 +24,7 @@ __all__ = [
     "list_drift_events",
     "record_drift_event",
     "record_drift_trigger",
+    "set_corruption_baseline",
     "set_drift_auto_retrain",
     "set_drift_baseline",
     "set_input_baseline",
@@ -57,6 +59,23 @@ def claim_drift_trigger(model: str, cooldown_s: float) -> bool:
             return cur.rowcount == 1
 
     return write_retry(_claim)
+
+
+def get_corruption_baseline(model: str) -> dict[str, float] | None:
+    """The zero-rate/spread reference a corruption signal is judged against (ADR 0114)."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT stats FROM corruption_baselines WHERE model=?", (model,)
+        ).fetchone()
+    return json.loads(row["stats"]) if row else None
+
+
+def set_corruption_baseline(model: str, stats: dict[str, float]) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO corruption_baselines (model, stats) VALUES (?,?)",
+            (model, json.dumps(stats)),
+        )
 
 
 def get_drift_auto_retrain(model: str) -> dict[str, Any] | None:

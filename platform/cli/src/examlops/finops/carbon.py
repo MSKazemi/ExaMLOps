@@ -20,6 +20,11 @@ from the scheduler. A run that used no GPU still burned energy.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, keeps this module import-light
+    from .carbon_signal import CarbonSignal
+
 # Documented defaults (all overridable).
 DEFAULT_GPU_TDP_WATTS = 400.0
 DEFAULT_CPU_TDP_WATTS = 120.0
@@ -82,6 +87,37 @@ def estimate_carbon(
         gpu_hours, gpu_tdp_watts, pue, cpu_hours=cpu_hours, cpu_tdp_watts=cpu_tdp_watts
     )
     return {"kwh": kwh, "co2e_g": co2e_grams(kwh, grid_intensity_g_per_kwh)}
+
+
+def estimate_emissions(
+    gpu_hours: float,
+    signal: CarbonSignal,
+    gpu_tdp_watts: float = DEFAULT_GPU_TDP_WATTS,
+    pue: float = DEFAULT_PUE,
+    *,
+    cpu_hours: float = 0.0,
+    cpu_tdp_watts: float = DEFAULT_CPU_TDP_WATTS,
+) -> dict:
+    """Device-hours → emissions, from a **typed accounting signal** (ADR 0112 decisions 2/4/6).
+
+    This is :func:`estimate_carbon` with the one thing a bare float cannot carry: what the
+    intensity figure measures. A marginal/decision signal is **rejected**, not silently used —
+    it overstates allocated emissions and would make EED reporting wrong in the other
+    direction. The result states its own ``method`` and ``signal_type`` so no carbon figure
+    this platform emits can be read without knowing which kind it is (decision 6).
+    """
+    from .carbon_signal import require_accounting
+
+    require_accounting(signal, path="estimate_emissions()")
+    out = estimate_carbon(
+        gpu_hours,
+        gpu_tdp_watts,
+        pue,
+        signal.grams_per_kwh,
+        cpu_hours=cpu_hours,
+        cpu_tdp_watts=cpu_tdp_watts,
+    )
+    return {**out, "signal": signal.as_dict()}
 
 
 def budget_usage_ratio(consumed: float, budget: float | None) -> float | None:

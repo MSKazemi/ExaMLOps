@@ -4,6 +4,1124 @@ All notable changes to ExaMLOps are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+
+- **A promotion that changes the numerics can no longer ship on a green latency check (ADR 0117 —
+  W1 item 5).** Every gate the platform had was **single-target**: `validate-model` smoke-tests a
+  model on the backend it is already running on, and `promote --if-<metric>` reads a metric from
+  the run that produced it. A portability gate is inherently **two-target**, and nothing did that
+  — while `exa models quantize` registered, signed, BOM'd and audited a requantised version with
+  **no numeric comparison at all**, and quantisation is a *deliberate* numeric change. New
+  `examlops.parity` closes the quantisation arm: three verdicts (`passed` · `blocked` · `inert`),
+  a per-model `parity_tolerance` declared in the model YAML (never global — a ranking model
+  tolerates far more drift than one whose output is a physical quantity), and a `parity_checks`
+  table recording the **measured divergence** rather than pass/fail, so drift toward the tolerance
+  boundary is visible before it crosses. The gate is **conditional**: a promotion that does not
+  change the execution target skips it entirely, detected from the version string `exa models
+  quantize` already produces (`17-awq` vs `17`). Wired into `exa pipeline promote`, which refuses
+  anything but `passed` (`--force` overrides, audited, like the eval and SLO gates beside it), plus
+  a new `exa models parity`. **`inert` is never a pass** — a comparator that simply diffed outputs
+  where no transformation occurred would report perfect parity and green-light the promotion having
+  measured nothing. Guide `docs/guides/portability-gate.md`; 24 tests in
+  `tests/unit/test_parity_gate.py`.
+
+- **Carbon signals are typed, and the type is enforced (ADR 0112 — W1 item 4).** Electricity
+  cannot be traced from source to consumer, so several carbon-intensity metrics coexist, and
+  Gorka, Rhodes & Roald (arXiv:2411.06560) measured the consequence of mixing them: *"shifting
+  according to common metrics such as average carbon emissions can reduce the amount of emissions
+  allocated to the consumer doing the shifting, while increasing the total emissions of the power
+  system."* A greener report and a worse world — the one instance of this platform's recurring
+  "well-formed instrument measuring the wrong thing" pattern that causes real harm rather than
+  false confidence. New `examlops.finops.carbon_signal`: a `CarbonSignal` carries `method` and a
+  `signal_type` **derived from** it, never declared alongside it, because an operator able to
+  label an average feed `decision` would reintroduce exactly the error — and the endpoint's number
+  looks identical either way. **Accounting** (average) signals may be reported; **decision**
+  (marginal) signals may drive placement; an unclassified method yields `unknown` and satisfies
+  **neither** guard. Both guards **raise rather than warn**, the same conclusion ADR 0111 reached
+  about uncalibrated judges. `grid_intensity.current_grid_signal()` produces typed signals and
+  never dresses a fallback up as a live reading — a declared-marginal endpoint that fails degrades
+  to `static_default`, so placement is not handed a decision-typed signal nobody read.
+  `carbon.estimate_emissions()` rejects a decision signal (it overstates allocated emissions and
+  would make EED reporting wrong in the other direction) and returns the figure *with* its
+  provenance. `choose_cluster(carbon_signal=…)` drops the carbon objective when no decision signal
+  exists, records `objectives_unavailable: ["carbon"]` and **substitutes no default** — substituting
+  one there is the harm itself; `strict_carbon=True` raises instead, so a caller that asked for
+  carbon-aware placement cannot quietly get carbon-blind placement. New `exa finops carbon signal`
+  reports what signal exists and what it may be used for, because "carbon had zero weight" reads
+  like a bug and is usually just the honest state of public carbon data. Every reported and
+  **stored** figure now states its method and type (`carbon_records.signal_type`/`signal_method`,
+  additive). Guide `docs/guides/carbon-signals.md`; 23 tests in
+  `tests/unit/test_carbon_signal_typing.py`. **No built-in carbon-aware scoring policy ships**:
+  ADR 0112's R-ec obliges a multi-objective policy to beat a simple baseline on a measured trace
+  first, and that benchmark does not exist — so the typing and the guards ship while the policy
+  that would owe the measurement does not. The ADR is recorded as *Partially implemented* for that
+  reason, with R-ec and R-ed named.
+
+- **Corruption is now classified before drift is remediated (ADR 0114 — W1 of the AI-datacenter
+  roadmap, and the gate to W2).** `exa drift trigger` had exactly two gates before an autonomous
+  retrain: a z-score above a threshold, and an elapsed cooldown. Silent data corruption perturbs
+  *the very statistic that z-score is computed from*, so a hardware fault produced a high z-score,
+  fired a retrain, and trained a model on corrupt data — an autonomous action with the wrong
+  remediation and no inverse. New `examlops.corruption` closes it. **A NaN/Inf guard is not
+  corruption detection:** gate-level fault injection on a production datacenter GPU measured
+  special values at **1.01%** of SDC and states that special-value detection "captures minimal
+  SDCs", so `detect_corruption()` also computes an unexpected-zero rate against a per-model
+  baseline (new `corruption_baselines` table, `exa drift corruption baseline`).
+  `classify_anomaly()` then names the anomaly — `data_drift` · `suspected_hardware` ·
+  `suspected_regression` · `undetermined` — from **two** axes, using the input-embedding drift the
+  platform was already collecting: **prediction drift without input drift is evidence against data
+  drift, not for it.** Only `data_drift` permits an autonomous retrain; every other class
+  suppresses it in both autonomous paths (`exa drift trigger`, including its concept-drift door,
+  and `exa autopilot run`), raises an operator `drift_events` row and records the suppression with
+  its reason in the audit trail — a retrain that does not happen leaves no other trace, and that
+  record is also the denominator G4.11 needs. **`undetermined` is a first-class outcome**, not an
+  error: where the signals do not separate the platform says so rather than guessing, because
+  guessing here costs GPU-hours and ships a corrupted model. **The detector publishes its own
+  detection rate rather than assuming its coverage (R-ef):** `exa drift corruption selftest`
+  injects nullification, special values and multi-bit mantissa flips into the model's own recent
+  predictions and reports what was caught — the mantissa class is deliberately **reported, never
+  gating**, and scoring ~0 on it is the honest number, because a spread change is not specific
+  enough to corruption to justify blocking a legitimate retrain. New commands `exa drift
+  corruption status|baseline|classify|selftest`; guide `docs/guides/corruption-detection.md`; the
+  ADR's own four-step verification runs as `tests/unit/test_corruption_sdc.py`, step 3 included —
+  revert the classification and the retrain fires again, so the guard is shown to be load-bearing.
+
+- **A prompt version is now a node in the provenance graph (ADR 0009 clause 5).** The clause puts
+  a prompt version in three places — a C1 span attribute, a C2 eval dimension and an **A2 lineage
+  node**; the first existed and the third did not. `lineage.prompt_node` gives it its own
+  version-scoped node type, and a **label move** emits a `prompt-label:<name>` run linking the
+  version to the label it now serves, with the label and a `rollback` flag as facets. **The design
+  question was where, not whether:** a prompt version is an input to every gateway call that
+  resolves it, so emitting there would put one lineage event on the graph *per inference* — the
+  per-request lineage the platform deliberately does not do. A label move is the release event —
+  low-volume, decision-shaped, and what an operator asks about when a prompt changed what
+  production says — mirroring the promotion event an alias move already emits for a model.
+
+- **`exa slo export-metrics` — the platform's own metrics reach Prometheus (ADR 0023, 0020
+  clause 5, 0025 clause 3).** The SLIs the platform ingests itself (`c2` eval, `c5` drift, `c8`
+  fairness) lived in `slo_samples`, and vector latency lived in `vector_metrics`, and neither was
+  visible to Prometheus. That was not only a missing dashboard: **`exa slo generate` already
+  emitted burn-rate alert rules that range over a Prometheus series**, so those SLOs had alerts
+  that could never fire — ADR 0025 asks for "a C6 fairness SLI *and alert*", and the alert had
+  nowhere to fire from. The command writes Prometheus text format for node_exporter's textfile
+  collector, the standard path for metrics a CLI produces and one that needs no long-lived
+  process; the control plane's `/metrics` reads a different database and is the wrong owner for
+  platform state. **An unmeasured SLO exports `measured=0` and no SLI** — publishing its
+  placeholder 1.0 would put a perfect ratio on a dashboard for something nobody measured, and a
+  burn-rate alert cannot fire on a perfect ratio. Vector gauges export the **latest** row per
+  series, not an average: the table is an append-only log, and an averaged gauge moves less and
+  less as it grows. One unreadable source is skipped rather than blanking the file, since a
+  textfile collector that vanishes takes every series with it.
+
+- **A reindex can run as a scheduler job, reports its progress, and is triggered by the vector
+  store (ADR 0043 clause 4).** All three parts were missing: the reindex ran inline in the calling
+  process, was invoked only by the CLI, and recorded no timing. `exa embedding reindex
+  --scheduler` (or `EXAMLOPS_REINDEX_ORCHESTRATOR`) submits through the phase-23 adapter — the
+  large-corpus case the clause names — while **inline stays the default**, because a reindex that
+  silently became a cluster submission on upgrade would strand every caller waiting for a result
+  that now arrives elsewhere; the submitted command pins `--inline` so a job never submits another
+  job, and an unreachable scheduler runs the work here and records `inline-fallback`. Jobs now
+  record where they ran, the scheduler job id, and a measured duration — on the aborted path too,
+  since time was spent either way — and a **submitted** reindex records a NULL recall rather than
+  0.0, which would read as "verified and terrible". **Monetary cost is deliberately not recorded:**
+  it needs device-hours this path does not know. Finally, a cross-encoder mismatch in the vector
+  store now **records a reindex recommendation** and names the exact command in the error; it does
+  not start one, because a search that quietly re-embedded a large corpus would turn one query
+  into an unbudgeted job — the refusal is unchanged, and now it leads somewhere.
+
+- **The `AssetOrchestrator` seam exists as code, and an asset can be materialized through the HPC
+  scheduler (ADR 0036 clauses 1 and 3).** The seam the whole decision is built around was named
+  only in a module docstring, so nothing was swappable and clause 3's "via the scheduler
+  (phase 23)" could not be true — materializing an asset called a local Python function and
+  bumped a row. Two implementations now sit behind a runtime-checkable protocol:
+  `LocalOrchestrator` (the previous behaviour, and **the default** — an asset layer that starts
+  submitting scheduler jobs on upgrade surprises every existing caller) and
+  `SchedulerOrchestrator`, which submits through the phase-23 adapter so mock/Slurm/Flux all work
+  without the asset layer knowing which. Selected by `EXAMLOPS_ASSET_ORCHESTRATOR` or
+  `exa assets materialize --orchestrator`, with an unrecognised value falling back to `local`.
+  **The recursion the scheduler path had to avoid:** a job is a separate process and cannot call
+  an in-process closure, so the submitted command re-enters the CLI — without `--no-deps` it
+  re-walks the graph and submits again once per ancestor, and without `--orchestrator local` it
+  submits itself. A missing scheduler falls back to local and records the reason, because an
+  absent scheduler is an environment fact rather than an asset failure. The materialization's
+  lineage event now names the orchestrator and carries the scheduler job id, since an asset built
+  on a cluster and one built in a notebook are different facts.
+
+- **A challenger can be scored by a C2 judge when ground truth never arrives (ADR 0024
+  clause 2).** The clause reads "when labels arrive (ground-truth) **or via a C2 judge**"; only
+  the first half existed, and the scorer skipped every unlabelled sample — so a shadow deployment
+  without ground truth produced an empty scoreboard forever, which is exactly the case the judge
+  is for. The `challenger_samples.label` column even carried the comment "filled as ground truth
+  / C2 judge arrives", and nothing filled it. `exa serve challenger judge` scores the unlabelled
+  samples and **stores the scores in their own columns, never in `label`** — a judged sample
+  indistinguishable from a measured one turns the scoreboard into a mixture nobody can separate,
+  and the promotion would rest on evidence of unknown provenance. Ground truth wins wherever it
+  exists (the judge is the fallback, not a second opinion replacing a measurement), the
+  scoreboard reports which evidence produced it (`labels`/`judge`/`mixed`/`none`), and a judge
+  error leaves the sample unscored rather than scored 0. **ADR 0111 applies here too:** a
+  scoreboard resting on an uncalibrated judge never reports `policy_met`, because a challenger
+  promotion is the same decision `exa pipeline promote` makes by a different road — and an
+  unanswerable calibration question is a refusal, not a pass.
+
+- **Data contracts are now enforced at both points ADR 0005 clause 2 names.** The clause is the
+  ADR's central value and had no surface — nothing outside the CLI called `load_contract`. A
+  **training gate** validates the A1-pinned dataset between extraction and submit, resolved
+  through the same revision resolver that pins the run (so it checks the data this run will train
+  on, not whatever is on disk), and **fails closed** on an error-severity violation;
+  `EXAMLOPS_DATA_CONTRACT_GATE` selects `enforce`/`warn`/`off` and an unrecognised value falls
+  back to `enforce`, since a typo must not quietly disable a gate whose point is failing closed.
+  Three things are deliberately not violations and each says so rather than failing: a dataset
+  with no contract, a location that cannot be read in this context, and a `--dummy` run whose
+  synthetic rows were never meant to satisfy a production contract — every skip carries a reason,
+  because a gate that records nothing when it could not run reads exactly like one that passed.
+  The **inference gate** routes `InferencePipelineIngress` through `contracts.validate_request`,
+  a function written for that ingress ("so the ingress can return a 4xx instead of a 5xx") that
+  only its own tests called, while the ingress hand-rolled a two-field presence check that could
+  not see an embedding of the wrong width. That width check is now available through
+  `EXAMLOPS_INFERENCE_EMBEDDING_DIM` and is never defaulted — 384 is a fact about a use case, not
+  a platform constant — and a replica that cannot import the contract package degrades to the
+  old presence check rather than refusing every request.
+
+- **Training, promotion and retrain now emit lineage — the three paths ADR 0004 clause 1 names
+  and none of which called the emitter.** `emit_lineage()`, its `platform_db` dual-write and its
+  fail-open all shipped; the only callers were `examlops.finetuning`, `examlops.distributed` and
+  `exa data synth`, so the provenance graph described the platform's side quests and not its main
+  road. Training emits `COMPLETE` (dataset → model, with the MLflow run id and resolved version;
+  a run that registered nothing still emits, because that is exactly what a graph should show);
+  promotion emits `COMPLETE` (model → deployment, with the source alias and the metric that
+  justified it) **after** the alias actually moved, so the graph records what happened rather
+  than what was attempted; retrain emits **`START`**, not `COMPLETE`, because the retrain has
+  only been *scheduled* — and its run id **is** the Prefect `flow_run_id`, since a graph whose
+  run ids match nothing in Prefect is a graph nobody can follow back. All three are fail-open,
+  each pinned by a test asserting the event is not recorded when the emitter raises. **Clause 2's
+  `hpc_job_id` facet** lands with them, and deliberately with its one real producer: the training
+  flow is the only path that knows a scheduler job id, so a facet added anywhere else would have
+  had nothing to carry. It is scheduler-neutral (Slurm, Flux, mock) and namespaced under
+  `examlops.hpc_job` like every sibling — a flat facet would merge `_producer` into the top-level
+  dict and collide with whichever other facet shares the event.
+
+- **`exa cards export` — publishing a card without leaking the deployment (ADR 0037 clause 4,
+  which makes the ADR Accepted).** The clause reads "export/publish with the existing naming-scrub
+  path; PII/internal fields excluded". The cards shipped and both scrub components shipped
+  (`redact_pii`, the secret scanner); nothing connected them, so the only way to get a card out
+  was to read it whole. Because a card is generated *from live platform data* it inherits
+  whatever that data holds, and the three kinds of finding get three different treatments:
+  internal fields (`tenant` — a D6 identity naming which customer the card belongs to) are
+  **dropped**; PII and site-specific locations (RFC1918/loopback addresses, absolute POSIX paths,
+  `user@host`) are **redacted**; a detected secret **blocks** the export, because redacting it
+  would hide that a credential reached a generated artifact at all. Location patterns are
+  general rather than a denylist of this deployment's hostnames — a list of known-internal names
+  silently passes the one nobody wrote down — and the scrub is recursive over keys as well as
+  values, since `fairness` is a nested mapping whose keys are slice values and a slice value can
+  be a person. `--force` overrides only the secret block, audited: that scanner is a regex
+  heuristic and can be wrong, whereas the dropped and redacted parts are not judgement calls.
+
+- **Drift and fairness can now back an SLO (ADR 0023 clause 3 `c5`, ADR 0025 clause 3).** Both
+  sources were named in their ADRs and had no ingester; `c5` was not merely unbuilt but
+  **unrecognised**, so a spec written straight from ADR 0023 was told the source did not exist.
+  **`--source c5`** reads recorded `drift_events`: good = verdicts of severity OK over total =
+  verdicts in the window, with `--query` pinning a `drift_kind`. Deriving it from raw
+  `drift_snapshots` would re-implement the scoring the drift provider owns and diverge from
+  `exa drift status` the moment a provider is swapped — one recorded verdict is one evaluation
+  the real detector already made. It does not cover prediction drift, which is computed live and
+  records no verdict, and the skip reason says so. **`--source c8`** turns fairness disparities
+  into an SLI: good = declared slice attributes within threshold, total = the ones that could be
+  **measured**. An attribute whose slices are all below the min-sample guard is excluded rather
+  than counted as good — otherwise a model with no data scores a perfect fairness SLI, and
+  unmeasured must not read as healthy. It resolves the registry through the same
+  `effective_fairness_config` the promotion gate uses, so the SLI and the gate can never disagree
+  about which attributes a model declares.
+
+- **A model declares its fairness slice registry in its own YAML (ADR 0025 clause 1).** The
+  clause puts the registry "per model in the model YAML"; everything downstream had shipped —
+  slice metrics, disparity computation, the promotion gate — but the attributes they all slice on
+  lived only in a runtime `fairness_config` row: not in code review, not in the deployment, and
+  gone when the database is rebuilt. Model YAML now takes a `fairness:` block, carried through
+  `ModelYAMLConfig` (the `engine:` key was silently dropped by this same loader once, so a guard
+  asserts the block survives it) and validated by the registry-integrity CI guard. **The
+  declaration is in force with no apply step**: `effective_fairness_config` backs
+  `slice_metrics`, `fairness_report` and `fairness_gate`, so declaring slices in code immediately
+  gates promotion — a registry that only counts once someone remembers to materialise it is a
+  protection that silently does not exist. **A runtime row still wins**, because writing one is a
+  deliberate act on a live system and the YAML overriding it would make the shipped dashboard
+  write surface look broken; `exa fairness show` reports which source is in force and names every
+  field where the two disagree, and `exa fairness apply` makes the declaration authoritative
+  again. Disagreement is reported, never resolved silently. An unknown key such as `slice:` is an
+  **error**, not ignored: it would parse into a registry declaring nothing, and a fairness gate
+  over zero attributes passes every model. No `fairness:` block was added to the shipped
+  use-case models — deciding that an attribute is a protected characteristic is a judgement about
+  the use case, not a platform default.
+
+- **`exa compliance declaration` — the Annex-V EU Declaration of Conformity (ADR 0012
+  clause 4).** The clause names a conformity state machine "with a Declaration-of-Conformity
+  template"; the state machine shipped and nothing generated the document, so the artifact the
+  whole workflow exists to reach did not exist. The generator fills what the platform can know
+  from live metadata — risk tier, conformity state, the technical file it references and its gap
+  count, the audit-chain head that makes it traceable — and **refuses to state what only the
+  provider can**: five of Annex V's eight items (legal name and address, signatory and function,
+  notified body, harmonised standards) are inputs, and absent ones render as an explicit
+  `TO BE COMPLETED BY THE PROVIDER` placeholder rather than a plausible invention. A declaration
+  is **FINAL only** when the conformity state is `declared`, every provider field is supplied and
+  the referenced technical file has no evidence gaps; otherwise it is stamped
+  `DRAFT — NOT A DECLARATION` with its reasons printed on the document itself. **There is no
+  `--force`** — an override producing a final-looking regulatory artifact over a listed objection
+  is the one thing this generator must not offer. Annex V(5) is conditional and treated as such:
+  a system that processes no personal data gets a statement that it does not, never a GDPR
+  conformity claim nobody made. `issued_at` is required rather than defaulted to now, because the
+  issue date is a fact about when a person signed. Declarations are retained in `technical_files`
+  under an additive `kind` column whose version sequence runs per (model, kind), so a declaration
+  and a technical file about the same system are never numbered as though one superseded the
+  other.
+
+- **`exa pipeline validate-model` now runs the eval gate, and the gate's aggregate is
+  configurable (ADR 0008 clauses 2 and 5).** Clause 2 said validate-model runs the eval gate
+  alongside the latency check; it ran only the latency check, so the command sold as the CI gate
+  before promotion never asked whether the model had regressed. It now resolves the alias to a
+  version through MLflow and exits non-zero on a `block`-mode failure. **A gate that could not
+  run is reported, not passed over** — `eval_gate: SKIP` with a distinct reason for each cause
+  (no gate configured, unresolvable alias, gate error), because a CI log showing only a green
+  latency check reads as "validated"; a `warn`-mode or outvoted pass is labelled `not blocking`
+  for the same reason. Clause 5 said the aggregate considers all metrics together "so a single
+  noisy metric cannot alone block a genuine improvement", and the code blocked on
+  `any(v.failed …)` — exactly that case. Gates now carry an `aggregate` policy
+  (`all` | `majority`, additive column, NULL reads as `all`) recorded on the report. **`all`
+  stays the default**: changing it would silently weaken every gate already configured, turning
+  a promotion that blocks today into one that passes tomorrow with no config change and no
+  message — and an unrecognised value falls back to `all`, so a typo fails closed. **The policy
+  governs regressions only**: a floor, a ceiling or a missing candidate score still blocks
+  alone, because sampling noise lives in a baseline comparison while an absolute bound is a
+  statement about the candidate itself — a safety cap unrelated metrics can outvote is not a
+  cap, and "nothing was measured" is not noise.
+
+- **A prompt label move is now gated by the C3 eval regression check (ADR 0009 clause 4).** The
+  clause says a label move "can be gated by the eval regression check exactly like model
+  promotion"; the registry, the audited move and the six `exa prompt` commands shipped, and the
+  gate did not — so the riskiest operation in the prompt lifecycle, the one that changes what
+  every caller gets, had no quality control at all. `exa prompt label` now runs `run_eval_gate`,
+  refuses a failing move with an audited `prompt_label_blocked_by_gate` event, and takes an
+  audited `--force`. Three decisions: the gate subject is **`prompt:<name>`**, because
+  `eval_gates` is one keyspace shared with models and a prompt named `jpcp` would otherwise be
+  judged on the *model* jpcp's scores; only **`prod`** is gated by default
+  (`EXAMLOPS_PROMPT_GATE_LABELS`), because gating `dev`/`staging` deadlocks the registry — the
+  gate reads its baseline from a labelled version, so nothing could ever become that baseline;
+  and **`rollback` is never gated**, since it is the remedy when a live prompt is bad, which is
+  exactly when its scores are failing.
+
+- **Skipper's own LLM and tool calls emit GenAI spans — ADR 0006 is now Accepted (clause 2's
+  third boundary).** The decision named three boundaries; the gateway and the serving path were
+  instrumented, Skipper was not, so the agent's model calls and every one of its ~50 tools were
+  absent from the traces. New `skipper/genai_trace.py` is a LangChain `BaseCallbackHandler`
+  attached to each turn's config. **Deliberately not the AgentOps seam:** `skipper.instrument`
+  already sees every tool result, but only the *result* — a `ToolMessage` carries no start time,
+  so a span opened there would report a duration of zero, and latency is most of what a tool span
+  is for. The callback API gives `on_tool_start`/`on_tool_end` as separate events with real time
+  between them. The two stay complementary: AgentOps records outcomes durably for
+  `tool_success_rate` and the circuit-breaker, this records timing to the trace backend. Spans
+  are **started, not entered** (new `genai.start_span`) — a handler cannot hold a context manager
+  across two callbacks, and detaching an OTel context token from a task other than the one that
+  attached it corrupts the context for everything after. A tool that *returns* its failure as a
+  `status="error"` `ToolMessage` arrives through `on_tool_end`, not `on_tool_error`, and is
+  marked accordingly rather than recorded as a success with a plausible latency. Usage is left
+  unset when the provider reports none, since zero tokens and unreported tokens are different
+  facts. Attaching goes through one `traced(cfg)` helper with a guard test over every
+  `graph.stream` call site — a second call site that forgets is exactly how this clause came to
+  be half-implemented.
+
+- **The LLM-serving path emits GenAI spans too, with carbon, and honours the semconv opt-in
+  (ADR 0006 clauses 2, 4, 5).** `genai_span` had exactly one caller outside its own module —
+  the B2 gateway — so anything reaching a model any other way (`exa models engine`, a serving
+  replica, a directly-held engine) was invisible. `engines/instrumented.py` now wraps every
+  engine `build_engine` returns, which is the one place all four engines and every future one
+  are constructed; the wrapper delegates everything it does not instrument, and deliberately
+  does **not** define `chat` on a text-only engine, because `supports_chat` decides
+  pass-through vs flattening and a blanket `chat` surface would route multimodal parts into an
+  engine that silently drops them. **These spans enclose the call**, so their duration is the
+  model's latency — the gateway's existing span is opened after its completion returns and
+  measures itself. **Carbon joins cost** through the same pluggable provider `exa finops
+  carbon` uses, and only where device-hours are a fact: a `vllm-server` client and the gateway
+  record none, because that GPU is continuously batching other requests and charging each
+  client its own wall-clock counts one accelerator many times over; CPU-only inference *is*
+  accounted, since it burned energy. A stream reports `examlops.stream.chunks` and no token
+  count — the engines' `stream` yields text fragments with no usage block, and a chunk tally
+  under a token attribute is a guess wearing a standard name. **Clause 5 was written for a
+  dual-emit that the GenAI conventions do not have**: OTel defines one value,
+  `gen_ai_latest_experimental`, which *replaces* the pinned set rather than adding to it, so
+  the opt-in moves captured content onto `gen_ai.input.messages`/`gen_ai.output.messages`
+  instead of emitting both — which also avoids doubling the exposure surface of the one
+  attribute the privacy gate exists to bound.
+
+- **Champion-challenger dashboard console (ADR 0024 clause 4 — the ADR's last open clause).** The
+  scoreboard, the Welch/z-test engine and `exa serve challenger` all existed, and the dashboard had
+  only a read-only *shadow* router — so the comparison an operator is meant to act on was CLI-only.
+  New backend router (list · per-model scoreboard · promote · disable) and a `Challenger` console at
+  `/serve/challenger` showing sample count, champion/challenger error, Δ, p-value, significance, the
+  SLO verdict and whether the promotion policy is met. **No new capability was invented:** disable
+  takes `traffic.manage`, which already governs enabling shadow traffic, and promote takes
+  `model.promote`, already a step-up capability — a third name for the same authority is one more
+  thing to keep in sync. **A refused promotion returns its reason and the scoreboard rather than an
+  error**, because "not significant" or "SLO regression" is the useful half of the answer. Every
+  decision routes through `examlops.champion_challenger`, the CLI's own path, and a guard test
+  asserts the router holds no `challenger_config` SQL of its own; the audit goes through
+  `write_audit_event`, not a raw INSERT, since `audit_events` is hash-chained and a direct insert
+  leaves a row that `exa audit verify` reports as tampering.
+
+- **Feature views declare themselves as assets too (ADR 0036).** `apply_view` — "the single
+  definition for train + serve" — now declares the view as a `feature` asset with its `source`
+  dataset upstream. With the dataset producer added alongside it, the graph spans data→features
+  with nobody entering it by hand: one snapshot and one view yield
+  `{"PM100": [], "jpcp_features": ["PM100"]}`, and new data makes the view stale automatically.
+  Re-applying a view is idempotent and changing its source is a genuine definition change that
+  should move the edge, so the dependencies are stable. Best-effort: the view definition is the
+  durable fact, the asset graph a derived view of it. **Pipeline runs and model registrations
+  deliberately still do not declare themselves** — deriving them from lineage events would be
+  wrong, not merely undone: lineage nodes are revision- and version-scoped (`PM100@r1`, `jpcp/18`)
+  because each records one immutable run, whereas an asset is an entity with a current version, so
+  the result would be one throwaway node per revision that never goes stale and can never be
+  materialized. Recorded in the ADR as a design decision rather than a gap.
+
+- **Dataset revisions declare their own asset, so the A4 DAG stops being empty (ADR 0036).** The
+  recorded finding was that "nothing in the platform declares an asset on its own… so the DAG is
+  empty until an operator types it in, which is the opposite of the declarative substrate the ADR
+  describes" — while `mark_source_changed`, whose docstring reads *"e.g. an A1 dataset revision
+  landed"*, was called only by its own CLI subcommand. Recording a revision now advances that
+  dataset's asset, and because all three callers (the CLI, the synthetic-data path, the Prefect
+  pipeline generator) share one recording function, they all feed the graph without knowing it
+  exists. It advances **only on a real insert** — the recorder is idempotent on
+  `(backend, dataset, revision_id)`, and bumping on a re-record would report a change that did not
+  happen and make every downstream model spuriously stale — and it is **best-effort**, since the
+  revision is the durable fact and the asset graph is a derived view of it. The payoff is automatic
+  freshness: a model asset declared against a dataset goes stale the moment a new revision lands.
+  Feature views, pipeline runs and model registrations still do not declare themselves.
+
+- **The semantic cache and RAG stop mixing encoders too — ADR 0043 clause 2 is now closed across
+  B3, B4 and B5.** **RAG** already carried an `encoder` into `ingest` and wrote it to `rag_kbs`, and
+  never passed it to the store, so the guard added for exactly this had nothing to compare against;
+  `ingest` now stamps the collection and the upsert, and `query` looks the KB's encoder up and asks
+  the store under it. Retrieval is where cross-encoder scoring is most convincing and least
+  detectable — every hit still arrives with a plausible score and a real citation attached.
+  **The semantic cache** is handled by *routing, not erroring*: the encoder joins the namespace that
+  already isolates tenant and params, so entries from a previous encoder become unreachable and the
+  next request recomputes. That is a cache miss, which is a cache working correctly; an exception
+  would be an outage caused by an upgrade. Old entries are hidden rather than destroyed, so a
+  rollback finds its cache intact. Of the three layers the cache was the worst exposure: the vector
+  store returns bad *ranking*, whereas the cache returns a confident **wrong answer** with no model
+  call in between to notice — its cosine threshold can be cleared by coincidence when the two
+  vectors come from unrelated encoders. Both changes stay additive: an unset `encoder_id` keeps the
+  previous namespace, and a KB with no recorded encoder still queries.
+
+- **Vector collections record which encoder built them, and cross-encoder use is refused
+  (ADR 0043 clauses 1–2, B5).** The recorded finding was that "the guard has nothing to guard":
+  `guard_compatible` existed and refused cross-encoder comparisons, and **nothing in the tree
+  carried an `encoder_id`**, so it was reached by no caller. `vector_collections` now has the
+  column (additive), `create_collection(..., encoder_id=…)` stamps it, and `upsert`/`search` raise
+  `EncoderMismatch` on a mismatch — routed **through** `guard_compatible` so the rule has one
+  definition instead of two that drift. The error is deliberately distinct from
+  `DimensionMismatch`: a wrong dimension cannot be scored at all and announces itself, whereas two
+  encoders of the *same* dimension produce vectors that score against each other happily and mean
+  nothing — a confident, ranked, wrong result nothing downstream can detect, which is precisely the
+  silent corruption a dimension check structurally cannot see. **Unverified is not verified:** an
+  unstamped collection, or a caller naming no encoder, passes — you cannot mismatch an identity
+  nobody asserted, and refusing would break every corpus written before the column existed; that is
+  the absence of a check, not a clean bill of health. Both stores carry the parameter so the seam
+  stays one interface. Still open: the B3 semantic cache and B4 RAG neither read nor write an
+  encoder id, so a cached embedding crossing an encoder change remains unguarded.
+
+- **Shadow deployment actually mirrors traffic now (ADR 0024 clause 1).** The scoreboard, the
+  Welch/z-test engine, the `exa serve shadow`/`challenger` CLI and a dashboard router were all
+  built — and **nothing mirrored a request**, so `shadow_results` only ever held what a caller
+  wrote by hand. The Ray Serve router now mirrors every successful prediction to the configured
+  shadow alias and records the champion/shadow pair with a percentage difference. Placement is
+  deliberate: `shadow_results` stores REAL predictions, which is the serving boundary's shape, not
+  the LLM gateway's; and only the success path mirrors, since a request that 4xx'd or timed out has
+  no champion value to sit opposite. The three properties the clause asks for are each obtained
+  explicitly — **asynchronous** (submitted to a pool the request thread never joins on),
+  **never returned** (it writes to the scoreboard and gives the caller nothing), and **failures
+  never affect production** (a pool separate from `_predict_pool`, so a slow shadow cannot starve
+  inference of its threads; every path swallows; an unreadable config is indistinguishable from
+  switched off). In-flight work is **capped and dropped rather than queued**
+  (`RAY_SHADOW_MAX_INFLIGHT`) — an unbounded queue would turn a shadow merely slower than the
+  champion into unbounded memory growth on a production replica — and drops are **counted**
+  (`examlops_shadow_total{status="dropped"}`), because a scoreboard built silently from the
+  requests that happened to fit would misrepresent the comparison it exists to make. The config
+  lookup is TTL-cached so a per-request SQLite read is not added to the serving path. Clause 4's
+  dashboard challenger page remains absent.
+
+- **The gateway can now guarantee a schema-valid response (ADR 0035 clause 1, gateway half).**
+  Two findings stood against this ADR and were the same gap: "the gateway's own request path never
+  validates a response, so tool-call arguments and RAG citations do not use it", and
+  `generate_structured` "has no caller outside its own tests" — it was written for that path and
+  never wired to it. `GatewayClient.chat(..., response_schema=…)` now parses, validates and repairs
+  the completion, attaching it as `Completion.parsed` or raising `StructuredOutputError`; a caller
+  gets a valid object or a typed error, never unchecked text. It routes **through**
+  `generate_structured` rather than re-implementing validate-then-repair, so the structured-output
+  failure rate is metered from one place. Parsing tolerates the ``` fence and surrounding prose that
+  instruction-tuned models emit regardless of the prompt, so the repair budget is not spent on a
+  formatting habit. Enforcement runs after the D8 guardrail — the validated object is the redacted
+  one, or `text` and `parsed` would disagree about what the response said — and before the cache, so
+  an invalid response is never stored. **Not closed:** constrained decoding (guided decoding,
+  grammars, provider structured-output APIs) is still absent, so generation is not *prevented* from
+  going wrong, only checked afterwards; and reasoning-token accounting still needs a field neither
+  `Completion` nor `_coerce` carries.
+
+- **SLOs now measure the platform instead of being hand-fed, and a breach leaves a record
+  (ADR 0023 clauses 3 and 5).** Two gaps stood against this ADR: every SLI arrived by hand through
+  `exa slo record` while the specs already carried an `sli_source` column that nothing ever read,
+  and an SLO breach was **not audited** — `exa slo status` would show a spent error budget with no
+  D4 record of it ever having been spent, which is the one event a governance layer exists to keep.
+  New `exa slo ingest <model>` reads that column. **`c2` (eval quality) is implemented**: an
+  `eval_suite_results` row is already a proportion over a known sample size — the exact shape an SLI
+  needs — and `sli_query` selects the metric (`pass_rate`, or `suite:metric` to pin one suite). A
+  metric that is **not** a ratio is refused rather than coerced, because rounding a latency into a
+  count would invent a denominator. `c1`, `availability` and `prometheus` are reported as
+  un-ingested **with their reasons** (`gateway_calls` has cost and tokens but no latency and no
+  error flag; no serving probe is persisted; Prometheus evaluates its own rules) — naming the gap
+  matters, since a source that silently records nothing is indistinguishable downstream from a
+  healthy service nobody asked about. For the breach: `examlops.slo.record_sample` is now the single
+  path every sample takes, hand-typed or ingested, and writes a `slo_breached` audit event carrying
+  the SLI, target, remaining budget, burn rate and sample count — **on transition only**, because
+  re-auditing a sustained breach every interval produces a trail that grows without new information,
+  and a refilled budget is a rolling-window artefact rather than a decision. C5 (drift) remains
+  un-ingested: `drift_snapshots` stores raw predictions, so a verdict must be derived against the
+  baselines first.
+
+- **The model gateway now scans what goes through it (ADR 0026 clause 3).** The guardrail layer
+  existed, was wired into retrieved RAG text and the agent's tool allow-list, and made **no call at
+  all** at the B2 gateway — the boundary the ADR names *first*. A request through `exa gateway` was
+  scanned neither on the way in nor on the way out. `GatewayClient.chat` now checks every message
+  inbound and every completion outbound, and three orderings are pinned by tests because each is
+  silent when wrong: the inbound scan runs **before the semantic cache** (a blocked prompt must not
+  be answered from cache, and a redaction must reach the cache key or one prompt becomes two
+  entries); the outbound scan runs **after cost accounting but before the cache** (the tokens were
+  spent whatever the verdict, so a blocked answer must still appear on the bill it incurred, and it
+  must never be stored where it would be served again without a scan); and `GuardrailBlocked` is a
+  typed `GatewayError` that is **not** retried against the next backend, exactly as `MediaNotAllowed`
+  already had to be — a policy denial is not a backend failure, and retrying it spends money
+  re-asking for the same violation. Default mode is `monitor` via `EXAMLOPS_GUARDRAIL_MODE`:
+  it observes and audits without changing anything a caller can see, so the boundary can be turned
+  on without breaking working traffic. `enforce` blocks and redacts; `off` skips the scan at no
+  cost; an unrecognised value falls back to `monitor`, so a typo cannot silently disable the
+  boundary. ADR 0026's remaining unfulfilled clause is now only the engine choice — Presidio and
+  NeMo/Guardrails-AI/LLM-Guard are still not adopted and the detectors are still bespoke regex.
+
+- **Every Python suite now runs parallel, not just the root one — ~10 minutes of testing becomes
+  under 2.** Dashboard backend 35s→12s (486 tests), Skipper agent 36s→17s (337), control plane
+  21s→13s (130), on top of the root suite's 520s→66s (2781). Each was measured serial, run parallel,
+  and confirmed green *before* the flag was applied; the three service suites are I/O-bound rather
+  than CPU-bound, so they gain 2–3x where the root suite gains 7.9x, and none needed an isolation
+  fix. `make ci-examlops` runs parallel as well — not for speed but for fidelity, since its whole
+  purpose is to mirror the GitHub job, which now runs `-n auto`. It was also passing `-v` and `-q`
+  together, which is contradictory; only `-q` is kept.
+
+- **`--strict-markers`.** An unregistered pytest marker is now an error rather than a silent no-op.
+  Without it `@pytest.mark.slwo` does nothing at all and the test everyone believes is tagged is
+  tagged with nothing.
+
+- **The test suite is now a gate you can afford to run: 2781 tests in ~66s instead of ~9 minutes.**
+  Nothing was parallelised before — `pytest-xdist` was not installed at all, so the whole suite ran
+  in one process on a 20-core machine, and `addopts` carried `-v`, printing one line per test.
+  Measured: **520s → 66s, a 7.9x speed-up.** That single number is what makes a tiered workflow
+  possible, so the tiers are now explicit: `make test-fast` (~70s, whole unit suite, the inner
+  loop), `make gate` (~4min: lint · format · typecheck · unit · docs, before pushing), and the
+  existing `make preflight` (~10min full CI mirror, before a release), plus `test-failed`,
+  `test-serial` and `test-slowest`. `-n auto` is on the targets, not in `addopts`, so a single-file
+  run still pays no worker start-up. The GitHub `examlops` and GitLab `test:examlops` jobs run
+  parallel too; `test:postgres` deliberately does **not**, because its workers would share one
+  schema that the isolation fixture truncates between tests. There is deliberately no
+  test-impact selection: it would save about a minute and would silently miss the many guard tests
+  here that *read* files (Makefile, CI yaml, ADRs) rather than importing them. New guide
+  `docs/guides/testing.md`.
+
+- **The agent suites now record what a run cost, not only whether it was right and in time.**
+  `operator-qa`, `cli-coverage`, `grounding` and `agent-safety` scored correctness, and since the
+  latency pass, speed. Neither axis separates an agent that answers correctly on 4 000 tokens a
+  question from one that needs 40 000, so a prompt or model change that tripled the spend at
+  unchanged accuracy left no trace in the stored history. The bridge already returned the OpenAI
+  `usage` block (`skipper/oai_compat.py` maps LangChain's `usage_metadata` onto it) and all four
+  suites threw it away. New `examlops.evaluation.usage` turns it into scores — `tokens_total`,
+  `prompt_tokens_total`, `completion_tokens_total`, `tokens_per_answer`, `usage_reported_rate`,
+  and `cost_usd`/`cost_per_answer` — so a budget is an ordinary ceiling on the existing gate
+  (`--metric tokens_per_answer:max=6000`) rather than new machinery. Two refusals keep a ceiling
+  honest, both in the direction where a broken measurement *passes*: no answer reporting usage
+  records **no** token scores rather than a zero that would clear every budget exactly when
+  reporting broke, and partial coverage is published as `usage_reported_rate` so a total drawn
+  from three of thirty answers is never read as a total over thirty. Cost is reported only when a
+  price is genuinely known — an operator-selected `llm_cost` provider (ADR 0083) or a model the
+  built-in table actually names — because Skipper's normal backend is locally served and the rate
+  table's unknown-model default would invent a dollar figure for self-hosted inference. Spend is
+  attributed to the backend that answered (`model_version`), never to the free-text
+  `--agent-model` label, and a source scan over every `record_eval_result` call means a fifth
+  suite cannot quietly omit it.
+
+- **`make typecheck` now reads the largest package it was named for, ratcheted.** mypy ran over
+  `pipelines/ serving/ platform/services/` and silently skipped `platform/cli/src/` — the
+  `examlops` package, **243 source files**: the CLI, the data layer, the eval gate. That package
+  is in the lint scope and the test scope and was in neither typecheck invocation, so a gate whose
+  name says "type check" reported green over code it never opened; that is how a real `arg-type`
+  error in `autopilot_cmd` sat in the tree with the gate passing. Measured: **59 errors in 18 of
+  243 files**, concentrated (11 `production.py`, 10 `serve.py`), mostly `arg-type` (20) and
+  `union-attr` (18). Two are fixed here (`autopilot_cmd`, `docs_cmd`) and the rest are **ratcheted,
+  not skipped**: `CLI_MYPY_BASELINE = 57`, and the new `typecheck-cli` target fails if the count
+  rises and tells you to lower the baseline when it falls. The same skip was written in three
+  places — `Makefile:typecheck`, `Makefile:ci-examlops` and the GitLab examlops job — so all three
+  now call that one target, and a guard asserts none of them can run the strict line without it.
+
+- **A gate now owns its metric direction instead of borrowing the caller's.** Both promotion
+  roads computed `higher_is_better = operator in ("gt","gte")` from the *promotion rule's*
+  operator — a threshold on one MLflow metric — and handed it to a gate whose config names
+  entirely different suite metrics. A model promoted on `--if-rmse-lt 5.0` therefore defaulted
+  every eval metric to lower-is-better, so an `accuracy` regression was read backwards, and the
+  same gate could judge differently depending on which road ran it and with what flag.
+  `exa eval gate set` takes `--higher-is-better/--lower-is-better`, stored on the gate.
+  Precedence is **per-metric > gate > caller**, so a mixed suite stays expressible. The column is
+  nullable and *undeclared* is not `False`: a gate written before this keeps the caller fallback
+  and behaves exactly as it did — `exa eval gate run` now says so out loud rather than choosing
+  silently, and `exa eval gate show` has a Direction column.
+
+- **The eval regression gate now guards the autopilot's promotions, not only `exa pipeline
+  promote`.** `exa eval gate set --mode block` reads as "this gate guards promotion of this
+  model", and it guarded one of the two roads to Production: the autopilot promotes the same model
+  to the same alias and never consulted it. Its own comment named the bypass — *"the autopilot
+  promotes without going through `run_eval_gate`"* — while closing only the ADR-0111 judge leg, so
+  the metric-regression leg stayed open. That leg is the one that matters here: the promotion
+  *rule* is an absolute threshold on one metric, and the C3 gate is the only check that compares a
+  candidate against the baseline alias, so a model could clear `rmse < 5.0` while having regressed
+  from 2.0 — refused on one road, promoted on the other. A failing block-mode gate now stops the
+  cycle and is audited as `autopilot_promote_blocked`; `warn` stays advisory on this road as on
+  the other; an unconfigured gate is still a no-op. A gate that is configured but *unevaluable* —
+  the Staging version cannot be resolved — blocks rather than promotes, because promoting because
+  the check could not run is the failure the gate exists to prevent.
+
+- **A gate can now hold metrics that point in opposite directions** — per-metric
+  `higher_is_better`, plus `max` as a plain ceiling. `exa eval gate` applied one direction to the
+  whole config, which was correct while every gated metric rose together and became wrong the
+  moment a suite stored both: with `--higher-is-better` an `unsafe_rate` climbing from 0.0 to 1.0
+  cleared its `min: 0.0` floor and the gate reported PASS on a candidate that executed *every*
+  mutating request; with `--lower-is-better` a perfect `answer_rate` of 1.0 failed its own floor.
+  Neither setting was configurable into correctness. `max` is direction-independent on purpose, so
+  a latency budget or an unsafe-rate cap cannot be silenced by the gate-level flag, and it is
+  carried into the persisted gate report. Existing single-direction gates are unaffected — the
+  per-metric key defaults to the gate's. Proved end to end: a mixed gate under CI's default
+  direction reports `answer_rate ok`, `unsafe_rate FAIL`, `latency_p95 FAIL`, exit 1.
+
+- **Every agent eval suite now records how long its answers took** (`latency_p50`,
+  `latency_p95`). Four suites measured whether the agent is *right* and none measured whether it
+  was in *time*, while a measured two of thirty `gpt-5-mini` answers had already exceeded the
+  120 s per-question timeout and never arrived. An answer that lands after two minutes is unusable
+  at an operator console whatever it says, so correctness alone reports a healthy agent nobody can
+  use. Percentiles are nearest-rank, never interpolated — with five requests an interpolated p95
+  invents a number no request had — and a suite that timed nothing records no latency rather than
+  a misleading zero. Measured on `azure:gpt-5.5`: `exa eval safety` p50 **15.77 s**, p95 **22.43 s**.
+
+- **`exa eval cli-coverage` — measure the agent across the whole CLI, not 30 curated questions.**
+  `exa eval operator-qa` reached 30/30, at which point a fixed 30-question suite can no longer
+  detect an improvement and can only detect a regression in the 30 places it looks. The new suite
+  draws its questions from the hand-written **Use case** column of
+  `docs/reference/cli-commands-guide.md` — operator intent for every command — giving a pool of
+  **362** questions. Grading stays deterministic and necessary-not-sufficient (no judge model, so
+  no calibration required per ADR 0111), and rows whose text names an `exa` command are excluded
+  and counted rather than silently filtered. First measurement: **37/40 (92.5%)** on a seeded
+  sample. `--with-description` adds the guide's *what it does* cell — an easier, differently
+  scoped question, off by default; all three misses above flip to correct under it, so the two
+  numbers answer two different questions and neither is the honest one alone.
+  Every miss is now reported **with its reason** — `named-another-real-command` (the answer
+  named a real command that also fits the question: a property of the question) versus
+  `named-no-real-command`/`named-nothing` (the agent was wrong) — because one number without
+  that split lets an ambiguity floor read as a quality problem and a real regression hide
+  behind "ambiguity". Measured over 120 questions (seed 11): **114/120 (95%)**, with all six
+  misses in the first category.
+  The bank is asked **concurrently** (`--concurrency/-j`, default 4): 363 questions at the ~10 s
+  an agent turn costs is over an hour serially, which is long enough that the full-pool number
+  never gets measured — the same, in practice, as not having it. One question that times out is
+  reported in `unanswered` and the other answers are kept, so a partial run stays honest rather
+  than being lost. **Full-pool measurement, 2026-08-28: 344/363 (94.8%)**, every question asked
+  and answered — and with the two fixes below, *all 19* misses named a different real command
+  that also fits the use-case sentence. Zero invented commands.
+- Two defects the full-pool run exposed, both of which made the number lie:
+  **(1) colliding question ids.** Answers are collected in a dict keyed by question id, and the
+  id derives from the command name, so the guide's flag-variant rows (`exa chat` /
+  `exa chat --session ID`, `exa ask "<q>"` / `exa ask "<q>" --no-stream`) shared one key. The run
+  reported `asked: 363, answered: 361` with an *empty* failure list — wrong by two and silent
+  about it. Ids that collide are now suffixed.
+  **(2) the miss classifier read the longest token run**, so a real command followed by its
+  argument (`exa drift input baseline JPCP`, `exa eval gate run JPCP 18`) was scored as an
+  invented command. Each match is now reduced to its longest live prefix. This made the agent
+  look worse than it is, which is the same defect as making it look better.
+- **`exa eval cli-coverage --record` and `exa eval history` — the number now survives the run.**
+  The whole-CLI rate existed only in the terminal output of the run that produced it, so the next
+  run had nothing to compare against and a regression in the agent's command knowledge was
+  invisible by construction. `--record` persists it to `eval_suite_results` as three metrics —
+  `pass_rate`, `ambiguity_rate`, `error_rate` — because a rate that falls when the question set
+  gets more ambiguous and one that falls when the agent gets worse are different events. The two
+  question modes record as two suites (`cli-coverage`, `cli-coverage-described`), so a mode flip
+  cannot read as a quality jump. `exa eval history <model>` is the missing reader: the eval store
+  has had a CLI writer since it existed and no way to read it back. First recorded pair, both
+  full-pool, against Skipper on Azure `gpt-5.5`: **347/363 (95.6%)** on operator intent alone and
+  **358/360 (99.4%)** with the description, **zero invented commands in either**. Two runs of the
+  identical hard-mode pool an hour apart scored 344 and 347 — about ±1% of run-to-run noise, which
+  is itself the argument for storing a series instead of quoting a figure.
+- **`flag_validity` — the layer below "did it name the command".** Grading stopped at the command
+  name, so an answer could name exactly the right command and hand the operator a flag that does
+  not exist, which fails the moment it is pasted. `exa eval cli-coverage` now checks every `exa …`
+  invocation in every answer against the live CLI tree and reports/records `flag_validity`. A flag
+  counts as real if the command declares it **or** its own help documents it, the same rule the
+  system-prompt guard uses — `exa pipeline promote` parses `--if-<metric>-<op>` in its body rather
+  than declaring each one, so an options-only check would report the product's real flag as a
+  hallucination. Measured over 364 live answers: **0.9973**, one invented flag
+  (`exa project assign --ref`; that command takes `--kind`), reproduced across two runs.
+- **`exa eval operator-qa --record`** stores the curated 30-question suite the same way
+  `cli-coverage` does. Two agent suites where only one keeps its history is the asymmetry that
+  rots — and the curated suite is the older measurement, the one a regression shows up in first.
+  Recorded live: **30/30**.
+- **`exa eval grounding` — the failure the other agent suites cannot see.** `operator-qa` and
+  `cli-coverage` both measure what the agent *says*; neither can detect a fluent, specific,
+  **wrong** answer about live state, because neither asks about it. The new suite asks questions
+  whose answers are facts about the running installation, computes each fact from the same source
+  the agent's tool reads, and sorts every answer into `grounded` / `abstained` / `fabricated`.
+  Abstaining is deliberately **not** a failure — on a half-running platform it is the correct
+  answer, and scoring it as a miss would train the agent to guess. The headline is the fabrication
+  count, and the only acceptable value is zero. Some questions deliberately target services that
+  are down in a normal checkout, because that is where an agent is tempted to fill the gap.
+  Measured live with MLflow and the control plane down, two runs twelve minutes apart:
+  **3 grounded / 3 abstained** and **1 grounded / 5 abstained**, **0 fabricated both times** — the
+  grounded/abstained split is run-to-run noise, the fabrication count is the signal. `--record` stores `fabrication_rate`, `grounded_rate` and `abstention_rate`.
+- **`exa eval safety` — does the agent refuse what it must refuse?** The other agent suites ask
+  whether it is *right*; none asks whether it is *safe*, and it can retrain models, move production
+  traffic and stop services. The suite reads the bridge's `hitl_required` and `trace` fields rather
+  than the agent's prose — an agent that *says* it refused and calls the tool anyway would score as
+  safe under any prose check — and sorts each answer into `held` / `declined` / `executed`. The
+  write-tool list is compared against the agent's own `skipper.confirm` registry one-directionally,
+  so a write the agent has and the suite lacks fails the build rather than failing open. Measured
+  live: **0 held · 5 declined · 0 executed** — no write was carried out, which is *not* the same
+  claim as "the human-in-the-loop gate held"; on a dev checkout the agent never reaches the gate,
+  and the report keeps `held` separate so the difference stays visible.
+
+### Changed
+
+- **Prediction drift alone no longer fires an autonomous retrain (ADR 0114).** A model with drift
+  snapshots but no input-drift evidence classifies as `undetermined` and is reported under
+  `Suppressed` instead of retrained, because one axis cannot separate data drift from a serving
+  regression. To restore autonomous retraining for a model: collect input snapshots, then set both
+  baselines (`exa drift input baseline <MODEL>`, `exa drift corruption baseline <MODEL>`) and
+  confirm with `exa drift corruption classify <MODEL>`. Expect `undetermined` to be common until
+  baselines settle — the intended trade, since a missed retrain costs latency while a wrong one
+  costs GPU-hours *and* ships a model trained on corrupt data. Migration in
+  `docs/guides/corruption-detection.md#migration`.
+
+### Fixed
+
+- **`quantize_model()` now records whether a transformation actually occurred — and the honest
+  answer is "no", on every path.** Building ADR 0117's parity gate exposed that
+  `quantize_model()` **invokes no quantizer at all**: the GPU branch differs from the CPU branch
+  only in that it does not warn, while the docstring claims *"On a GPU host this drives the
+  engine's real quantizer."* Deriving the new `weights_transformed` flag from `_gpu_available()`
+  would therefore have asserted that weights changed on a GPU host where they did not, and the
+  parity gate would have compared a model against itself, found perfect agreement and reported
+  `passed` — the vacuous-pass trap re-created one level up. The flag is `False` unconditionally
+  with the reason recorded at the assignment, so the gate reports `inert` and says why; a future
+  real quantizer sets it at the point it transforms the weights.
+
+- **`exa models quantize` no longer tells a GPU host a story the code does not carry out.** The
+  R-A4 warning fired only on a CPU host, on the premise that a GPU host ran the real quantizer —
+  so on a GPU host an operator received a signed, BOM'd "quantized" version with unchanged weights
+  and **no warning at all**. The warning is now unconditional and names the GPU case separately
+  ("a CUDA GPU is present, but the real quantizer is not wired in yet"), and the docstring, which
+  claimed *"On a GPU host this drives the engine's real quantizer"*, now says what the function
+  does: it records the intended transformation as provenance so the D3 sign + BOM path is
+  exercisable, and the weights are unchanged. The capability gap stays visible rather than being
+  papered over by the function's name.
+
+- **ADR 0025's status claimed two things that were already built.** It said "nothing populates A6
+  model cards or D1 reports with the disparities"; `cards.build_model_card` fills a `fairness`
+  field from `fairness_report`, and `compliance._ev_fairness` is a registered evidence collector
+  in the shared `FRAMEWORK`, so a technical file carries them. Both had real callers when the
+  claim was written. Corrected in the ADR with its cause rather than quietly edited.
+
+### Fixed
+
+- **An audit event could not be the first database touch of a fresh install.** Every read path in
+  `examlops.data.audit` bootstraps the schema; `write_audit_event` — the one *write* path — did
+  not, so a command whose first touch was its own audit event died on
+  `no such table: audit_events` rather than working. Found by `exa cards export --dataset`, which
+  is exactly such a command. The bootstrap is near-free after the first call per process, and is
+  skipped when the caller supplies its own connection, since that caller is already inside a
+  transaction on an initialised database and re-entering would deadlock.
+
+### Fixed
+
+- **An unrecognised SLI source and a deliberately-unbuilt one read identically.** Both produced
+  "unknown sli_source"; a typo now says `unrecognised sli_source '<x>' — expected one of [...]`
+  and lists them, while `c1`/`availability`/`prometheus` keep explaining *why* they have no
+  ingester. Telling a user their source does not exist, when it is in the ADR and merely unbuilt,
+  is how a documented feature gets reported as a documentation error.
+
+### Fixed
+
+- **ADR 0009's recorded status made two false claims about the tree, and they are corrected in
+  the ADR rather than quietly edited away.** It said clause 3's consumer side "was never built"
+  and that clause 5's C1 span attribute was absent. Both are built and reached by real callers:
+  Skipper resolves `skipper-system@<label>` through `examlops.prompts.get_prompt`, LLM-serving
+  resolves `name@label` through the *same* client, and the gateway stamps
+  `examlops.prompt.version` on its span. The original evidence grep was accurate when it ran;
+  the wiring landed afterwards and the status was never re-read — which is the failure mode the
+  ADR record exists to prevent, so the correction is recorded with its cause.
+
+### Fixed
+
+- **The ADR reconciler was reading stale build artifacts, and had recorded a wrong verdict because
+  of it.** `source_files()` walked the whole tree with `build`/`dist` absent from `SKIP_DIRS`, so
+  **242 of 1235 scanned files** came from `platform/cli/build/` — a copy of the package that can be
+  months out of date. The matcher takes the first path that matches a token, so a stale copy could
+  answer for the source. Both directions are wrong and the second is worse: a newly added symbol
+  reads as **absent** (noise, which is how a guard gets switched off — this is what surfaced it,
+  with ADR 0023 reporting `examlops.slo.record_sample` missing while it sat in the source), and a
+  symbol deleted from source but still present in the artifact reads as **present**, blinding the
+  Accepted-ADR check that gates the build. No false *present* existed at the time of the fix — no
+  ADR lost an artifact when `build/` was excluded — but the mechanism allowed one.
+  It also mis-dated artifacts: **ADR 0006** had been swept in 2026-08-28 as "name-match only, every
+  artifact predates the ADR", a verdict computed from the build copy. Dated from source,
+  `telemetry/genai.py` first appears 2026-07-16, *after* the ADR — so the sweep note was false and
+  the ADR was decidable. It has now been read and decided as **Partially implemented** (clauses 1
+  and 3 in full; clause 2's instrumentation reaches only the gateway, not the serving path or
+  Skipper; clause 4 has cost but no carbon; clause 5's `OTEL_SEMCONV_STABILITY_OPT_IN` is absent).
+  A guard test now fails if the reconciler ever reads a `build`/`dist` path again.
+
+- **Every dashboard audit event was outside the tamper-evident hash chain, and verification said
+  nothing (D4, ADR 0028).** Sixteen routers and five modules each carried an identical `_audit()`
+  doing a raw `INSERT INTO audit_events`, which leaves `prev_hash`/`hash` NULL. Because
+  `verify_audit_chain` selects `WHERE hash IS NOT NULL`, those rows were not merely unverified —
+  they were **invisible to verification**: `exa audit verify` answered `ok: True` over a log from
+  which every dashboard mutation (project deletion, connection deletion, secret rotation,
+  virtual-key issuance, the autopilot kill-switch) had been silently excluded, and its `count`
+  under-reported by exactly that number. The append-only triggers still stopped SQL-level edits, so
+  nothing was rewritable through the app; what was missing is what a chain is *for* — proof that no
+  row was inserted between others, reordered, or removed by someone with direct access to the
+  database file. D4 advertises "any edit/deletion/reordering breaks the chain", and for dashboard
+  events that was simply untrue.
+  All 22 call sites now go through one `audit_write.audit()` helper into
+  `examlops.data.audit.write_audit_event`, so dashboard and CLI events share **one** chain rather
+  than a chained half and an unchained half. `verify_audit_chain` additionally **counts and reports
+  unchained rows** (`unchained`, plus a warning that narrows the claim) instead of skipping them:
+  a verifier that ignores what it cannot check reports success over a log it has only partly read.
+  A guard test fails on any new raw insert.
+  Two things this uncovered on the way: appending needed a new `conn=` form
+  (`append_audit_event`) because callers are already inside a write transaction and a second SQLite
+  connection deadlocks — the first attempt swallowed that failure and *dropped* events, which ten
+  existing tests caught — and sharing the caller's transaction now makes each audit **atomic with
+  the mutation it records**. Flag-set details change from the ad-hoc string `enabled=False` to
+  `{"enabled": false}`, matching every other audit event.
+  `verify` also reports `chain_begins_at`, because unchained rows have **two** causes that must be
+  told apart: events written before the chain columns existed (expected, cannot be retro-fitted
+  without rewriting the log, and they age out) versus a writer still bypassing `write_audit_event`
+  (a bug). On this machine's database all 1408 unchained rows are the former — `bridge`,
+  `exa-policy`, `cli`, `exa-retrain`, `agent-memory`, every one of them stopping at
+  2026-07-16 11:32 with the chain beginning at 11:57 the same day. **None are dashboard writes**;
+  that database holds no dashboard events at all. The dashboard defect was real in the code and is
+  demonstrated by a test that fails without the fix, but it had not yet produced a row here.
+
+- **A registered marker that marked nothing.** A `slow` marker was registered in `pyproject.toml`
+  describing itself as "excluded from the inner-loop tier by `make test-fast`". It was applied to no
+  test, and `make test-fast` excludes nothing — so the description was false in both halves, and
+  `-m slow` would have selected zero tests and reported success. It is **removed rather than
+  retro-fitted**: at 66s for the whole suite there is no reason to skip anything from the inner
+  loop, and `make test-slowest` measures real durations, which cannot rot the way a hand-applied
+  label does. The surviving `live` marker is now actually applied to the two live integration
+  modules, so `-m live` / `-m "not live"` select meaningfully (19 / 5). A guard in
+  `test_every_test_can_fail.py` fails if any registered marker is applied to no test.
+
+- **Tests leaked `PLATFORM_DB` between each other, which only parallelism could reveal.** About
+  forty modules set `os.environ["PLATFORM_DB"] = str(tmp_path / …)` directly rather than through
+  `monkeypatch`, so the value outlived the test that set it. Serially this is invisible — the
+  directory still exists and the stale database goes unused. Under `-n auto` it produced four
+  failures that each of those tests passes on its own: a `--json` command whose output would not
+  parse, because `warning: platform datastore unavailable` had been printed ahead of the JSON. The
+  warning was correct and went to stderr; `CliRunner` merges the streams. An autouse fixture in
+  `tests/conftest.py` now gives every test a private `PLATFORM_DB`, and because it uses
+  `monkeypatch.setenv` it also reverts direct `os.environ` writes — closing the leak without
+  editing forty files. This is the class of bug that gets misdiagnosed as "parallelism is flaky"
+  and answered by going back to a nine-minute serial run.
+
+- **A genuinely flaky test, fixed rather than re-run.** `test_rate_limit_window_resets` failed
+  about one run in five *in isolation*. `coord_rate_allow` compares
+  `window_start <= CURRENT_TIMESTAMP - <window> seconds` and SQLite's `CURRENT_TIMESTAMP` has
+  whole-second resolution, so with a 1-second window two calls milliseconds apart that straddle a
+  second tick are both read as opening a new window. The denial is now asserted over a 60-second
+  window, where a one-second tick cannot reach the boundary; the 1-second window is kept only for
+  the reset assertion, the direction a coarse clock cannot break. The limiter's 1-second edge is
+  real and is documented in the test rather than hidden — it is immaterial at the minute-scale
+  windows the platform uses.
+
+- **`make install-hooks` would have deleted the AI-attribution guard.** It did a plain
+  `cp platform/ci/hooks/pre-push .git/hooks/pre-push`, and on this machine that filename belongs to
+  the global guard covering annotated tag messages, `--no-verify` commits, and
+  CHANGELOG/CONTRIBUTORS credit files — the one hook whose purpose is to be un-bypassable. The
+  target now installs the CI gate as `pre-push-ci` in both `.git` and `.git-private`, refuses to
+  overwrite any existing `pre-push`, and prints the single line that chains the two.
+
+- **A Wilson proportion interval was being attached to durations and prices.** ADR 0111 G7.4
+  stores an interval around every eval score rather than a point value, and `record_eval_result`
+  decided which scores qualified by testing the *value's range*: anything in `[0, 1]` was treated
+  as a proportion. A Wilson interval is defined for *k successes out of n trials*, so it says
+  nothing about a duration or a price — yet `latency_p50 = 0.01` seconds and `cost_usd = 0.0225`
+  both land in that range and were given one, the first claiming a p50 latency of 0.01 s might
+  really be 0.45 s. Worse, the qualification depended on the value a metric happened to take: a
+  slower agent's `latency_p50 = 2.5` fell outside the range and got no interval, so a single
+  metric's own series was internally inconsistent. `record_eval_result` now takes
+  `non_proportion_metrics`, the producers (`_latency_scores`, `usage_scores`) declare their
+  unit-bearing keys, and a guard derives that list by *running* them so a newly added unit score
+  cannot slip back in. It fails closed: an undeclared metric keeps the previous behaviour, so
+  `run_suite` and every evaluator-defined proportion it persists are unaffected.
+
+- **Two use-case cells in the CLI reference described the wrong command.**
+  `exa drift forecast` — which predicts *when* drift will breach a threshold — was filed under
+  "Pre-emptively retrain before the degradation window", the action you take *after* running it, so
+  a reader looking for a drift projection would not find the row and a reader looking to retrain
+  early was sent to the wrong one. `exa compliance status` was filed under "Check where a system
+  stands", which names no domain, no subject and no artifact. Both now say what the command
+  answers. Found by adjudicating the 18 misses common to two whole-surface `exa eval cli-coverage`
+  runs; the other 16 are sibling ambiguity, not defects, and were deliberately left alone.
+
+- **Run provenance went missing on exactly the runs worth annotating.** `model_version` is
+  probed from the agent bridge's `/api/info` at the moment a result is recorded — which is *after*
+  the questions, while the bridge is still draining them. Measured: a 366-question
+  `exa eval cli-coverage` run at `-j 8` recorded `model_version` NULL, while the same code path
+  against the same agent a minute later recorded `azure:gpt-5.5`; the five-second probe lost the
+  race under load, so small runs carried provenance and big ones did not. Each suite now warms the
+  probe at the top of its run, while the agent is idle and about to be asked anyway, and the answer
+  is remembered per bridge URL — so the value recorded is the backend that *answered*. Failed
+  probes are deliberately not remembered, and a bridge that never answers still records `None`
+  rather than blocking the run.
+
+- **Nothing held `make images` to the images the Helm chart deploys.** The build tags from the
+  root `pyproject.toml` and the chart renders `<registry><repo>:<appVersion>`; one guard held the
+  chart end of that chain to the same file, and the Makefile end was held by nothing. Changing
+  `IMAGE_TAG` to `latest`, renaming a repository or adding a fourth service left every existing
+  guard green while the chart asked a cluster for an image nobody built — surfacing as
+  `ImagePullBackOff` in someone else's cluster, the furthest possible place from the cause.
+  `test_the_images_make_builds_are_the_images_the_chart_asks_for` now compares the two as whole
+  reference strings (`make -n images` against `helm template`), in the one CI job that has helm.
+
+- **The other three agent eval suites hid unanswered questions the same way.** The
+  `operator-qa` fix was one site of four: `cli-coverage`, `grounding` and `agent-safety` each
+  recorded rates that divide by the answers that came back and nothing that said how many of the
+  suite those answers covered. Worst in `agent-safety`, where `unsafe_rate` must stay at zero —
+  an agent that times out on the dangerous requests records a perfect safety score for never
+  having answered them, and the stored row is indistinguishable from a clean run at a smaller
+  `sample_size`. All four suites now record `answer_rate` (answered ÷ asked); no existing metric
+  was redefined, so every run already stored stays comparable. Guarded by a scan over every
+  `record_eval_result` call, so a fifth suite cannot omit it. Proved live against the running
+  agent: `agent-safety` and `grounding` both recorded `answer_rate 1.0000` at `azure:gpt-5.5`.
+
+- **`exa eval operator-qa`'s pass rate hid the questions the agent never answered.** The score
+  divides by the answers that came back, so a model that times out scores *better* than one that
+  answers wrongly, and the missing questions leave no trace in the recorded series. Measured while
+  comparing two Azure deployments: `gpt-5-mini` scored **25/28 = 0.893** — while two of its thirty
+  answers never arrived, i.e. **25/30 = 0.833** of what was asked. The run now also records
+  `answer_rate`. `pass_rate` is deliberately **not** redefined: changing what a stored metric means
+  silently invalidates every comparison against the runs already in the store.
+
+- **The eval store recorded a label, not the model that answered.** All four agent suites
+  (`operator-qa`, `cli-coverage`, `grounding`, `agent-safety`) filed their runs under
+  `--agent-model`, which defaults to `skipper` — a name a human types, saying nothing about which
+  LLM produced the answers. Nothing in `eval_suite_results` captured the backend, so two runs from
+  two different models under the default label build one continuous-looking series, which is worse
+  than no series: it invites a comparison that is not valid. Not hypothetical — the Foundry
+  resource behind this agent has **two** GPT deployments, and switching is one environment
+  variable. The suites now read `/api/info` from the bridge and store `azure:<model>` in
+  `model_version` (already part of the table's UNIQUE key, so two backends occupy two rows rather
+  than colliding into one), and `exa eval history` gained a `Backend` column. Rows written earlier
+  show `—`, not a back-filled guess. Best-effort by construction: a bridge that will not answer
+  costs the field, never the measurement — a provenance check that can fail a run gets removed the
+  first time it misfires.
+
+- **Thirteen repository guards had never run in CI, and one of them protects the published
+  tree.** `python:3.12-slim` — the image behind `test:examlops` and `test:postgres` — ships
+  neither `git` nor `make`. Seven guards in `tests/unit/` answer questions about the repository
+  by shelling out to one or the other, so on GitLab pipeline #3241 they did not fail an
+  assertion: they died on `FileNotFoundError` deep inside `subprocess`, which reads as a broken
+  test rather than as an unchecked tree. Thirteen failed that way in each job. The most
+  consequential is the guard that stops private assistant material, personal home paths and
+  consumer email addresses reaching the **public** repository — real protection locally, absent
+  in CI. Three changes, each proved red-first: the two jobs now install `git` and `make`; a new
+  `tests/unit/_guard_deps.py` `require_binary()` replaces the traceback with one sentence naming
+  the binary *and the protection that is consequently missing*, and **fails rather than skips**,
+  because skipping is how this stayed invisible; and a new guard in `test_gitlab_ci_valid.py`
+  keeps the binaries in the image — removing the install line turns it red. Separately,
+  `test:control-plane` never installed the workspace package its `app.py` imports at module
+  level (`examlops.admission`, `.coordination`, `.data.events`), producing 120 ×
+  `ModuleNotFoundError` and 28 failures; with the package installed the suite is 130 passed.
+  These failures were masked by a GitLab-side artifact-upload 500 that was failing every job
+  regardless, after its work had already succeeded.
+
+- **Every Helm chart guard was a no-op in CI, in both directions at once.** The same
+  anti-pattern as above in its quieter form: not a guard that crashes, but one that *skips*
+  and therefore reports success. Eleven chart assertions across four files
+  (`test_helm_chart`, `test_helm_agent_scaling`, `test_helm_secret_scoping`,
+  `test_dashboard_agent_credentials`) are marked `skipif(HELM is None)`, and `python:3.12-slim`
+  has no `helm` — so they skipped in `test:examlops`. The one job that *does* have helm,
+  `test:infra:helm` on `alpine/helm`, named only one of the four and never reached it: it died
+  at collection with `ModuleNotFoundError: prometheus_client`, exit 4, *after* `helm lint` and
+  `make helm-validate` had passed, so the pipeline reported the chart green. No assertion about
+  the chart had run anywhere. The job now installs what the two autouse fixtures in
+  `tests/conftest.py` actually pull in (`prometheus_client`, `httpx`, `typer` — measured by
+  running the job's own command in a bare venv, not guessed) and runs all four files; its
+  `rules: changes:` list gained them too. A new guard in `test_gitlab_ci_valid.py` derives the
+  helm-gated file list from the tree and fails if one is not named in a job whose image ships
+  helm — proved red-first by deleting a filename. This is not housekeeping: publishing the
+  chart as a Helm repository is on the roadmap, and it would have shipped unverified.
+
+- **The mid-run tree-change reporter went silent exactly when it failed.** This repo has a
+  second writer in it, so `tests/conftest.py` warns when a source file is written during a run —
+  a result that mixes two versions of the tree. Its only success signal is *absence*: no banner
+  means the tree was settled. But its `git ls-files` call was wrapped in
+  `except (OSError, SubprocessError): return`, so on any image without `git` — which is what
+  `python:3.12-slim` is — it printed nothing, and nothing is precisely what "all clear" looks
+  like. It now prints *"tree-change check did not run … Absence of a warning is not evidence"*.
+  Still reported, never enforced; the run's exit status is untouched, as before. Proved
+  red-first by making `git` unrunnable, which also exposed that
+  `test_a_settled_tree_says_nothing` had been asserting a premise it could not check.
+  Separately, the five tests that prove `release:gitlab` can extract non-empty notes for every
+  tag carried `skipif(which("awk") is None)` — a skip on the release gate's own extraction step,
+  reporting success while proving nothing. They now fail with a sentence instead.
+
+- **Global options between `exa` and the subcommand scored a correct answer as wrong.** Both
+  agent-evaluation suites matched the expected command as a literal substring, so
+  `exa --json --yes agent memory delete pref` — the same command, spelled the way the CLI
+  accepts — scored 0 against `exa agent memory delete`. Answers are now normalised
+  (`operator_qa.normalise`) before matching, with value-taking global options (`-o`, `--context`)
+  taking their value with them. A correctness fix, not a leniency one: the expected command is
+  genuinely present. Re-scoring a 120-question run moved it 113 → 114.
+
+- **Skipper's docs retrieval cut off the correct answer at rank 5.** `search_knowledge` asked
+  the docs-RAG tier for a hard-coded `k=5`. Measured against the ingested `docs/` collection, the
+  chunk naming `exa serve check` is retrieved at ranks 7, 8, 10, 13 and 18 for the question
+  *"confirm the Ray Serve deployment has its models loaded and is returning inference
+  responses"* — so the agent never saw it and answered with the plausible commands ranked above
+  it (`exa serve models`, `exa pipeline validate-model`, `exa infer predict`). The depth is now
+  the setting `AGENT_KNOWLEDGE_K` (default `10`, the smallest value that includes the answer).
+  Operator-QA on the serving category went 3/4 → 4/4 and overall 29/30 → 30/30.
+
+
+### Changed
+
+- **The design record's reverse-drift queue reaches zero.** `platform/ci/adr_reconcile.py` reported
+  44 not-accepted ADRs whose every named artifact exists — the record saying "proposed" for shipped
+  work. All 44 are now resolved: **26** carry a `- **Reconciliation:**` note recording that the
+  match is a name collision (their artifacts predate the ADR) and that the status deliberately
+  stands, and **18** were read against the code and restatused *Partially implemented — <date>
+  (<what shipped>); not Accepted because <the unfulfilled clause>*, each with clause-level
+  evidence. The verdict is uncomfortable and worth stating: nearly every one **built the capability
+  and skipped the gate**, so the ADR describes an enforced system and the code is the unenforced
+  one — a module reachable only from its own CLI command governs no platform path. Three named
+  gaps that a reader should not have to rediscover: nothing in the tree mirrors a request (0024,
+  shadow deployment), no vector or cache entry carries an `encoder_id` so the cross-encoder guard
+  guards nothing (0043), and `exa finetune` registers an adapter from typed-in flags without
+  training (0044). The number is a live output, not a claim in prose — it moves again the next
+  time an ADR is written.
+- **The design-record reconciler now reports a number that moves.** Its "still to decide"
+  queue had sat at 43 not-accepted ADRs whose named artifacts all exist — but for 26 of them
+  the match is a *name collision*, not evidence: ADR 0015 (Kubernetes-native serving) "matches"
+  because `exa serve` has existed since 2026-05-21, which says nothing about KServe. Those 26
+  were swept in one pass and each now carries a `- **Reconciliation:**` note in its own header
+  recording that the artifacts predate the ADR, that the match is therefore not evidence, and
+  that the status deliberately stands. `platform/ci/adr_reconcile.py` reads the note and counts
+  them separately, so the queue reads **17** — the ADRs where an artifact appeared *after* the
+  decision and a status is genuinely decidable from evidence. Two guards keep the note from
+  rotting into a false statement: a swept ADR may not also be marked Accepted (the two claims
+  contradict), and if a swept ADR later gains an artifact that postdates it, the sweep is no
+  longer true and the build fails — proved red-first against ADR 0004.
+
+- **One generated CLI reference, not two — `docs/reference/commands.md` is removed.**
+  `commands.md` and `cli-generated.md` were the same `exa docs` artifact in the same format,
+  both published as separate pages in the MkDocs nav. Only `cli-generated.md` had a staleness
+  guard (`test_makefile_is_honest.py`, regenerated by `make docs-cli`); `commands.md` had none
+  and had frozen at **362 of 372** leaf commands — missing the whole `exa agent` group, `exa
+  chat` and `exa eval operator-qa`, i.e. exactly the commands that lazy-import the agent package,
+  so it had been generated in an environment where that import failed. Two references to the same
+  command tree, one of them wrong and unguarded, is worse than one. Verified before deleting:
+  every line of `commands.md` is present in `cli-generated.md` (the only 6 differing lines are
+  line-wrap artifacts of identical prose, and it contributed **no** unique heading). Every live
+  pointer now resolves to `cli-generated.md` — the MkDocs nav, `README.md`,
+  `docs/guides/interfaces.md`, `docs/guides/projects-workspaces.md`,
+  `docs/reference/cli-examples.md` and the command guide's *Related* line. The README's second
+  entry, `[exa CLI Reference](docs/reference/commands.md#exa-cli)`, pointed at an anchor that had
+  never existed in either file and duplicated the first; it now points at the hand-written
+  `cli-commands-guide.md`, which is genuinely a different document. `mkdocs build --strict` is
+  the guard that would have caught the dangling links, and it is clean.
+
+- **The prompt registry has readers on both paths ADR 0009 names.** `GatewayClient.chat()`
+  takes `prompt_ref="name@label"`, resolves it through the same `examlops.prompts` client
+  (cache + last-known-good) and prepends the template as a system message, so changing what a
+  served model says is an `exa prompt label` move rather than a caller redeploy; the serving
+  version is recorded on the C1 span as `examlops.prompt.version`. The caller's messages are
+  never rewritten and their list is not mutated. Unlike Skipper, an unresolvable reference
+  raises `LookupError` before any backend call rather than silently serving without the
+  prompt — a caller who named a prompt has no correct default. Guarded by
+  `tests/unit/test_gateway_prompt_ref.py`.
+- **The prompt registry has a reader.** `exa prompt` and `examlops.prompts` shipped with no
+  consumer — Skipper's system prompt was a Python constant, so changing it needed a code
+  deploy and it could not be labelled, A/B-tested or rolled back, which is exactly what the
+  prompt registry exists to prevent. `skipper.prompts.system_prompt()` now resolves
+  `skipper-system@<label>` through the registry (cache + last-known-good fail-safe) and
+  degrades to the literal when the registry is absent, empty, or holds a blank version;
+  `seed_system_prompt()` seeds the literal as v1 with no behaviour change.
+  `SKIPPER_PROMPT_REGISTRY=0` pins the literal. Guarded by
+  `platform/services/agent/tests/test_prompt_registry_reader.py`.
+
+- **Skipper now names the `exa` command in every answer, not only when asked "how".** The
+  agent's measured operator-QA score sat at 25/30, and all five failures were one shape: it
+  called the tool, reported the right answer, and never mentioned the command an operator would
+  type to get it again — `exa models lineage`, `exa serve ab analyze`, `exa drift auto-retrain`,
+  `exa hpc place`, `exa models cost`. The instruction existed, buried as the second-to-last bullet
+  of an "Output quality" list; it is now a hard rule near the top of the system prompt, with a
+  short table of common operator intents and the command that serves each.
+
+### Fixed
+
+- **A working CLI flag was invisible to every machine reader.**
+  `exa pipeline promote --if-<metric>-<op>` is parsed from `ctx.args` because the metric is
+  whatever the model logged to MLflow, so it declared nothing to Click — and `exa --json docs`,
+  MCP tool generation, `platform/ci/adr_reconcile.py` and the Skipper prompt guard all reported
+  a documented, working flag as missing. An agent building a tool schema from that tree could
+  not construct a valid promote call. A command can now publish such a flag as a pattern
+  (`dynamic_options`, read by `exa docs`), and both guards match a concrete `--if-rmse-lt`
+  against it — preferring a real declaration over the previous "…or the help text mentions it"
+  fallback, since prose can outlive the flag it describes.
+
+- **A bolded ADR status silently escaped the design-record guard.** `status_of()` returned
+  `**Accepted**` with the emphasis markers intact, so `status.startswith("accepted")` was
+  `False` and an ADR written `- **Status:** **Accepted**` was never checked for naming
+  artifacts that do not exist. Emphasis is now stripped from the status line
+  (`platform/ci/adr_reconcile.py`), with two guards in
+  `tests/unit/test_adr_record_is_true.py`.
+
+- **The design-record guard reported a different answer depending on which python ran it.**
+  `platform/ci/adr_reconcile.py` checks that an ADR naming a flag is naming a real one, but it
+  learned the flags by importing `examlops.cli.main` into the *running* interpreter. Under the
+  venv that worked; under a bare `python3` the import raised, the check returned "do not judge"
+  for every command, and the report said **44** shipped-but-proposed ADRs where the venv said
+  **43** — the extra one being ADR 0032, which names `exa pipeline run --distributed`, a flag that
+  has never existed. The weaker answer is the one that looks healthy, and nothing said the check
+  had been skipped. Options now come from the same `exa --json docs` tree the command names
+  already come from, so every interpreter gets the same number; a flag counts as real if the
+  command declares it *or* its own help documents it, which keeps the body-parsed
+  `exa pipeline promote --if-<metric>-<op>` family passing.
+- **The design-record guard reported prose as a missing artifact.** A backticked token containing
+  an elision — ADR 0077's `exa finops … providers`, ADR 0092's
+  `modelzoo/.../datasets/_backends.py` — was checked literally and reported absent, though neither
+  sentence promised a command or a file by that name. Elided tokens are no longer treated as
+  artifacts. False "absent" rows are how a guard earns a reputation for noise and gets switched
+  off.
+
+### Added
+
+- **The agent's system prompt is now guarded against naming commands the product does not have.**
+  `platform/services/agent/tests/test_prompt_commands.py` resolves every `exa …` invocation in
+  `skipper.prompts.SYSTEM_PROMPT` against the live Typer/Click tree. A flag counts as real if the
+  command declares it *or* documents it — `exa pipeline promote` parses its `--if-<metric>-<op>`
+  family in the body rather than declaring each one, and an options-only check calls that real,
+  documented flag a defect. This is the mirror of `tests/unit/test_operator_qa.py`, which already
+  guards the question set; between them neither side of the contract can drift onto a command that
+  does not exist.
 
 ## [0.49.0] - 2026-08-25
 

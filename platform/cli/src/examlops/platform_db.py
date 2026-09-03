@@ -235,6 +235,31 @@ def init_db(*, force: bool = False) -> None:
                 stats     TEXT NOT NULL,
                 set_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- ADR 0114: the zero-rate/spread reference a corruption signal is judged
+            -- against. Separate from drift_baselines because it answers a different
+            -- question — "is this machine lying?" rather than "has the data moved?".
+            -- ADR 0117: the portability gate's measured divergence, recorded whatever the
+            -- verdict. A gate that stores only pass/fail hides drift toward its own tolerance
+            -- boundary until the moment it crosses it.
+            CREATE TABLE IF NOT EXISTS parity_checks (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model              TEXT NOT NULL,
+                source_version     TEXT,
+                target_version     TEXT,
+                verdict            TEXT NOT NULL,
+                max_abs_divergence REAL,
+                max_rel_divergence REAL,
+                tolerance          REAL,
+                n_fixtures         INTEGER NOT NULL DEFAULT 0,
+                transformed        INTEGER NOT NULL DEFAULT 0,
+                reason             TEXT
+            );
+            CREATE TABLE IF NOT EXISTS corruption_baselines (
+                model     TEXT PRIMARY KEY,
+                stats     TEXT NOT NULL,
+                set_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS model_costs (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 model_name  TEXT NOT NULL,
@@ -915,7 +940,7 @@ def init_db(*, force: bool = False) -> None:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id      TEXT NOT NULL,
                 direction   TEXT NOT NULL,             -- input | output
-                node_type   TEXT NOT NULL,             -- dataset | model | deployment
+                node_type   TEXT NOT NULL,             -- dataset | model | prompt | deployment
                 node_name   TEXT NOT NULL,             -- namespaced, e.g. examlops://model/jpcp/18
                 ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (run_id, direction, node_name)
@@ -1603,6 +1628,43 @@ def init_db(*, force: bool = False) -> None:
 # ``ALTER TABLE ADD COLUMN`` errors if the column already exists, so we gate on
 # PRAGMA table_info. Keep entries here forever — they are cheap and self-skipping.
 _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    # A6 reindex orchestration (ADR 0043 clause 4): where the job ran and how long it took.
+    # `cost_usd` is deliberately absent — a monetary figure needs device-hours this path does not
+    # know, and an invented one is worse than none (the rule the C1 carbon facet already follows).
+    "reindex_jobs": {
+        "orchestrator": "TEXT",
+        "hpc_job_id": "TEXT",
+        "duration_s": "REAL",
+    },
+    # C7 judge scoring (ADR 0024 clause 2). Deliberately NOT written into `label`: a judge's
+    # opinion is not ground truth, and a judged sample that is indistinguishable from a measured
+    # one makes the whole scoreboard a mixture nobody can separate afterwards.
+    "challenger_samples": {
+        "champion_judge": "REAL",
+        "challenger_judge": "REAL",
+        "judge_model": "TEXT",
+    },
+    # D1: which document a row holds. NULL reads as the Annex-IV technical file, which is what
+    # every row written before the Declaration of Conformity existed is.
+    "technical_files": {
+        "kind": "TEXT",
+    },
+    # C3 eval gate: the gate's own metric direction. NULL means "not declared", which is not the
+    # same as False — an undeclared gate falls back to whatever the caller passes, so every gate
+    # configured before this column existed behaves exactly as it did.
+    "eval_gates": {
+        "higher_is_better": "INTEGER",
+        # ADR 0008 clause 5 — the aggregate policy ("all" | "majority"). NULL reads as "all",
+        # so every gate configured before this column existed keeps blocking on any failure.
+        "aggregate": "TEXT",
+    },
+    # A6 embedding lifecycle (ADR 0043 clause 1): which encoder produced this collection's
+    # vectors. NULL means "unstamped", which is not the same as "compatible" — a collection
+    # written before this column existed cannot be checked, and the guard says so rather than
+    # assuming. Stamping is what gives `guard_compatible` something to guard.
+    "vector_collections": {
+        "encoder_id": "TEXT",
+    },
     # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
     "audit_events": {
         "tenant": "TEXT NOT NULL DEFAULT 'default'",
@@ -1633,8 +1695,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "pruned": "INTEGER NOT NULL DEFAULT 0",
     },
     # FinOps pluggable providers (ADR 0074): which carbon provider produced each record.
+    # ADR 0112 decision 6 adds what *kind* of signal produced it — a stored intensity without
+    # its method is exactly what lets an average figure be read as if it could justify a
+    # scheduling decision.
     "carbon_records": {
         "provider": "TEXT",
+        "signal_type": "TEXT",
+        "signal_method": "TEXT",
     },
     # A5 data contracts (ADR 0005): revision/stage/score facets on the quality table.
     "data_quality_checks": {
@@ -1747,7 +1814,7 @@ def _audit_hash(prev_hash: str, canonical: str) -> str:
 
 # Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
 # relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
-from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, get_device_pools, get_llm_endpoint, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, set_challenger_judge_scores, get_device_pools, get_llm_endpoint, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
 
 
 
@@ -2355,12 +2422,12 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
 from examlops.data.audit import (audit_chain_head, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
-from examlops.data.data_assets import (bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
-from examlops.data.drift import (claim_drift_trigger, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
+from examlops.data.data_assets import (latest_vector_metrics, bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
+from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
 from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
 from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
-from examlops.data.governance import (get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
+from examlops.data.governance import (ANNEX_IV, DECLARATION, get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
 from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
 from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001
 from examlops.data.prompts import (create_prompt_version, get_prompt_by_label, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label)  # noqa: E402, E501, F401, I001

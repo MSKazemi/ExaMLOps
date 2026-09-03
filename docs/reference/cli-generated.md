@@ -188,7 +188,12 @@ List declared assets with their current version.
 
 Rebuild the asset + its stale ancestors only (R4/GWT-3).
 
+`--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam
+(ADR 0036 clause 3) instead of running the production function in this process.
+
 - `--force` — Rebuild even if fresh
+- `--no-deps` — Build only this asset, never its stale ancestors
+- `--orchestrator` — local | scheduler — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run
 
 ### `exa assets source-changed`
 
@@ -354,6 +359,21 @@ Emit + validate a Croissant JSON-LD dataset card (R1/R2).
 - `--license` — Dataset license
 - `--out` — Write the Croissant JSON to this file
 
+### `exa cards export`
+
+Export a card for publication with PII, locations and internal fields scrubbed (clause 4).
+
+Internal fields are dropped, PII and site-specific locations are redacted, and a detected
+**secret blocks the export** — redacting it would hide that a credential reached a generated
+artifact at all. `--force` overrides that, audited, because the scanner is a regex heuristic
+and can be wrong; the dropped and redacted parts are not overridable, because they are not
+judgement calls.
+
+- `--dataset` — Export a dataset (Croissant) card
+- `--out` — Write the publishable card to this file
+- `--force` — Publish despite a secret finding (audited)
+- `--tenant` — Tenant scope
+
 ### `exa cards model`
 
 Build a structured model card from live data — gaps as 'not provided' (R3/R4).
@@ -385,6 +405,25 @@ Record a system's EU AI Act risk classification (R1).
 - `--purpose` — Intended purpose
 - `--context` — Deployment context
 - `--tenant` — Tenant scope (D6)
+
+### `exa compliance declaration`
+
+Generate the Annex-V EU Declaration of Conformity (ADR 0012 clause 4).
+
+Fields the platform can know are read from live metadata; the ones only the provider can
+state are yours to supply. Anything missing is left as an explicit placeholder and the
+document is stamped DRAFT with its reasons — never quietly filled in.
+
+- `--issued-at` — Place and date of issue, e.g. 'Julich, 2026-09-02' (Annex V(8))
+- `--provider` — Provider legal name (Annex V(2))
+- `--provider-address` — Provider address (Annex V(2))
+- `--signatory` — Name of the signatory (Annex V(8))
+- `--signatory-function` — Function of the signatory (Annex V(8))
+- `--standard` — Harmonised standard or common specification (repeatable)
+- `--notified-body` — Notified body name + identification number (Annex V(7))
+- `--personal-data` — Whether the system processes personal data (Annex V(5))
+- `--out` — Write the declaration Markdown to this file
+- `--tenant` — Tenant scope
 
 ### `exa compliance declare`
 
@@ -610,6 +649,41 @@ Concept-drift test on realized error as delayed labels arrive (C5·R1).
 - `--alias` — Restrict to one serving alias
 - `--window` — Recent window size (samples)
 
+### `exa drift corruption`
+
+#### `exa drift corruption baseline`
+
+Store the current zero-rate and spread as this model's corruption baseline.
+
+Zero rates drift legitimately (a genuinely sparser input distribution), so like
+``exa drift baseline`` this is an explicit, audited act rather than a rolling window.
+
+- `--reason` — Why you are making this change (recorded in the audit trail)
+
+#### `exa drift corruption classify`
+
+Name the anomaly — data drift, hardware, regression, or undetermined.
+
+The remediation follows from the class, never from the z-score (ADR 0114 decision 2).
+
+#### `exa drift corruption selftest`
+
+Measure this detector against injected corruption and publish the rate (R-ef).
+
+A detector may not be credited with classes it was not tested against, so this injects
+each class into the model's own recent predictions and reports what was caught. A class
+the detector does not gate on is expected to score ~0 — printing that is the point.
+
+- `--rate` — Fraction of values to corrupt per trial
+- `--trials` — Injection trials per corruption class
+
+#### `exa drift corruption status`
+
+Show the corruption signal per model — NaN/Inf **and** unexpected zeros.
+
+A NaN/Inf guard alone sees about 1% of silent data corruption, so it is never reported
+on its own here (ADR 0114 decision 1).
+
 ### `exa drift estimate`
 
 Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4).
@@ -710,10 +784,16 @@ Register a versioned encoder → encoder_id (R1).
 
 Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5).
 
+Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` submits the job and
+returns its id instead of re-embedding in this process. `--inline` forces the local path and
+is what the submitted job itself runs, so a job never submits another job.
+
 - `--tenant` — Tenant scope
 - `--corpus-size` — Docs to re-embed
 - `--recall` — Measured recall of the new index
 - `--recall-floor` — Minimum recall to switch
+- `--inline` — Run here even if EXAMLOPS_REINDEX_ORCHESTRATOR=scheduler
+- `--scheduler` — Submit to the HPC scheduler instead of running here
 
 ### `exa embedding set-encoder`
 
@@ -767,6 +847,28 @@ Show a judge's latest calibration and whether it may gate.
 
 - `--version` — Pin to a judge version
 
+### `exa eval cli-coverage`
+
+Ask the agent about commands sampled from the whole CLI surface and report the rate.
+
+`exa eval operator-qa` asks 30 curated questions; once the agent scores 30/30 that suite can
+no longer measure anything. This one draws its questions from the hand-written **Use case**
+column of `docs/reference/cli-commands-guide.md`, which covers every command, so the number
+says something about the CLI rather than about 30 chosen corners. Grading is the same
+deterministic "did the answer name the command" — necessary, not sufficient — so no judge
+model is involved. Rows whose use case names an `exa` command are excluded and counted,
+because a question that leaks its own answer measures nothing.
+
+- `--sample, -n` — Commands to ask about; 0 = every usable one
+- `--seed` — Sampling seed, so two runs are comparable
+- `--with-description, -d` — Also give the guide's 'what it does' cell (easier: it paraphrases the command)
+- `--out` — Write the answers as JSONL
+- `--agent-url` — Agent bridge base URL (default: configured agent_url)
+- `--timeout` — Per-question timeout in seconds
+- `--concurrency, -j` — Questions in flight at once (1 = strictly serial)
+- `--record` — Persist the rate to the eval store so runs are comparable
+- `--agent-model` — Label the recorded run belongs to
+
 ### `exa eval feedback`
 
 Ground-truth feedback loop
@@ -801,20 +903,55 @@ Eval regression gate (block/warn promotion on regression)
 
 Run the gate for a candidate version (exit 1 in block mode on failure) — CI-safe (R10).
 
-- `--higher-is-better` — Metric direction
+- `--higher-is-better` — Fallback metric direction, used only for a gate that declares none
 
 #### `exa eval gate set`
 
 Configure the regression gate for a model.
 
 - `--suite` — C2 suite that produces the scores
-- `--metric` — metric[:min=X][:max_drop=Y] (repeatable)
+- `--metric` — metric[:min=X][:max=Y][:max_drop=Z][:higher_is_better=false] (repeatable). `max` is a ceiling and ignores direction; `higher_is_better` overrides the gate's direction for this metric alone — needed for a suite that stores both (e.g. answer_rate up, unsafe_rate and latency_p95 down).
 - `--baseline` — Baseline alias
 - `--mode` — block | warn
+- `--aggregate` — all | majority — how the metrics decide together (ADR 0008 clause 5). `majority` lets one noisy regression be outvoted; a floor, a ceiling or a missing score still blocks on its own.
+- `--higher-is-better` — This gate's own metric direction. Unset leaves it undeclared, and the gate then takes the direction from whoever runs it — which is derived from the promotion rule's operator and says nothing about this suite's metrics. Declare it.
 
 #### `exa eval gate show`
 
 Show the configured gate for a model.
+
+### `exa eval grounding`
+
+Ask about live platform state and check the answers against the truth.
+
+`exa eval operator-qa` and `exa eval cli-coverage` measure what the agent *says* — whether it
+names the right command, and whether the flags it names exist. Neither can see the failure
+that matters most on a platform an operator trusts: a fluent, specific, **wrong** answer about
+live state.
+
+Answers are sorted into `grounded`, `abstained` and `fabricated`. Abstaining is **not** a
+failure — on a half-running platform it is the correct answer, and a suite that scored it as a
+miss would be training the agent to guess. The number to watch is `fabricated`, and the only
+acceptable value is zero.
+
+- `--out` — Write the answers as JSONL
+- `--agent-url` — Agent bridge base URL (default: configured agent_url)
+- `--timeout` — Per-question timeout in seconds
+- `--record` — Persist the result to the eval store
+- `--agent-model` — Label the recorded run belongs to
+
+### `exa eval history`
+
+Show what the eval suites recorded, newest first.
+
+`exa eval run` and `exa eval cli-coverage --record` have been able to *write* to the eval
+store since it existed, and nothing could read it back from the CLI. A number that can only
+be written is not a trend: the run that produced it reports it once, and the next run has
+nothing to compare against, so a regression is invisible by construction.
+
+- `--suite` — Only this suite
+- `--metric` — Only this metric
+- `--limit` — Most recent rows to show
 
 ### `exa eval operator-qa`
 
@@ -829,6 +966,8 @@ unanswerable run can never be mistaken for a bad score.
 - `--out` — Write the answers as JSONL (feeds `exa eval run`)
 - `--agent-url` — Agent bridge base URL (default: configured agent_url)
 - `--timeout` — Per-question timeout in seconds
+- `--record` — Persist the rate to the eval store so runs are comparable
+- `--agent-model` — Label the recorded run belongs to
 
 ### `exa eval run`
 
@@ -841,6 +980,27 @@ Run a deterministic eval suite over items and persist scores (exit != 0 on error
 - `--sample` — Sample N items by request_hash
 - `--dataset-revision` — A1 revision
 - `--run-id` — Idempotency key (default: derived)
+
+### `exa eval safety`
+
+Ask the agent to change things it must not change on its own, and see what it does.
+
+The other agent suites ask whether it is *right*. This one asks whether it is *safe*, using
+the two machine-readable fields the bridge already returns — `hitl_required` (the graph
+interrupted and is waiting for a human) and `trace` (the tools it actually called) — rather
+than reading its prose. An agent that *says* it refused and calls the tool anyway would score
+as safe under any prose check, which is exactly the failure worth catching.
+
+`held` and `declined` are both safe outcomes, but for different reasons: only `held` is
+evidence that the human-in-the-loop gate worked. An agent that never reached a write tool —
+because the backing service was down — declines everything, which says no write happened, not
+that the gate held. `executed` is the defect.
+
+- `--out` — Write the answers as JSONL
+- `--agent-url` — Agent bridge base URL (default: configured agent_url)
+- `--timeout` — Per-request timeout in seconds
+- `--record` — Persist the result to the eval store
+- `--agent-model` — Label the recorded run belongs to
 
 ## `exa events`
 
@@ -897,6 +1057,16 @@ Explain what a command does, in plain language, with examples.
 
 Fairness — subgroup performance & disparity monitoring
 
+### `exa fairness apply`
+
+Materialise the model YAML's `fairness:` block as the runtime config (audited).
+
+Only needed to *override* a runtime row that has drifted from the declaration — an
+unoverridden YAML block is already in force, so nothing stands between declaring a slice
+registry in code and the gate honouring it.
+
+- `--tenant` — Tenant scope (D6)
+
 ### `exa fairness config`
 
 Declare slicing attributes + disparity threshold for a model (R1).
@@ -912,6 +1082,15 @@ Declare slicing attributes + disparity threshold for a model (R1).
 Full fairness report across all declared slice attributes (R5).
 
 - `--tenant` — Tenant scope
+
+### `exa fairness show`
+
+Show the slice registry actually in force, and where it came from (ADR 0025 clause 1).
+
+A model may declare its slices in its YAML (reviewed, deployed with the code) and/or carry a
+runtime row written by this CLI or the dashboard. The runtime row wins; this reports which
+one is in force and, when both exist, exactly where they disagree — drift resolved silently
+is how a reviewed declaration and a live gate come to differ with nobody able to see it.
 
 ### `exa fairness slice`
 
@@ -1099,6 +1278,20 @@ Estimate (via the active provider) and persist a carbon record for a training ru
 Aggregate recorded energy and carbon (optionally for one model).
 
 - `--model, -m` — Filter to one model
+
+#### `exa finops carbon signal`
+
+Show the live carbon signal, its type, and what it may be used for (ADR 0112).
+
+Two carbon-intensity metrics coexist and they are safe on opposite paths: an *accounting*
+(average) signal is what a report needs, and a *decision* (marginal) signal is the only one
+that can answer whether moving a job would reduce total emissions. Shifting on an average
+signal is the documented way to reduce the emissions **allocated** to you while **increasing**
+the power system's total.
+
+So when placement says the carbon objective had zero weight, this is where to see why: it is
+almost always that the configured feed is an average one, which is the honest state of most
+public data sources rather than a bug.
 
 ### `exa finops cost`
 
@@ -1569,6 +1762,20 @@ Show the pipeline → dataset → model version lineage chain (or the A2 graph).
 
 List all registered models with their production alias and latest version.
 
+### `exa models parity`
+
+Portability gate: compare a quantized version against its base (ADR 0117).
+
+Quantisation is a *deliberate* numeric change, and until now it was registered, signed and
+BOM'd with no numeric comparison at all — so a promotion that changed the numerics shipped
+on a green latency check.
+
+Three verdicts, and only one lets an autonomous promotion through. ``inert`` means nothing
+was compared — no transformation happened, or no fixtures ran — and it is **not** a pass:
+an identical result is only evidence of parity when a transformation actually occurred.
+
+- `--tolerance` — Override the model's declared parity_tolerance
+
 ### `exa models quantize`
 
 Quantize a model → register a new signed + BOM'd version (GWT-3).
@@ -1784,6 +1991,7 @@ Specify metric threshold with --if-<metric>-<op> <value>, e.g. --if-rmse-lt 5.0
 - `--save` — Save rule to DB for future reference
 - `--list` — List saved promotion rules
 - `--force` — Override a failing C3 eval gate (audited, D4)
+- `--if-<metric>-<op> <value>` — Promote only if the metric passes the threshold. <metric> is any metric the model logged; <op> is one of gt, gte, lt, lte. Example: --if-rmse-lt 5.0
 
 ### `exa pipeline promote-delete`
 
@@ -1824,9 +2032,14 @@ Validate the pack's models/*.yaml against Python model shims.
 
 ### `exa pipeline validate-model`
 
-Smoke-test a model alias on Ray Serve: check it responds and meets latency SLA.
+Smoke-test a model alias on Ray Serve and run the C3 eval gate against it.
 
 Returns exit code 0 on PASS, 1 on FAIL. Safe to use as a gate before promotion.
+
+ADR 0008 clause 2: the eval gate runs **alongside** the latency check, so one command
+answers both "does it serve" and "did it regress". A model with no configured gate is
+unaffected; when a gate is configured but the candidate version cannot be resolved, the
+reason is reported rather than passed over in silence.
 
 - `--alias` — Alias to validate
 - `--max-latency` — Max acceptable latency in seconds
@@ -2059,7 +2272,9 @@ Show a line diff between two prompt versions (spec R3).
 
 ### `exa prompt label`
 
-Move a label to a version — audited (spec R8/R9).
+Move a label to a version — audited (spec R8/R9) and C3-gated (ADR 0009 clause 4).
+
+- `--force` — Move the label even if the C3 eval gate fails (audited)
 
 ### `exa prompt list`
 
@@ -2068,6 +2283,10 @@ List prompt names, or the versions + labels of one prompt.
 ### `exa prompt rollback`
 
 Roll a label back to a prior version without deleting history (spec R10).
+
+**Deliberately not gated by C3.** A rollback is the remedy when a live prompt is bad — often
+exactly when its scores are failing — so gating it would trap an operator on the version they
+are trying to escape. Moving *forward* is what the gate exists to hold.
 
 ### `exa prompt show`
 
@@ -2433,6 +2652,23 @@ Enable a challenger and declare its promotion policy (R1/R5).
 - `--auto-promote` — Promote automatically on win
 - `--tenant` — Tenant scope (D6)
 
+#### `exa serve challenger judge`
+
+Score unlabelled challenger samples with a C2 judge (ADR 0024 clause 2).
+
+For deployments where ground truth never arrives. Only samples with **no label** are scored —
+a judge is the fallback for unlabelled samples, not a second opinion on measured ones — and
+the scores are stored separately from `label`, so a scoreboard can always say whether it
+rests on measurement or on an opinion.
+
+**ADR 0111 applies here too:** a scoreboard resting on an uncalibrated judge never reports
+`policy_met`, because a challenger promotion is the same decision `exa pipeline promote`
+makes by a different road.
+
+- `--judge-model` — Judge identifier — must be MVVP-calibrated to gate
+- `--limit` — Most recent samples to consider
+- `--tenant` — Tenant scope (D6)
+
 #### `exa serve challenger list`
 
 List configured challengers.
@@ -2653,12 +2889,45 @@ Show which SLOs are burning budget (and would page) (R3).
 
 - `--tenant` — Tenant scope
 
+### `exa slo export-metrics`
+
+Publish platform-recorded metrics in Prometheus text format (ADR 0023/0020/0025).
+
+The SLIs this platform ingests itself — `c2` eval, `c5` drift, `c8` fairness — live in
+`slo_samples` and were visible to nothing. That is not only a missing dashboard: the
+burn-rate rules `exa slo generate` emits range over a **Prometheus series**, so those SLOs
+could never alert. Point node_exporter's textfile collector at the output and they can.
+
+Also exports the vector-store latency/item gauges, which ADR 0020 clause 5 asks for and which
+were likewise recorded and exposed by nothing.
+
+An **unmeasured** SLO exports `measured=0` and no SLI — publishing its placeholder ratio
+would put a perfect number on a dashboard for something nobody measured.
+
+- `--model` — One model (default: every declared SLO)
+- `--tenant` — Tenant scope
+- `--out` — Write to a .prom file for the node_exporter textfile collector
+
 ### `exa slo generate`
 
 Generate promtool-valid Prometheus recording + burn-rate rules (R2/R3).
 
 - `--tenant` — Tenant scope
 - `--out` — Write rules YAML to this file
+
+### `exa slo ingest`
+
+Pull SLI samples from the platform's own telemetry instead of typing them in.
+
+Every SLI used to arrive by hand through `exa slo record`, so an SLO measured whatever
+someone remembered to enter — while the specs already carried an `sli_source` that nothing
+read. This reads it.
+
+Sources that cannot yet be ingested are **listed with the reason**, not skipped silently: a
+spec that yields no samples is indistinguishable downstream from a healthy service nobody
+asked about.
+
+- `--tenant` — Tenant scope (D6)
 
 ### `exa slo list`
 
@@ -2679,7 +2948,7 @@ Declare or version-bump one SLO spec (R1).
 
 - `--target` — Objective ratio 0..1
 - `--window` — Rolling window (e.g. 30d)
-- `--source` — c1|c2|c5|availability|prometheus
+- `--source` — c2 (eval quality) | c5 (drift verdicts) | c8 (fairness disparity) | c1 | availability | prometheus
 - `--query` — PromQL SLI expression (good ratio)
 - `--tenant` — Tenant scope (D6)
 - `--gate` — Gate promotion when budget exhausted (C3)

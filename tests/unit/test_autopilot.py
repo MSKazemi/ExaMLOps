@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 
 from examlops.cli.commands import autopilot_cmd
 from examlops.cli.main import app
+from examlops.data.drift import set_corruption_baseline, set_input_baseline, write_input_snapshot
 from examlops.platform_db import (
     create_autopilot_run,
     get_autopilot_config,
@@ -37,6 +38,32 @@ from examlops.platform_db import (
 runner = CliRunner()
 
 JPCP = "JPCP"
+
+
+def seed_data_drift_evidence(model: str, preds: list[float] | None = None) -> None:
+    """Give `model` the *second* axis ADR 0114 requires before an autonomous retrain.
+
+    Prediction drift alone now classifies as `undetermined` — one axis cannot separate data
+    drift from a serving regression — so a test that means "this model is genuinely drifting"
+    has to say so on both axes. Inputs are placed 4σ from their baseline (real data drift),
+    and the corruption baseline matches the predictions (corruption negative).
+    """
+    from examlops.corruption import corruption_stats
+
+    set_corruption_baseline(model, corruption_stats(preds if preds else [5.0] * 10))
+    set_input_baseline(
+        model,
+        {
+            "norm_mean": 1.0,
+            "norm_mean_std": 0.1,
+            "mean_mean": 0.0,
+            "mean_mean_std": 0.1,
+            "std_mean": 1.0,
+            "std_mean_std": 0.1,
+        },
+    )
+    for _ in range(50):
+        write_input_snapshot(model, "Production", 1.4, 0.0, 1.0, None)
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +229,7 @@ class TestRunCycleDriftTrigger:
         # Write high-drift snapshots (mean far from baseline)
         for _ in range(10):
             write_drift_snapshot(JPCP, "Production", 5.0, None)
+        seed_data_drift_evidence(JPCP)
 
     def test_dry_run_does_not_call_retrain(self):
         with patch.object(autopilot_cmd, "_call_retrain") as mock_retrain:
@@ -256,6 +284,85 @@ class TestRunCycleDriftTrigger:
 # ── run_cycle: policy integration ─────────────────────────────────────────────
 
 
+class TestRunCycleCorruptionSuppression:
+    """ADR 0114 — the autopilot promotes on its own road, so the suppression has to hold
+    here too. Without this the closed loop would be the one path that can still retrain a
+    model on a hardware fault."""
+
+    def setup_method(self):
+        set_autopilot_config("enabled", "1")
+        set_drift_auto_retrain(
+            JPCP, enabled=True, min_z_score=2.0, dataset_name="PM100Dataset", cooldown_s=0
+        )
+        set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
+
+    def _seed_corrupt_predictions(self) -> None:
+        from examlops.corruption import corruption_stats, inject_nullification
+
+        clean = [5.0 + (i % 5) * 0.01 for i in range(200)]
+        set_corruption_baseline(JPCP, corruption_stats(clean))
+        for value in inject_nullification(clean, 0.30, seed=11):
+            write_drift_snapshot(JPCP, "Production", value, None)
+        seed_data_drift_evidence(JPCP, clean)
+
+    def test_corruption_suppresses_the_cycle_retrain(self):
+        self._seed_corrupt_predictions()
+        with patch.object(autopilot_cmd, "_call_retrain") as mock_retrain:
+            result = autopilot_cmd.run_cycle()
+        mock_retrain.assert_not_called()
+        assert result["retrains"] == []
+        assert result["suppressed"], "the cycle suppressed nothing and recorded nothing"
+        assert result["suppressed"][0]["class"] == "suspected_hardware"
+
+    def test_the_suppression_is_recorded(self):
+        from examlops.data import get_db
+        from examlops.data.drift import list_drift_events
+
+        self._seed_corrupt_predictions()
+        with patch.object(autopilot_cmd, "_call_retrain"):
+            autopilot_cmd.run_cycle()
+        events = list_drift_events(model=JPCP, drift_kind="corruption")
+        assert events and events[0]["detail"]["class"] == "suspected_hardware"
+        with get_db() as conn:
+            audit = conn.execute(
+                "SELECT * FROM audit_events WHERE action='autopilot_retrain_suppressed'"
+            ).fetchall()
+        assert audit, "a retrain that does not happen left no trace at all"
+
+    def test_history_shows_the_suppression(self):
+        """A cycle that suppressed a model must not read like a quiet one — that is the
+        failure mode of every guard whose only success signal is silence.
+
+        Asserted on the recorded run rather than on the rendered table: rich truncates the
+        header at the 80-column test terminal, and a test that fails on terminal width is
+        testing the terminal.
+        """
+        self._seed_corrupt_predictions()
+        with patch.object(autopilot_cmd, "_call_retrain"):
+            autopilot_cmd.run_cycle()
+        result = runner.invoke(app, ["--json", "autopilot", "status"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        recorded = json.loads(payload["runs"][0]["summary"])
+        assert recorded["suppressed"], "the run history records no suppression at all"
+        assert recorded["retrains"] == []
+        assert autopilot_cmd._suppressed_count(list_autopilot_runs(last_n=1)[0]) == 1
+
+    def test_suppressed_count_survives_a_run_with_no_summary(self):
+        assert autopilot_cmd._suppressed_count({"summary": None}) == 0
+        assert autopilot_cmd._suppressed_count({"summary": "not json"}) == 0
+
+    def test_reverting_the_guard_makes_the_retrain_fire_again(self):
+        """The bug must return, or the two tests above prove nothing about the guard."""
+        self._seed_corrupt_predictions()
+        with (
+            patch.object(autopilot_cmd, "_classify_anomaly_for", return_value=None),
+            patch.object(autopilot_cmd, "_call_retrain", return_value={"flow_run_id": "x"}) as m,
+        ):
+            autopilot_cmd.run_cycle()
+        assert m.call_count == 1
+
+
 class TestRunCyclePolicy:
     def setup_method(self):
         set_autopilot_config("enabled", "1")
@@ -265,6 +372,7 @@ class TestRunCyclePolicy:
         set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
         for _ in range(10):
             write_drift_snapshot(JPCP, "Production", 5.0, None)
+        seed_data_drift_evidence(JPCP)
 
     def test_policy_deny_blocks_retrain(self):
         with patch.object(
@@ -394,10 +502,12 @@ class TestModelFilter:
         set_drift_baseline("MACK", {"mean": 1.0, "std": 0.1})
         for _ in range(10):
             write_drift_snapshot("MACK", "Production", 5.0, None)
+        seed_data_drift_evidence("MACK")
         set_drift_auto_retrain(JPCP, enabled=True, min_z_score=2.0, dataset_name="D", cooldown_s=0)
         set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
         for _ in range(10):
             write_drift_snapshot(JPCP, "Production", 5.0, None)
+        seed_data_drift_evidence(JPCP)
 
         with patch.object(autopilot_cmd, "_call_retrain", return_value={}):
             result = autopilot_cmd.run_cycle(model_filter="MACK")
@@ -518,6 +628,7 @@ class TestRunCycleStormCap:
             set_drift_baseline(m, {"mean": 1.0, "std": 0.1})
             for _ in range(10):
                 write_drift_snapshot(m, "Production", 5.0, None)
+            seed_data_drift_evidence(m)
 
     def _cap(self, monkeypatch, n):
         monkeypatch.setenv("EXAMLOPS_AUTOPILOT_MAX_RETRAINS", str(n))
@@ -604,6 +715,90 @@ class TestRunCycleJudgeEligibility:
         mock_promote.assert_called_once()
 
 
+# ── run_cycle: C3 — the eval regression gate guards this road too ─────────────
+#
+# `exa eval gate set --mode block` reads as "this gate guards promotion of this model". It
+# guarded `exa pipeline promote` and not the autopilot, which promotes the same model to the
+# same alias — so the closed loop was the one road to Production that never met it. The
+# promotion *rule* is an absolute threshold on one metric; only the C3 gate compares a
+# candidate against the baseline alias, which is precisely the check a self-driving loop needs.
+
+
+class TestRunCycleEvalGate:
+    def setup_method(self):
+        set_autopilot_config("enabled", "1")
+        set_promotion_rule(JPCP, "rmse", "lt", 5.0, "Staging", "Production")
+        from examlops.data.evaluation import record_eval_result, set_eval_gate
+
+        # `higher_is_better` is spelled out per metric on purpose. Both roads derive the gate's
+        # *default* direction from the promotion rule's operator — here `rmse lt`, i.e. lower is
+        # better — which says nothing about the direction of the suite's own metrics. Pass 219
+        # made that expressible; the default is still inferred from an unrelated comparison and
+        # is worth its own pass.
+        set_eval_gate(
+            JPCP,
+            "smoke",
+            [{"name": "accuracy", "max_drop": 0.01, "higher_is_better": True}],
+            mode="block",
+        )
+        # Baseline 0.95 in Production, candidate 0.80 in Staging: the promotion rule's own
+        # metric (rmse 3.0 < 5.0) passes happily while accuracy has fallen off a cliff.
+        record_eval_result(
+            "smoke",
+            JPCP,
+            run_id="base",
+            scores={"accuracy": 0.95},
+            model_version="1",
+            alias="Production",
+        )
+        record_eval_result(
+            "smoke", JPCP, run_id="cand", scores={"accuracy": 0.80}, model_version="2"
+        )
+
+    def test_a_failing_block_mode_gate_stops_the_promote(self):
+        with (
+            patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}),
+            patch.object(autopilot_cmd, "_staging_version", return_value="2"),
+            patch.object(autopilot_cmd, "_do_promote") as mock_promote,
+        ):
+            result = autopilot_cmd.run_cycle()
+        mock_promote.assert_not_called(), "a block-mode gate must stop the autopilot too"
+        assert any("accuracy" in b["reason"] for b in result["policy_blocks"])
+
+    def test_warn_mode_records_but_does_not_stop_it(self):
+        from examlops.data.evaluation import set_eval_gate
+
+        set_eval_gate(
+            JPCP,
+            "smoke",
+            [{"name": "accuracy", "max_drop": 0.01, "higher_is_better": True}],
+            mode="warn",
+        )
+        with (
+            patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}),
+            patch.object(autopilot_cmd, "_staging_version", return_value="2"),
+            patch.object(autopilot_cmd, "_do_promote") as mock_promote,
+        ):
+            autopilot_cmd.run_cycle()
+        mock_promote.assert_called_once(), "warn mode is advisory on this road as on the other"
+
+    def test_a_gate_that_cannot_be_evaluated_does_not_promote_anyway(self):
+        """Configured but unevaluable is not the same as passed.
+
+        If the Staging version cannot be resolved there is nothing to compare against the
+        baseline, and promoting because the check could not run is the failure this gate exists
+        to prevent.
+        """
+        with (
+            patch.object(autopilot_cmd, "_get_staging_metrics", return_value={"rmse": 3.0}),
+            patch.object(autopilot_cmd, "_staging_version", return_value=None),
+            patch.object(autopilot_cmd, "_do_promote") as mock_promote,
+        ):
+            result = autopilot_cmd.run_cycle()
+        mock_promote.assert_not_called()
+        assert any("could not" in b["reason"].lower() for b in result["policy_blocks"])
+
+
 # ── the gate itself, unmocked ─────────────────────────────────────────────────
 #
 # Every policy test above patches `_policy_decide`, so its body never ran in the suite. It read
@@ -679,6 +874,7 @@ class TestPolicyReachesTheRealCycle:
         set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
         for _ in range(10):
             write_drift_snapshot(JPCP, "Production", 5.0, None)
+        seed_data_drift_evidence(JPCP)
 
     def test_a_real_deny_rule_blocks_the_cycle(self, monkeypatch):
         import examlops.policy as policy

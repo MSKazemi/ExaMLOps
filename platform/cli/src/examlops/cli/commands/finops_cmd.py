@@ -78,6 +78,14 @@ _EX_CARBON_PROVIDERS = (
     "declarative formula in ~/.config/examlops/finops.yaml (provider: expression). See\n"
     "docs/guides/finops-providers.md."
 )
+_EX_CARBON_SIGNAL = (
+    "Examples:\n\n"
+    "  exa finops carbon signal\n\n"
+    "  exa --json finops carbon signal\n\n"
+    "Signal type is derived from EXAMLOPS_GRID_INTENSITY_METHOD, never declared separately —\n"
+    "an average feed labelled 'decision' is the exact error ADR 0112 exists to prevent."
+)
+
 _EX_COST_PROVIDERS = (
     "Examples:\n\n"
     "  exa finops cost providers\n\n"
@@ -178,6 +186,22 @@ def _carbon_overrides(grid_intensity: float, pue: float | None, gpu_tdp: float |
     return overrides
 
 
+def _reporting_signal(grid_intensity: float):
+    """The typed signal behind a reported figure (ADR 0112 decision 6).
+
+    An explicit ``--grid-intensity`` is ``operator_supplied``; the untouched default is
+    ``static_default``. Both are *accounting* signals, which is what a report needs — and
+    naming which one it is stops a documented constant being read as a measurement.
+    """
+    from examlops.finops.carbon_signal import CarbonSignal
+    from examlops.finops.grid_intensity import STATIC_METHOD
+
+    method = (
+        STATIC_METHOD if grid_intensity == DEFAULT_GRID_INTENSITY_G_PER_KWH else "operator_supplied"
+    )
+    return CarbonSignal(grams_per_kwh=grid_intensity, method=method, source="cli")
+
+
 def _estimate_or_exit(
     gpu_hours: float,
     cpu_hours: float,
@@ -239,8 +263,11 @@ def carbon_estimate(
     original methodology exactly.
     """
     est = _estimate_or_exit(gpu_hours, cpu_hours, provider, grid_intensity, pue, gpu_tdp)
+    signal = _reporting_signal(grid_intensity)
     if _output.json_mode:
-        _output.print_json({"gpu_hours": gpu_hours, "cpu_hours": cpu_hours, **est})
+        _output.print_json(
+            {"gpu_hours": gpu_hours, "cpu_hours": cpu_hours, **est, "signal": signal.as_dict()}
+        )
         return
     _output.print_table(
         f"Carbon estimate — {gpu_hours} GPU-h, {cpu_hours} CPU-core-h",
@@ -253,6 +280,10 @@ def carbon_estimate(
                 "Uncertainty",
                 "—" if est["uncertainty"] is None else f"±{est['uncertainty'] * 100:.0f}%",
             ],
+            # ADR 0112 decision 6 — a carbon figure that does not say what kind of signal
+            # produced it can be quoted on a path where that kind is the wrong one.
+            ["Signal type", signal.signal_type],
+            ["Method", signal.method],
         ],
     )
 
@@ -279,7 +310,17 @@ def carbon_record(
     """Estimate (via the active provider) and persist a carbon record for a training run."""
     init_db()
     est = _estimate_or_exit(gpu_hours, cpu_hours, provider, grid_intensity, pue, gpu_tdp)
-    write_carbon_record(model, run_id, est["kwh"], est["co2e_g"], grid_intensity, est["provider"])
+    signal = _reporting_signal(grid_intensity)
+    write_carbon_record(
+        model,
+        run_id,
+        est["kwh"],
+        est["co2e_g"],
+        grid_intensity,
+        est["provider"],
+        signal_type=signal.signal_type,
+        signal_method=signal.method,
+    )
     write_audit_event(
         "cli",
         _actor(),
@@ -291,6 +332,7 @@ def carbon_record(
             "provider": est["provider"],
             "kwh": est["kwh"],
             "co2e_g": est["co2e_g"],
+            **signal.as_dict(),
         },
     )
     _output.ok(
@@ -341,6 +383,57 @@ def _list_providers(domain: str, register_module: str, title: str) -> None:
 def carbon_providers() -> None:
     """List the available carbon providers (built-ins + entry-point plugins) and their status."""
     _list_providers("carbon", "examlops.finops.carbon_providers", "Carbon providers")
+
+
+@carbon_app.command("signal", epilog=_EX_CARBON_SIGNAL)
+def carbon_signal_cmd() -> None:
+    """Show the live carbon signal, its type, and what it may be used for (ADR 0112).
+
+    Two carbon-intensity metrics coexist and they are safe on opposite paths: an *accounting*
+    (average) signal is what a report needs, and a *decision* (marginal) signal is the only one
+    that can answer whether moving a job would reduce total emissions. Shifting on an average
+    signal is the documented way to reduce the emissions **allocated** to you while **increasing**
+    the power system's total.
+
+    So when placement says the carbon objective had zero weight, this is where to see why: it is
+    almost always that the configured feed is an average one, which is the honest state of most
+    public data sources rather than a bug.
+    """
+    from examlops.finops.carbon import DEFAULT_GRID_INTENSITY_G_PER_KWH as _default
+    from examlops.finops.grid_intensity import current_grid_signal
+    from examlops.hpc_placement import carbon_objective_state
+
+    signal = current_grid_signal(_default)
+    usable, reason = carbon_objective_state(signal)
+    payload = {
+        **signal.as_dict(),
+        "usable_for_placement": usable,
+        "placement_reason": reason,
+        "usable_for_reporting": signal.is_accounting,
+    }
+    if _output.json_mode:
+        _output.print_json(payload)
+        return
+    _output.print_table(
+        "Carbon signal",
+        ["Field", "Value"],
+        [
+            ["Intensity (gCO2e/kWh)", f"{signal.grams_per_kwh:.1f}"],
+            ["Signal type", signal.signal_type],
+            ["Method", signal.method],
+            ["Zone", signal.zone or "—"],
+            ["Source", signal.source or "—"],
+            ["Usable for reporting", "yes" if signal.is_accounting else "NO"],
+            ["Usable for placement", "yes" if usable else "NO"],
+        ],
+    )
+    if not usable:
+        _output.hint(
+            f"Carbon cannot weigh on placement: {reason}. This is not a bug — no default is "
+            "substituted, because substituting an average signal there is the harm itself. "
+            "Set EXAMLOPS_GRID_INTENSITY_METHOD=locational_marginal only if the feed really "
+            "is marginal."
+        )
 
 
 @cost_app.command("providers", epilog=_EX_COST_PROVIDERS)
