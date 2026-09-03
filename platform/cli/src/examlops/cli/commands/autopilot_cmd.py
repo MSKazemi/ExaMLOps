@@ -40,6 +40,7 @@ from examlops.data.autopilot import (
 )
 from examlops.data.drift import claim_drift_trigger, get_drift_baseline, list_drift_auto_retrain
 from examlops.data.serving import get_promotion_rule
+from examlops.evidence import AUTONOMOUS, correlated
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -286,6 +287,7 @@ def run_cycle(
                 "skipped": True,
                 "reason": "another autopilot cycle is already running (lease held)",
             }
+    cycle_ctx = None
     try:
         run_id = create_autopilot_run(
             triggered_by=triggered_by,
@@ -293,6 +295,14 @@ def run_cycle(
             dry_run=dry_run,
             enabled_state="enabled" if enabled else "disabled",
         )
+        # ADR 0110: everything this cycle writes is one correlated, *autonomous* unit of work.
+        # The autopilot is the platform acting on its own initiative, which is the mode ADR 0113
+        # gates hardest — and until it is declared, an auditor cannot tell a cycle's retrain from
+        # one a person asked for. Entered here rather than around the whole function so the
+        # lease bookkeeping in `finally` stays outside the unit of work it is not part of; the
+        # matching exit is in that same `finally`.
+        cycle_ctx = correlated(mode=AUTONOMOUS, on_behalf_of=triggered_by)
+        cycle_ctx.__enter__()
 
         retrains: list[dict[str, Any]] = []
         promotions: list[dict[str, Any]] = []
@@ -740,6 +750,8 @@ def run_cycle(
 
         return {"run_id": run_id, "dry_run": dry_run, "kill_switch_enabled": enabled, **summary}
     finally:
+        if cycle_ctx is not None:
+            cycle_ctx.__exit__(None, None, None)
         if lease_held:
             release_autopilot_lease(lease_holder)
 

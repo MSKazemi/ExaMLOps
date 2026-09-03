@@ -17,7 +17,9 @@ _EXAMPLES = (
     "  exa audit --action model_approved\n\n"
     "  exa --json audit --last 30d\n\n"
     "  exa audit verify\n\n"
-    "  exa audit checkpoint"
+    "  exa audit checkpoint\n\n"
+    "  exa audit chain <correlation-id>\n\n"
+    "  exa audit autonomy --last 30d"
 )
 
 app = typer.Typer(
@@ -104,6 +106,92 @@ def audit(
         for r in rows
     ]
     _output.print_table(f"Audit Log (last {last})", cols, table_rows)
+
+
+@app.command("chain")
+def chain(
+    correlation_id: str = typer.Argument(..., help="Correlation id to reconstruct"),
+) -> None:
+    """Reconstruct one unit of work and everything it caused (ADR 0110).
+
+    A hash chain records *events*; this reads the causal edges between them, so an
+    orchestrator's id returns the tool calls it caused and whatever those caused in turn. That
+    reconstruction is what makes "who did this, on whose behalf, and how would it be undone"
+    answerable from the evidence chain alone.
+    """
+    from examlops.data.audit import correlation_chain
+
+    events = correlation_chain(correlation_id)
+    if not events:
+        _output.ok(f"No events correlated to {correlation_id}")
+        return
+    if _output.json_mode:
+        _output.print_json(events)
+        return
+    _output.print_table(
+        f"Correlation chain — {correlation_id}",
+        ["ID", "When", "Action", "Target", "Actor", "On behalf of", "Mode", "Undo"],
+        [
+            [
+                str(e["id"]),
+                str(e.get("ts") or "—"),
+                e.get("action") or "—",
+                e.get("target") or "—",
+                e.get("actor") or "—",
+                e.get("on_behalf_of") or "—",
+                e.get("mode") or "—",
+                e.get("rollback_ref") or "—",
+            ]
+            for e in events
+        ],
+    )
+
+
+@app.command("autonomy")
+def autonomy(
+    last: str = typer.Option("30d", "--last", help="Time window (e.g. 7d, 30d)"),
+) -> None:
+    """Every autonomous action in the window, and whether it declared an inverse.
+
+    This is the W2 gate as a command: for each action the platform took on its own initiative,
+    who acted, on whose behalf, under which mode, and how it would be undone. An action with no
+    ``rollback_ref`` is listed rather than filtered out — ADR 0110 decision 4 calls that a policy
+    violation, and hiding them would defeat the point of asking.
+    """
+    from examlops.data.audit import autonomous_actions
+
+    rows = autonomous_actions(since_days=_parse_days(last))
+    if not rows:
+        _output.ok(f"No autonomous actions recorded in the last {last}")
+        return
+    undoable = sum(1 for r in rows if r["undoable"])
+    if _output.json_mode:
+        _output.print_json(
+            {"window": last, "count": len(rows), "undoable": undoable, "actions": rows}
+        )
+        return
+    _output.print_table(
+        f"Autonomous actions — last {last}",
+        ["When", "Action", "Target", "Actor", "On behalf of", "Correlation", "Undo"],
+        [
+            [
+                str(r["ts"]),
+                r["action"],
+                r["target"] or "—",
+                r["actor"] or "—",
+                r["on_behalf_of"] or "—",
+                (r["correlation_id"] or "—")[:12],
+                r["rollback_ref"] or "NONE",
+            ]
+            for r in rows
+        ],
+    )
+    if undoable < len(rows):
+        _output.warning(
+            f"{len(rows) - undoable} of {len(rows)} autonomous action(s) declared no inverse. "
+            "ADR 0110 decision 4 treats a NULL rollback_ref on an autonomous action as a policy "
+            "violation; the refusal that enforces it is not built yet, so these are reported."
+        )
 
 
 @app.command("verify")

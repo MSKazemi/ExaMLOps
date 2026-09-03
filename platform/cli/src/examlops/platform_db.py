@@ -1670,6 +1670,14 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "tenant": "TEXT NOT NULL DEFAULT 'default'",
         "prev_hash": "TEXT",
         "hash": "TEXT",
+        # ADR 0110 decision 3: the causal edges. Without them the chain records events but not
+        # causation, so "who did this, on whose behalf, and how would it be undone" cannot be
+        # answered from the chain alone — which is the W2 gate.
+        "correlation_id": "TEXT",
+        "parent_correlation_id": "TEXT",
+        "mode": "TEXT",
+        "on_behalf_of": "TEXT",
+        "rollback_ref": "TEXT",
     },
     # E5 autoscaling (ADR 0031): richer policy columns on the Phase-24 autoscale_config stub.
     "autoscale_config": {
@@ -1785,21 +1793,28 @@ def _audit_canonical(
     details_json: str | None,
     tenant: str,
     ts: str,
+    correlation: dict[str, Any] | None = None,
 ) -> str:
-    """Deterministic serialization of an audit event for the D4 hash chain (R1)."""
-    return json.dumps(
-        {
-            "source": source,
-            "actor": actor,
-            "action": action,
-            "target": target,
-            "details": details_json,
-            "tenant": tenant,
-            "ts": ts,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    """Deterministic serialization of an audit event for the D4 hash chain (R1).
+
+    ``correlation`` (ADR 0110) is folded in **only when it carries something**, so an event
+    written outside any correlation context canonicalises byte-identically to what this function
+    produced before those fields existed — which is what lets every historical row keep
+    verifying. It is inside the hash rather than beside it because a causal edge an attacker
+    could rewrite without breaking the chain would be evidence of nothing.
+    """
+    payload: dict[str, Any] = {
+        "source": source,
+        "actor": actor,
+        "action": action,
+        "target": target,
+        "details": details_json,
+        "tenant": tenant,
+        "ts": ts,
+    }
+    if correlation and any(correlation.values()):
+        payload["correlation"] = {k: v for k, v in sorted(correlation.items()) if v}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _audit_hash(prev_hash: str, canonical: str) -> str:
@@ -2420,7 +2435,7 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 # ── Per-domain body relocation (item 4.5): helpers below LIVE in examlops.data.*; re-exported
 # for back-compat (at END so every primitive/constant + install_write_retry is defined first).
 from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
-from examlops.data.audit import (audit_chain_head, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.audit import (audit_chain_head, autonomous_actions, correlation_chain, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
 from examlops.data.data_assets import (latest_vector_metrics, bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
 from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001

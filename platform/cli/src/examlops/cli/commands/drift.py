@@ -21,6 +21,7 @@ from examlops.data.drift import (
     set_input_baseline,
 )
 from examlops.drift_providers import resolve_drift_score_fn
+from examlops.evidence import AUTONOMOUS, correlated
 
 # Help panels for `exa drift` (auto-retrain and input sub-groups are added within this module).
 _PANELS: list[tuple[str, list[str]]] = [
@@ -427,6 +428,13 @@ def trigger(
     skipped = []
     suppressed: list[dict] = []
 
+    # ADR 0110: `drift trigger` fires retrains on the platform's own initiative, so everything it
+    # writes — the retrains and the ADR-0114 suppressions alike — belongs to one correlated,
+    # *autonomous* unit of work. Without the mode an auditor cannot tell these from a retrain a
+    # person asked for, which is half of what the W2 gate asks.
+    trigger_ctx = correlated(mode=AUTONOMOUS, on_behalf_of=actor)
+    trigger_ctx.__enter__()
+
     for row in drift_rows:
         model = row["model"]
         if model not in enabled_configs:
@@ -549,6 +557,8 @@ def trigger(
             )
         except ClientError as e:
             _output.error(f"Failed to trigger concept-drift retrain for {model}: {e}")
+
+    trigger_ctx.__exit__(None, None, None)
 
     if _output.json_mode:
         _output.print_json({"triggered": triggered, "skipped": skipped, "suppressed": suppressed})
