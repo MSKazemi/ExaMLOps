@@ -26,6 +26,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.unit._guard_deps import require_binary
+
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = ROOT / "docs" / "reference" / "env-vars.md"
 
@@ -81,6 +83,7 @@ def _variables_read_in_code() -> set[str]:
     # `--others --exclude-standard` includes files that are new and not yet committed. Without it
     # the guard cannot fail on the change that introduces a variable — only on some later one, by
     # which point the undocumented knob is already released.
+    require_binary("git", "every environment variable the code reads is documented")
     files = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"],
         cwd=ROOT,

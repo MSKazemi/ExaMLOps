@@ -21,11 +21,10 @@ what CI does.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
+from tests.unit._guard_deps import require_binary
 
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".gitlab-ci.yml"
@@ -46,6 +45,7 @@ def _awk_program() -> str:
 
 
 def _tags() -> list[str]:
+    require_binary("git", "every tag yields non-empty release notes")
     out = subprocess.run(
         ["git", "tag"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout
@@ -53,6 +53,11 @@ def _tags() -> list[str]:
 
 
 def _extract(version: str) -> str:
+    # These five tests used to carry `skipif(which("awk") is None)`. That is the release gate's
+    # own extraction step: if awk is missing they proved nothing, and a skip reports success —
+    # the same anti-pattern as the thirteen guards that crashed for want of `git`, in its
+    # quieter and therefore worse form. Fail with a sentence instead.
+    require_binary("awk", "release:gitlab can extract non-empty notes for every tag")
     return subprocess.run(
         ["awk", "-v", f"v={version}", _awk_program(), str(CHANGELOG)],
         capture_output=True,
@@ -61,13 +66,11 @@ def _extract(version: str) -> str:
     ).stdout
 
 
-@pytest.mark.skipif(shutil.which("awk") is None, reason="awk not installed")
 def test_there_are_tags_to_check():
     """Otherwise the sweep below passes by inspecting nothing."""
     assert len(_tags()) >= 10, _tags()
 
 
-@pytest.mark.skipif(shutil.which("awk") is None, reason="awk not installed")
 def test_every_tag_extracts_non_empty_release_notes():
     empty = [t for t in _tags() if not _extract(t[1:]).strip()]
     unexpected = sorted(set(empty) - UNDOCUMENTED_RELEASES)
@@ -78,7 +81,6 @@ def test_every_tag_extracts_non_empty_release_notes():
     )
 
 
-@pytest.mark.skipif(shutil.which("awk") is None, reason="awk not installed")
 def test_the_undocumented_list_does_not_outlive_its_reason():
     """A stale exemption is an exemption that hides a live defect."""
     still_empty = {t for t in UNDOCUMENTED_RELEASES if not _extract(t[1:]).strip()}
@@ -88,14 +90,12 @@ def test_the_undocumented_list_does_not_outlive_its_reason():
     )
 
 
-@pytest.mark.skipif(shutil.which("awk") is None, reason="awk not installed")
 def test_a_version_heading_in_either_style_is_found():
     """The CHANGELOG uses both `## [0.46.0]` and `## [v0.48.0]`; neither may be invisible."""
     assert _extract("0.46.0").strip(), "bare-style heading `## [0.46.0]` not matched"
     assert _extract("0.48.0").strip(), "v-prefixed heading `## [v0.48.0]` not matched"
 
 
-@pytest.mark.skipif(shutil.which("awk") is None, reason="awk not installed")
 def test_a_version_heading_more_than_once_contributes_every_section():
     """`0.37.0` heads two sections; both must reach the release notes."""
     heads = len(re.findall(r"^## \[v?0\.37\.0\]", CHANGELOG.read_text(), re.M))

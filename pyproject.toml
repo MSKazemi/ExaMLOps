@@ -52,6 +52,9 @@ dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.21",  # async test support
     "pytest-cov>=4.1",
+    "pytest-xdist>=3.8",  # `-n auto` — the unit suite is 2781 tests and runs 7.9x faster
+                          # across this machine's cores (520s -> 66s). Without it every
+                          # Makefile tier that passes `-n` fails on a clean install.
     "httpx>=0.24",        # HTTP client for integration tests
     "ruff==0.15.6",     # pinned: ruff's formatter evolves between releases; an exact
                         # pin keeps `ruff format --check` deterministic in CI (the
@@ -78,8 +81,24 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+# No `-v` by default. It printed one line per test — 2781 of them — which is a wall of scrollback
+# on every run and real terminal I/O on a suite this size. Targets that want it pass `-v`
+# explicitly; `make test-fast` deliberately does not. Parallelism is likewise NOT set here: a
+# single-file run (`pytest tests/unit/test_x.py`) would pay worker start-up for nothing, so
+# `-n auto` lives in the Makefile tiers that run the whole suite.
+# `--strict-markers`: an unregistered marker is an error, not a silent no-op. Without it
+# `@pytest.mark.slwo` (or a marker whose registration was later removed) simply does nothing, and
+# a test everyone believes is tagged is tagged with nothing at all.
+addopts = "--tb=short --strict-markers"
 asyncio_mode = "auto"
+markers = [
+    # `live` is the only marker worth registering. A `slow` marker was registered here briefly and
+    # removed: nothing applied it, its stated purpose (excluding slow tests from the inner loop)
+    # was not what `make test-fast` does, and at 66s for the whole suite there is no reason to skip
+    # anything. `make test-slowest` measures real durations, which cannot rot the way a
+    # hand-applied label does.
+    "live: needs a real external service (Postgres, Redis) and skips itself when its opt-in environment variable is unset; select with `-m live`, exclude with `-m 'not live'`",
+]
 
 [tool.ruff]
 line-length = 100

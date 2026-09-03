@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any  # noqa: F401
 
+from examlops.data._rowid import last_insert_id
 from examlops.platform_db import get_db, init_db, install_write_retry, write_retry  # noqa: F401
 
 __all__ = [
@@ -70,7 +71,7 @@ def create_autopilot_run(
                VALUES (?,?,?,?)""",
             (triggered_by, model_filter, int(dry_run), enabled_state),
         )
-        return cur.lastrowid
+        return last_insert_id(cur)
 
 
 def get_autopilot_config(key: str) -> str | None:

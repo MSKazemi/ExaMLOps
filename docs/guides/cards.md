@@ -56,6 +56,37 @@ exa cards completeness JPCP --require 0.7    # exit 1 if below 70%
 CI step) can require a minimum completeness before promotion (C3), so incomplete models
 can't ship silently.
 
+## Publishing a card
+
+A card is generated *from live platform data*, so it inherits whatever that data holds — tenant
+identifiers, absolute paths from a deployment, a stray address in a free-text limitation.
+`exa cards export` is the way one leaves the building.
+
+```bash
+exa cards export jpcp --out jpcp-card.json          # model card
+exa cards export PM100 --dataset --out pm100.json   # Croissant dataset card
+```
+
+Three kinds of finding, three different treatments — they are not alike:
+
+| Finding | Treatment | Why |
+|---|---|---|
+| Internal fields (`tenant`) | **dropped** | A D6 identity naming which customer the card belongs to. Not a property of the model, so there is nothing to decide per export. |
+| PII, private/loopback addresses, absolute paths, `user@host` | **redacted** | D8's designed behaviour for content; the card is still useful with a placeholder in place of a name. |
+| A likely secret | **blocks the export** | Redacting it would hide that a credential reached a generated artifact at all — a problem upstream that publishing quietly would bury. |
+
+Two details worth knowing:
+
+- **Location patterns are general, not a list of this deployment's hostnames.** A denylist of
+  known-internal names silently passes the one nobody wrote down.
+- **The scrub is recursive and covers keys as well as values.** `metrics` and `fairness` are
+  nested mappings, and a fairness slice *value* becomes a key — and can be a person's name.
+
+`--force` overrides **only** the secret block, and is audited. That scanner is a regex heuristic
+and can be wrong; the dropped and redacted parts are not judgement calls and are not overridable.
+Every export writes a `card_exported` or `card_export_blocked` audit event naming what was removed
+and which rules fired — never the matched value.
+
 ## Programmatic use
 
 ```python

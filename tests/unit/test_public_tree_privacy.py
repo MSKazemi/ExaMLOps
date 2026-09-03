@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.unit._guard_deps import require_binary
+
 REPO = Path(__file__).resolve().parents[2]
 PRIVATE_PARTS = {".claude", ".codex"}
 PRIVATE_ROOTS = {"design", "memory", "memories", "paper", "plans", "reviews"}
@@ -21,6 +23,10 @@ PRIVATE_REFERENCE = re.compile(r"(?:^|[/\\])\.(?:claude|codex)(?:[/\\]|\b)|\bCLA
 
 def _public_paths() -> list[Path]:
     """Return tracked files plus untracked files eligible for the public repository."""
+    require_binary(
+        "git",
+        "no private assistant material, personal home path or consumer email address is tracked in the public tree",
+    )
     output = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=REPO,

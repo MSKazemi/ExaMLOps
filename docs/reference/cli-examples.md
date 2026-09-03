@@ -23,7 +23,7 @@ exa env               # effective config + the source of every value (secrets re
 
 exa explain status    # plain-language help + examples for a command
 
-exa docs --out docs/reference/commands.md   # generate the full command reference from the live tree
+exa docs --out docs/reference/cli-generated.md   # regenerate the full command reference (make docs-cli)
 
 exa plugins           # list installed exa CLI plugins + load status
 #   No plugins installed (entry-point group: examlops.cli_plugins).

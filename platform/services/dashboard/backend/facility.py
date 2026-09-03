@@ -19,6 +19,7 @@ import json
 import sqlite3
 from typing import Any
 
+import audit_write
 from dbconn import connect
 
 # Job states that count as actively holding resources vs waiting in the queue.
@@ -173,11 +174,7 @@ def set_cluster_state(
             return False
         action = "cluster_approved" if state == "ACTIVE" else "cluster_rejected"
         if _has_table(conn, "audit_events"):
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) "
-                "VALUES (?,?,?,?,?)",
-                ("dashboard", actor, action, name, json.dumps({"reason": reason})),
-            )
+            audit_write.audit(actor, action, name, {"reason": reason}, conn=conn)
         conn.commit()
         return True
     finally:

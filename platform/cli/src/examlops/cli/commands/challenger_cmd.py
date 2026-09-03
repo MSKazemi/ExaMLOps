@@ -98,6 +98,79 @@ def status(
         _output.ok("Policy met — challenger is ready to promote (exa serve challenger promote).")
 
 
+@app.command("judge")
+def judge(
+    model: str = typer.Argument(..., help="Model name"),
+    judge_model: str = typer.Option(
+        "judge", "--judge-model", help="Judge identifier — must be MVVP-calibrated to gate"
+    ),
+    limit: int = typer.Option(200, "--limit", help="Most recent samples to consider"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Score unlabelled challenger samples with a C2 judge (ADR 0024 clause 2).
+
+    For deployments where ground truth never arrives. Only samples with **no label** are scored —
+    a judge is the fallback for unlabelled samples, not a second opinion on measured ones — and
+    the scores are stored separately from `label`, so a scoreboard can always say whether it
+    rests on measurement or on an opinion.
+
+    **ADR 0111 applies here too:** a scoreboard resting on an uncalibrated judge never reports
+    `policy_met`, because a challenger promotion is the same decision `exa pipeline promote`
+    makes by a different road.
+    """
+    from examlops.champion_challenger import score_samples_with_judge
+    from examlops.evaluation.calibration import is_gate_eligible
+
+    eligible, failures = is_gate_eligible(judge_model)
+    result = score_samples_with_judge(
+        model,
+        _gateway_judge(judge_model),
+        judge_model=judge_model,
+        tenant=tenant,
+        limit=limit,
+    )
+    result.update({"judge_eligible": eligible, "judge_failures": failures})
+    if _output.json_mode:
+        _output.print_json(result)
+        return
+    _output.ok(
+        f"Judged {result['scored']} unlabelled sample(s) for {model} "
+        f"({result['failed']} skipped on judge error)"
+    )
+    if not eligible:
+        _output.warning(
+            f"'{judge_model}' is not MVVP-eligible ({', '.join(failures)}) — these scores are "
+            "recorded but will not let a promotion pass. Calibrate it: exa eval calibrate"
+        )
+
+
+def _gateway_judge(judge_model: str):
+    """The judge seam, wired to the B2 gateway exactly as C2 documents.
+
+    Kept a closure rather than a module-level client so a caller with no gateway configured gets
+    a per-sample failure the scorer counts and skips, instead of an import-time crash that would
+    make an unconfigured gateway look like a broken command.
+    """
+
+    def _judge(champion_pred, challenger_pred):
+        from examlops.gateway import GatewayClient, build_default_router
+
+        prompt = (
+            "Score each prediction for quality on a 0..1 scale. "
+            f"Champion: {champion_pred}. Challenger: {challenger_pred}. "
+            'Answer as JSON: {"champion": <0..1>, "challenger": <0..1>}.'
+        )
+        completion = GatewayClient(build_default_router()).chat(
+            judge_model, [{"role": "user", "content": prompt}]
+        )
+        import json as _json
+
+        parsed = _json.loads(completion.text)
+        return float(parsed["champion"]), float(parsed["challenger"])
+
+    return _judge
+
+
 @app.command("promote")
 def promote(
     model: str = typer.Argument(..., help="Model name"),

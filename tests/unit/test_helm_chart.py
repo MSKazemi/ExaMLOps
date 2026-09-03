@@ -284,3 +284,49 @@ def test_every_published_helm_command_sets_the_required_registry():
         "these published commands omit the registry the chart requires, so they fail (or, for "
         "`helm lint`, pass while printing the failure):\n  " + "\n  ".join(offenders)
     )
+
+
+@needs_helm
+def test_the_images_make_builds_are_the_images_the_chart_asks_for():
+    """Two halves of one deploy, and until now nothing compared them.
+
+    `make images` tags from the root `pyproject.toml`; the chart renders `<registry><repo>:<tag>`
+    with `tag` defaulting to `appVersion`. `test_app_version_tracks_the_platform_version` holds
+    the chart end of that chain to the same file, so today all three agree — but the Makefile end
+    is held by nothing. Change `IMAGE_TAG ?=` to `latest`, rename a repository, or add a fourth
+    service to `make images` and every existing guard still passes, while the chart asks a cluster
+    for an image nobody built. That failure surfaces as `ImagePullBackOff` in someone else's
+    cluster, which is the furthest possible place from its cause — the same shape as the
+    `docker.io/library/` default this file was written for.
+
+    Compared as whole reference strings on purpose: repository *and* tag, one prefix, no parsing
+    of either side's intent. `make -n` prints the build commands without running docker.
+    """
+    from tests.unit._guard_deps import require_binary
+
+    require_binary("make", "the images `make images` builds are the ones the chart deploys")
+
+    prefix = "ghcr.io/mskazemi/"
+    built = set(
+        re.findall(
+            r"-t (\S+)",
+            subprocess.run(
+                ["make", "-n", "images", f"IMAGE_PREFIX={prefix}"],
+                capture_output=True,
+                text=True,
+                cwd=REPO,
+            ).stdout,
+        )
+    )
+    assert built, "`make -n images` printed no `docker build -t` line — has the target moved?"
+
+    rendered = set(
+        re.findall(
+            r"^\s+image:\s*(\S+)$", _render(f"--set=global.imageRegistry={prefix}").stdout, re.M
+        )
+    )
+    assert rendered, "the chart rendered no image references"
+    assert built == rendered, (
+        f"`make images` builds {sorted(built)} but the chart deploys {sorted(rendered)} — "
+        "a cluster would pull an image that was never built"
+    )

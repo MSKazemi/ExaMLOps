@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit._guard_deps import require_binary
+
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
 
 # Hosts a template may legitimately name: they belong to nobody, or to the whole world.
@@ -118,6 +120,7 @@ def test_the_nested_compose_template_is_not_published():
     import subprocess
 
     repo = ENV_EXAMPLE.parent
+    require_binary("git", "the published .env.example matches what the code actually reads")
     tracked = subprocess.run(
         ["git", "ls-files", "platform/infra/docker-compose/.env.example"],
         cwd=repo,

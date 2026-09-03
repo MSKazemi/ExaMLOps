@@ -226,6 +226,129 @@ def build_model_card(model: str, *, tenant: str = "default") -> ModelCard:
     return ModelCard(model=model, tenant=tenant, fields=fields)
 
 
+# ── Publishing (ADR 0037 clause 4) ────────────────────────────────────────────
+#
+# A card is generated from live platform data, so it inherits whatever that data contains:
+# tenant identifiers, absolute paths from a deployment, a stray address in a free-text
+# limitation. Publishing one is the moment those leave the building, and the repo's own rule is
+# that secrets, personal data, local paths and site-specific infrastructure never do.
+
+#: Fields removed outright. ``tenant`` is a D6 identity — on a shared platform it names which
+#: customer the card belongs to, which is not a property of the model at all.
+INTERNAL_FIELDS = ("tenant",)
+
+#: Site-specific detail that is not a secret but is nobody's business outside the deployment.
+#: Deliberately general patterns rather than a list of this deployment's hostnames: a denylist of
+#: known-internal names silently passes the one nobody wrote down.
+_LOCATION_PATTERNS: list[tuple[str, Any]] = []
+
+
+def _location_patterns() -> list[tuple[str, Any]]:
+    global _LOCATION_PATTERNS
+    if not _LOCATION_PATTERNS:
+        import re as _re
+
+        _LOCATION_PATTERNS = [
+            # RFC1918 + loopback, with or without a port.
+            (
+                "private-address",
+                _re.compile(
+                    r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01])|127\.0\.0)"
+                    r"\.\d{1,3}(?:\.\d{1,3})?(?::\d+)?\b"
+                ),
+            ),
+            ("localhost", _re.compile(r"\blocalhost(?::\d+)?\b")),
+            # An absolute POSIX path of two or more segments — a deployment's filesystem layout.
+            ("filesystem-path", _re.compile(r"(?<![\w/])/(?:[\w.\-]+/){1,}[\w.\-]*")),
+            ("ssh-target", _re.compile(r"\b[\w.\-]+@[\w.\-]+\b(?!\.[a-z]{2,})")),
+        ]
+    return _LOCATION_PATTERNS
+
+
+REDACTED = "[REDACTED]"
+
+
+@dataclass
+class CardExport:
+    """The publishable form of a card, plus everything that was removed to get there."""
+
+    content: dict[str, Any]
+    removed_fields: list[str] = field(default_factory=list)
+    redactions: list[str] = field(default_factory=list)
+    secret_findings: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def safe(self) -> bool:
+        """Whether this may be published without an explicit override."""
+        return not self.secret_findings
+
+
+def _scrub_text(text: str) -> tuple[str, list[str]]:
+    """Redact PII (D8) and site-specific locations from one string."""
+    from examlops.guardrails import redact_pii
+
+    scrubbed, found = redact_pii(text)
+    kinds = list(found)
+    for name, pattern in _location_patterns():
+        if pattern.search(scrubbed):
+            scrubbed = pattern.sub(REDACTED, scrubbed)
+            kinds.append(name)
+    return scrubbed, kinds
+
+
+def _scrub(value: Any, redactions: list[str], path: str = "") -> Any:
+    """Walk a card recursively, scrubbing every string it contains.
+
+    Recursive on purpose: a card's ``metrics`` and ``fairness`` fields are nested mappings and a
+    top-level-only pass would publish anything one level down. Keys are scrubbed as well as
+    values — a slice value can itself be a person's name.
+    """
+    if isinstance(value, str):
+        scrubbed, kinds = _scrub_text(value)
+        redactions.extend(f"{path or 'card'}: {k}" for k in kinds)
+        return scrubbed
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            new_key = _scrub(k, redactions, f"{path}.{k}" if path else str(k))
+            out[new_key] = _scrub(v, redactions, f"{path}.{k}" if path else str(k))
+        return out
+    if isinstance(value, list):
+        return [_scrub(v, redactions, f"{path}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
+def export_card(card: dict[str, Any]) -> CardExport:
+    """Scrub a card for publication (clause 4). Never raises; the caller decides.
+
+    Three different treatments, because the three findings are not alike:
+
+    * **Internal fields are dropped.** They are structurally not publishable, so there is nothing
+      to decide per export.
+    * **PII and site-specific locations are redacted.** That is D8's designed behaviour for
+      content, and the card is still useful with a name replaced by a placeholder.
+    * **A secret is reported, and blocks.** Redacting it would hide the fact that a credential
+      reached a generated artifact at all, which is a problem upstream that publishing quietly
+      would bury. The finding never carries the matched value.
+    """
+    from examlops.secrets import scan_text
+
+    content = {k: v for k, v in card.items() if k not in INTERNAL_FIELDS}
+    removed = [k for k in card if k in INTERNAL_FIELDS]
+    redactions: list[str] = []
+    content = _scrub(content, redactions)
+
+    import json as _json
+
+    findings = scan_text(_json.dumps(content, indent=2, default=str))
+    return CardExport(
+        content=content,
+        removed_fields=removed,
+        redactions=sorted(set(redactions)),
+        secret_findings=findings,
+    )
+
+
 def card_completeness(model: str, *, tenant: str = "default") -> float:
     """Completeness score 0..1 for a model's card — used by the D5/C3 gate (R6)."""
     return build_model_card(model, tenant=tenant).completeness
@@ -233,8 +356,11 @@ def card_completeness(model: str, *, tenant: str = "default") -> float:
 
 __all__ = [
     "CROISSANT_CONTEXT",
+    "INTERNAL_FIELDS",
     "NOT_PROVIDED",
+    "CardExport",
     "ModelCard",
+    "export_card",
     "croissant_record",
     "validate_croissant",
     "build_model_card",

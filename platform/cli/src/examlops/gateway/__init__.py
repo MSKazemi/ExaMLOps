@@ -13,7 +13,9 @@ degrades to a configured last-resort backend if the gateway is unreachable (R11)
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,6 +42,20 @@ class AllBackendsFailed(GatewayError):
     """Every routed backend errored and no fallback succeeded (R3)."""
 
 
+class GuardrailBlocked(GatewayError):
+    """A D8 guardrail blocked the request or the response (ADR 0026 clause 3).
+
+    Like :class:`MediaNotAllowed` this is a **policy denial, not a backend failure**, so it is
+    never retried against the next backend: a second backend would deny an injected prompt
+    identically, and retrying an output block would spend money to produce the same violation.
+    """
+
+    def __init__(self, direction: str, findings: list[str], reason: str) -> None:
+        self.direction = direction
+        self.findings = findings
+        super().__init__(f"guardrail blocked the {direction}: {reason} ({', '.join(findings)})")
+
+
 class MediaNotAllowed(GatewayError):
     """A multimodal content part failed validation before dispatch (R-V5).
 
@@ -57,6 +73,9 @@ class Completion:
     completion_tokens: int = 0
     cost_usd: float = 0.0
     cached: bool = False
+    #: The schema-validated object, when ``chat(..., response_schema=…)`` was used (ADR 0035
+    #: clause 1). ``None`` means no schema was requested — never "it failed", which raises.
+    parsed: Any = None
 
 
 # A backend is any callable: (model, messages, **kw) -> Completion-ish.
@@ -181,6 +200,148 @@ def authorize(key_raw: str, model: str) -> dict[str, Any]:
 # ── Client ────────────────────────────────────────────────────────────────────
 
 
+def resolve_prompt_ref(ref: str) -> tuple[str, str, int]:
+    """Resolve ``name`` or ``name@label`` to (template, name, version) — ADR 0009 clause 3.
+
+    Goes through :func:`examlops.prompts.get_prompt`, so serving shares Skipper's client:
+    the same short-TTL cache and the same last-known-good fallback when the registry is
+    briefly unreachable.
+
+    Unlike Skipper, an unresolvable reference is an **error, not a fallback**. Skipper has a
+    literal that is always a correct system prompt; a caller who names ``support-bot@prod``
+    has no such default, and silently sending the request without it would change the
+    model's behaviour invisibly. Failing loudly is the only honest option.
+    """
+    from examlops.prompts import get_prompt
+
+    name, _, label = ref.partition("@")
+    pv = get_prompt(name, label or "prod")
+    return pv.template, pv.name, pv.version
+
+
+# ── A2/E2 structured output at the gateway (ADR 0035 clause 1) ───────────────
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _extract_json(text: str) -> Any:
+    """Parse the object out of a completion, or raise ``ValueError``.
+
+    Tolerant of the one thing every instruction-tuned model does regardless of the prompt:
+    wrapping the object in a ``` fence, often with a line of prose above it. Without this the
+    platform would report a schema failure for a response that contains a perfectly good object,
+    and the repair path would be spent fixing a formatting habit rather than a data problem.
+    """
+    raw = text.strip()
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    fenced = _FENCE.search(raw)
+    if fenced:
+        return json.loads(fenced.group(1).strip())
+    # Last resort: the outermost {...} or [...] span.
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = raw.find(opener), raw.rfind(closer)
+        if start != -1 and end > start:
+            return json.loads(raw[start : end + 1])
+    raise ValueError("no JSON object found in the response")
+
+
+def _enforce_schema(
+    comp: Completion, schema: dict[str, Any], *, tenant: str, max_repairs: int
+) -> None:
+    """Attach a schema-valid object to ``comp``, or raise ``StructuredOutputError``.
+
+    ADR 0035 clause 1 asks the platform to *guarantee* a response validates. The half of that
+    clause built on **constrained decoding** is still absent — no guided decoding, no grammar, no
+    provider structured-output API — so this reaches the guarantee the other way: parse, validate,
+    repair, and raise if it still does not validate. A caller gets a valid object or a typed error,
+    never an unchecked one.
+
+    It routes through :func:`generate_structured` rather than re-implementing validate-then-repair,
+    which also gives that function its first caller outside its own tests — it was written for this
+    path and never wired to it — so the structured-output failure rate is metered from one place.
+    """
+    from examlops.structured import StructuredOutputError, generate_structured
+
+    try:
+        obj = _extract_json(comp.text)
+    except ValueError as exc:
+        from examlops import data as _pdb
+
+        _pdb.record_structured_output_event("failed", model=comp.model, tenant=tenant)
+        raise StructuredOutputError(f"response is not JSON: {exc}") from exc
+
+    comp.parsed = generate_structured(
+        "",  # the prompt is already spent; this call only validates + repairs what came back
+        schema,
+        generate_fn=lambda _prompt: obj,
+        max_repairs=max_repairs,
+        model=comp.model,
+        tenant=tenant,
+    )
+
+
+# ── D8 guardrails at the gateway boundary (ADR 0026 clause 3) ────────────────
+
+
+def default_guardrail(tenant: str = "default"):
+    """The guardrail every gateway request passes through, or ``None`` when disabled.
+
+    ADR 0026 names the gateway as the **first** boundary to scan, and until now it was the one
+    boundary that made no guardrail call at all: retrieved RAG text was scanned (`rag`), the agent's
+    tools were allow-listed, and a request through `exa gateway` was scanned neither on the way in
+    nor on the way out.
+
+    The default mode is **monitor**, not enforce. Monitor scans every request and records what it
+    finds to `guardrail_events`, and changes nothing a caller can observe — so switching the
+    boundary on cannot break traffic that was working, and an operator can see what their prompts
+    actually contain before deciding to block any of it. `EXAMLOPS_GUARDRAIL_MODE=enforce` turns on
+    blocking and redaction; `off` skips the scan entirely, at no cost.
+
+    Enforce is deliberately not the default even though it is the safer-sounding value: a gateway
+    that starts blocking on the day it is upgraded, on regex detectors, would be turned off wholesale
+    within a day, which ends with less enforcement than monitor-then-enforce.
+    """
+    mode = os.getenv("EXAMLOPS_GUARDRAIL_MODE", "monitor").strip().lower()
+    if mode == "off":
+        return None
+    try:
+        from examlops.guardrails import DefaultGuardrail
+
+        return DefaultGuardrail(
+            mode=mode if mode in ("monitor", "enforce") else "monitor", tenant=tenant
+        )
+    except Exception:
+        # A guardrail that cannot be constructed must not take the gateway down with it. The
+        # boundary degrades to unscanned, which is exactly where it was before this existed.
+        return None
+
+
+def _guard_messages(
+    guard: Any, messages: list[dict[str, Any]], tenant: str
+) -> list[dict[str, Any]]:
+    """Scan each message's text content; return them, redacted where the guardrail said so.
+
+    Per message rather than over one joined blob, because a redaction has to be written back to
+    the message it came from. Non-string content (multimodal parts) is passed through untouched —
+    those have their own validator (`MediaNotAllowed`) and a text scanner has nothing to say
+    about an image.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, str) or not content:
+            out.append(msg)
+            continue
+        res = guard.check_input(content, {"tenant": tenant})
+        if res.blocked:
+            raise GuardrailBlocked("request", res.findings, res.reason)
+        out.append({**msg, "content": res.text} if res.text != content else msg)
+    return out
+
+
 @dataclass
 class GatewayClient:
     """Thin OpenAI-compatible client with routing, failover, budget, cost + telemetry."""
@@ -191,14 +352,56 @@ class GatewayClient:
     last_resort: Backend | None = None  # R11 degrade path
     cache_lookup: Callable[[str, list], Any] | None = None  # B3 hook
     cache_store: Callable[[str, list, Completion], None] | None = None
+    #: D8 guardrail for this client. ``"auto"`` resolves from ``EXAMLOPS_GUARDRAIL_MODE`` on first
+    #: use (ADR 0026 clause 3); pass an explicit ``Guardrail`` to override, or ``None`` to disable.
+    guardrail: Any = "auto"
 
-    def chat(self, model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
+    def _guard(self):
+        if self.guardrail == "auto":
+            self.guardrail = default_guardrail(self.tenant)
+        return self.guardrail
+
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        prompt_ref: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+        max_repairs: int = 1,
+        **kw: Any,
+    ) -> Completion:
+        """Route one chat request.
+
+        ``prompt_ref`` names a registry prompt (``name`` or ``name@label``, ADR 0009
+        clause 3). Its template is prepended as a system message, so a prompt change is a
+        label move rather than a caller redeploy, and the version that served the request
+        is recorded on the C1 span. A caller's own messages are never rewritten.
+
+        ``response_schema`` (ADR 0035 clause 1) makes the response a **validated object**:
+        ``Completion.parsed`` holds it, and a response that cannot be made to validate raises
+        ``StructuredOutputError`` rather than returning unchecked text.
+        """
         from examlops.data.finops import add_key_spend
         from examlops.data.gateway import record_gateway_call
 
         key_hash = _hash_key(self.virtual_key) if self.virtual_key else None
         if self.virtual_key:
             authorize(self.virtual_key, model)  # raises typed errors before any backend call
+
+        prompt_version: str | None = None
+        if prompt_ref:
+            template, name, version = resolve_prompt_ref(prompt_ref)
+            prompt_version = f"{name}@v{version}"
+            # Prepend, never replace: the caller's own system message still applies.
+            messages = [{"role": "system", "content": template}, *messages]
+
+        # D8 inbound scan (ADR 0026 clause 3). Ahead of the cache deliberately: a blocked
+        # request must not be answered from cache either, and a redaction has to reach the
+        # cache key, or the redacted and unredacted forms of one prompt become two entries.
+        guard = self._guard()
+        if guard is not None:
+            messages = _guard_messages(guard, messages, self.tenant)
 
         # B3 semantic-cache hook (optional; caller API unchanged, R9).
         if self.cache_lookup is not None:
@@ -228,7 +431,7 @@ class GatewayClient:
                 model, comp.prompt_tokens, comp.completion_tokens
             )
             # C1 span (best-effort) + FinOps cost (R8).
-            _emit_span(model, self.tenant, comp)
+            _emit_span(model, self.tenant, comp, prompt_version=prompt_version)
             record_gateway_call(
                 key_hash,
                 model,
@@ -239,6 +442,24 @@ class GatewayClient:
             )
             if key_hash:
                 add_key_spend(key_hash, comp.cost_usd)
+
+            # D8 outbound scan. After the accounting on purpose: the tokens were spent and the
+            # money is owed whatever the guardrail decides, so a blocked response that vanished
+            # from the cost record would make the bill disagree with the provider's. Before the
+            # cache on purpose too: a blocked answer must never be stored, and a redacted one
+            # must be stored redacted.
+            if guard is not None:
+                verdict = guard.check_output(comp.text, {"tenant": self.tenant, "model": model})
+                if verdict.blocked:
+                    raise GuardrailBlocked("response", verdict.findings, verdict.reason)
+                comp.text = verdict.text
+
+            # A2/E2 schema enforcement (ADR 0035 clause 1). After the guardrail, so a redacted
+            # response is the one validated — otherwise the object handed back could contain the
+            # text the guardrail just removed. Before the cache, so only a valid object is stored.
+            if response_schema is not None:
+                _enforce_schema(comp, response_schema, tenant=self.tenant, max_repairs=max_repairs)
+
             if self.cache_store is not None:
                 self.cache_store(model, messages, comp)
             return comp
@@ -278,11 +499,16 @@ def _coerce(raw: Any, model: str, backend: str) -> Completion:
     return Completion(text=str(raw), model=model, backend=backend)
 
 
-def _emit_span(model: str, tenant: str, comp: Completion) -> None:
+def _emit_span(
+    model: str, tenant: str, comp: Completion, *, prompt_version: str | None = None
+) -> None:
     try:
         from examlops.telemetry import genai
 
         with genai.genai_span("chat", system="gateway", model=model, tenant=tenant) as span:
+            if prompt_version:
+                # Which prompt version served this request (ADR 0009 clause 5).
+                span.set_attribute("examlops.prompt.version", prompt_version)
             genai.record_usage(
                 span,
                 model=model,

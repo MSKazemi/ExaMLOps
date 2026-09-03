@@ -6,6 +6,7 @@ Immutable versions, moving labels (dev/staging/prod), audited label moves, rollb
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import typer
 
@@ -88,7 +89,7 @@ def list_prompts(
         return
     versions = list_prompt_versions(name)
     labels = {r["label"]: r["version"] for r in list_prompt_labels(name)}
-    label_of = {v: [] for v in {x["version"] for x in versions}}
+    label_of: dict[Any, list[str]] = {v: [] for v in {x["version"] for x in versions}}
     for lab, ver in labels.items():
         label_of.setdefault(ver, []).append(lab)
     if _output.json_mode:
@@ -165,16 +166,97 @@ def diff(
         _output.detail(line)
 
 
+# ── C3 regression gate on label moves (ADR 0009 clause 4) ────────────────────
+#
+# The clause says a label move "can be gated by the eval regression check (C3) **exactly like
+# model promotion**", so this reuses `run_eval_gate` rather than growing a second gate.
+#
+# **The subject is `prompt:<name>`, not `<name>`.** `eval_gates` is keyed by a free-form string
+# shared with models, so a prompt called `jpcp` would otherwise inherit the *model* jpcp's gate
+# and be judged against scores that are not about it — a gate that fires on the wrong evidence
+# is worse than no gate. Configure one with
+# `exa eval gate set prompt:<name> --suite <suite> --metric …`.
+#
+# **Only the labels in `EXAMLOPS_PROMPT_GATE_LABELS` are gated (default `prod`).** Gating every
+# label would deadlock the registry: the gate reads its baseline from a *labelled* version, so
+# with `dev` gated there is no way to establish the baseline the gate needs. `dev`/`staging` are
+# where a candidate is staged in order to be evaluated; `prod` is the move that changes what
+# callers get, and is the analogue of the model alias promotion this clause points at.
+_DEFAULT_GATED_LABELS = "prod"
+
+
+def _gated_labels() -> set[str]:
+    raw = os.getenv("EXAMLOPS_PROMPT_GATE_LABELS", _DEFAULT_GATED_LABELS)
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+def _gate_label_move(name: str, label_name: str, version: int, *, force: bool) -> None:
+    """Refuse a gated label move when the C3 gate fails. No configured gate ⇒ a no-op."""
+    if label_name.strip().lower() not in _gated_labels():
+        return
+    from examlops.evaluation.gate import run_eval_gate
+
+    subject = f"prompt:{name}"
+    try:
+        result = run_eval_gate(subject, str(version))
+    except Exception:  # noqa: BLE001 - a broken gate must not strand a prompt release
+        return
+    if result is None or result.passed:
+        return
+    failing = [m.name for m in result.metrics if m.failed]
+    detail = {"label": label_name, "version": version, "failing_metrics": failing}
+    if not force:
+        write_audit_event("exa-prompt", _actor(), "prompt_label_blocked_by_gate", name, detail)
+        _output.error(
+            f"Eval gate FAILED for {name} v{version}: {', '.join(failing)}. "
+            "Use --force to override (audited).",
+        )
+    write_audit_event(
+        "exa-prompt", _actor(), "eval_gate_override", name, {**detail, "forced": True}
+    )
+    _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
+
+
+def _emit_label_lineage(name: str, label_name: str, version: int, *, rollback: bool) -> None:
+    """A2 lineage for a prompt label move (ADR 0009 clause 5). Fail-open.
+
+    **Emitted on the label move, not per request.** A prompt version is an input to every
+    gateway call that resolves it, and emitting there would put one lineage event on the graph
+    per inference — the per-request lineage the platform deliberately does not do (see
+    `docs/guides/lineage.md`). A label move is the *release*: low-volume, decision-shaped, and
+    the thing an operator asks about when a prompt changed what production says. It mirrors the
+    promotion event an alias move already emits for models.
+    """
+    try:
+        from examlops.lineage import deployment_node, emit_lineage, prompt_node
+
+        emit_lineage(
+            "COMPLETE",
+            job=f"prompt-label:{name}",
+            run_id=f"prompt-{name}-{label_name}-v{version}",
+            inputs=[prompt_node(name, version)],
+            outputs=[deployment_node(f"prompt/{name}@{label_name}")],
+            facets={"label": label_name, "rollback": rollback},
+        )
+    except Exception:  # noqa: BLE001 - the label has moved; bookkeeping must not report failure
+        pass
+
+
 @app.command("label", epilog=_EX_LABEL)
 def label(
     name: str = typer.Argument(..., help="Prompt name"),
     label_name: str = typer.Argument(..., metavar="LABEL", help="Label (dev/staging/prod/…)"),
     version: int = typer.Argument(..., help="Version to point the label at"),
+    force: bool = typer.Option(
+        False, "--force", help="Move the label even if the C3 eval gate fails (audited)"
+    ),
 ) -> None:
-    """Move a label to a version — audited (spec R8/R9)."""
+    """Move a label to a version — audited (spec R8/R9) and C3-gated (ADR 0009 clause 4)."""
     if get_prompt_version(name, version) is None:
         _output.error(f"{name} v{version} does not exist.")
+    _gate_label_move(name, label_name, version, force=force)
     set_prompt_label(name, label_name, version)
+    _emit_label_lineage(name, label_name, version, rollback=False)
     write_audit_event(
         "exa-prompt", _actor(), "prompt_label", name, {"label": label_name, "version": version}
     )
@@ -187,10 +269,16 @@ def rollback(
     label_name: str = typer.Argument(..., metavar="LABEL", help="Label to roll back"),
     to_version: int = typer.Argument(..., help="Prior version to point the label back at"),
 ) -> None:
-    """Roll a label back to a prior version without deleting history (spec R10)."""
+    """Roll a label back to a prior version without deleting history (spec R10).
+
+    **Deliberately not gated by C3.** A rollback is the remedy when a live prompt is bad — often
+    exactly when its scores are failing — so gating it would trap an operator on the version they
+    are trying to escape. Moving *forward* is what the gate exists to hold.
+    """
     if get_prompt_version(name, to_version) is None:
         _output.error(f"{name} v{to_version} does not exist.")
     set_prompt_label(name, label_name, to_version)
+    _emit_label_lineage(name, label_name, to_version, rollback=True)
     write_audit_event(
         "exa-prompt",
         _actor(),

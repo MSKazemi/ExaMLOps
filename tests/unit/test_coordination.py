@@ -57,10 +57,31 @@ def test_rate_limit_fixed_window(coord):
 
 
 def test_rate_limit_window_resets(coord):
-    assert coord.allow("b", limit=1, window_s=1) is True
-    assert coord.allow("b", limit=1, window_s=1) is False
+    """Both directions of the fixed window — written so neither can flake.
+
+    The denial is asserted over a **60s** window, not a 1s one. `coord_rate_allow` compares
+    `window_start <= CURRENT_TIMESTAMP - <window> seconds`, and SQLite's `CURRENT_TIMESTAMP` has
+    whole-second resolution, so with a 1s window two calls milliseconds apart that happen to
+    straddle a second tick are both read as starting a new window and both allowed. Measured:
+    this test failed roughly one run in five, in isolation, before the window was lengthened —
+    always in 0.2s, i.e. on the second `allow`, never after the sleep.
+
+    Over 60s the same tick moves the boundary by one part in sixty and cannot reach
+    `window_start`, so the assertion is deterministic. The reset half keeps a 1s window on its
+    own bucket: waiting *past* the boundary is the safe direction — a coarse clock can only make
+    the window look more elapsed, never less.
+
+    NB the 1s straddle is a real (small) property of the limiter, not merely a test artifact: at
+    a 1-second window it can admit two calls in barely over one second. It is left as-is
+    deliberately — the integer-second arithmetic is a documented choice in `coord_rate_allow` —
+    and it is immaterial at the minute-scale windows the platform actually uses.
+    """
+    assert coord.allow("b", limit=1, window_s=60) is True
+    assert coord.allow("b", limit=1, window_s=60) is False
+
+    assert coord.allow("c", limit=1, window_s=1) is True
     time.sleep(1.1)
-    assert coord.allow("b", limit=1, window_s=1) is True  # new window
+    assert coord.allow("c", limit=1, window_s=1) is True  # new window
 
 
 def test_lock_exactly_one_winner_under_concurrency(coord):

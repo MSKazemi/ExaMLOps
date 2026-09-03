@@ -79,9 +79,27 @@ def _params_key(model: str, params: dict[str, Any]) -> str:
     return f"{model}|t={temp}|m={max_tokens}"
 
 
-def namespace(model: str, params: dict[str, Any], tenant: str) -> str:
-    """Cache namespace: model + normalized params + tenant (R3) — prevents cross-collision."""
-    return f"{tenant}::{_params_key(model, params)}"
+def namespace(
+    model: str, params: dict[str, Any], tenant: str, encoder_id: str | None = None
+) -> str:
+    """Cache namespace: model + normalized params + tenant (R3) — prevents cross-collision.
+
+    ``encoder_id`` extends the same isolation to the embedding that decides a hit (ADR 0043
+    clause 2). This cache matches on cosine similarity, so an entry embedded by one encoder and
+    a query embedded by another are compared on axes that have nothing to do with each other —
+    and the result is not a miss, it is a *similarity number*, which can clear the 0.85 threshold
+    by coincidence and return a cached answer to an unrelated question. Of the three places this
+    corruption can occur, the cache is the worst: the vector store returns bad ranking, and the
+    cache returns a confident wrong answer with no model call to notice it.
+
+    Handled by **routing, not erroring**. An encoder change should make the old entries invisible
+    so the next request recomputes — that is a cache miss, which is a cache working correctly,
+    where an exception would be an outage caused by an upgrade.
+
+    Omitted from the key when unset, so every existing caller keeps the namespace it had.
+    """
+    base = f"{tenant}::{_params_key(model, params)}"
+    return f"{base}::enc={encoder_id}" if encoder_id else base
 
 
 def is_cacheable(
@@ -105,6 +123,9 @@ class SemanticCache:
     max_size: int = 1000
     bypass_temperature: float = 0.5
     embed_fn: Callable[[str], list[float]] = _embed
+    #: Identity of the encoder behind ``embed_fn`` (ADR 0043). Set it and entries from a previous
+    #: encoder stop being reachable; leave it unset and cross-encoder hits remain possible.
+    encoder_id: str | None = None
     _entries: list[CacheEntry] = field(default_factory=list)
 
     def _now(self) -> float:
@@ -123,7 +144,7 @@ class SemanticCache:
     ) -> tuple[Any | None, float]:
         """Return (completion, similarity) on a hit within threshold + namespace, else (None, best)."""
         self._evict()
-        ns = namespace(model, params, tenant)
+        ns = namespace(model, params, tenant, self.encoder_id)
         q = self.embed_fn(prompt)
         best_sim = 0.0
         best: CacheEntry | None = None
@@ -150,7 +171,7 @@ class SemanticCache:
         tokens: int = 0,
         cost_usd: float = 0.0,
     ) -> None:
-        ns = namespace(model, params, tenant)
+        ns = namespace(model, params, tenant, self.encoder_id)
         self._entries.append(
             CacheEntry(self.embed_fn(prompt), prompt, completion, ns, self._now(), tokens, cost_usd)
         )

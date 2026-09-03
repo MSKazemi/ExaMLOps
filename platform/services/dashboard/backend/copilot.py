@@ -15,6 +15,7 @@ import json
 import re
 from typing import Any
 
+import audit_write
 from dbconn import connect
 
 # `exa` subcommands that mutate state — a proposal for one of these must be gated behind human
@@ -178,10 +179,13 @@ def audit_copilot(
             ).fetchone():
                 return False
             page = str((ctx or {}).get("page", "unknown"))
-            details = json.dumps({"q": question[:200], "proposals": len(proposals)})
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-                ("dashboard-copilot", actor, "copilot_query", page, details),
+            audit_write.audit(
+                actor,
+                "copilot_query",
+                page,
+                {"q": question[:200], "proposals": len(proposals)},
+                source="dashboard-copilot",
+                conn=conn,
             )
             conn.commit()
             return True

@@ -53,6 +53,11 @@ class ModelYAMLConfig:
     # to_vllm_args / the KServe manifest generator. Previously this key was silently
     # dropped here, so the engine block could never reach the Ray Serve loader.
     engine: dict[str, Any] = field(default_factory=dict)
+    # Fairness slice registry (ADR 0025 clause 1). Kept as a raw mapping and validated by
+    # examlops.fairness.validate_fairness_block (registry-integrity CI guard). Declaring the
+    # protected/binned attributes here rather than only in `fairness_config` puts them in code
+    # review and in the deployment, instead of in a runtime table that a fresh database loses.
+    fairness: dict[str, Any] = field(default_factory=dict)
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -114,6 +119,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         seanerbus_uuid=raw.get("seanerbus_uuid") or None,
         project=raw.get("project") or None,
         engine=raw.get("engine") or {},
+        fairness=raw.get("fairness") or {},
     )
 
 

@@ -1,9 +1,24 @@
 # Lineage & provenance graph (OpenLineage)
 
-ExaMLOps emits **OpenLineage** run events from training, promotion, retrain, and
-(optionally, sampled) serving so the full `data → pipeline → run → model → deployment →
-inference` graph is queryable in **Marquez** — while `platform_db` stays the operational
-source of truth. Emission **dual-writes** both, so the graph and the DB cannot diverge.
+ExaMLOps emits **OpenLineage** run events so the `data → pipeline → run → model →
+deployment` graph is queryable, while `platform_db` stays the operational source of truth.
+Emission **dual-writes** both, so the graph and the DB cannot diverge.
+
+**What emits today:** the **training** flow (`COMPLETE`, dataset → model), **promotion**
+(`COMPLETE`, model → deployment), **retrain** (`START` — the retrain is scheduled, and the
+flow emits its own completion), a **prompt label move** (`COMPLETE`, prompt version → label),
+plus asset materialization, fine-tuning, distributed training and `exa data synth`. **Serving
+emits nothing** — per-inference lineage is not implemented, so the graph ends at the deployment
+node.
+
+That boundary is what decides *where* an event belongs. A prompt version is an input to every
+gateway call that resolves it, so emitting there would mean one event per inference; the **label
+move** is the release, and that is what the graph records.
+
+**Marquez is not shipped.** ADR 0004 names it as the reference receiver under a docker-compose
+`lineage` profile; no such profile exists. Set `EXAMLOPS_OPENLINEAGE_URL` to any OpenLineage
+receiver you run yourself, or read the graph from `platform_db` with `exa models lineage`,
+which is what the CLI does today.
 
 Design: ADR 0004 · spec `design/vision/specs/A2-open-lineage.md`.
 
@@ -50,11 +65,19 @@ exa models lineage --impact abc123
 exa --json models lineage jpcp --graph        # machine-readable graph
 ```
 
-The dashboard **Lineage** page renders the graph read-only from the Marquez API when
-`EXAMLOPS_OPENLINEAGE_URL` is configured; otherwise it renders from `platform_db`.
+There is **no dashboard Lineage page** — ADR 0004's spec anticipates one and it was never
+built. `exa models lineage` is the surface.
 
 ## Nodes
 
 Nodes are stably namespaced: `examlops://dataset/PM100Dataset@<rev>`,
-`examlops://model/jpcp/18`, `examlops://deployment/<name>`. Promotion/alias changes and
-drift-triggered retrains emit events linking the affected versions (R4).
+`examlops://model/jpcp/18`, `examlops://deployment/<name>`. Promotion links the model version
+to the deployment it now backs, and records the alias it came from plus the metric that
+justified the move; a retrain links the dataset to the model it will produce.
+
+### Facets
+
+Events carry `dataset_revision` (A1), `mlflow_run_id`, `cost`/`carbon`, `eval_score` (C2), an
+OTel `trace_id`, and **`examlops.hpc_job`** — the scheduler job that produced a training run,
+carried scheduler-neutrally so the same field serves Slurm, Flux and mock. Only the training
+flow sets it: it is the one path that knows a job id at all.

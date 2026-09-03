@@ -116,9 +116,34 @@ def retrain(
             "dummy": dummy,
         }
     )
+    _emit_retrain_lineage(model, dataset_name, result)
     _output.hint("Monitor: exa status  |  Watch logs: exa stack logs --service prefect")
     if _output.json_mode:
         _output.print_json(result)
+
+
+def _emit_retrain_lineage(model: str, dataset: str, result: dict) -> None:
+    """A2 lineage for a retrain trigger (ADR 0004 clause 1). Fail-open.
+
+    The Prefect ``flow_run_id`` is a genuine run identifier, so the lineage run and the flow it
+    describes share one id — a graph whose run ids match nothing in Prefect is a graph nobody can
+    follow back. ``START``, not ``COMPLETE``: the retrain has been *scheduled*, and the flow
+    emits its own completion when it finishes.
+    """
+    try:
+        from examlops.lineage import dataset_node, emit_lineage, model_node
+
+        flow_run_id = result.get("flow_run_id")
+        emit_lineage(
+            "START",
+            job=f"retrain:{model.upper()}",
+            run_id=str(flow_run_id or f"retrain-{model.upper()}-{dataset}"),
+            inputs=[dataset_node(dataset)],
+            outputs=[model_node(model.upper(), "pending")],
+            model=model.upper(),
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _record_audit(

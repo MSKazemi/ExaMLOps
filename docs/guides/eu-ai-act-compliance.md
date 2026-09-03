@@ -76,6 +76,53 @@ exa compliance declare JPCP --state declared
 Valid states: `draft → documented → assessed → declared` (with limited back-transitions).
 Skipping a step (e.g. `documented → declared`) is rejected (R8).
 
+## Declaration of Conformity (Annex V)
+
+`declared` is a state; the **document** is what the state exists to reach.
+
+```bash
+exa compliance declaration JPCP \
+    --issued-at "Julich, 2026-09-02" \
+    --provider "Example GmbH" --provider-address "Example Str. 1, 52425 Example, DE" \
+    --signatory "A. Person" --signatory-function "Head of AI Governance" \
+    --standard "EN ISO/IEC 42001:2023" \
+    --out declaration.md
+```
+
+Annex V requires eight items. The platform fills the ones it can know — system identity, risk
+tier, conformity state, the Annex-IV technical file version it rests on and that file's gap
+count, and the audit-chain head that makes the claim traceable.
+
+**It will not fill the other five.** Provider legal name and address, signatory name and
+function, notified body, and harmonised standards are statements only you can make: the platform
+holds no legal entity and no signatory. Anything you do not supply renders as
+`⚠️ TO BE COMPLETED BY THE PROVIDER`.
+
+### When a declaration is FINAL
+
+Only when all three hold:
+
+1. the conformity state is `declared`,
+2. every provider-supplied field is present, and
+3. the referenced Annex-IV technical file has **no evidence gaps**.
+
+Otherwise the document is stamped `DRAFT — NOT A DECLARATION` and lists, on its own face, every
+reason it is not final. **There is no `--force`.** An override that produces a final-looking
+regulatory artifact over a listed objection is precisely the thing this generator must not
+offer — if a blocker is wrong, fix the underlying fact, not the document.
+
+Two Annex-V items are conditional and are treated as such rather than as blanks: a system that
+processes no personal data gets a recorded statement that it does not, never a GDPR conformity
+claim nobody made (V(5)); and an absent notified body reads "Not applicable", because most
+systems genuinely have none and that is an answer (V(7)).
+
+`--issued-at` is required. The issue date is a fact about when a person signed, not about when
+the generator ran.
+
+Each generated declaration is versioned and retained alongside the technical files, in its own
+version sequence. **Art. 47's ten-year retention is not enforced by the platform** — the
+documents are stored and every generation is audited, but nothing prevents their removal.
+
 ## The shared framework
 
 ```bash

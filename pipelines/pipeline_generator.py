@@ -1111,7 +1111,51 @@ def log_mlflow_task(
         except Exception as exc:
             print(f"[pipeline] MLflow registration skipped: {exc}")
 
+    _emit_training_lineage(
+        registered_model_name, dataset_name, registration, job_id, scheduler, backend_name
+    )
     return registration
+
+
+def _emit_training_lineage(
+    model: str,
+    dataset: str,
+    registration: dict,
+    job_id: str | None,
+    scheduler: str | None,
+    backend_name: str | None,
+) -> None:
+    """A2 lineage for a completed training run (ADR 0004 clauses 1 and 2). Fail-open.
+
+    This is the emit point the ADR's clause 1 names first and the one that had none. It is also
+    the only place that knows the **HPC job id** clause 2 asks for as a facet: everything
+    downstream sees a model version, not the scheduler job that produced it, so a facet added
+    anywhere else would have had nothing real to carry.
+
+    Emitted after registration so the model node names a resolved version. When registration was
+    skipped the version is unknown and the event still records the run — a training run that
+    produced no registered version is exactly the case a provenance graph should show.
+    """
+    try:
+        from examlops.lineage import dataset_node, emit_lineage, model_node  # noqa: PLC0415
+
+        run_id = registration.get("run_id") or f"train-{model}-{dataset}"
+        version = registration.get("version")
+        emit_lineage(
+            "COMPLETE",
+            job=f"train:{model}",
+            run_id=str(run_id),
+            inputs=[dataset_node(dataset)],
+            outputs=[model_node(model, version or "unregistered")],
+            facets={"backend": backend_name or ""},
+            mlflow_run_id=registration.get("run_id"),
+            model=model,
+            model_version=version,
+            hpc_job_id=job_id,
+            scheduler=scheduler,
+        )
+    except Exception as exc:  # noqa: BLE001 - lineage must never fail a completed training run
+        print(f"[pipeline] lineage emit skipped: {exc}")
 
 
 def _evaluate_stage_rule(metric_val: float, threshold: float, direction: str) -> bool:
@@ -1280,6 +1324,103 @@ def promote_task(
     return highest_status
 
 
+# ── A5 data-contract training gate (ADR 0005 clause 2) ─────────────────────────
+
+
+def _contract_gate_mode() -> str:
+    """``enforce`` (default, the ADR's "fails closed") | ``warn`` | ``off``."""
+    mode = os.environ.get("EXAMLOPS_DATA_CONTRACT_GATE", "enforce").strip().lower()
+    return mode if mode in ("enforce", "warn", "off") else "enforce"
+
+
+class DataContractViolation(RuntimeError):
+    """Raised when an error-severity contract check fails before training (R5)."""
+
+
+def data_contract_gate(
+    dataset_name: str, backend_name: str | None, *, is_dummy: bool = False
+) -> dict:
+    """Validate the A1-pinned dataset before training. Fails closed (ADR 0005 clause 2).
+
+    Returns a report describing what happened, including the skips — a gate that records
+    nothing when it could not run is indistinguishable from one that passed, which is the
+    failure this whole ADR exists to prevent.
+
+    Three things are deliberately **not** violations, and each says so rather than failing:
+    a dataset with no contract (most of them), data whose location cannot be read in this
+    context (the revision resolver may return a remote or unmaterialised URI), and a
+    ``--dummy`` run, whose synthetic rows were never meant to satisfy a production contract.
+    A genuine ``error``-severity failure raises :class:`DataContractViolation`.
+    """
+    report: dict = {"dataset": dataset_name, "gate": _contract_gate_mode()}
+    if report["gate"] == "off":
+        return {**report, "validated": False, "reason": "gate disabled"}
+    if is_dummy:
+        return {**report, "validated": False, "reason": "dummy run — synthetic rows"}
+    try:
+        from pipelines.contracts import load_contract  # noqa: PLC0415
+
+        contract = load_contract(dataset_name)
+        if contract is None:
+            return {**report, "validated": False, "reason": "no contract for this dataset"}
+
+        df, source = _contract_dataframe(dataset_name, backend_name)
+        if df is None:
+            return {**report, "validated": False, "reason": source}
+
+        result = contract.validate(df)
+    except DataContractViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a broken gate must not masquerade as a pass
+        return {**report, "validated": False, "reason": f"gate error: {exc}"}
+
+    _record_contract_result(dataset_name, result)
+    report.update({"validated": True, "passed": result.passed, "score": result.score})
+    failures = _describe(result.errors)
+    if not result.passed and report["gate"] == "enforce":
+        raise DataContractViolation(
+            f"{dataset_name} violates its data contract (score {result.score}): {failures}"
+        )
+    if not result.passed:
+        print(f"[contract] {dataset_name} FAILED but gate=warn — continuing: {failures}")
+    return report
+
+
+def _describe(checks: list) -> str:
+    """Readable failure text. ``QualityResult.errors`` yields check *dicts*, not strings —
+    joining them directly raises a TypeError inside the very path that reports a violation."""
+    return "; ".join(f"{c.get('name')} ({c.get('observed')})" for c in checks)
+
+
+def _contract_dataframe(dataset_name: str, backend_name: str | None) -> tuple[Any, str]:
+    """The pinned dataset as a DataFrame, or ``(None, reason)``.
+
+    Resolves through the same A1 revision resolver that pins the run, so the gate validates
+    **the data this run will train on** rather than whatever happens to be on disk.
+    """
+    from pipelines.datasets.versioning import discover_files, resolve_revision  # noqa: PLC0415
+
+    rev = resolve_revision(backend_name, dataset_name)
+    uri = getattr(rev, "uri", "") or ""
+    if not uri or "://" in uri:
+        return None, f"revision uri is not a readable local path ({uri or 'unset'})"
+    files = discover_files(uri)
+    if not files:
+        return None, f"no parquet files under {uri}"
+    import pandas as pd  # noqa: PLC0415
+
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True), uri
+
+
+def _record_contract_result(dataset_name: str, result: Any) -> None:
+    try:
+        from examlops.platform_db import record_data_quality_check  # noqa: PLC0415
+
+        record_data_quality_check(dataset_name, result, stage="train", actor="pipeline")
+    except Exception as exc:  # noqa: BLE001 - bookkeeping never blocks the gate's verdict
+        print(f"[contract] quality-check record skipped: {exc}")
+
+
 # ── Generic Prefect Flow ───────────────────────────────────────────────────────
 
 
@@ -1295,6 +1436,7 @@ def training_flow(
 
     Steps:
         1. data_extraction  — instantiate model + build train dataloader
+        1b. contract gate   — validate the A1-pinned dataset (A5; fails closed)
         2. slurm_submit     — submit to HPC (or run inline in mock mode)
         3. slurm_wait       — poll until job reaches terminal state
         4. result_fetch     — load trained estimator, reconstruct model object
@@ -1316,6 +1458,8 @@ def training_flow(
     print(f"{'=' * 60}\n")
 
     model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
+    gate = data_contract_gate(dataset_cls_name, backend_name, is_dummy=is_dummy)
+    print(f"[contract] {gate}")
     job_id, artifact_hint = slurm_submit_task(
         model_init, loader, model_name, dataset_cls_name, is_dummy
     )

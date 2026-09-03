@@ -14,6 +14,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+import audit_write
 from dbconn import connect
 
 
@@ -160,9 +161,13 @@ def set_override(db_path: str, name: str, enabled: bool, actor: str) -> bool:
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
         ).fetchone():
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-                ("dashboard-flags", actor, "flag_set", name, f"enabled={enabled}"),
+            audit_write.audit(
+                actor,
+                "flag_set",
+                name,
+                {"enabled": bool(enabled)},
+                source="dashboard-flags",
+                conn=conn,
             )
         conn.commit()
         return True

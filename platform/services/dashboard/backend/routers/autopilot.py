@@ -10,9 +10,9 @@ infra → not exposed here.
 
 from __future__ import annotations
 
-import json
 import os
 
+import audit_write
 from auth import require_role
 from capabilities import AUTOPILOT_MANAGE, can, deny_reason
 from dbconn import connect
@@ -34,10 +34,7 @@ def _require_manage(principal: dict) -> None:
 
 
 def _audit(conn, actor: str, action: str, details: dict) -> None:
-    conn.execute(
-        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-        ("dashboard", actor, action, "autopilot", json.dumps(details)),
-    )
+    audit_write.audit(actor, action, "autopilot", details, conn=conn)
 
 
 def _examlops_autopilot():

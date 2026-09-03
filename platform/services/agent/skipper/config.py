@@ -83,6 +83,12 @@ AGENT_KNOWLEDGE_ROOTS = os.getenv(
     "AGENT_KNOWLEDGE_ROOTS",
     str(_REPO_ROOT / "docs"),
 )
+# How many chunks `search_knowledge` retrieves per question. Measured 2026-08-28 on the question
+# "confirm the Ray Serve deployment has its models loaded and is returning inference responses":
+# the correct answer (`exa serve check`) is retrieved at ranks 7, 8, 10, 13 and 18, so the former
+# hard-coded k=5 cut it off and the agent answered with the three plausible commands above it.
+# 10 is the smallest value that includes it; raise it for recall, lower it to spend less context.
+AGENT_KNOWLEDGE_K = int(os.getenv("AGENT_KNOWLEDGE_K", "10"))
 AGENT_KNOWLEDGE_CHUNK_SIZE = int(os.getenv("AGENT_KNOWLEDGE_CHUNK_SIZE", "60"))
 AGENT_KNOWLEDGE_OVERLAP = int(os.getenv("AGENT_KNOWLEDGE_OVERLAP", "15"))
 

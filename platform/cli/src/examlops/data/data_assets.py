@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any  # noqa: F401
 
+from examlops.data._rowid import last_insert_id
 from examlops.platform_db import (  # noqa: F401
     _PRUNABLE_TELEMETRY,
     _UNSET,
@@ -28,6 +29,7 @@ __all__ = [
     "get_adapter",
     "get_asset",
     "get_collection",
+    "latest_vector_metrics",
     "get_data_quality_checks",
     "get_dataset_revision",
     "get_dataset_revisions",
@@ -124,7 +126,7 @@ def create_reindex_job(
                VALUES (?,?,?,?, 'building')""",
             (collection, tenant, from_encoder, to_encoder),
         )
-        return int(cur.lastrowid)
+        return last_insert_id(cur)
 
 
 def get_adapter(adapter_id: str) -> dict[str, Any] | None:
@@ -506,7 +508,7 @@ def record_dataset_revision(
     """
     init_db()
     with get_db() as conn:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO dataset_revisions
                    (backend, dataset, revision_id, kind, uri, schema_hash,
                     mlflow_run_id, row_count, byte_count, actor,
@@ -529,6 +531,35 @@ def record_dataset_revision(
                 generator,
             ),
         )
+        inserted = cur.rowcount > 0
+
+    if inserted:
+        _declare_dataset_asset(rev.dataset, actor=actor)
+
+
+def _declare_dataset_asset(dataset: str, *, actor: str | None = None) -> None:
+    """Advance the dataset's A4 asset so downstream models go stale (ADR 0036).
+
+    `mark_source_changed` was written for precisely this — its docstring reads "e.g. an A1 dataset
+    revision landed" — and nothing in the platform called it. The ADR's finding was that the asset
+    DAG "is empty until an operator types it in, which is the opposite of the declarative substrate
+    the ADR describes"; a dataset revision is the platform's most common source event, so this is
+    where the DAG starts building itself.
+
+    **Only on a real insert.** `record_dataset_revision` is idempotent on
+    `(backend, dataset, revision_id)`, and re-recording the same revision must not bump the
+    version: that would report the dataset as changed when nothing changed, and every downstream
+    model would go spuriously stale — a freshness signal that cries wolf is one nobody acts on.
+
+    Best-effort. A dataset revision is the durable fact here; the asset graph is a derived view of
+    it, and failing to update the view must never lose the fact.
+    """
+    try:
+        from examlops.assets import mark_source_changed
+
+        mark_source_changed(dataset, actor=actor)
+    except Exception:
+        pass
 
 
 def record_synthetic_dataset(
@@ -802,15 +833,47 @@ def update_distributed_run(
             )
 
 
+def latest_vector_metrics(tenant: str | None = None) -> list[dict[str, Any]]:
+    """The most recent row per (collection, tenant, operation) from ``vector_metrics``.
+
+    The **latest**, not an average: the table is an append-only log, and a gauge averaging a
+    collection's whole history moves less and less as the log grows — the opposite of what an
+    operator watching a reindex needs.
+    """
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT collection, tenant, operation, latency_ms, item_count FROM vector_metrics "
+            "WHERE id IN ("
+            "  SELECT MAX(id) FROM vector_metrics GROUP BY collection, tenant, operation"
+            ")"
+        ).fetchall()
+    out = [dict(r) for r in rows]
+    return [r for r in out if tenant is None or r["tenant"] == tenant]
+
+
 def update_reindex_job(
     job_id: int,
     *,
     status: str | None = None,
     recall: float | None = None,
     docs_reindexed: int | None = None,
+    orchestrator: str | None = None,
+    hpc_job_id: str | None = None,
+    duration_s: float | None = None,
 ) -> None:
     init_db()
     with get_db() as conn:
+        for column, value in (
+            ("orchestrator", orchestrator),
+            ("hpc_job_id", hpc_job_id),
+            ("duration_s", duration_s),
+        ):
+            if value is not None:
+                conn.execute(
+                    f"UPDATE reindex_jobs SET {column}=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (value, job_id),
+                )
         if status is not None:
             conn.execute(
                 "UPDATE reindex_jobs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",

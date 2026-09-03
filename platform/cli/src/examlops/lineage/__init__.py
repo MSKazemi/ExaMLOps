@@ -47,6 +47,15 @@ def deployment_node(name: str) -> Node:
     return Node(name=name, type="deployment")
 
 
+def prompt_node(name: str, version: str | int) -> Node:
+    """A prompt version as an A2 node (ADR 0009 clause 5).
+
+    Version-scoped like a model version, because that is what a prompt version is: an immutable
+    artifact a label points at. The **label** is the deployment node it feeds.
+    """
+    return Node(name=f"{name}/v{version}", type="prompt")
+
+
 # ── facet builders (R3, R12) ──────────────────────────────────────────────────
 
 
@@ -60,6 +69,20 @@ def dataset_revision_facet(revision: str, kind: str = "content") -> dict[str, An
 
 def cost_facet(gpu_hours: float, kwh: float = 0.0, co2e: float = 0.0) -> dict[str, Any]:
     return {"examlops.cost": _facet({"gpu_hours": gpu_hours, "kwh": kwh, "co2e_kg": co2e})}
+
+
+def hpc_job_id_facet(job_id: str, scheduler: str | None = None) -> dict[str, Any]:
+    """Which scheduler job produced this run (clause 2).
+
+    Scheduler-neutral by design: the same field carries a Slurm job id, a Flux jobid or a mock
+    one, because a lineage graph that only understands Slurm cannot describe a Flux site — and
+    ADR 0023's scheduler abstraction exists precisely so nothing above it has to care.
+
+    Namespaced under its own key like every sibling facet. A flat return would merge
+    ``_producer``/``_schemaURL`` into the top-level facets dict and collide with whichever other
+    facet was attached to the same event.
+    """
+    return {"examlops.hpc_job": _facet({"job_id": job_id, "scheduler": scheduler or ""})}
 
 
 def eval_facet(score: float, metric: str = "score") -> dict[str, Any]:
@@ -112,6 +135,8 @@ def emit_lineage(
     model: str | None = None,
     model_version: str | int | None = None,
     trace_id: str | None = None,
+    hpc_job_id: str | None = None,
+    scheduler: str | None = None,
 ) -> None:
     """Emit an OpenLineage event + dual-write platform_db. Fail-open (R6/R7)."""
     inputs = inputs or []
@@ -119,6 +144,8 @@ def emit_lineage(
     facets = dict(facets or {})
     if dataset_revision:
         facets.update(dataset_revision_facet(dataset_revision))
+    if hpc_job_id:
+        facets.update(hpc_job_id_facet(hpc_job_id, scheduler))
 
     # 1) Operational source of truth — always written (R7), independent of Marquez.
     try:

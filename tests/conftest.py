@@ -26,6 +26,31 @@ def _isolate_postgres_state():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_platform_db(tmp_path, monkeypatch):
+    """Give every test its own ``PLATFORM_DB`` file, before the test body runs.
+
+    Roughly forty test modules set ``os.environ["PLATFORM_DB"] = str(tmp_path / ...)`` directly
+    rather than through ``monkeypatch``, so the value outlives the test that set it and the next
+    test in the same process inherits a path belonging to a test that has finished. Serially that
+    is invisible — the directory still exists and the stale database is simply unused. Under
+    ``-n auto`` it is not: the run reported four failures that every one of those tests passes on
+    its own, all of them a `--json` command whose output would not parse because
+    ``warning: platform datastore unavailable`` had been printed ahead of the JSON.
+
+    The warning was correct and went to stderr; ``CliRunner`` merges the streams, which is why it
+    landed in the parsed output. The defect is the leaked path, and it is the kind that gets
+    blamed on parallelism and "fixed" by going back to a nine-minute serial run.
+
+    ``monkeypatch.setenv`` here undoes *any* assignment made during the test, including a direct
+    ``os.environ`` write, so the leak is closed for the sloppy modules without editing forty
+    files — and a test that deliberately points at its own path still wins, because this runs
+    first. No-op in effect on Postgres, where ``PLATFORM_DB`` is not consulted.
+    """
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_cli_output_modes():
     """Return the CLI's output globals to their defaults before every test.
 
@@ -82,7 +107,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config: pytest.Config)
             check=True,
             timeout=30,
         ).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Never fail silently. This reporter is only ever *read* as an absence: no banner is
+        # taken to mean the tree was settled. If it cannot run, that reading is wrong, and the
+        # silence is indistinguishable from a clean run. `git` is not on the PATH of every
+        # image that runs this suite — that is exactly how thirteen other guards went unnoticed
+        # for months — so say so rather than return.
+        terminalreporter.write_sep("=", "tree-change check did not run", yellow=True)
+        terminalreporter.write_line(
+            f"  `git ls-files` failed ({type(exc).__name__}: {exc}), so nothing here checked "
+            "whether a file was written mid-run. Absence of a warning is not evidence.",
+            yellow=True,
+        )
         return
     moved = []
     for name in listing.split("\0"):

@@ -9,6 +9,7 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any  # noqa: F401
 
 from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F401
@@ -94,13 +95,25 @@ def record_eval_result(
     judge: dict[str, str] | None = None,
     dataset_revision: str | None = None,
     calibration_id: str | None = None,
+    non_proportion_metrics: Iterable[str] = (),
 ) -> None:
     """Persist per-metric suite scores; idempotent per (suite, version, run, metric) (R7/R8).
 
     Every row carries the judge's ``calibration_id`` (ADR 0111 G7.3 — evaluator provenance) and
     a Wilson interval around the score (G7.4 — no point values). The interval is computed only
-    for scores that are proportions in ``[0, 1]`` over a known sample; a raw RMSE gets none,
-    because a Wilson interval on it would be a fabricated number.
+    for scores that are proportions over a known sample; a raw RMSE gets none, because a Wilson
+    interval on it would be a fabricated number.
+
+    ``non_proportion_metrics`` names the metrics that carry a **unit** rather than a share, and
+    it exists because the range test alone cannot tell them apart. A Wilson interval is defined
+    for *k successes out of n trials*, so it says nothing about a duration or a price — yet
+    ``latency_p50 = 0.01`` seconds and ``cost_usd = 0.0225`` both land inside ``[0, 1]`` and were
+    silently given one, claiming a p50 latency of 0.01 s might really be 0.45 s. Worse, the same
+    metric acquired an interval or not depending on the value it happened to take: a slow agent's
+    ``latency_p50 = 2.5`` fell outside the range and got none, so one metric's own series was
+    internally inconsistent. Declaring the unit-bearing names is explicit where the range test
+    guessed, and it fails closed — an undeclared metric keeps the old behaviour rather than
+    losing an interval it was entitled to.
     """
     from examlops.evaluation.calibration import wilson_interval
 
@@ -110,10 +123,11 @@ def record_eval_result(
     if calibration_id is None and judge_model:
         latest = get_judge_calibration(judge_model, version=judge_prompt)
         calibration_id = (latest or {}).get("calibration_id")
+    unitless = set(non_proportion_metrics)
     with get_db() as conn:
         for metric, score in scores.items():
             lo = hi = None
-            if sample_size > 0 and 0.0 <= float(score) <= 1.0:
+            if metric not in unitless and sample_size > 0 and 0.0 <= float(score) <= 1.0:
                 lo, hi = wilson_interval(float(score) * sample_size, sample_size)
             conn.execute(
                 """INSERT OR IGNORE INTO eval_suite_results
@@ -185,17 +199,42 @@ def set_eval_gate(
     baseline_alias: str = "Production",
     mode: str = "block",
     updated_by: str | None = None,
+    higher_is_better: bool | None = None,
+    aggregate: str | None = None,
 ) -> None:
+    """Configure a model's C3 regression gate.
+
+    ``higher_is_better`` is the gate's own metric direction. ``None`` means *undeclared* — not
+    False — and an undeclared gate falls back to whatever the caller passes, which is how every
+    gate written before this parameter existed keeps its behaviour.
+
+    ``aggregate`` is clause 5's policy ("all" | "majority"). ``None`` reads as ``all``, so a
+    gate written before the column existed still blocks on any failing metric.
+    """
     init_db()
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO eval_gates (model, suite, baseline_alias, metrics_json, mode, updated_by)
-               VALUES (?,?,?,?,?,?)
+            """INSERT INTO eval_gates
+                   (model, suite, baseline_alias, metrics_json, mode, updated_by,
+                    higher_is_better, aggregate)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(model) DO UPDATE SET
                    suite=excluded.suite, baseline_alias=excluded.baseline_alias,
                    metrics_json=excluded.metrics_json, mode=excluded.mode,
-                   updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
-            (model, suite, baseline_alias, json.dumps(metrics), mode, updated_by),
+                   updated_by=excluded.updated_by,
+                   higher_is_better=excluded.higher_is_better,
+                   aggregate=excluded.aggregate,
+                   updated_at=CURRENT_TIMESTAMP""",
+            (
+                model,
+                suite,
+                baseline_alias,
+                json.dumps(metrics),
+                mode,
+                updated_by,
+                None if higher_is_better is None else int(higher_is_better),
+                aggregate,
+            ),
         )
 
 

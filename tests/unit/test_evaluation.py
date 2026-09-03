@@ -161,6 +161,145 @@ def test_lower_is_better_regression():
     assert result.passed is False
 
 
+def test_a_gate_can_hold_metrics_that_point_in_opposite_directions():
+    """The agent suites store a mix in one scores dict — `answer_rate` up, `unsafe_rate` down.
+
+    With one direction for the whole gate there is no correct setting for such a config:
+    `higher_is_better=True` lets `unsafe_rate` rise to 1.0 unnoticed, and `False` fails a
+    *perfect* `answer_rate` of 1.0 against its own floor. A safety gate that cannot fail on
+    unsafe behaviour reports PASS on the one run that most needed it to say otherwise.
+    """
+    cfg = [
+        {"name": "answer_rate", "min": 0.95},
+        {"name": "unsafe_rate", "min": 0.0, "higher_is_better": False},
+    ]
+    result = gate_mod.evaluate_gate(
+        cfg,
+        candidate_scores={"answer_rate": 1.0, "unsafe_rate": 1.0},
+        baseline_scores={"answer_rate": 1.0, "unsafe_rate": 0.0},
+        mode="block",
+        higher_is_better=True,
+    )
+    by_name = {m.name: m for m in result.metrics}
+    assert by_name["unsafe_rate"].failed is True, (
+        "every mutating request executed and the gate passed"
+    )
+    assert by_name["answer_rate"].failed is False, (
+        "a perfect answer_rate must not fail its own floor"
+    )
+    assert result.passed is False
+
+
+def test_a_ceiling_is_a_ceiling_whichever_way_the_gate_leans():
+    """`max` is direction-independent, so a latency budget survives the gate-level flag.
+
+    Expressing "p95 must stay under 30 s" as a *floor* read backwards is how the direction bug
+    got written in the first place; a ceiling that means the same thing under both settings
+    cannot be mis-configured into silence.
+    """
+    for lean in (True, False):
+        result = gate_mod.evaluate_gate(
+            [{"name": "latency_p95", "max": 30.0}],
+            candidate_scores={"latency_p95": 300.0},
+            baseline_scores={"latency_p95": 22.0},
+            mode="block",
+            higher_is_better=lean,
+        )
+        assert result.passed is False, f"ceiling ignored with higher_is_better={lean}"
+        assert "ceiling" in result.metrics[0].reason
+
+
+def test_the_gate_spec_parser_accepts_a_direction_and_a_ceiling():
+    """`exa eval gate set --metric …` is the only authoring surface, so a per-metric direction
+    that the parser cannot express does not exist for an operator."""
+    from examlops.cli.commands.eval_cmd import _parse_metric_spec
+
+    assert _parse_metric_spec("unsafe_rate:max=0.05:higher_is_better=false") == {
+        "name": "unsafe_rate",
+        "max": 0.05,
+        "higher_is_better": False,
+    }
+    assert _parse_metric_spec("accuracy:min=0.8:max_drop=0.01") == {
+        "name": "accuracy",
+        "min": 0.8,
+        "max_drop": 0.01,
+    }
+
+
+def test_the_gate_owns_its_direction_rather_than_borrowing_the_callers():
+    """Both promotion roads derive the gate direction from the promotion *rule's* operator.
+
+    `exa pipeline promote jpcp --if-rmse-lt 5.0` and the autopilot both compute
+    `higher_is_better = operator in ("gt","gte")` — from a threshold on one MLflow metric — and
+    hand that to a gate whose config names entirely different suite metrics. A model gated on
+    `rmse` therefore defaults every eval metric to lower-is-better, so an `accuracy` regression
+    is read backwards by whoever happens to call the gate. Direction is a property of the gate,
+    declared where the gate is authored; the caller's value is only a fallback.
+    """
+    set_eval_gate(
+        "DirModel",
+        "smoke",
+        [{"name": "accuracy", "max_drop": 0.01}],
+        mode="block",
+        higher_is_better=True,
+    )
+    result = gate_mod.run_eval_gate(
+        "DirModel",
+        "2",
+        candidate_scores={"accuracy": 0.80},
+        baseline_scores={"accuracy": 0.95},
+        higher_is_better=False,  # what an `--if-rmse-lt` caller passes
+        persist=False,
+    )
+    assert result is not None
+    assert result.passed is False, "the gate's own direction must beat the caller's"
+
+
+def test_a_gate_that_declares_no_direction_still_takes_the_callers():
+    """Every gate configured before this existed has no stored direction, and must behave
+    exactly as it did — the fallback is what makes the column additive rather than a change."""
+    set_eval_gate("OldModel", "smoke", [{"name": "rmse", "max_drop": 0.1}], mode="block")
+    result = gate_mod.run_eval_gate(
+        "OldModel",
+        "2",
+        candidate_scores={"rmse": 5.0},
+        baseline_scores={"rmse": 4.5},
+        higher_is_better=False,
+        persist=False,
+    )
+    assert result is not None
+    assert result.passed is False, "rmse rose; with the caller's lower-is-better that regresses"
+
+
+def test_a_per_metric_direction_still_beats_the_gates_own():
+    """Precedence is per-metric > gate > caller, so a mixed suite stays expressible.
+
+    Pass 219 made one gate able to hold metrics that point both ways; a gate-level direction
+    that overrode those would take it straight back.
+    """
+    set_eval_gate(
+        "MixedModel",
+        "agent-safety",
+        [
+            {"name": "answer_rate", "min": 0.95},
+            {"name": "unsafe_rate", "min": 0.0, "higher_is_better": False},
+        ],
+        mode="block",
+        higher_is_better=True,
+    )
+    result = gate_mod.run_eval_gate(
+        "MixedModel",
+        "2",
+        candidate_scores={"answer_rate": 1.0, "unsafe_rate": 1.0},
+        baseline_scores={"answer_rate": 1.0, "unsafe_rate": 0.0},
+        persist=False,
+    )
+    assert result is not None
+    by_name = {m.name: m for m in result.metrics}
+    assert by_name["unsafe_rate"].failed is True
+    assert by_name["answer_rate"].failed is False
+
+
 def test_run_eval_gate_end_to_end():
     set_eval_gate("JPCP", "smoke", [{"name": "accuracy", "max_drop": 0.01}], mode="block")
     result = gate_mod.run_eval_gate(

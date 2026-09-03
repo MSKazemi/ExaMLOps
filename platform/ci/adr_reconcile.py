@@ -29,7 +29,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ADR_DIR = ROOT / "design" / "adr"
 
-SKIP_DIRS = {".git", ".git-private", ".venv", "node_modules", "site", "__pycache__", ".mypy_cache"}
+# `build`/`dist` hold *stale copies* of the package, and the matcher takes the first file whose
+# path matches — so a token like `examlops.slo.record_sample` could resolve against a build
+# artifact months out of date. That cuts both ways and the second way is worse: a newly added
+# symbol reads as **absent** (noise, which is how a guard gets switched off), and a symbol deleted
+# from source but still present in the artifact reads as **present**, blinding the Accepted-ADR
+# check that gates the build. 242 of 1235 scanned files came from there before this line.
+SKIP_DIRS = {
+    ".git",
+    ".git-private",
+    ".venv",
+    "node_modules",
+    "site",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "build",
+    "dist",
+    "htmlcov",
+}
 
 
 def source_files() -> list[Path]:
@@ -63,6 +82,14 @@ MODULE_RE = re.compile(r"^examlops(\.[a-z_0-9]+)+$")
 PATH_RE = re.compile(r"^[\w./-]+\.(py|yml|yaml|toml|json)$")
 
 
+# Every command node the CLI reports, keyed by its full path — filled by ``cli_commands()``.
+# The flag check reads it instead of importing the CLI into *this* interpreter, because
+# that import is what used to decide the answer: run under a python without ``examlops``
+# on the path, every flag check quietly became a no-op and the report said 44 where the
+# venv said 43. One source of truth, same number from any interpreter.
+_CLI_NODES: dict[str, dict] = {}
+
+
 def cli_commands() -> set[str]:
     """Every command the installed CLI actually exposes, from the CLI itself."""
     exa = ROOT / ".venv" / "bin" / "exa"
@@ -74,9 +101,11 @@ def cli_commands() -> set[str]:
     if out.returncode != 0:
         return set()
     names: set[str] = set()
+    _CLI_NODES.clear()
 
     def walk(node: dict) -> None:
         names.add(node["name"])
+        _CLI_NODES[node["name"]] = node
         for child in node.get("subcommands") or []:
             walk(child)
 
@@ -84,9 +113,20 @@ def cli_commands() -> set[str]:
     return names
 
 
+# A token that elides part of itself is prose, not an artifact. ADR 0077 writes
+# ``exa finops … providers`` while explaining that finops *has* provider listing, and ADR
+# 0092 writes ``modelzoo/.../datasets/_backends.py`` to point at a directory without
+# spelling the package out. Checking those literally reports a missing artifact for a
+# sentence that never promised one, and false "absent" rows are how a guard earns a
+# reputation for noise and gets switched off.
+_ELIDED = ("…", "...")
+
+
 def artifact_exists(token: str, cmds: set[str]) -> bool | None:
     """True / False if the token is checkable, None if it is not an artifact."""
     token = token.strip()
+    if any(mark in token for mark in _ELIDED):
+        return None
     if CLI_RE.match(token):
         # `exa models sign/verify/bom` and `exa workbench create|list` name a group
         # plus a menu of leaves; the group is the part every form agrees on.
@@ -103,7 +143,18 @@ def artifact_exists(token: str, cmds: set[str]) -> bool | None:
         if flags:
             known = _command_options(base)
             if known is not None:
-                missing = [f for f in flags if f not in known]
+                # Preference order, strongest evidence first: a literal declaration, an
+                # instance of a declared pattern (`--if-rmse-lt` against
+                # `--if-<metric>-<op>`), then the command's own help text. The last is the
+                # weakest — prose can outlive the flag it describes — so it is the fallback,
+                # not the first thing consulted.
+                missing = [
+                    f
+                    for f in flags
+                    if f not in known
+                    and not _matches_declared_pattern(base, f)
+                    and not _documents_flag(base, f)
+                ]
                 if missing:
                     return False
         return True
@@ -132,42 +183,55 @@ def artifact_exists(token: str, cmds: set[str]) -> bool | None:
     return None
 
 
-_OPTS_CACHE: dict[str, set[str] | None] = {}
-
-
 def _command_options(path: str) -> set[str] | None:
-    """Every option `exa <path>` accepts, or None when the question does not apply.
+    """Every flag ``exa <path>`` accepts, or None when the question cannot be answered.
 
-    None means *do not judge*: either the CLI is not importable here, or the command
-    declares ``allow_extra_args``/``ignore_unknown_options`` and parses flags itself at
-    runtime — which is exactly how ``exa pipeline promote --if-rmse-lt 5.0`` works despite
-    no such option being declared anywhere.
+    Reads the tree ``cli_commands()`` already fetched from the installed ``exa`` rather
+    than importing the CLI here, so the answer does not depend on which interpreter ran
+    this file. A flag counts as accepted if the command **declares** it or its own help
+    **documents** it: ``exa pipeline promote`` parses the whole ``--if-<metric>-<op>``
+    family in its body and declares none of them, and an options-only check would call
+    that real, documented flag a missing artifact.
     """
-    if path in _OPTS_CACHE:
-        return _OPTS_CACHE[path]
-    result: set[str] | None = None
-    try:
-        import typer.main  # noqa: PLC0415 - optional, and only for the flag check
+    node = _CLI_NODES.get(path)
+    if node is None:
+        return None
+    declared: set[str] = set()
+    for opt in node.get("options") or []:
+        for form in str(opt.get("opts", "")).split(","):
+            form = form.strip()
+            if form.startswith("-"):
+                declared.add(form)
+    return declared | {"--help"}
 
-        from examlops.cli.main import app  # noqa: PLC0415
 
-        cmd = typer.main.get_command(app)
-        root_opts = {o for prm in cmd.params for o in prm.opts}
-        for part in path.split()[1:]:
-            nxt = (getattr(cmd, "commands", {}) or {}).get(part)
-            if nxt is None:
-                cmd = None
-                break
-            cmd = nxt
-        if cmd is not None:
-            settings = getattr(cmd, "context_settings", None) or {}
-            if not (settings.get("allow_extra_args") or settings.get("ignore_unknown_options")):
-                own = {o for prm in cmd.params for o in prm.opts}
-                result = own | root_opts | {"--help"}
-    except Exception:  # pragma: no cover - the reconciler must still run without the CLI
-        result = None
-    _OPTS_CACHE[path] = result
-    return result
+def _matches_declared_pattern(path: str, flag: str) -> bool:
+    """True if ``flag`` is an instance of a *pattern* the command declares.
+
+    A command that parses its own flags declares them as a shape rather than a list —
+    ``exa pipeline promote`` publishes ``--if-<metric>-<op> <value>`` because the metric is
+    whatever the model logged to MLflow. Expanding the placeholders is what lets a concrete
+    ``--if-rmse-lt`` be recognised from a real declaration instead of from prose in the help
+    text, which is a weaker thing to trust.
+    """
+    node = _CLI_NODES.get(path) or {}
+    for opt in node.get("options") or []:
+        pattern = str(opt.get("opts", "")).split(",")[0].strip().split(" ")[0]
+        if "<" not in pattern:
+            continue
+        # Build the regex from the pattern's literal parts so nothing in a flag name is
+        # interpreted as regex syntax; each <placeholder> becomes one non-empty segment.
+        parts = re.split(r"<[^>]*>", pattern)
+        rx = "^" + "[^\\s-]+".join(re.escape(part) for part in parts) + "$"
+        if re.match(rx, flag):
+            return True
+    return False
+
+
+def _documents_flag(path: str, flag: str) -> bool:
+    """True when ``exa <path> --help`` itself names the flag in prose."""
+    node = _CLI_NODES.get(path) or {}
+    return flag in f"{node.get('help', '') or ''}"
 
 
 def _find_module(rel: str) -> Path | None:
@@ -270,10 +334,33 @@ def first_seen(token: str, cmds: set[str]) -> str:
 
 
 def status_of(text: str) -> str:
+    """The ADR's status line, with markdown emphasis stripped.
+
+    Stripping matters: ``- **Status:** **Accepted**`` is how a human writes emphasis, and
+    with the markers left in, ``head.startswith("accepted")`` is False — the ADR silently
+    escapes the Accepted guard. A record-keeping guard that can be switched off by bolding
+    a word is not a guard.
+    """
     for line in text.splitlines()[:8]:
         m = re.match(r"\s*-?\s*\*\*Status:?\*\*:?\s*(.+)", line)
         if m:
-            return m.group(1).strip()
+            return re.sub(r"\*+|__", "", m.group(1)).strip()
+    return ""
+
+
+def swept_of(text: str) -> str:
+    """The ADR's ``**Reconciliation:**`` note, if it carries one.
+
+    A not-accepted ADR whose named artifacts all predate it is a **name match**, not evidence:
+    ADR 0015 "matches" because ``exa serve`` has existed since 2026-05-21, which says nothing
+    about KServe. Sweeping those once and recording the sweep in the ADR itself is what keeps
+    "still to decide" a number that moves — without it the report counts the same 26 ADRs
+    forever and the count stops meaning anything.
+    """
+    for line in text.splitlines()[:12]:
+        m = re.match(r"\s*-?\s*\*\*Reconciliation:?\*\*:?\s*(.+)", line)
+        if m:
+            return re.sub(r"\*+|__", "", m.group(1)).strip()
     return ""
 
 
@@ -282,6 +369,7 @@ def reconcile(cmds: set[str]) -> list[dict]:
     for path in sorted(ADR_DIR.glob("*.md")):
         text = path.read_text()
         status = status_of(text)
+        swept = swept_of(text)
         text = commitments(text)
         head = re.split(r"\s*[—(-]\s*", status)[0].strip().rstrip(".").lower() or "(none)"
         present: list[str] = []
@@ -297,6 +385,7 @@ def reconcile(cmds: set[str]) -> list[dict]:
                 "adr": path.name,
                 "status": head,
                 "accepted": head.startswith("accepted"),
+                "swept": swept,
                 "present": present,
                 "absent": absent,
             }
@@ -338,15 +427,28 @@ def main() -> int:
         for a in r["absent"]:
             print(f"      missing: {a}")
     print()
+    # "Partially implemented" is a decision already taken with evidence, not a stale status.
+    # Counting those as still-to-decide makes the remaining work look bigger than it is, which
+    # is the failure mode this whole report exists to avoid.
+    decided = [r for r in shipped_but_proposed if r["status"].startswith("partially implemented")]
+    # A recorded sweep is also a decision already taken: the artifacts predate the ADR, so the
+    # match proves nothing and the status stays. Leaving those in the queue is what made this
+    # number immovable.
+    swept = [r for r in shipped_but_proposed if r not in decided and r["swept"]]
+    undecided = [r for r in shipped_but_proposed if r not in decided and r not in swept]
+
     print(f"Not-accepted ADRs whose named artifacts ALL exist: {len(shipped_but_proposed)}")
-    for r in shipped_but_proposed:
+    print(f"  of which already decided as 'Partially implemented': {len(decided)}")
+    print(f"  of which swept as name-match-only (artifacts predate the ADR): {len(swept)}")
+    print(f"  still to decide one at a time: {len(undecided)}")
+    for r in undecided:
         print(f"  {r['adr']:<58} {', '.join(r['present'][:3])}")
 
     if args.dates:
         print()
         print("Dated (an artifact older than its ADR is not evidence the ADR was carried out):")
         drove, predates = [], []
-        for r in shipped_but_proposed:
+        for r in undecided:
             adr_date = _git(["log", "--format=%ad", "--date=short", "--", f"design/adr/{r['adr']}"])
             dates = {a: first_seen(a, cmds) for a in r["present"]}
             after = {a: d for a, d in dates.items() if d and adr_date and d > adr_date}

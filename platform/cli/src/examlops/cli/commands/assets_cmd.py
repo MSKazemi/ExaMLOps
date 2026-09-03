@@ -107,11 +107,25 @@ def status(
 def materialize(
     name: str = typer.Argument(..., help="Target asset"),
     force: bool = typer.Option(False, "--force", help="Rebuild even if fresh"),
+    no_deps: bool = typer.Option(
+        False, "--no-deps", help="Build only this asset, never its stale ancestors"
+    ),
+    orchestrator: str = typer.Option(
+        None,
+        "--orchestrator",
+        help="local | scheduler — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run",
+    ),
 ) -> None:
-    """Rebuild the asset + its stale ancestors only (R4/GWT-3)."""
+    """Rebuild the asset + its stale ancestors only (R4/GWT-3).
+
+    `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam
+    (ADR 0036 clause 3) instead of running the production function in this process.
+    """
     from examlops.assets import materialize as _materialize
 
-    result = _materialize(name, actor=_actor(), force=force)
+    result = _materialize(
+        name, actor=_actor(), force=force, no_deps=no_deps, orchestrator=orchestrator
+    )
     if result.blocked:
         _output.error(f"Blocked by policy: {result.blocked}")
         return

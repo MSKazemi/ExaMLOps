@@ -19,6 +19,7 @@ Pinned semconv version — attribute names track OpenTelemetry GenAI semconv
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
@@ -26,6 +27,13 @@ from typing import Any
 
 SEMCONV_VERSION = "1.27.0"
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# Semconv stability opt-in (ADR 0006 clause 5). The GenAI area does **not** use the
+# ``<area>/dup`` dual-emit token the HTTP conventions use: OpenTelemetry defines a single
+# value, ``gen_ai_latest_experimental``, which selects the latest experimental conventions
+# the instrumentation supports *instead of* the version it pinned. Absent the opt-in, an
+# instrumentation keeps emitting whatever it already emitted — here, ``SEMCONV_VERSION``.
+LATEST_EXPERIMENTAL = "gen_ai_latest_experimental"
 
 # gen_ai.operation.name → OTel span kind mapping for the three ExaMLOps span roles.
 _SPAN_KINDS = {"model", "agent", "workflow", "tool", "chat", "embeddings"}
@@ -71,6 +79,42 @@ def content_capture_enabled() -> bool:
     return os.getenv("EXAMLOPS_GENAI_CAPTURE_CONTENT", "").strip().lower() in _TRUTHY
 
 
+def semconv_opt_in() -> frozenset[str]:
+    """Tokens listed in ``OTEL_SEMCONV_STABILITY_OPT_IN`` (comma-separated, per OTel)."""
+    raw = os.getenv("OTEL_SEMCONV_STABILITY_OPT_IN", "")
+    return frozenset(token.strip() for token in raw.split(",") if token.strip())
+
+
+def latest_experimental_enabled() -> bool:
+    """True when the operator opted into the latest experimental GenAI conventions."""
+    return LATEST_EXPERIMENTAL in semconv_opt_in()
+
+
+def semconv_version() -> str:
+    """Which convention set this process is emitting (reported on every span).
+
+    Deliberately the string ``latest-experimental`` rather than a version number under the
+    opt-in: the conventions are still Development, so naming a specific release we have not
+    conformance-tested against would be a claim, not a label.
+    """
+    return "latest-experimental" if latest_experimental_enabled() else SEMCONV_VERSION
+
+
+def _as_messages(role: str, text: str) -> str:
+    """One text message in the latest-experimental ``gen_ai.*.messages`` shape."""
+    return json.dumps([{"role": role, "parts": [{"type": "text", "content": text}]}])
+
+
+def has_rate(model: str) -> bool:
+    """Whether the built-in table actually prices this model.
+
+    ``estimate_cost`` answers for every model, charging anything it does not know a conservative
+    default. That is right for a span attribute and wrong for a recorded metric: a locally served
+    backend would acquire an invented dollar cost. Callers that must not invent one ask this first.
+    """
+    return model in _RATE_TABLE
+
+
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     """Derive USD cost from token usage (spec R7). Deterministic and pure.
 
@@ -96,6 +140,9 @@ class _NoOpSpan:
     def add_event(self, *_a: Any, **_k: Any) -> None:
         pass
 
+    def end(self, *_a: Any, **_k: Any) -> None:
+        """So a :func:`start_span` caller ends its span without asking whether it is real."""
+
     @property
     def is_noop(self) -> bool:
         return True
@@ -118,8 +165,7 @@ def genai_span(
     ``chat``/``embeddings``). Yields a live OTel span, or a :class:`_NoOpSpan` when
     ``OTEL_SDK_DISABLED`` (spec R9 — no export, behaviour unchanged).
     """
-    if kind not in _SPAN_KINDS:
-        kind = "model"
+    kind = _normalize_kind(kind)
     if not tracing_enabled():
         yield _NoOpSpan()
         return
@@ -128,19 +174,89 @@ def genai_span(
 
     tracer = trace.get_tracer("examlops.genai", SEMCONV_VERSION)
     with tracer.start_as_current_span(f"gen_ai.{kind} {model}") as span:
-        span.set_attribute("gen_ai.operation.name", kind)
-        span.set_attribute("gen_ai.system", system)
-        span.set_attribute("gen_ai.request.model", model)
-        # ExaMLOps extras (R3): join keys for eval/feedback/drift + A2 lineage.
-        span.set_attribute("examlops.tenant", tenant)
-        if request_hash:
-            span.set_attribute("examlops.request_hash", request_hash)
-        if alias:
-            span.set_attribute("examlops.model.alias", alias)
-        if version:
-            span.set_attribute("examlops.model.version", str(version))
-        span.set_attribute("examlops.semconv.version", SEMCONV_VERSION)
+        _apply_base_attributes(
+            span,
+            kind,
+            system=system,
+            model=model,
+            tenant=tenant,
+            request_hash=request_hash,
+            alias=alias,
+            version=version,
+        )
         yield span
+
+
+def start_span(
+    kind: str,
+    *,
+    system: str,
+    model: str,
+    tenant: str = "default",
+    request_hash: str = "",
+    alias: str | None = None,
+    version: str | None = None,
+) -> Any:
+    """Start a GenAI span the caller must ``end()`` itself.
+
+    For **callback-style** instrumentation, where start and finish are separate events with no
+    enclosing block — a LangChain/LangGraph callback handler is the case this exists for. Such a
+    handler cannot hold a context manager across two callbacks, and deliberately does not make
+    the span *current*: detaching an OTel context token from a different task than the one that
+    attached it corrupts the context for everything that runs after it.
+
+    Returns a :class:`_NoOpSpan` when tracing is disabled, so a caller ends a span
+    unconditionally and never branches on whether tracing is on.
+    """
+    kind = _normalize_kind(kind)
+    if not tracing_enabled():
+        return _NoOpSpan()
+
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer("examlops.genai", SEMCONV_VERSION)
+    span = tracer.start_span(f"gen_ai.{kind} {model}")
+    _apply_base_attributes(
+        span,
+        kind,
+        system=system,
+        model=model,
+        tenant=tenant,
+        request_hash=request_hash,
+        alias=alias,
+        version=version,
+    )
+    return span
+
+
+def _normalize_kind(kind: str) -> str:
+    return kind if kind in _SPAN_KINDS else "model"
+
+
+def _apply_base_attributes(
+    span: Any,
+    kind: str,
+    *,
+    system: str,
+    model: str,
+    tenant: str,
+    request_hash: str,
+    alias: str | None,
+    version: str | None,
+) -> None:
+    """The attributes every GenAI span carries — one definition for both span shapes."""
+    span.set_attribute("gen_ai.operation.name", kind)
+    span.set_attribute("gen_ai.system", system)
+    span.set_attribute("gen_ai.request.model", model)
+    # ExaMLOps extras (R3): join keys for eval/feedback/drift + A2 lineage.
+    span.set_attribute("examlops.tenant", tenant)
+    if request_hash:
+        span.set_attribute("examlops.request_hash", request_hash)
+    if alias:
+        span.set_attribute("examlops.model.alias", alias)
+    if version:
+        span.set_attribute("examlops.model.version", str(version))
+    span.set_attribute("examlops.semconv.version", semconv_version())
 
 
 def record_usage(
@@ -174,14 +290,73 @@ def maybe_capture_content(
     Returns True if content was captured. Content is captured **only** when
     ``EXAMLOPS_GENAI_CAPTURE_CONTENT`` is truthy, and always passes through the
     redaction hook (D8) first.
+
+    Under the ``gen_ai_latest_experimental`` opt-in (clause 5) the content goes on
+    ``gen_ai.input.messages`` / ``gen_ai.output.messages`` — the structured message shape the
+    current conventions use — instead of the flat ``gen_ai.prompt`` / ``gen_ai.completion``
+    attributes this instrumentation has emitted since it pinned 1.27.0. **One or the other,
+    never both:** capture is the one place content leaves the process, and emitting the same
+    redacted text twice doubles the exposure surface of the very attribute the privacy gate
+    exists to bound.
     """
     if not content_capture_enabled():
         return False
+    latest = latest_experimental_enabled()
     captured = False
     if prompt is not None:
-        span.set_attribute("gen_ai.prompt", _redactor(prompt))
+        redacted = _redactor(prompt)
+        if latest:
+            span.set_attribute("gen_ai.input.messages", _as_messages("user", redacted))
+        else:
+            span.set_attribute("gen_ai.prompt", redacted)
         captured = True
     if completion is not None:
-        span.set_attribute("gen_ai.completion", _redactor(completion))
+        redacted = _redactor(completion)
+        if latest:
+            span.set_attribute("gen_ai.output.messages", _as_messages("assistant", redacted))
+        else:
+            span.set_attribute("gen_ai.completion", redacted)
         captured = True
     return captured
+
+
+def record_carbon(
+    span: Any,
+    *,
+    gpu_hours: float = 0.0,
+    cpu_hours: float = 0.0,
+    provider: str | None = None,
+) -> dict[str, Any] | None:
+    """Attach Green-AI energy + carbon to a GenAI span (spec R7, ADR 0006 clause 4).
+
+    Routes through the pluggable ``carbon`` provider registry, so a span reports the same
+    methodology ``exa finops carbon`` does rather than a second hard-coded formula.
+
+    **Device-hours are an input, never a guess.** A caller that does not own the hardware for
+    the duration it measured passes nothing and gets ``None`` — no attribute is better than a
+    plausible one. Charging a gateway client's wall-clock to a GPU it shares with every other
+    concurrent request would produce a number that is always wrong and always publishable.
+
+    If the resolved provider has no term for an input it was given, the reason is recorded on
+    the span (``examlops.carbon.unaccounted``) rather than dropped: a missing attribute and a
+    silently-halved one are indistinguishable downstream.
+    """
+    if gpu_hours <= 0 and cpu_hours <= 0:
+        return None
+    try:
+        from examlops.finops.carbon import CarbonInputUnaccounted, estimate_carbon_via_provider
+
+        try:
+            estimate = estimate_carbon_via_provider(
+                gpu_hours, cpu_hours=cpu_hours, provider=provider
+            )
+        except CarbonInputUnaccounted as exc:
+            span.set_attribute("examlops.carbon.unaccounted", str(exc))
+            return None
+        span.set_attribute("examlops.energy.kwh", float(estimate["kwh"]))
+        span.set_attribute("examlops.carbon.co2e_g", float(estimate["co2e_g"]))
+        if estimate.get("provider"):
+            span.set_attribute("examlops.carbon.provider", str(estimate["provider"]))
+        return estimate
+    except Exception:  # noqa: BLE001 - telemetry must never break the call it measures
+        return None

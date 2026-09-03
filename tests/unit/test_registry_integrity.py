@@ -190,6 +190,37 @@ def test_yaml_engine_block_is_valid(yaml_path):
 
 
 @pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
+def test_yaml_fairness_block_is_valid(yaml_path):
+    """A malformed ``fairness:`` block must fail CI (ADR 0025 clause 1).
+
+    The failure this guards against is quiet: ``slice:`` for ``slices:`` yields a registry that
+    declares no attributes, and a fairness gate over zero attributes passes every model. A
+    protection that silently does not apply is worse than one that was never configured.
+    """
+    import yaml as _yaml
+
+    from examlops.fairness import validate_fairness_block
+
+    doc = _yaml.safe_load(yaml_path.read_text()) or {}
+    block = doc.get("fairness")
+    if block is None:
+        return  # no fairness block ⇒ no slice registry declared, nothing to validate
+    errors = validate_fairness_block(block, model=str(doc.get("name", yaml_path.stem)))
+    assert errors == [], f"{yaml_path.name}: invalid fairness block: {errors}"
+
+
+@pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
+def test_yaml_fairness_block_survives_the_loader(yaml_path):
+    """The block must reach ``ModelYAMLConfig`` — the ``engine:`` key was silently dropped once."""
+    import yaml as _yaml
+
+    from pipelines.model_loader import load_model_yaml
+
+    raw = (_yaml.safe_load(yaml_path.read_text()) or {}).get("fairness") or {}
+    assert load_model_yaml(yaml_path).fairness == raw
+
+
+@pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
 def test_yaml_lifecycle_stages_have_valid_directions(yaml_path):
     from pipelines.model_loader import load_model_yaml
 

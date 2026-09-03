@@ -42,8 +42,41 @@ class Question:
 
     def missing(self, answer: str) -> list[tuple[str, ...]]:
         """The expectation groups this answer fails to satisfy."""
-        low = answer.lower()
+        low = normalise(answer)
         return [g for g in self.must_mention if not any(alt.lower() in low for alt in g)]
+
+
+# Global options may sit between ``exa`` and the subcommand — ``exa --json docs``,
+# ``exa -o yaml status``, ``exa --yes retrain``, all valid and all documented. Literal substring
+# grading read those as *not* naming the command: measured 2026-08-28, the answer
+# ``exa --json --yes agent memory delete pref`` scored 0 against ``exa agent memory delete``,
+# which is the same command. Normalising the invocation before matching is a correctness fix,
+# not a leniency one — the expected command really is present, spelled the way the CLI accepts.
+#: The two global options that consume the token after them; the rest are flags.
+_GLOBAL_WITH_VALUE = ("--output", "-o", "--context", "-c")
+
+
+def normalise(answer: str) -> str:
+    """Lower-case ``answer`` with global options removed from every ``exa …`` invocation."""
+    low = answer.lower()
+
+    def strip(match: re.Match[str]) -> str:
+        parts = match.group(0).split()
+        out = [parts[0]]
+        i = 1
+        while i < len(parts):
+            tok = parts[i]
+            if tok.startswith("-"):
+                # ``-o json`` consumes its value; ``-o=json`` and bare flags do not.
+                if tok in _GLOBAL_WITH_VALUE and i + 1 < len(parts):
+                    i += 1
+                i += 1
+                continue
+            break
+        out.extend(parts[i:])
+        return " ".join(out)
+
+    return re.sub(r"\bexa(?: \S+)*", strip, low)
 
 
 OPERATOR_QUESTIONS: tuple[Question, ...] = (
@@ -76,7 +109,13 @@ OPERATOR_QUESTIONS: tuple[Question, ...] = (
     Question(
         "train-run",
         "training",
-        "How do I train a model right now without touching the cluster?",
+        # Re-worded 2026-08-28: the old phrasing ("without touching the cluster") was also a
+        # true description of `exa retrain --dummy`, which goes through the control plane and
+        # never reaches the scheduler. Naming the *shell* excludes the HTTP path, so exactly
+        # one command answers. Widening the accepted set instead would have made the grader
+        # accept anything plausible, which is the opposite of what it is for.
+        "How do I run the training pipeline directly from my own shell, with dummy data "
+        "so that no cluster job is submitted?",
         (("exa pipeline run",), ("--dummy", "dummy")),
     ),
     Question(
@@ -144,7 +183,15 @@ OPERATOR_QUESTIONS: tuple[Question, ...] = (
     Question(
         "serve-check",
         "serving",
-        "How do I verify the serving layer is actually answering inference requests?",
+        # Re-worded 2026-08-28 (twice): the first phrasing was equally answered by
+        # `exa pipeline validate-model --alias Production`, which really does send live
+        # requests — but per model, and against a latency SLA. Asking about the deployment
+        # itself was not enough either: the agent answered `exa status` / `exa doctor`, which
+        # is a true answer to "is it up". Ruling the platform-wide check out in the question,
+        # and asking for models-loaded + responses-returned, leaves only the serve-level probes.
+        "The platform-wide status check looks fine, but I need to confirm the Ray Serve "
+        "deployment specifically has its models loaded and is returning inference "
+        "responses \u2014 which command does that?",
         (("exa serve check", "exa serve infer-check"),),
     ),
     Question(

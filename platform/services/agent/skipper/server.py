@@ -28,6 +28,7 @@ from skipper.auth import (
     scope_thread_id,
     unscoped_thread_id,
 )
+from skipper.genai_trace import traced
 from skipper.graph import build_graph
 from skipper.llm import check_backend
 from skipper.turns import TurnBusy, TurnCoordinationUnavailable, TurnLease, acquire_turn
@@ -171,8 +172,12 @@ def stream_messages(graph, inp, cfg):
 
     With ``subgraphs=True`` an item is ``(namespace, (message, metadata))`` instead of
     ``(message, metadata)``; both shapes are unwrapped here so callers see one shape.
+
+    The config goes through :func:`skipper.genai_trace.traced`, which attaches the GenAI
+    callback handler (ADR 0006 clause 2) when tracing is on and returns the config untouched
+    when it is not.
     """
-    for item in graph.stream(inp, cfg, stream_mode="messages", subgraphs=True):
+    for item in graph.stream(inp, traced(cfg), stream_mode="messages", subgraphs=True):
         payload = item[-1] if isinstance(item, tuple) and isinstance(item[-1], tuple) else item
         if isinstance(payload, tuple) and len(payload) == 2:
             yield payload

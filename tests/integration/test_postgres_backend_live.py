@@ -31,7 +31,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "platform" / "cli" 
 
 DSN = os.getenv("EXAMLOPS_POSTGRES_TEST_DSN", "")
 
-pytestmark = pytest.mark.skipif(not DSN, reason="set EXAMLOPS_POSTGRES_TEST_DSN to run")
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(not DSN, reason="set EXAMLOPS_POSTGRES_TEST_DSN to run"),
+]
 
 
 @pytest.fixture(autouse=True)

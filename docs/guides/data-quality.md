@@ -33,16 +33,58 @@ categorical domain, exact embedding dimensionality, minimum row count.
 
 ## The training gate
 
-Before training, validate the A1-pinned data against its contract. An `error`-severity
-violation **fails closed** (non-zero exit) and the run does not train; `warn` violations
-are recorded but don't block. Every run writes a `data_quality_checks` row (dataset,
-revision, pass/fail, per-check results, quality score, actor).
+`training_flow` validates the A1-pinned data against its contract between data extraction and
+job submission. An `error`-severity violation **fails closed** — the run raises
+`DataContractViolation` and never trains; `warn` violations are recorded and continue. Passing
+runs write a `data_quality_checks` row (dataset, pass/fail, per-check results, quality score).
+
+It validates the data **the revision resolver pinned for this run**, not whatever happens to be
+on disk, so the gate and the recorded provenance describe the same rows.
+
+```bash
+EXAMLOPS_DATA_CONTRACT_GATE=enforce   # default — fail closed
+EXAMLOPS_DATA_CONTRACT_GATE=warn      # record the violation, keep training
+EXAMLOPS_DATA_CONTRACT_GATE=off       # skip entirely
+```
+
+An unrecognised value falls back to `enforce`: a typo must not quietly disable a gate whose
+whole point is failing closed.
+
+### Three things that are not violations
+
+The gate reports each with a reason instead of failing, because **a gate that records nothing
+when it could not run is indistinguishable from one that passed**:
+
+| Situation | Why it is not a violation |
+|---|---|
+| The dataset has no contract | Most do not. Absence of a contract is not a breach of one. |
+| The pinned location is not readable here | The resolver may return a remote or unmaterialised URI; that is an environment fact, not a data defect. |
+| `--dummy` run | Synthetic rows were never meant to satisfy a production contract. |
 
 ## The inference gate
 
-`validate_request(payload, required=..., embedding_field=..., embedding_dim=...)` checks
-each request payload. It **never raises** — a malformed payload returns `(False, errors)`
-so the ingress responds 4xx instead of 5xx, and bad payloads are counted for C5 monitoring.
+`InferencePipelineIngress` validates every request through
+`validate_request(payload, required=..., embedding_field=..., embedding_dim=...)`. It **never
+raises** — a malformed payload returns `(False, errors)` so the ingress answers 4xx rather than
+5xx.
+
+Set the embedding width to have it checked:
+
+```bash
+EXAMLOPS_INFERENCE_EMBEDDING_DIM=384
+```
+
+Unset, no width check runs. It is **never defaulted**: an embedding width is a fact about a use
+case, not a platform constant, and a wrong guess would reject every legitimate request.
+
+Two deliberate limits:
+
+- **The request contract is not derived from the dataset contract.** A `DataContract` describes
+  training *columns*, and a request is not a row of the training table — deriving one from the
+  other would be a guess wearing a contract's name.
+- **A replica that cannot import the contract package degrades** to a required-field presence
+  check rather than refusing everything. Rejecting every request because a *validator* is
+  missing is a worse failure than the one the gate prevents.
 
 ## CLI
 

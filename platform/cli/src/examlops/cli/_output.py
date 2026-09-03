@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -160,7 +160,11 @@ def ok(message: str) -> None:
         console.print(f"[green]✓[/green] {escape(message)}")
 
 
-def error(message: str, exit_code: int = 1, hint: str | None = None) -> None:
+def error(message: str, exit_code: int = 1, hint: str | None = None) -> NoReturn:
+    """Print an error and leave the command. Never returns — the ``raise`` below is
+    unconditional, and saying so in the signature is what lets a caller's
+    ``if x is None: _output.error(...)`` actually narrow ``x`` afterwards instead of
+    every later use of it being read as possibly-None."""
     if json_mode:
         payload: dict[str, Any] = {"error": message, "exit_code": exit_code}
         if hint:

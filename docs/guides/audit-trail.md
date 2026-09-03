@@ -47,6 +47,32 @@ exa audit verify
 `exa audit verify` exits non-zero on a broken chain, so it can gate CI or a compliance
 check.
 
+It also reports what it could **not** check:
+
+```bash
+exa audit verify
+# ✓ Audit chain verified — 6779 chained event(s) intact (head a1b2c3d4e5f6…).
+# ⚠ 1408 event(s) carry no hash and were not verified — they are outside the chain, so their
+#   order and presence are not tamper-evident…
+```
+
+A row with a NULL `hash` is outside the chain and cannot be recomputed, so it is counted
+separately rather than skipped. `ok` stays true — the chain that exists is intact — but the claim
+is narrowed out loud, because a verifier that silently ignores what it cannot check reports
+success over a log it has only partly read. Unchained rows are still protected from SQL-level
+edits by the append-only triggers; what they lack is proof of **order and presence**.
+
+**Two causes, and they need telling apart.** `verify` reports `chain_begins_at`, the timestamp of
+the oldest chained event:
+
+- **Before that point** — events written before the chain columns were added. Expected, benign, and
+  deliberately *not* retro-fitted: back-filling hashes would mean rewriting the log, which is the
+  one thing an append-only audit trail must never do. They age out with retention.
+- **After it** — a writer is still bypassing `write_audit_event`. That is a bug; find it.
+
+Until 2026-09-02 the dashboard was such a writer: sixteen routers and five modules used raw
+`INSERT`s.
+
 ## Signed checkpoints
 
 The chain head can be signed periodically, producing a detached signature that proves the
@@ -79,10 +105,19 @@ exa --json audit --last 30d
 
 ## Coverage
 
-Every governed action carries **actor + tenant (D6) + resource** and is chained. Sources
-across the platform (CLI, agent, bridge, control plane) all write through the same
-`write_audit_event`, so the chain is complete by construction. PII in details should be
-stored by reference / redacted (see D8).
+Every governed action carries **actor + tenant (D6) + resource** and is chained. Sources across
+the platform — CLI, **dashboard**, agent, bridge, control plane — all write through the same
+`write_audit_event`, so the chain is complete by construction. PII in details should be stored by
+reference / redacted (see D8).
+
+> The dashboard was **absent from that list until 2026-09-02**, and so was its chaining: sixteen
+> routers and five modules wrote raw `INSERT`s, so every dashboard mutation would have landed
+> outside the chain and invisible to `verify`. Dashboard code now goes through one
+> `audit_write.audit()`
+> helper, a guard test fails on any new raw insert, and `verify` counts what it cannot check. A
+> caller already inside a write transaction passes its connection
+> (`write_audit_event(..., conn=…)`), which both avoids a second-connection deadlock and makes the
+> audit atomic with the mutation it records.
 
 ## Programmatic use
 

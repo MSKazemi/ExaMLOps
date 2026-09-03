@@ -3,9 +3,14 @@
 # instant to run, so a formatting/lint/syntax break can never reach a pushed
 # commit again (the v0.26.x pipelines died on `ruff format --check`).
 #
-# Fast by design (~2s): only the hard, sub-second gates. The full CI mirror
-# (unit + integration + dashboard + compose) lives in `make preflight`; run that
-# before a release.
+# Two parts. The sub-second static gates run first and always. Then the unit
+# suite runs in parallel (~70s on a 20-core box, vs ~9min serial) — added
+# 2026-09-01, because static checks passing had never been evidence the code
+# works, and a red CI run costs far more than 70 seconds. Set PREPUSH_SKIP_TESTS=1
+# to push static-only when you know the suite is already green.
+#
+# The full CI mirror (integration + dashboard + compose + Postgres) is still
+# `make preflight`; run that before a release.
 #
 # Bypass for a genuine emergency:  git push --no-verify
 set -euo pipefail
@@ -42,7 +47,7 @@ fail() {
 
 echo "── pre-push gate (fast CI mirror) ─────────────────────────"
 
-echo "1/3 python syntax (py_compile)…"
+echo "1/4 python syntax (py_compile)…"
 # Only changed/tracked .py under the gated dirs — keeps it fast.
 mapfile -t PYFILES < <(git ls-files -- 'platform/*.py' 'pipelines/*.py' 'serving/*.py' 'tests/*.py' 'tools/*.py' 2>/dev/null)
 if [ "${#PYFILES[@]}" -gt 0 ]; then
@@ -50,11 +55,23 @@ if [ "${#PYFILES[@]}" -gt 0 ]; then
     || fail "python syntax error (see above)"
 fi
 
-echo "2/3 ruff check…"
+echo "2/4 ruff check…"
 "$RUFF" check "${CHECK_PATHS[@]}" || fail "ruff check found lint errors"
 
-echo "3/3 ruff format --check  (HARD failure in CI)…"
+echo "3/4 ruff format --check  (HARD failure in CI)…"
 "$RUFF" format --check "${FMT_PATHS[@]}" \
   || fail "ruff format --check — run: $RUFF format ${FMT_PATHS[*]}"
+
+echo "4/4 unit tests (parallel)…"
+if [ "${PREPUSH_SKIP_TESTS:-0}" = "1" ]; then
+  echo "   ⏭  skipped (PREPUSH_SKIP_TESTS=1) — CI will still run them."
+elif [ ! -x ".venv/bin/pytest" ]; then
+  # Never silently pass. A missing runner is not a green suite, and the whole
+  # point of this step is that "no output" must not read as "tests passed".
+  echo "   ⚠️  .venv/bin/pytest not found — tests NOT run (make install-dev)."
+else
+  .venv/bin/pytest tests/unit/ -n auto -q --tb=short --no-header \
+    || fail "unit tests failed — see above (PREPUSH_SKIP_TESTS=1 to bypass)"
+fi
 
 echo "✅ pre-push gate passed — pushing."

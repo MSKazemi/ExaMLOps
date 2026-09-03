@@ -88,7 +88,8 @@ endif
         remote-rebuild selfheal smoke-check \
         test-postgres \
         venv install install-dev install-hooks clean \
-        lint lint-fix typecheck test test-unit test-integration test-cov check \
+        lint lint-fix typecheck typecheck-cli test test-unit test-integration test-cov check \
+        test-fast test-failed test-serial test-slowest gate \
         alerts-check dr-drill helm-validate \
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
         preflight preflight-nopg \
@@ -416,7 +417,7 @@ dashboard-check: ## Run dashboard backend + frontend tests
 	  printf "$(RED)No $(VENV)/bin/pytest — run 'make install-dev' first.$(RESET)\n"; exit 1; }
 	@cd platform/services/dashboard/backend && \
 	  $(VENV_BIN)/pip install -r requirements.txt -q && \
-	  $(VENV_BIN)/pytest tests/ -v --tb=short
+	  $(VENV_BIN)/pytest tests/ $(PYTEST_PARALLEL) --tb=short -q
 	@printf "$(BOLD)Frontend tests...$(RESET)\n"
 	@command -v npm >/dev/null 2>&1 || { \
 	  printf "$(RED)npm not on PATH — the frontend half of this gate cannot run.$(RESET)\n"; \
@@ -431,7 +432,7 @@ dashboard-check-backend: ## Dashboard BACKEND tests only (use when there is no n
 	  printf "$(RED)No $(VENV)/bin/pytest — run 'make install-dev' first.$(RESET)\n"; exit 1; }
 	@cd platform/services/dashboard/backend && \
 	  $(VENV_BIN)/pip install -r requirements.txt -q && \
-	  $(VENV_BIN)/pytest tests/ -v --tb=short
+	  $(VENV_BIN)/pytest tests/ $(PYTEST_PARALLEL) --tb=short -q
 	@printf "$(GREEN)Dashboard BACKEND checks passed — the frontend half did NOT run.$(RESET)\n"
 
 # =============================================================================
@@ -525,10 +526,31 @@ install-dev: venv ## Install runtime + dev dependencies (pytest · ruff · mypy)
 	@$(UV) pip install -e ".[dev]" -q
 	@printf "$(GREEN)Runtime + dev dependencies installed.$(RESET)\n"
 
-install-hooks: ## Install git hooks (fast pre-push CI gate) into .git/hooks/
-	@cp platform/ci/hooks/pre-push .git/hooks/pre-push
-	@chmod +x .git/hooks/pre-push
-	@printf "$(GREEN)pre-push hook installed$(RESET) — runs ruff check + format --check + py-compile before every push.\n"
+# NEVER `cp` over .git/hooks/pre-push. On this machine that filename is owned by the global
+# AI-attribution guard (tag messages, --no-verify commits, CHANGELOG/CONTRIBUTORS scanning),
+# installed from infra-hub into every repo. This target used to overwrite it, which would have
+# silently removed the last line of defence before anything leaves the machine — the one hook
+# whose whole job is to be un-bypassable. Both gits are covered: `.git` (public) and
+# `.git-private` each have their own hooks directory.
+install-hooks: ## Install the repo's pre-push CI gate into every git dir, without clobbering the attribution guard
+	@for d in .git .git-private; do \
+	  [ -d "$$d/hooks" ] || continue; \
+	  cp platform/ci/hooks/pre-push "$$d/hooks/pre-push-ci"; \
+	  chmod +x "$$d/hooks/pre-push-ci"; \
+	  if [ ! -e "$$d/hooks/pre-push" ]; then \
+	    cp platform/ci/hooks/pre-push "$$d/hooks/pre-push"; \
+	    chmod +x "$$d/hooks/pre-push"; \
+	    printf "$(GREEN)%s/hooks/pre-push installed$(RESET) (no existing hook)\n" "$$d"; \
+	  elif grep -q "pre-push-ci" "$$d/hooks/pre-push" 2>/dev/null; then \
+	    printf "$(DIM)%s/hooks/pre-push already chains the CI gate — refreshed.$(RESET)\n" "$$d"; \
+	  else \
+	    printf "$(BOLD)%s/hooks/pre-push exists and is NOT ours — left untouched.$(RESET)\n" "$$d"; \
+	    printf "  The CI gate is installed beside it as $$d/hooks/pre-push-ci.\n"; \
+	    printf "  To run both, add this as the LAST line of $$d/hooks/pre-push:\n"; \
+	    printf "    exec \"\$$(git rev-parse --git-dir)/hooks/pre-push-ci\" \"\$$@\"\n"; \
+	  fi; \
+	done
+	@printf "$(DIM)Gate: py-compile + ruff check + ruff format --check + unit tests (parallel, ~70s).$(RESET)\n"
 
 clean: ## Remove .venv, build artifacts, and all cache directories
 	@rm -rf $(VENV) platform/cli/src/*.egg-info
@@ -556,16 +578,67 @@ lint-fix: install-dev ## Run ruff --fix (auto-fix all safe issues)
 	@$(VENV)/bin/ruff format platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Auto-fix complete.$(RESET)\n"
 
-typecheck: install-dev ## Run mypy type checker on pipelines/ and platform/services/
+# `platform/cli/src/` — the `examlops` package, 243 source files — is not yet mypy-clean, so it
+# is **ratcheted, not skipped**: the error count may only go down. Skipping it is what let a real
+# `arg-type` error sit in `autopilot_cmd` with this gate reporting green. Lower the baseline
+# whenever the recipe tells you it fell; never raise it.
+CLI_MYPY_BASELINE ?= 0
+
+typecheck: install-dev ## Run mypy on pipelines/, serving/, platform/services/ + ratcheted platform/cli/src/
 	@printf "$(BOLD)Type checking...$(RESET)\n"
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
+	@$(MAKE) --no-print-directory typecheck-cli
 	@printf "$(GREEN)Type check passed.$(RESET)\n"
 
-test: install-dev ## Run the full test suite
-	@$(VENV)/bin/pytest tests/ -v --tb=short
+typecheck-cli: ## mypy over platform/cli/src/, ratcheted at CLI_MYPY_BASELINE (one source of truth)
+	@printf "$(BOLD)Type checking platform/cli/src/ (ratchet: $(CLI_MYPY_BASELINE))...$(RESET)\n"
+	@n=$$($(VENV)/bin/mypy platform/cli/src/ --ignore-missing-imports | grep -c "^platform/cli/src/.*error:" || true); \
+	if [ "$$n" -gt "$(CLI_MYPY_BASELINE)" ]; then \
+		printf "$(RED)platform/cli/src/ has $$n mypy errors; the ratchet is $(CLI_MYPY_BASELINE). Fix the new ones.$(RESET)\n"; \
+		$(VENV)/bin/mypy platform/cli/src/ --ignore-missing-imports || true; \
+		exit 1; \
+	elif [ "$$n" -lt "$(CLI_MYPY_BASELINE)" ]; then \
+		printf "$(GREEN)platform/cli/src/ is down to $$n errors — lower CLI_MYPY_BASELINE to $$n.$(RESET)\n"; \
+	else \
+		printf "$(DIM)platform/cli/src/ holds at $$n known errors.$(RESET)\n"; \
+	fi
 
-test-unit: install-dev ## Run unit tests only
-	@$(VENV)/bin/pytest tests/unit/ -v --tb=short
+# ── Test tiers ───────────────────────────────────────────────────────────────
+# The suite is 2781 unit tests. Run serially that is ~9 minutes, which is long enough that the
+# gate gets skipped — and a gate that gets skipped is not a gate. Across this machine's cores it
+# is ~66s, so the *whole* suite is affordable on every change and no test-selection heuristic is
+# needed to make the inner loop fast. That is the trade deliberately taken here: impact-based
+# selection would shave another minute and would silently miss the many guard tests in this repo
+# that read files rather than import them.
+#
+#   make test-fast   ~70s   inner loop / pre-commit — whole unit suite, parallel, quiet
+#   make gate        ~2min  pre-push — lint + format + typecheck + test-fast + docs
+#   make preflight   ~10min pre-release — full CI mirror incl. Postgres, dashboard, compose
+#
+# JOBS is overridable: `make test-fast JOBS=4` on a loaded laptop, `JOBS=0` to force serial when
+# a failure is suspected of being an isolation bug rather than a real one.
+JOBS ?= auto
+PYTEST_PARALLEL = $(if $(filter 0,$(JOBS)),,-n $(JOBS))
+
+test: install-dev ## Run the full test suite (unit + integration, parallel)
+	@$(VENV)/bin/pytest tests/ $(PYTEST_PARALLEL) --tb=short
+
+test-fast: install-dev ## TIER 1 (~70s) — whole unit suite in parallel; the inner-loop gate
+	@printf "$(BOLD)Unit suite (parallel, JOBS=$(JOBS))...$(RESET)\n"
+	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -q --tb=short --no-header
+
+test-failed: install-dev ## Re-run only the tests that failed last time (then the rest)
+	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -q --tb=short --no-header --last-failed \
+	  --last-failed-no-failures all
+
+test-unit: install-dev ## Run unit tests only (verbose, parallel)
+	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -v --tb=short
+
+test-serial: install-dev ## Run the unit suite single-process — to confirm a parallel-only failure
+	@$(VENV)/bin/pytest tests/unit/ -q --tb=short --no-header
+
+test-slowest: install-dev ## Show the 30 slowest tests — find what to mark `slow` or fix
+	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -q --tb=no --no-header --durations=30
 
 test-integration: install-dev ## Run integration tests only
 	@$(VENV)/bin/pytest tests/integration/ -v --tb=short
@@ -603,6 +676,19 @@ test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.h
 	  --cov=src --cov=pipelines \
 	  --cov-report=html --cov-report=term-missing
 	@printf "$(GREEN)Coverage report: htmlcov/index.html$(RESET)\n"
+
+gate: install-dev ## TIER 2 (~2min) — the pre-push gate: lint · format · typecheck · unit · docs
+	@printf "$(BOLD)Gate 1/5 lint$(RESET)\n"
+	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
+	@printf "$(BOLD)Gate 2/5 format$(RESET)\n"
+	@$(VENV)/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
+	@printf "$(BOLD)Gate 3/5 typecheck$(RESET)\n"
+	@$(MAKE) --no-print-directory typecheck-cli
+	@printf "$(BOLD)Gate 4/5 unit tests$(RESET)\n"
+	@$(MAKE) --no-print-directory test-fast
+	@printf "$(BOLD)Gate 5/5 docs$(RESET)\n"
+	@$(MAKE) --no-print-directory docs-build
+	@printf "\n$(GREEN)$(BOLD)Gate passed — safe to push.$(RESET)\n\n"
 
 check: lint typecheck test dashboard-check ## Run all quality checks: lint · typecheck · test · dashboard
 	@printf "\n$(GREEN)$(BOLD)All checks passed.$(RESET)\n\n"
@@ -720,12 +806,16 @@ ci-examlops: install-dev ## Mirror GitHub 'examlops' job — lint + typecheck + 
 	@printf "$(BOLD)CI · examlops (uv)$(RESET)\n"
 	@$(VENV)/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@$(VENV)/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
-	@$(VENV)/bin/pytest tests/unit/ -v --tb=short --no-header -q
+	@$(MAKE) --no-print-directory typecheck-cli
+	@# `-n auto` mirrors the GitHub job, which runs it too. A "CI mirror" that runs the suite
+	@# differently from CI is the thing this target exists to prevent. (`-v` and `-q` were both
+	@# passed here, which is contradictory; `-q` won, so only `-q` is kept.)
+	@$(VENV)/bin/pytest tests/unit/ -n auto --tb=short --no-header -q
 	@printf "$(GREEN)CI · examlops passed.$(RESET)\n"
 
 ci-control-plane: ## Mirror GitLab 'test:control-plane' job — the control plane service's own tests
 	@printf "$(BOLD)CI · control plane$(RESET)\n"
-	@$(VENV_BIN)/pytest platform/services/control_plane/tests --tb=short -q
+	@$(VENV_BIN)/pytest platform/services/control_plane/tests $(PYTEST_PARALLEL) --tb=short -q
 	@printf "$(GREEN)CI · control plane passed.$(RESET)\n"
 
 ci-frontend: ## Mirror GitLab 'test:frontend' job — dashboard frontend lint + vitest + tsc build
@@ -851,7 +941,7 @@ skipper-test:  ## Run the Skipper agent unit tests
 	@# which is what a second copy of a dependency set always does.
 	@$(VENV)/bin/pip install -q -r platform/services/agent/requirements.txt
 	@$(VENV)/bin/pip install -q pytest-asyncio
-	@$(VENV)/bin/pytest platform/services/agent/tests -v
+	@$(VENV)/bin/pytest platform/services/agent/tests $(PYTEST_PARALLEL) -q
 
 agent-test: skipper-test  ## Alias for `skipper-test` (backward compatibility)
 

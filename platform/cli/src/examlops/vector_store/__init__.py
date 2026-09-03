@@ -28,6 +28,17 @@ class DimensionMismatch(ValueError):
     """An upserted/queried vector does not match the collection dimensionality (R2)."""
 
 
+class EncoderMismatch(ValueError):
+    """A vector produced by one encoder met a collection built by another (ADR 0043 clause 2).
+
+    Separate from :class:`DimensionMismatch` because the two failures are not alike. A wrong
+    dimension cannot be scored at all, so it announces itself. Two encoders of the *same*
+    dimension produce vectors that score perfectly happily against each other and mean nothing —
+    the search returns confident, ranked, wrong results, and nothing downstream can tell. That
+    silent corruption is the failure ADR 0043 exists to prevent.
+    """
+
+
 class CollectionNotFound(KeyError):
     """No such collection for this tenant."""
 
@@ -76,10 +87,25 @@ def _score(metric: str, q: list[float], v: list[float]) -> float:
 class VectorStore(Protocol):
     name: str
 
-    def create_collection(self, name: str, dim: int, metric: str, tenant: str) -> None: ...
-    def upsert(self, coll: str, items: list[VecItem], tenant: str) -> None: ...
+    def create_collection(
+        self,
+        name: str,
+        dim: int,
+        metric: str,
+        tenant: str,
+        encoder_id: str | None = ...,
+    ) -> None: ...
+    def upsert(
+        self, coll: str, items: list[VecItem], tenant: str, encoder_id: str | None = ...
+    ) -> None: ...
     def search(
-        self, coll: str, vector: list[float], k: int, flt: dict | None, tenant: str
+        self,
+        coll: str,
+        vector: list[float],
+        k: int,
+        flt: dict | None,
+        tenant: str,
+        encoder_id: str | None = ...,
     ) -> list[Hit]: ...
     def reindex(self, coll: str, tenant: str) -> None: ...
 
@@ -105,20 +131,76 @@ class SqliteVectorStore:
         return dict(row)
 
     def create_collection(
-        self, name: str, dim: int, metric: str = "cosine", tenant: str = "default"
+        self,
+        name: str,
+        dim: int,
+        metric: str = "cosine",
+        tenant: str = "default",
+        encoder_id: str | None = None,
     ) -> None:
+        """Declare a collection. ``encoder_id`` stamps which encoder produced its vectors."""
         if metric not in _METRICS:
             raise ValueError(f"metric '{metric}' not in {_METRICS}")
         with get_db() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO vector_collections (name, tenant, dim, metric)
-                   VALUES (?,?,?,?)""",
-                (name, tenant, dim, metric),
+                """INSERT OR REPLACE INTO vector_collections (name, tenant, dim, metric, encoder_id)
+                   VALUES (?,?,?,?,?)""",
+                (name, tenant, dim, metric, encoder_id),
             )
 
-    def upsert(self, coll: str, items: list[VecItem], tenant: str = "default") -> None:
+    @staticmethod
+    def _check_encoder(meta: dict, encoder_id: str | None, coll: str) -> None:
+        """Refuse a cross-encoder operation (ADR 0043 clause 2). Never guesses.
+
+        Both "the collection is unstamped" and "the caller named no encoder" pass, and neither is
+        a statement that the vectors are compatible — it is the absence of one. This mirrors the
+        `measured` flag on SLOs and `usage_reported_rate` on eval runs: unverified must not be
+        recorded, or reported, as verified. A stamped collection meeting a named encoder is the
+        one case where a real comparison exists, and that is the case this refuses.
+
+        Delegates to `examlops.embeddings.guard_compatible`, which the ADR found had "nothing to
+        guard" — it was written for exactly this check and reached by no caller.
+        """
+        stamped = meta.get("encoder_id")
+        if not stamped or not encoder_id:
+            return
+        if stamped != encoder_id:
+            # B5's hook (ADR 0043 clause 4): leave a trail the operator can act on. It records a
+            # recommendation and never starts a reindex — a search that quietly re-embedded a
+            # large corpus would turn one query into an unbounded job nobody asked for.
+            try:
+                from examlops.embeddings import recommend_reindex
+
+                recommend_reindex(
+                    coll,
+                    str(meta.get("tenant") or "default"),
+                    from_encoder=str(stamped),
+                    to_encoder=str(encoder_id),
+                )
+            except Exception:  # noqa: BLE001 - the refusal below is what matters
+                pass
+            try:
+                from examlops.embeddings import guard_compatible
+
+                guard_compatible(str(stamped), str(encoder_id))
+            except Exception as exc:
+                raise EncoderMismatch(
+                    f"collection '{coll}' was built with encoder {stamped!r} but the vector "
+                    f"comes from {encoder_id!r} — same-dimension vectors from different encoders "
+                    "score against each other and mean nothing. Reindex it: "
+                    f"exa embedding reindex {coll} {encoder_id}"
+                ) from exc
+
+    def upsert(
+        self,
+        coll: str,
+        items: list[VecItem],
+        tenant: str = "default",
+        encoder_id: str | None = None,
+    ) -> None:
         meta = self._collection(coll, tenant)
         dim = int(meta["dim"])
+        self._check_encoder(meta, encoder_id, coll)
         t0 = time.time()
         for it in items:
             if len(it.vector) != dim:
@@ -143,11 +225,15 @@ class SqliteVectorStore:
         k: int = 5,
         flt: dict | None = None,
         tenant: str = "default",
+        encoder_id: str | None = None,
     ) -> list[Hit]:
         meta = self._collection(coll, tenant)
         dim, metric = int(meta["dim"]), meta["metric"]
         if len(vector) != dim:
             raise DimensionMismatch(f"query vector dim {len(vector)} != collection dim {dim}")
+        # Queried with the wrong encoder, this returns confident, ranked, meaningless results —
+        # the failure mode a dimension check cannot see.
+        self._check_encoder(meta, encoder_id, coll)
         t0 = time.time()
         with get_db() as conn:
             rows = conn.execute(
@@ -225,13 +311,16 @@ class PgVectorStore:  # pragma: no cover - needs Postgres+pgvector
             raise RuntimeError("psycopg not installed; pip install examlops[vector]") from exc
         return psycopg.connect(self.dsn)
 
-    def create_collection(self, name, dim, metric="cosine", tenant="default"):
+    # `encoder_id` is carried here too, unused, so the two stores stay one interface. A seam
+    # whose implementations take different arguments is not a seam — the day pgvector is
+    # implemented, a caller that stamps its encoder would silently stop being checked.
+    def create_collection(self, name, dim, metric="cosine", tenant="default", encoder_id=None):
         raise NotImplementedError("PgVectorStore is provisioned via the Helm chart / migrations")
 
-    def upsert(self, coll, items, tenant="default"):
+    def upsert(self, coll, items, tenant="default", encoder_id=None):
         raise NotImplementedError
 
-    def search(self, coll, vector, k=5, flt=None, tenant="default"):
+    def search(self, coll, vector, k=5, flt=None, tenant="default", encoder_id=None):
         raise NotImplementedError
 
     def reindex(self, coll, tenant="default"):

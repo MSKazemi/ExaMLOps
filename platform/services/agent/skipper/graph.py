@@ -8,7 +8,7 @@ from skipper import config, supervisor
 from skipper.capabilities import read_only_local_tools, tool_name
 from skipper.llm import build_llm
 from skipper.memory import build_checkpointer, build_store, build_trim_middleware
-from skipper.prompts import SYSTEM_PROMPT
+from skipper.prompts import system_prompt
 from skipper.tools import TOOLS
 from skipper.tools import memory as memory_tools
 
@@ -80,5 +80,5 @@ def build_graph(
     if config.AGENT_SUMMARIZE_ENABLED:
         kwargs["middleware"] = [build_trim_middleware()]
     return create_agent(
-        llm, tools=tools, system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer, **kwargs
+        llm, tools=tools, system_prompt=system_prompt(), checkpointer=checkpointer, **kwargs
     )

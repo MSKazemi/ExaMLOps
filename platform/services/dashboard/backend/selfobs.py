@@ -15,6 +15,7 @@ import time
 from collections import deque
 from typing import Any
 
+import audit_write
 from dbconn import connect
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -133,10 +134,13 @@ def record_ui_action(action: str, target: str, actor: str, details: str = "") ->
             ).fetchone()
             if not exists:
                 return False
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) "
-                "VALUES (?,?,?,?,?)",
-                ("dashboard-ui", actor, action, target, details),
+            audit_write.audit(
+                actor,
+                action,
+                target,
+                {"detail": details} if details else None,
+                source="dashboard-ui",
+                conn=conn,
             )
             conn.commit()
             return True

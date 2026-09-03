@@ -42,6 +42,31 @@ All ops accept `--tenant <name>` for D6 isolation.
 - **Metrics (R7):** index build cost + search latency are recorded to
   `platform_db.vector_metrics` (and Prometheus in production).
 
+## Encoder compatibility (ADR 0043)
+
+A collection can record which encoder produced its vectors, and mismatches are then refused:
+
+```python
+store.create_collection("docs", dim=384, encoder_id="minilm@v1")
+store.upsert("docs", items, encoder_id="minilm@v1")
+store.search("docs", q, encoder_id="e5@v2")     # EncoderMismatch
+```
+
+**This is not the dimension check, and the difference is the whole point.** A wrong dimension
+cannot be scored at all, so it announces itself. Two encoders of the *same* dimension produce
+vectors that score against each other perfectly happily and mean nothing — the search returns
+confident, ranked, wrong results, and nothing downstream can tell. `EncoderMismatch` is a separate
+error from `DimensionMismatch` because an operator needs to know which of the two happened: one is
+unscoreable, the other is scoreable and wrong.
+
+**Unverified is not verified.** An unstamped collection, or a call that names no encoder, passes —
+you cannot mismatch an identity nobody asserted, and refusing would break every corpus written
+before the column existed. Treat that as the absence of a check rather than a clean bill of health:
+stamp your collections if you want the guarantee.
+
+The B3 semantic cache and B4 RAG carry the encoder too — see
+[Semantic caching](model-gateway.md#semantic-caching-b3) and [RAG](rag.md).
+
 ## Interface
 
 ```python

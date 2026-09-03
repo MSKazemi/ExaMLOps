@@ -228,7 +228,7 @@ Projects are callable by LLM agents over MCP (`exa mcp serve`). Read tools `proj
 budget vs. consumption — with no secret exposure. The write tools `project_assign_model` and
 `project_add_member` are registered only when writes are enabled (`--allow-writes` /
 `EXAMLOPS_MCP_ALLOW_WRITES=1`), pass the same least-privilege `agent_write` policy gate as every
-other mutating tool, and are audited. See `docs/reference/commands.md` → *Agent surface*.
+other mutating tool, and are audited. See `docs/reference/cli-generated.md` → *Agent surface*.
 
 ## 14. Automatic onboarding — one project per model (CLI · Dashboard · Jupyter)
 
@@ -279,7 +279,7 @@ dry-run), so a re-run is safe and shows exactly what (if anything) changed.
 
 ## Related
 
-- `docs/reference/commands.md` — full `exa project` command tree
+- `docs/reference/cli-generated.md` — full `exa project` command tree
 - `docs/guides/rbac-multi-tenancy.md` — how membership grants are enforced
 - ADRs 0086 (unified workspace), 0087–0090 (connections, project-scoped serving/pipelines,
   project FinOps, workbenches), 0084 (Docker resource envelopes), 0057 (authn/authz/multitenancy)

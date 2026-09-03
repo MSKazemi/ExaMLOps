@@ -85,3 +85,24 @@ def test_an_empty_answer_never_passes():
     ev = oq.MentionsAll(questions=oq.by_id())
     for item in oq.to_items({q.id: "" for q in oq.OPERATOR_QUESTIONS}):
         assert ev.score(item).score == 0.0
+
+
+def test_a_global_option_between_exa_and_the_subcommand_still_counts_as_naming_it():
+    """`exa --json --yes agent memory delete` is the same command as `exa agent memory delete`.
+
+    Measured 2026-08-28 in a 120-question coverage run: that exact answer scored 0, because the
+    grader matched the expected command as a literal substring and the global options broke it.
+    The agent was right and the number said otherwise, which is the one failure a measuring stick
+    must not have.
+    """
+    from examlops.evaluation.operator_qa import Question, normalise
+
+    q = Question("x", "y", "z", (("exa agent memory delete",),))
+    assert q.missing("```bash\nexa --json --yes agent memory delete pref\n```") == []
+    # Options that consume a value must take it with them, or a stray `yaml` survives.
+    assert normalise("exa -o yaml status") == "exa status"
+    assert normalise("exa --context prod --json models list") == "exa models list"
+    # Prose containing the word must be left alone, and a genuinely different command must not
+    # be normalised into the expected one.
+    assert normalise("exa is the CLI") == "exa is the cli"
+    assert q.missing("exa --json serve check") == [("exa agent memory delete",)]

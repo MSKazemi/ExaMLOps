@@ -21,13 +21,13 @@ from __future__ import annotations
 import logging
 
 from skipper import config, router, skills
-from skipper.prompts import SYSTEM_PROMPT
+from skipper.prompts import system_prompt
 
 log = logging.getLogger("skipper.supervisor")
 
 
 def _specialist_prompt(playbook: str) -> str:
-    return f"{SYSTEM_PROMPT}\n\n## Your role this turn\n{playbook}"
+    return f"{system_prompt()}\n\n## Your role this turn\n{playbook}"
 
 
 def build_supervisor(llm, checkpointer, *, store=None, inrepo_tools, extra_tools=None):

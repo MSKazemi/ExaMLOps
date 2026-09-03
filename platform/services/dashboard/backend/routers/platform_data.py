@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 
+import audit_write
 from auth import require_role
 from dbconn import connect
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -24,10 +25,7 @@ def _db_path() -> str:
 
 
 def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
-    conn.execute(
-        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-        ("dashboard", actor, action, target, json.dumps(details)),
-    )
+    audit_write.audit(actor, action, target, details, conn=conn)
 
 
 @router.get("/traffic-rules")

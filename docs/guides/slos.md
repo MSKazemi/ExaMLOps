@@ -48,7 +48,96 @@ slos:
 
 SLOs are **versioned** (re-applying bumps the version) and **per-tenant** (D6). SLI
 sources map to the other Next-Gen tracks: `c1` (latency/cost/error), `c2` (eval
-quality), `c5` (drift/data-quality), `availability`, or raw `prometheus`.
+quality), `c5` (drift verdicts), `c8` (fairness disparity), `availability`, or raw
+`prometheus`.
+
+## Feeding the SLI
+
+```bash
+exa slo ingest JPCP        # pull samples from the platform's own telemetry
+exa slo record JPCP latency-p99 995 1000    # or push one interval by hand
+```
+
+Until `ingest` existed every SLI arrived by hand, so an SLO measured whatever someone remembered
+to type — while the spec's `sli_source` was stored and read by nothing.
+
+**`c2` (eval quality) is ingested today.** An `eval_suite_results` row is already a proportion over
+a known sample size, which is exactly the shape an SLI needs; `sli_query` picks the metric —
+`pass_rate`, or `agent-safety:answer_rate` to pin one suite. A metric that is not a ratio is
+refused rather than coerced: an SLI is good/total, and rounding a latency into a count would
+invent a denominator.
+
+**`c5` (drift) counts recorded verdicts.** `good` is the drift evaluations that came back OK,
+`total` is the evaluations in the window; `--query` pins one `drift_kind`.
+
+```bash
+exa slo set JPCP not-drifting --target 0.95 --source c5 --query concept
+```
+
+It reads `drift_events` rather than raw snapshots on purpose: one recorded verdict is one
+evaluation the real detector already made, so there is no second copy of the threshold rule to
+diverge from `exa drift status` when a drift provider is swapped. **It does not cover prediction
+drift** — `exa drift status` computes that live and persists no verdict, so a model with only
+prediction drift reports the skip reason rather than an empty SLI.
+
+**`c8` (fairness) counts declared slice attributes.** `good` is the attributes whose disparity is
+within threshold, `total` is the ones that could actually be **measured**.
+
+```bash
+exa slo set JPCP fair --target 0.99 --source c8 --gate
+```
+
+An attribute whose slices are all below the min-sample guard is **excluded, not counted as
+good** — counting it would let a model with no data score a perfect fairness SLI. The registry
+comes from the same `effective_fairness_config` the promotion gate uses, so the SLI and the gate
+can never disagree about which attributes a model declares.
+
+**The remaining sources are reported as un-ingested, with the reason** — `c1` because
+`gateway_calls` persists cost and tokens but neither latency nor an error flag; `availability`
+because no serving probe is persisted; `prometheus` because Prometheus evaluates its own rules
+(use `exa slo generate`). This is not an oversight to tidy away: a source that silently records
+nothing is indistinguishable downstream from a healthy service nobody asked about, which is the
+trap the `measured` flag already exists to close.
+
+A **misspelled** source is reported differently again — `unrecognised sli_source '<x>' — expected
+one of [...]`. A typo and a deliberately-unbuilt source read identically until 2026-09-02, which
+meant a spec written straight from ADR 0023 (`--source c5`) was told the source did not exist.
+
+## When an SLO breaks
+
+A breach is audited. Every sample — hand-typed or ingested — goes through one path, and the moment
+an error budget goes from intact to spent it writes a D4 `slo_breached` event with the SLI, target,
+remaining budget, burn rate and sample count:
+
+```bash
+exa audit --last 7d | grep slo_breached
+```
+
+Only the **transition** is audited. A sustained breach re-recording itself every interval would
+produce an audit trail that grows without new information, and recovery is not audited at all — a
+budget that refills is a rolling-window artefact, not a decision anyone made.
+
+## Publishing the SLIs Prometheus cannot see
+
+`exa slo generate` emits burn-rate **alert** rules that range over a Prometheus series. For an SLI
+the platform ingests itself — `c2`, `c5`, `c8` — that series does not exist unless you publish it,
+so those alerts can never fire:
+
+```bash
+exa slo export-metrics --out /var/lib/node_exporter/textfile/examlops.prom
+# then: node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile
+```
+
+Run it on a timer (cron, a systemd timer, a Prefect schedule) — it is a pure read, so re-running
+it costs a query and rewrites one file.
+
+It publishes `examlops_slo_sli`, `_target`, `_budget_remaining`, `_burn_rate`, `_samples` and
+`_measured`, plus vector-store latency and item gauges.
+
+**An unmeasured SLO exports `measured=0` and no SLI at all.** Its placeholder 1.0 would put a
+perfect ratio on a dashboard for something nobody has measured — and a burn-rate alert cannot fire
+on a perfect ratio, which is exactly the silence this whole section exists to break. Alert on
+`examlops_slo_measured == 0` if you want to know an SLO has gone unfed.
 
 ## Generating Prometheus rules
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 # ── Engine interface ──────────────────────────────────────────────────────────
 
@@ -59,8 +59,13 @@ class ChatEngine(Protocol):
     def chat_stream(self, messages: list[dict[str, Any]], **kw: Any): ...
 
 
-def supports_chat(engine: Any) -> bool:
-    """True if ``engine`` accepts messages natively (R-V4 decides pass-through vs flatten)."""
+def supports_chat(engine: Any) -> TypeGuard[ChatEngine]:
+    """True if ``engine`` accepts messages natively (R-V4 decides pass-through vs flatten).
+
+    Declared as a ``TypeGuard`` rather than plain ``bool`` because the guard is the whole
+    point: the gateway calls ``engine.chat(...)`` inside the true branch, and a ``bool``
+    return leaves that call reading as an attribute the engine contract does not have.
+    """
     return callable(getattr(engine, "chat", None))
 
 

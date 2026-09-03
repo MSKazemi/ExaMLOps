@@ -26,6 +26,8 @@ __all__ = [
     "list_policy_bundles",
     "list_relations",
     "list_slo_specs",
+    "ANNEX_IV",
+    "DECLARATION",
     "list_technical_files",
     "record_fairness_sample",
     "record_slo_sample",
@@ -38,6 +40,11 @@ __all__ = [
     "store_policy_bundle",
     "upsert_slo_spec",
 ]
+
+#: The Annex-IV technical file. Rows written before ``kind`` existed carry NULL and are this.
+ANNEX_IV = "annex_iv"
+#: The Annex-V EU Declaration of Conformity (ADR 0012 clause 4).
+DECLARATION = "declaration"
 
 
 def get_compliance_system(model: str) -> dict[str, Any] | None:
@@ -191,13 +198,18 @@ def list_slo_specs(*, model: str | None = None, tenant: str | None = None) -> li
     return [dict(r) for r in rows]
 
 
-def list_technical_files(model: str) -> list[dict[str, Any]]:
+def list_technical_files(model: str, *, kind: str = ANNEX_IV) -> list[dict[str, Any]]:
+    """Versions of one compliance document kind, newest first.
+
+    Defaults to the Annex-IV technical file, so every caller written before the Declaration of
+    Conformity existed keeps listing exactly what it listed.
+    """
     init_db()
     with get_db() as conn:
         rows = conn.execute(
             "SELECT version, gaps, generated_at, generated_by FROM technical_files "
-            "WHERE model=? ORDER BY version DESC",
-            (model,),
+            "WHERE model=? AND COALESCE(kind, ?)=? ORDER BY version DESC",
+            (model, ANNEX_IV, kind),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -258,18 +270,27 @@ def save_technical_file(
     tenant: str = "default",
     gaps: int = 0,
     generated_by: str | None = None,
+    kind: str = ANNEX_IV,
 ) -> int:
-    """Persist a new (versioned) technical file; returns the new version (R5)."""
+    """Persist a new (versioned) compliance document; returns the new version (R5).
+
+    **Versions run per (model, kind).** One sequence shared across document kinds would make
+    "technical file v4" and "declaration v5" describe the same model at the same moment with
+    numbers that suggest one is newer than the other. The NULL-is-Annex-IV read keeps every
+    pre-existing row in its own sequence, so no technical file changes version.
+    """
     init_db()
     with get_db() as conn:
         prev = conn.execute(
-            "SELECT MAX(version) AS v FROM technical_files WHERE model=?", (model,)
+            "SELECT MAX(version) AS v FROM technical_files WHERE model=? AND COALESCE(kind, ?)=?",
+            (model, ANNEX_IV, kind),
         ).fetchone()
         version = (prev["v"] or 0) + 1
         conn.execute(
-            """INSERT INTO technical_files (model, tenant, version, gaps, content, generated_by)
-               VALUES (?,?,?,?,?,?)""",
-            (model, tenant, version, gaps, content, generated_by),
+            """INSERT INTO technical_files
+                   (model, tenant, version, gaps, content, generated_by, kind)
+               VALUES (?,?,?,?,?,?,?)""",
+            (model, tenant, version, gaps, content, generated_by, kind),
         )
     return version
 

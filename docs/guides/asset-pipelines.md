@@ -46,6 +46,45 @@ exa assets graph
 # jpcp_model ← jpcp_features
 ```
 
+## What declares itself
+
+You do not have to type the whole DAG in. **Recording a dataset revision advances that dataset's
+asset automatically**, so the graph starts building itself from the platform's most common source
+event:
+
+```bash
+exa data snapshot PM100 --backend minio --path ./data/PM100
+exa assets status jpcp_model      # stale, because PM100 just moved
+```
+
+Every path that records a revision feeds it — the CLI, the synthetic-data generator and the Prefect
+pipeline generator all call one function — so nothing has to know the asset layer exists.
+
+Two behaviours worth knowing:
+
+- **Only a genuinely new revision advances the version.** Re-recording the same revision is a no-op
+  (the recorder is idempotent), because reporting a change that did not happen would make every
+  downstream model stale for nothing, and a freshness signal that cries wolf is one nobody acts on.
+- **It is best-effort.** The revision is the durable fact; the asset graph is a derived view of it.
+  If the asset layer is unavailable the revision is still recorded.
+
+**Applying a feature view declares it too**, with its source dataset upstream:
+
+```python
+apply_view(FeatureView(name="jpcp_features", entity="node", features=[...], source="PM100"))
+```
+
+```
+PM100 → jpcp_features        # exa assets graph, with nothing typed in
+```
+
+Pipeline runs and model registrations do **not** yet declare themselves — those are still
+`exa assets declare`. That is deliberate rather than pending: lineage events, the obvious source
+for them, are revision- and version-scoped (`PM100@r1`, `jpcp/18`) because each records one
+immutable run, while an asset is an entity with a current version. Deriving assets from them would
+produce one throwaway node per revision that can never go stale or be materialized. The two
+producers that exist are the ones whose call sites name an entity and its dependency directly.
+
 ## Freshness
 
 An asset is **stale** when it was never materialized, when any declared upstream advanced
@@ -86,6 +125,43 @@ exa assets materialize jpcp_model
 
 This is the core win: a data change re-runs the *stale slice*, not the whole pipeline
 (R4 / GWT-3).
+
+## Where the work runs
+
+Materialization goes through an `AssetOrchestrator`. Two ship:
+
+| Orchestrator | What it does |
+|---|---|
+| `local` (**default**) | Calls the production function in this process. |
+| `scheduler` | Submits the build through the phase-23 HPC seam — mock, Slurm or Flux, whichever `EXAMLOPS_HPC_SCHEDULER` names. |
+
+```bash
+exa assets materialize jpcp_model --orchestrator scheduler
+export EXAMLOPS_ASSET_ORCHESTRATOR=scheduler     # or set it for every build
+```
+
+`local` stays the default deliberately: an asset layer that began submitting scheduler jobs on
+upgrade would surprise every existing caller. An unrecognised value falls back to `local` too — a
+typo should leave the asset built, not route it to an engine nobody configured.
+
+### What the scheduler path needs, and what it does without it
+
+A scheduler job is a separate process and cannot call an in-process closure, so the submitted
+command re-enters the CLI as `exa assets materialize <name> --no-deps --orchestrator local`. Both
+flags matter: without `--no-deps` the job re-walks the graph and submits again once per ancestor,
+and without `--orchestrator local` it submits itself.
+
+That job therefore needs `exa` installed and reachability to the same `platform.db` — a shared
+filesystem, or the Postgres backend — because **it** is what bumps the version. Under
+`EXAMLOPS_HPC_SCHEDULER=mock` the job runs inline and both hold trivially.
+
+If no scheduler is reachable, the build **falls back to local and records why** in the lineage
+facet. An absent scheduler is an environment fact, not an asset failure; leaving the asset unbuilt
+would be the worse answer.
+
+Every materialization's lineage event names the orchestrator that produced it and carries the
+scheduler job id when there was one — an asset built on a cluster and one built in a notebook are
+different facts.
 
 ## Lineage, policy, audit
 
