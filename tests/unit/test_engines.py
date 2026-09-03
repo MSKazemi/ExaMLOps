@@ -124,7 +124,12 @@ def test_quantize_without_artifacts_still_boms(tmp_path):
     assert get_model_bom("JPCP", "18-fp8") is not None
 
 
-# ── GWT-A4: provenance-only quantization warns on a CPU host (spec R-A4) ───────
+# ── GWT-A4: provenance-only quantization warns on EVERY host (spec R-A4, revised) ──
+#
+# R-A4 originally warned only on a CPU host, on the premise that a GPU host ran the real
+# quantizer. Building ADR 0117's parity gate established that it does not: no quantizer is
+# invoked on either path, so a GPU host received a signed, BOM'd "quantized" version with
+# unchanged weights and no warning at all. The warning is now unconditional.
 
 
 def test_gwta4_quantize_warns_provenance_only_on_cpu(monkeypatch):
@@ -134,14 +139,38 @@ def test_gwta4_quantize_warns_provenance_only_on_cpu(monkeypatch):
     assert v == "20-awq"  # version still registered (D3 sign + BOM path exercisable)
 
 
-def test_gwta4_quantize_no_provenance_warning_on_gpu(monkeypatch, recwarn):
+def test_gwta4_quantize_also_warns_on_a_gpu_host(monkeypatch):
+    """A GPU host must not be told a story the code does not carry out: the quantizer is not
+    wired in there either, so silence would read as 'the real thing ran'."""
     monkeypatch.setattr(engines, "_gpu_available", lambda: True)
-    v = engines.quantize_model("JPCP", "21", "gptq")
+    with pytest.warns(RuntimeWarning, match="provenance-only"):
+        v = engines.quantize_model("JPCP", "21", "gptq")
     assert v == "21-gptq"
-    assert not any(
-        issubclass(w.category, RuntimeWarning) and "provenance-only" in str(w.message)
-        for w in recwarn
-    )
+
+
+def test_the_gpu_warning_says_why_a_gpu_is_not_enough(monkeypatch):
+    monkeypatch.setattr(engines, "_gpu_available", lambda: True)
+    with pytest.warns(RuntimeWarning, match="not wired in yet"):
+        engines.quantize_model("JPCP", "22", "fp8")
+
+
+def test_quantize_never_claims_the_weights_changed(monkeypatch):
+    """The flag ADR 0117's gate reads. True on any path would make the gate compare a model
+    against itself and call it parity."""
+    import json
+
+    from examlops.data import get_db
+
+    for gpu in (False, True):
+        monkeypatch.setattr(engines, "_gpu_available", lambda gpu=gpu: gpu)
+        with pytest.warns(RuntimeWarning):
+            engines.quantize_model("JPCP", f"3{int(gpu)}", "int8")
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT details FROM audit_events WHERE action='model_quantized'"
+        ).fetchall()
+    assert rows
+    assert all(json.loads(r["details"])["weights_transformed"] is False for r in rows)
 
 
 def test_gwta4_gpu_available_false_without_torch_cuda(monkeypatch):

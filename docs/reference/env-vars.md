@@ -253,13 +253,22 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 |---|---|---|
 | `EXAMLOPS_LAKEFS_ENDPOINT` / `_REPO` / `_REF` | unset / dataset / `main` | **A1** data versioning — set the endpoint to use lakeFS commit ids; else a deterministic content hash. |
 | `EXAMLOPS_DATASET_REVISION` | unset | **A1** pin a pipeline run to a recorded dataset revision (set by `exa pipeline run --dataset-revision`). |
+| `EXAMLOPS_DATA_CONTRACT_GATE` | `enforce` | **A5** training-gate mode (ADR 0005 clause 2): `enforce` fails the run closed on an error-severity contract violation, `warn` records it and continues, `off` skips. An unrecognised value falls back to `enforce` — a typo must not quietly disable a gate that fails closed by design. Dummy runs and datasets with no contract are skipped with a recorded reason. |
+| `EXAMLOPS_ASSET_ORCHESTRATOR` | `local` | **A4** which engine materializes an asset (ADR 0036): `local` runs the production function in-process, `scheduler` submits it through the phase-23 HPC seam. An unrecognised value falls back to `local` — a typo must leave the asset built, not route it to an engine nobody configured. Override per run with `exa assets materialize --orchestrator`. |
+| `EXAMLOPS_REINDEX_ORCHESTRATOR` | `inline` | **A6** where a blue-green reindex runs (ADR 0043 clause 4): `inline` in the calling process, `scheduler` submits it through the phase-23 HPC seam (the case the clause names — large corpora). An unrecognised value falls back to `inline`; an unreachable scheduler falls back too and records `inline-fallback`. Override per run with `exa embedding reindex --scheduler` / `--inline`. |
+| `EXAMLOPS_INFERENCE_EMBEDDING_DIM` | unset | **A5** inference-gate embedding width. When set, a request whose embedding is the wrong length is refused with 422. Never defaulted — an embedding width is a fact about a use case, not a platform constant. |
 | `EXAMLOPS_OPENLINEAGE_URL` | unset (no-op) | **A2** OpenLineage — Marquez endpoint; unset ⇒ `emit_lineage` skips HTTP but still dual-writes `platform_db`. |
 | `OTEL_SDK_DISABLED` | `true` | **C1** master tracing switch; `false` enables OTLP export of GenAI spans. |
 | `EXAMLOPS_GENAI_CAPTURE_CONTENT` | unset (off) | **C1** capture prompt/completion content on spans (redactor-gated, D8). |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | **C1** OpenTelemetry's comma-separated convention opt-in. Listing `gen_ai_latest_experimental` switches captured content from `gen_ai.prompt`/`gen_ai.completion` to the structured `gen_ai.input.messages`/`gen_ai.output.messages`. Absent it, the pinned 1.27.0 attributes keep being emitted. |
 | `EXAMLOPS_VAULT_ADDR` / `EXAMLOPS_SECRETS_KEY` | unset | **D7** secrets — OpenBao address; else Fernet-local store keyed by `EXAMLOPS_SECRETS_KEY` (or `DASHBOARD_SECRET_KEY`). |
 | `EXAMLOPS_VAULT_STRICT` | unset (fall back) | When truthy, a configured-but-unreachable OpenBao/Vault **fails the read** instead of silently downgrading to the local store or an environment variable. Set it wherever Vault is the system of record. |
 | `EXAMLOPS_SECRET_TENANTS` | unset | **D7** per-tenant secret path-prefix scoping. |
 | `EXAMLOPS_MULTITENANCY` | unset (off) | **D6** RBAC — off ⇒ every `authz.check` allows (single-tenant compat); truthy ⇒ default-deny enforcement. |
+| `RAY_SHADOW_WORKERS` | `2` | Threads for **shadow mirroring** (ADR 0024 clause 1). A pool of its own — never the prediction pool — so a shadow slower than the champion cannot take threads from the traffic it is shadowing. |
+| `RAY_SHADOW_MAX_INFLIGHT` | `16` | Cap on concurrent shadow requests. Excess is **dropped and counted** (`examlops_shadow_total{status="dropped"}`), never queued: an unbounded queue would turn a slow shadow into unbounded memory growth on a serving replica. |
+| `RAY_SHADOW_CONFIG_TTL` | `30` | Seconds the `shadow_config` lookup is cached. It is consulted per request, so a SQLite read per prediction would put the shadow's cost on the production path. |
+| `EXAMLOPS_GUARDRAIL_MODE` | `monitor` | **D8** guardrails at the **gateway** boundary (ADR 0026 clause 3) — every `GatewayClient.chat` is scanned on the way in and on the way out. `monitor` (default) records findings to `guardrail_events` and changes nothing a caller can observe; `enforce` blocks injection/toxicity and redacts PII and secrets, failing closed on a scanner error; `off` skips the scan at no cost. An unrecognised value falls back to `monitor` rather than off, so a typo cannot silently disable the boundary. |
 | `EXAMLOPS_SIGNING_KEY` | unset | **D3** supply-chain — HMAC model-signing key; else read from D7 secret `model-signing/key`. |
 | `EXAMLOPS_SERVING_BACKEND` | `ray-compose` | **E1** serving backend — `ray-compose` (default) or `kserve-k8s`. |
 | `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback) or `pgvector`. |
@@ -489,6 +498,23 @@ Cross-session memory for the agent (procedures / incidents / preferences / KB). 
 | `AGENT_MEMORY_SHARED_BUCKET` | `global` | Tenant name of the shared memory bucket every project can read (cross-project tribal knowledge). |
 | `AGENT_ACTOR` | `$EXAMLOPS_ACTOR`/`$USER`/`operator` | Actor recorded in preference memory + memory audit events. |
 
+### Versioned system prompt (ADR 0009)
+
+Skipper resolves its system prompt from the prompt registry as `skipper-system@<label>` instead of
+reading a Python constant, so a prompt change is a label move rather than a code deploy, and can be
+rolled back. The literal in `skipper/prompts.py` remains the seed and the fail-safe: an absent,
+unreachable or empty registry falls back to it silently, so the agent always starts.
+
+Seed it once with `python -c "from skipper.prompts import seed_system_prompt; seed_system_prompt()"`
+(idempotent, no behaviour change), then `exa prompt label skipper-system prod --version N` to move
+it and `exa prompt rollback skipper-system prod` to go back.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SKIPPER_PROMPT_REGISTRY` | `1` | Resolve the system prompt from the registry. `0`/`false`/`no`/`off` ⇒ always use the literal in `skipper/prompts.py`. |
+| `EXAMLOPS_PROMPT_GATE_LABELS` | `prod` | **B1** comma-separated prompt labels whose moves are gated by the C3 eval regression check (ADR 0009 clause 4). Gating `dev`/`staging` too would deadlock the registry — the gate reads its baseline from a labelled version. |
+| `SKIPPER_PROMPT_LABEL` | `prod` | Which label to resolve (`dev`/`staging`/`prod`), so a staging agent can run an unpromoted prompt. |
+
 ### Self-instrumentation (Phase 2, ADR 0103)
 
 The reactive chat loop records each turn's tool calls into the shared `examlops.agentops` tables so `tool_success_rate` reflects real usage, and guards the turn with an in-loop circuit-breaker. Both are best-effort/fail-open — a missing `examlops.agentops` or `platform.db` never breaks a chat turn.
@@ -527,6 +553,7 @@ The degradation is graceful but no longer silent: `make skipper-knowledge-ingest
 | `AGENT_KNOWLEDGE_ENABLED` | `true` | Master switch for the docs-RAG tier. `false` ⇒ `search_knowledge` always uses ripgrep. |
 | `AGENT_KNOWLEDGE_KB` | `skipper-knowledge` | Vector-store collection name for the indexed docs. |
 | `AGENT_KNOWLEDGE_ROOTS` | `docs;design/adr` | Semicolon-separated roots to ingest (only `*.md` files). |
+| `AGENT_KNOWLEDGE_K` | `10` | How many chunks `search_knowledge` retrieves per question. Measured 2026-08-28: for *"confirm the Ray Serve deployment has its models loaded and is returning inference responses"* the chunk naming `exa serve check` is retrieved at ranks 7, 8, 10, 13 and 18 — the previous hard-coded `5` cut it off and the agent answered with the plausible commands ranked above it. Raise for recall, lower to spend less context. |
 | `AGENT_KNOWLEDGE_CHUNK_SIZE` / `AGENT_KNOWLEDGE_OVERLAP` | `60` / `15` | Chunk size (words) and overlap for `rag.chunk_text`. |
 
 `MLFLOW_TRACKING_URI`, `CONTROL_PLANE_URL`, and `CONTROL_PLANE_TOKEN` are shared with the pipeline / control plane sections above — set them once and the agent picks them up automatically. The agent exposes 45 base tools across 10 groups (plus 3 memory tools when the store is enabled); the **14 write/destructive tools** pause for operator confirmation (`Proceed? [y/N]`) before acting.
@@ -699,6 +726,7 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 | `EXAMLOPS_GRID_INTENSITY_URL` | unset | Endpoint returning current grid carbon intensity. |
 | `EXAMLOPS_GRID_INTENSITY_ZONE` | unset | Zone/region appended to that URL. |
 | `EXAMLOPS_GRID_INTENSITY_TOKEN` | unset | Bearer token for the signal provider. |
+| `EXAMLOPS_GRID_INTENSITY_METHOD` | `average_grid_mix` | What the endpoint measures (ADR 0112). Accounting methods (`average_grid_mix`, `residual_mix`) may be reported; decision methods (`locational_marginal`, `marginal_emissions`, `short_run_marginal`) may drive placement. The default is the safe one — set a decision method **only** if the feed really is marginal. |
 
 ---
 

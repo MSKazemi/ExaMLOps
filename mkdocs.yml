@@ -60,6 +60,7 @@ nav:
   - Guides:
       - Quick Start: guides/quickstart.md
       - Architecture: guides/architecture.md
+      - Testing strategy: guides/testing.md
       - Postgres datastore backend: guides/postgres-backend.md
       - Project Workspace Architecture: architecture/project-workspace.md
       - Projects & Workspaces: guides/projects-workspaces.md
@@ -108,6 +109,9 @@ nav:
           - Evaluation & regression gates: guides/evaluation.md
           - Judge calibration (ADR 0111): guides/judge-calibration.md
           - Advanced drift: guides/drift-advanced.md
+          - Corruption detection (ADR 0114): guides/corruption-detection.md
+          - Carbon signals (ADR 0112): guides/carbon-signals.md
+          - Portability gate (ADR 0117): guides/portability-gate.md
           - SLOs: guides/slos.md
           - Champion-challenger: guides/shadow-champion-challenger.md
           - Fairness: guides/fairness.md
@@ -178,7 +182,6 @@ nav:
       - exa CLI — Verified Examples: reference/cli-examples.md
       - exa CLI (overview): reference/cli.md
       - exa CLI (full command tree): reference/cli-generated.md
-      - Command Reference: reference/commands.md
       - API Reference: reference/api.md
       - Environment Variables: reference/env-vars.md
   - Release Notes:

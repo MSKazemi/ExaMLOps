@@ -56,6 +56,11 @@ from examlops.engines.config import (
     to_vllm_args,
     validate_engine_block,
 )
+from examlops.engines.instrumented import (
+    InstrumentedChatEngine,
+    InstrumentedEngine,
+    instrument,
+)
 from examlops.engines.media import (
     MediaRejected,
     MediaStats,
@@ -76,6 +81,8 @@ __all__ = [
     "EngineConfig",
     "EngineUnreachable",
     "InferenceEngine",
+    "InstrumentedChatEngine",
+    "InstrumentedEngine",
     "MediaRejected",
     "MediaStats",
     "MultimodalConfig",
@@ -85,6 +92,7 @@ __all__ = [
     "build_engine",
     "chat_via_generate",
     "flatten_messages",
+    "instrument",
     "normalize_content",
     "parse_prometheus_text",
     "quantize_model",
@@ -281,7 +289,22 @@ def resolve_base_url(config: EngineConfig) -> str | None:
 def build_engine(
     config: EngineConfig, model_path: str | None = None, *, allow_fallback: bool = True
 ) -> InferenceEngine:
-    """Instantiate the engine named by ``config``.
+    """Instantiate the engine named by ``config``, wrapped in GenAI telemetry.
+
+    Resolution is :func:`_construct_engine`; the returned engine is then wrapped by
+    :func:`examlops.engines.instrumented.instrument` so every ``generate``/``stream``/``chat``
+    emits an OTel GenAI span (ADR 0006 clause 2). The wrapper delegates everything it does not
+    instrument and is a no-op unless ``OTEL_SDK_DISABLED`` is falsy, so behaviour, warnings and
+    engine identity (``name``, ``base_url``, ``config``) are unchanged.
+    """
+    engine = _construct_engine(config, model_path, allow_fallback=allow_fallback)
+    return instrument(engine, model_path or config.hf_model_id or config.engine)
+
+
+def _construct_engine(
+    config: EngineConfig, model_path: str | None = None, *, allow_fallback: bool = True
+) -> InferenceEngine:
+    """Resolve and instantiate the engine named by ``config`` (no telemetry wrapper).
 
     Resolution for the vLLM family (ADR 0107):
 
@@ -308,7 +331,7 @@ def build_engine(
             "falling back to EchoEngine (CPU/CI). Install examlops[serving-sglang] "
             "on a GPU host to use it.",
             RuntimeWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         return _echo_fallback(config)
     cls = _ENGINES.get(engine, VLLMServerEngine)
@@ -339,7 +362,7 @@ def _build_vllm(
             "(engine.base_url / EXAMLOPS_VLLM_BASE_URL unset); falling back to EchoEngine. "
             "Start one with `exa serve llm start`.",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
         return _echo_fallback(config)
 
@@ -349,7 +372,7 @@ def _build_vllm(
             "falling back to EchoEngine (CPU/CI). Install examlops[serving-vllm] "
             "on a GPU host to use it.",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
         return _echo_fallback(config)
     return VLLMEngine(model_path or "", config)
@@ -375,30 +398,48 @@ def quantize_model(
     dataset_revision: str | None = None,
     actor: str | None = None,
 ) -> str:
-    """Quantize a model and register the result as a new signed + BOM'd version (R5/GWT-3).
+    """Register a quantization as a new signed + BOM'd version (R5/GWT-3).
 
-    On a GPU host this drives the engine's real quantizer; in degraded/CPU mode it records
-    the transformation as provenance so the sign + BOM (D3) path is exercisable, and emits a
-    clear ``RuntimeWarning`` that no real quantization compute happened (R-A4). Returns the
-    new version string.
+    **No quantization compute runs here, on any host.** This records the *intended*
+    transformation as provenance — signing it and generating its AI-BOM so the D3 supply-chain
+    path is exercisable — and returns the new version string. The weights are unchanged.
+
+    The name says "quantize" because this is where a real AWQ/GPTQ/FP8 quantizer belongs (the A2
+    GPU increment); it is not there yet, and a ``RuntimeWarning`` says so on every call. Until it
+    is, ADR 0117's portability gate reports ``inert`` for these versions rather than ``passed``:
+    an identical result is only evidence of parity when a transformation actually occurred.
     """
     if method not in _VALID_QUANT_METHODS:
         raise ValueError(f"quantization method '{method}' not in {_VALID_QUANT_METHODS}")
     new_version = f"{version}-{method}"
 
-    # R-A4: real AWQ/GPTQ/FP8 quantization compute needs a GPU host (the A2 GPU
-    # increment drives the engine's quantizer). Absent a GPU we record provenance
-    # only — and say so loudly, so a CPU-quantized version is never mistaken for a
-    # genuinely quantized artifact.
-    if not _gpu_available():
-        warnings.warn(
-            f"quantize_model: no CUDA GPU available — recording provenance-only for "
-            f"{model} v{new_version}; real {method.upper()} quantization compute requires "
-            "a GPU host (A2 increment). The signed + BOM'd version records the intended "
-            "transformation but the weights are unchanged.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    # R-A4 originally warned only on a CPU host, on the premise that a GPU host ran the real
+    # quantizer. It does not: **no quantizer is invoked on either path**, so a GPU host was
+    # handed a signed, BOM'd "quantized" version with unchanged weights and no warning at all.
+    # The warning is therefore unconditional, and names the GPU case separately rather than
+    # treating it as the working one.
+    #
+    # ADR 0117: what the portability gate needs is whether a quantizer *ran*, which is not the
+    # same question as whether a GPU exists. Deriving this from `_gpu_available()` would assert
+    # that weights changed on a GPU host where they did not, and the parity gate would then
+    # compare a model against itself, find perfect agreement and report `passed` — the exact
+    # vacuous-pass trap the gate exists to close, one level up. A future real quantizer sets
+    # this True at the point it actually transforms the weights.
+    weights_transformed = False
+    gpu = _gpu_available()
+    warnings.warn(
+        f"quantize_model: recording provenance-only for {model} v{new_version} — no "
+        f"{method.upper()} quantization compute runs in this function on any host, so the "
+        "signed + BOM'd version records the intended transformation but the weights are "
+        "unchanged"
+        + (
+            ". A CUDA GPU is present, but the real quantizer (A2 increment) is not wired in yet"
+            if gpu
+            else ". Real quantization compute also requires a GPU host (A2 increment)"
+        ),
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
     # Sign + BOM the (quantized) artifact bundle so it enters serving via the D3 gate.
     try:
@@ -417,7 +458,7 @@ def quantize_model(
         # D3 unavailable (e.g. no signing key) — quantization metadata still recorded below.
         pass
 
-    _audit_quantize(model, version, new_version, method, actor)
+    _audit_quantize(model, version, new_version, method, actor, weights_transformed)
     return new_version
 
 
@@ -444,8 +485,20 @@ def record_spec_decode_telemetry(
 
 
 def _audit_quantize(
-    model: str, base: str, new_version: str, method: str, actor: str | None
+    model: str,
+    base: str,
+    new_version: str,
+    method: str,
+    actor: str | None,
+    weights_transformed: bool = False,
 ) -> None:
+    """Record the quantisation, **including whether any weights actually changed**.
+
+    ``weights_transformed`` exists for ADR 0117's portability gate. Without it the gate cannot
+    tell a real requantisation from the provenance-only path, and a comparator would then find
+    perfect parity between an artefact and itself and green-light the promotion having measured
+    nothing. An identical result is only evidence of parity when a transformation occurred.
+    """
     try:
         from examlops.data.audit import write_audit_event
 
@@ -454,7 +507,12 @@ def _audit_quantize(
             actor,
             "model_quantized",
             f"{model}@{new_version}",
-            {"base_version": base, "method": method},
+            {
+                "base_version": base,
+                "method": method,
+                "weights_transformed": weights_transformed,
+                "provenance_only": not weights_transformed,
+            },
         )
     except Exception:
         pass

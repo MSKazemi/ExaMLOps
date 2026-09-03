@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; this module stays pure and import-light
+    from examlops.finops.carbon_signal import CarbonSignal
 
 # A scorer maps (ask, capacity-dict) → a float; higher = better placement. The built-in default is
 # :func:`headroom_score`; a pluggable provider can supply another (ADR 0077) without editing this
@@ -35,9 +39,21 @@ class PlacementResult:
     cluster: str | None
     reason: str
     candidates: list[dict] = field(default_factory=list)
+    #: Objectives that could not be scored, named rather than silently dropped (ADR 0112
+    #: decision 5). An operator reading a placement must be able to see that carbon played no
+    #: part in it; a zero weight that says nothing is indistinguishable from a bug.
+    objectives_unavailable: list[str] = field(default_factory=list)
+    #: What each scored objective contributed, for the same reason.
+    objectives: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {"cluster": self.cluster, "reason": self.reason, "candidates": self.candidates}
+        return {
+            "cluster": self.cluster,
+            "reason": self.reason,
+            "candidates": self.candidates,
+            "objectives_unavailable": self.objectives_unavailable,
+            "objectives": self.objectives,
+        }
 
 
 def node_capacity(nodes: list[dict]) -> dict:
@@ -87,8 +103,32 @@ def headroom_score(ask: ResourceAsk, cap: dict) -> float:
     return (cap["idle_gpus"] - ask.gpus) * 100 + (cap["idle_nodes"] - ask.nodes)
 
 
+def carbon_objective_state(signal: CarbonSignal | None) -> tuple[bool, str]:
+    """Whether carbon may weigh on a placement, and why (ADR 0112 decisions 3–5).
+
+    Returns ``(usable, reason)``. Only a **decision** (marginal/consequential) signal may drive
+    placement: shifting on an *average* signal is the documented way to reduce the emissions
+    allocated to you while increasing the power system's total. When no decision signal exists
+    the carbon objective's weight is **zero and recorded** — no default is substituted, because
+    substituting one here is the harm itself, not a convenience.
+    """
+    if signal is None:
+        return False, "no carbon signal available"
+    if not signal.is_decision:
+        return False, (
+            f"carbon signal is '{signal.signal_type}' (method={signal.method!r}); "
+            "placement needs a decision/marginal signal"
+        )
+    return True, f"decision signal via {signal.method}"
+
+
 def choose_cluster(
-    ask: ResourceAsk, clusters: list[dict], score_fn: ScoreFn | None = None
+    ask: ResourceAsk,
+    clusters: list[dict],
+    score_fn: ScoreFn | None = None,
+    *,
+    carbon_signal: CarbonSignal | None = None,
+    strict_carbon: bool = False,
 ) -> PlacementResult:
     """Choose the best ACTIVE cluster that can satisfy ``ask`` under a scoring policy.
 
@@ -98,11 +138,33 @@ def choose_cluster(
     unless a caller injects a pluggable provider's scorer (ADR 0077). Returns a
     :class:`PlacementResult` with the chosen cluster (or ``None``) plus a scored, human-readable
     candidate list for transparency.
+
+    ``carbon_signal`` is checked, never assumed (ADR 0112). A usable **decision** signal is
+    published to each capacity dict as ``carbon_intensity_decision`` so a provider's scorer can
+    weigh it; anything else leaves the carbon objective unscored and named in
+    ``objectives_unavailable``. ``strict_carbon=True`` makes a wrong-typed signal **raise**
+    instead — for a caller that asked for carbon-aware placement and must not silently get
+    carbon-blind placement.
     """
     score = score_fn or headroom_score
+    objectives_unavailable: list[str] = []
+    objectives: dict = {}
+    carbon_usable, carbon_reason = carbon_objective_state(carbon_signal)
+    if carbon_usable and carbon_signal is not None:
+        objectives["carbon"] = carbon_signal.as_dict()
+    else:
+        if strict_carbon:
+            from examlops.finops.carbon_signal import CarbonSignalTypeError
+
+            raise CarbonSignalTypeError(f"carbon-aware placement requested but {carbon_reason}")
+        objectives_unavailable.append("carbon")
+        objectives["carbon"] = {"weight": 0.0, "reason": carbon_reason}
+
     candidates: list[dict] = []
     for c in clusters:
         cap = _effective_capacity(c)
+        if carbon_usable and carbon_signal is not None:
+            cap["carbon_intensity_decision"] = carbon_signal.grams_per_kwh
         fits = can_satisfy(ask, cap)
         candidates.append(
             {
@@ -124,7 +186,7 @@ def choose_cluster(
             reason = "no ACTIVE clusters registered — 'exa hpc connect' then 'exa hpc approve'"
         else:
             reason = f"no ACTIVE cluster can satisfy the ask (gpus={ask.gpus}, nodes={ask.nodes})"
-        return PlacementResult(None, reason, candidates)
+        return PlacementResult(None, reason, candidates, objectives_unavailable, objectives)
 
     best = fitting[0]
     reason = (
@@ -132,4 +194,8 @@ def choose_cluster(
         f"{best['idle_gpus']}/{best['total_gpus']} idle GPUs, "
         f"{best['idle_nodes']}/{best['total_nodes']} idle nodes"
     )
-    return PlacementResult(best["name"], reason, candidates)
+    if objectives_unavailable:
+        reason += (
+            f" [objectives unavailable: {', '.join(objectives_unavailable)} — {carbon_reason}]"
+        )
+    return PlacementResult(best["name"], reason, candidates, objectives_unavailable, objectives)

@@ -273,9 +273,14 @@ def validate_model(
     ),
     n_requests: int = typer.Option(3, "--n", help="Number of smoke-test requests"),
 ):
-    """Smoke-test a model alias on Ray Serve: check it responds and meets latency SLA.
+    """Smoke-test a model alias on Ray Serve and run the C3 eval gate against it.
 
     Returns exit code 0 on PASS, 1 on FAIL. Safe to use as a gate before promotion.
+
+    ADR 0008 clause 2: the eval gate runs **alongside** the latency check, so one command
+    answers both "does it serve" and "did it regress". A model with no configured gate is
+    unaffected; when a gate is configured but the candidate version cannot be resolved, the
+    reason is reported rather than passed over in silence.
     """
     import time
 
@@ -307,6 +312,7 @@ def validate_model(
     max_observed = max(latencies)
     passed = avg_latency <= max_latency
 
+    gate_row = _eval_gate_for_alias(cfg, model, alias)
     row = {
         "model": model,
         "alias": alias,
@@ -315,12 +321,23 @@ def validate_model(
         "max_latency_s": round(max_observed, 3),
         "threshold_s": max_latency,
         "result": "PASS" if passed else "FAIL",
+        "eval_gate": gate_row["result"],
+        "eval_gate_detail": gate_row["detail"],
     }
 
     if _output.json_mode:
         _output.print_json(row)
     else:
-        cols = ["Model", "Alias", "Requests", "Avg Latency", "Max Latency", "Threshold", "Result"]
+        cols = [
+            "Model",
+            "Alias",
+            "Requests",
+            "Avg Latency",
+            "Max Latency",
+            "Threshold",
+            "Eval Gate",
+            "Result",
+        ]
         _output.print_table(
             "Model Validation",
             cols,
@@ -332,6 +349,7 @@ def validate_model(
                     f"{avg_latency:.3f}s",
                     f"{max_observed:.3f}s",
                     f"{max_latency}s",
+                    f"{gate_row['result']} — {gate_row['detail']}",
                     row["result"],
                 ]
             ],
@@ -340,6 +358,54 @@ def validate_model(
     if not passed:
         _output.error(f"Latency {avg_latency:.3f}s exceeds threshold {max_latency}s")
         raise typer.Exit(1)
+
+    if gate_row["result"] == "FAIL":
+        _output.error(f"Eval gate FAILED for {model}@{alias}: {gate_row['detail']}")
+        raise typer.Exit(1)
+
+
+def _eval_gate_for_alias(cfg, model: str, alias: str) -> dict[str, str]:
+    """Run the C3 gate for whatever version *alias* points at (ADR 0008 clause 2).
+
+    Returns a row for the validation report: ``result`` ∈ PASS / FAIL / SKIP, plus the reason.
+    **SKIP is reported, never silent.** A CI log that shows only a green latency check, when the
+    eval gate could not run, reads as "validated" — which is the failure this gate exists to
+    prevent. The three skip reasons are distinct on purpose: no gate configured is a choice, an
+    unresolvable alias is an outage, and a warn-mode gate is advisory by its own config.
+    """
+    from examlops.cli.commands.rollback_cmd import _get_current_alias_version
+    from examlops.evaluation.gate import run_eval_gate
+
+    try:
+        gate = _lookup_eval_gate(model)
+        if gate is None:
+            return {"result": "SKIP", "detail": "no gate configured"}
+        version = _get_current_alias_version(cfg, model, alias)
+        if version is None:
+            return {"result": "SKIP", "detail": f"could not resolve {model}@{alias} in MLflow"}
+        result = run_eval_gate(model, str(version))
+        if result is None:
+            return {"result": "SKIP", "detail": "no gate configured"}
+        failing = [m.name for m in result.metrics if m.failed]
+        if result.passed and not failing:
+            return {"result": "PASS", "detail": f"v{version} clean"}
+        detail = f"v{version}: {', '.join(failing)}" if failing else f"v{version}"
+        if result.passed:
+            # warn mode, or an aggregate that outvoted the failures — both are passes that a
+            # reader must be able to tell apart from "nothing failed".
+            return {
+                "result": "PASS",
+                "detail": f"{detail} (not blocking: {result.mode}/{result.aggregate})",
+            }
+        return {"result": "FAIL", "detail": detail}
+    except Exception as exc:  # noqa: BLE001 - a broken gate must not masquerade as a pass
+        return {"result": "SKIP", "detail": f"gate error: {exc}"}
+
+
+def _lookup_eval_gate(model: str):
+    from examlops.data.evaluation import get_eval_gate
+
+    return get_eval_gate(model)
 
 
 _EXAMPLES_PROMOTE = (
@@ -358,6 +424,10 @@ _OPS: dict[str, object] = {
     "lte": lambda v, t: v <= t,
     "gte": lambda v, t: v >= t,
 }
+
+
+def _parity_actor() -> str:
+    return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
 
 
 @app.command(
@@ -534,6 +604,41 @@ def promote(
         )
         _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
 
+    # ADR 0117 — portability gate. Conditional on the promotion changing the execution
+    # target, not a tax on every promotion: an unchanged target returns None and this is a
+    # no-op. `inert` is deliberately *not* a pass — a quantisation that never ran cannot have
+    # demonstrated parity, and letting it through is the vacuous-pass trap the ADR names.
+    from examlops.parity import run_quantization_parity_gate
+
+    parity = run_quantization_parity_gate(model, str(version), actor=_parity_actor())
+    if parity is not None and not parity.permits_autonomous_promotion:
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_parity",
+                model,
+                {"version": version, **parity.as_dict()},
+            )
+            _output.error(
+                f"Portability gate {parity.verdict.upper()} for {model} v{version}: "
+                f"{parity.reason}. Use --force to override (audited).",
+                hint="exa models parity " + model,
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "parity_gate_override",
+            model,
+            {"version": version, "to": to_alias, "forced": True, **parity.as_dict()},
+        )
+        _output.warning(
+            f"Portability gate {parity.verdict.upper()} but --force set; overriding: "
+            f"{parity.reason}"
+        )
+
     # C6 — SLO error-budget gate: when EXAMLOPS_SLO_GATE_ENABLED and a gate-flagged SLO
     # has an exhausted budget, refuse to promote (unless --force, audited). No-op otherwise.
     from examlops.cli.commands.slo_cmd import gate_enabled as _slo_gate_enabled
@@ -691,10 +796,62 @@ def promote(
         {"from": from_alias, "to": to_alias, "version": version, metric: metric_val},
     )
 
+    _emit_promotion_lineage(model, str(version), from_alias, to_alias, metric, metric_val)
+
     if save:
         set_promotion_rule(model, metric, operator, threshold, from_alias, to_alias)
 
     _output.ok(f"Promoted {model} v{version} → {to_alias}  ({status_str})")
+
+
+def _emit_promotion_lineage(
+    model: str, version: str, from_alias: str, to_alias: str, metric: str, value: float
+) -> None:
+    """A2 lineage for an alias move (ADR 0004 clause 1).
+
+    The ADR names training, promotion and retrain as the emit paths and none of them called
+    ``emit_lineage``. A promotion is the event that decides what serves traffic, so a provenance
+    graph missing it cannot answer "what is in production and where did it come from".
+
+    Emitted **after** the alias actually moved, so the graph records what happened rather than
+    what was attempted; the whole call is fail-open, since lineage is bookkeeping and must never
+    turn a successful promotion into a failed command.
+    """
+    try:
+        from examlops.lineage import deployment_node, emit_lineage, eval_facet, model_node
+
+        emit_lineage(
+            "COMPLETE",
+            job=f"promote:{model}",
+            run_id=f"promote-{model}-v{version}-{to_alias}",
+            inputs=[model_node(model, version)],
+            outputs=[deployment_node(f"{model}@{to_alias}")],
+            facets={**eval_facet(float(value), metric), "fromAlias": from_alias},
+            model=model,
+            model_version=version,
+        )
+    except Exception:  # noqa: BLE001 - never fail a completed promotion on bookkeeping
+        pass
+
+
+# `promote` parses its threshold flag out of ``ctx.args`` because the metric name is whatever
+# the model logged to MLflow — there is no fixed list to declare as Click options. That makes
+# the flag invisible to every introspection surface (`exa --json docs`, MCP tool generation,
+# `platform/ci/adr_reconcile.py`, the Skipper prompt guard), each of which then reports a
+# documented, working flag as missing. Declaring it here in machine-readable form is what
+# `exa docs` reads, so the generated reference and the code cannot disagree.
+# Attached to the function object on purpose (the introspection surfaces read it off the
+# command); mypy has no way to declare an attribute added to a Callable after the fact.
+promote.dynamic_options = [  # type: ignore[attr-defined]
+    {
+        "opts": "--if-<metric>-<op> <value>",
+        "help": (
+            "Promote only if the metric passes the threshold. <metric> is any metric the "
+            "model logged; <op> is one of " + ", ".join(sorted(_OPS)) + ". "
+            "Example: --if-rmse-lt 5.0"
+        ),
+    }
+]
 
 
 _EXAMPLES_ADD_MODEL = (

@@ -22,6 +22,15 @@ _EXAMPLES = (
     "  exa models engine list"
 )
 
+_EXAMPLES_PARITY = (
+    "Examples:\n\n"
+    "  exa models parity JPCP 17-awq\n\n"
+    "  exa --json models parity JPCP 17-awq\n\n"
+    "  exa models parity JPCP 17-awq --tolerance 1e-4\n\n"
+    "Declare the per-model tolerance as 'parity_tolerance' in the model's YAML — a ranking\n"
+    "model tolerates far more numeric drift than one whose output is a physical quantity."
+)
+
 
 def _actor() -> str | None:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER")
@@ -108,3 +117,66 @@ def engine_validate(
         _output.error(f"{yaml_path}: engine block invalid ({len(errors)} error(s))")
         return
     _output.ok(f"{yaml_path}: engine block valid")
+
+
+@app.command("parity", epilog=_EXAMPLES_PARITY)
+def parity(
+    model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
+    target_version: str = typer.Argument(..., help="Quantized version, e.g. 17-awq"),
+    tolerance: float | None = typer.Option(
+        None, "--tolerance", help="Override the model's declared parity_tolerance"
+    ),
+) -> None:
+    """Portability gate: compare a quantized version against its base (ADR 0117).
+
+    Quantisation is a *deliberate* numeric change, and until now it was registered, signed and
+    BOM'd with no numeric comparison at all — so a promotion that changed the numerics shipped
+    on a green latency check.
+
+    Three verdicts, and only one lets an autonomous promotion through. ``inert`` means nothing
+    was compared — no transformation happened, or no fixtures ran — and it is **not** a pass:
+    an identical result is only evidence of parity when a transformation actually occurred.
+    """
+    from examlops.parity import run_quantization_parity_gate
+
+    result = run_quantization_parity_gate(model, target_version, actor=_actor())
+    if result is None:
+        _output.ok(
+            f"{model} v{target_version} does not change the execution target — "
+            "the portability gate does not apply."
+        )
+        return
+    if _output.json_mode:
+        _output.print_json(result.as_dict())
+        return
+    _output.print_table(
+        f"Portability gate — {model}",
+        ["Field", "Value"],
+        [
+            ["Verdict", result.verdict.upper()],
+            ["Source version", result.source_version],
+            ["Target version", result.target_version],
+            ["Weights transformed", "yes" if result.transformed else "NO"],
+            ["Fixtures compared", str(result.n_fixtures)],
+            [
+                "Max abs divergence",
+                "—" if result.max_abs_divergence is None else f"{result.max_abs_divergence:.6g}",
+            ],
+            [
+                "Max rel divergence",
+                "—" if result.max_rel_divergence is None else f"{result.max_rel_divergence:.6g}",
+            ],
+            ["Tolerance", "—" if result.tolerance is None else f"{result.tolerance:.6g}"],
+            [
+                "Permits autonomous promotion",
+                "yes" if result.permits_autonomous_promotion else "NO",
+            ],
+        ],
+    )
+    _output.detail(result.reason)
+    if result.verdict == "inert":
+        _output.hint(
+            "'inert' is not a pass — nothing was compared. On a host without CUDA, "
+            "quantize_model() records provenance only and the weights are unchanged, so an "
+            "identical result would prove nothing."
+        )
