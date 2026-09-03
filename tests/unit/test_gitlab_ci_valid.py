@@ -198,3 +198,132 @@ def test_every_helm_gated_test_file_runs_in_the_one_job_that_has_helm():
         "helm runs them — so they assert nothing in CI:\n  " + "\n  ".join(missing) + "\n"
         f"add them to the pytest invocation in: {', '.join(with_helm)}"
     )
+
+
+# ── the manual rollback button ───────────────────────────────────────────────
+#
+# `rollback:lxp` is the one job whose whole purpose is to work when the pipeline is unwell,
+# which makes its configuration easy to "tidy" into uselessness: adding a `needs:` list or
+# dropping `allow_failure` both look like corrections and both disable it.
+
+
+def _rollback() -> dict:
+    job = _pipeline().get("rollback:lxp")
+    assert job, "the manual rollback job is gone"
+    return job
+
+
+def test_the_rollback_button_does_not_wait_for_anything():
+    """You roll back *because* jobs failed, so it must be clickable in a red pipeline."""
+    assert _rollback().get("needs") == [], (
+        "rollback:lxp declares `needs:`. GitLab will not let the button be clicked until "
+        "those jobs succeed — so it becomes unavailable in exactly the situation it exists "
+        "for. It must be `needs: []`."
+    )
+
+
+def test_the_rollback_button_never_blocks_a_pipeline():
+    job = _rollback()
+    assert job.get("when") == "manual"
+    assert job.get("allow_failure") is True, (
+        "an un-clicked manual job with allow_failure: false leaves the pipeline blocked, so "
+        "every main pipeline would sit waiting for a rollback nobody wants"
+    )
+
+
+def test_the_rollback_cannot_race_a_deploy():
+    """One node, one production. The health gate must not be deciding while this runs."""
+    pipeline = _pipeline()
+    group = pipeline["deploy:lxp"]["resource_group"]
+    assert _rollback().get("resource_group") == group
+    assert pipeline["smoke:lxp"].get("resource_group") == group
+
+
+def test_the_rollback_is_health_checked():
+    """A rollback that is not verified is a hope, not a recovery."""
+    steps = "\n".join(_rollback().get("script") or [])
+    assert "smoke_check.sh" in steps, (
+        "rollback:lxp restores a release without probing it, so a rollback that fails to "
+        "restore health reports success"
+    )
+
+
+# ── workflow rules ───────────────────────────────────────────────────────────
+#
+# `workflow.rules` decides whether a pipeline is created AT ALL, which makes it the one
+# block in this file where a mistake is silent in the worst way: nothing runs, and nothing
+# reports that nothing ran. Two properties are worth holding.
+
+
+def _workflow_rules() -> list[dict]:
+    rules = _pipeline()["workflow"]["rules"]
+    assert rules, "workflow.rules is empty — no pipeline would ever be created"
+    return rules
+
+
+def _rule_index(predicate) -> int:
+    for i, rule in enumerate(_workflow_rules()):
+        if predicate(str(rule.get("if", ""))):
+            return i
+    return -1
+
+
+def test_the_duplicate_suppressor_is_evaluated_before_the_catch_all():
+    """Rule order IS the mechanism, not a style choice.
+
+    GitLab takes the first matching rule. The `never` for a branch with an open MR must come
+    before the plain-branch rule; behind it, the catch-all matches first and every push to a
+    branch with an MR builds the full suite twice against identical code.
+    """
+    never = _rule_index(lambda c: "CI_OPEN_MERGE_REQUESTS" in c)
+    catch_all = _rule_index(lambda c: c.strip() == "$CI_COMMIT_BRANCH")
+    assert never >= 0, "the duplicate-pipeline suppressor is gone"
+    assert catch_all >= 0, "the plain-branch rule is gone — topic branches would not build"
+    assert never < catch_all, (
+        f"the CI_OPEN_MERGE_REQUESTS `never` rule is at index {never}, after the catch-all "
+        f"branch rule at {catch_all}. The catch-all matches first, so nothing is ever "
+        "suppressed and every MR branch builds twice."
+    )
+
+
+def test_main_and_tags_can_still_create_a_pipeline():
+    """The failure mode of a workflow-rules mistake is that NOTHING runs, silently."""
+    rules = _workflow_rules()
+    for needed in ("$CI_COMMIT_TAG", "$CI_DEFAULT_BRANCH"):
+        matching = [r for r in rules if needed in str(r.get("if", ""))]
+        assert matching, f"no workflow rule admits {needed} — releases or deploys would stop"
+        assert any(r.get("when") != "never" for r in matching), (
+            f"every workflow rule mentioning {needed} is a `never`, so main/tag pipelines "
+            "would not be created at all — and no job would report it"
+        )
+
+
+def test_no_job_needs_another_in_its_own_stage():
+    """Stricter than the rule above, and deliberately so.
+
+    Same-stage ``needs:`` is legal — but only from GitLab 14.2. This pipeline runs on a
+    self-managed Seanergys instance whose version is not something the file should have to
+    assume, and the failure mode is a pipeline that will not be *created*: no job runs, and
+    no job reports that nothing ran. Keeping every dependency pointing at a strictly earlier
+    stage costs nothing and removes the assumption entirely.
+
+    If you ever need same-stage ``needs``, delete this test on purpose after checking the
+    instance version — do not work around it by renaming a stage.
+    """
+    doc = _pipeline()
+    order = {s: i for i, s in enumerate(doc["stages"])}
+    jobs = _jobs(doc)
+    same: dict[str, list[str]] = {}
+    for name, body in jobs.items():
+        here = order.get(body.get("stage"), -1)
+        peers = [
+            w
+            for w in (n["job"] if isinstance(n, dict) else n for n in body.get("needs", []))
+            if w in jobs and order.get(jobs[w].get("stage"), -1) == here
+        ]
+        if peers:
+            same[name] = peers
+    assert not same, (
+        "these jobs depend on another job in the SAME stage, which requires GitLab 14.2+: "
+        f"{same}. Move the depended-on job to an earlier stage."
+    )

@@ -22,6 +22,7 @@ from examlops.data.drift import (
 )
 from examlops.drift_providers import resolve_drift_score_fn
 from examlops.evidence import AUTONOMOUS, correlated
+from examlops.rollback import AutonomousActionRefused, require_rollback
 
 # Help panels for `exa drift` (auto-retrain and input sub-groups are added within this module).
 _PANELS: list[tuple[str, list[str]]] = [
@@ -334,6 +335,34 @@ def auto_retrain_status():
 # ---------------------------------------------------------------------------
 
 
+def _alias_version(model: str, alias: str) -> str | None:
+    """The version an alias currently points at — i.e. the one a rollback would restore."""
+    try:
+        import mlflow
+
+        return str(mlflow.MlflowClient().get_model_version_by_alias(model.lower(), alias).version)
+    except Exception:
+        return None
+
+
+def _declare_rollback(action: str, model: str, alias: str = "Production") -> str | None:
+    """Record how an autonomous action would be undone, before it is taken (ADR 0113).
+
+    The inverse is built from the alias's *current* version, read now: once a retrain has run and
+    promoted, the version a rollback would restore is no longer the one the alias points at.
+    """
+    from examlops.evidence import with_rollback_ref
+    from examlops.rollback import build_rollback_ref
+
+    previous = _alias_version(model, alias)
+    if previous is None:
+        return None
+    ref = build_rollback_ref(action, model=model, previous_version=previous, alias=alias)
+    if ref:
+        with_rollback_ref(ref)
+    return ref
+
+
 def _corruption_signal_or_none(model: str):
     """The corruption signal, or ``None`` if it cannot be computed.
 
@@ -427,6 +456,7 @@ def trigger(
     triggered = []
     skipped = []
     suppressed: list[dict] = []
+    refused: list[dict] = []
 
     # ADR 0110: `drift trigger` fires retrains on the platform's own initiative, so everything it
     # writes — the retrains and the ADR-0114 suppressions alike — belongs to one correlated,
@@ -467,6 +497,23 @@ def trigger(
                     "remediation": classification.remediation,
                 }
             )
+            continue
+
+        # ADR 0113 decision 2: declare the inverse, then refuse if there is none. Evaluated
+        # before the dry-run branch so a preview reports what the real run would do.
+        _declare_rollback("drift_auto_retrain_triggered", model)
+        try:
+            require_rollback("drift_auto_retrain_triggered")
+        except AutonomousActionRefused as exc:
+            refused.append({"model": model, "action": "retrain", "reason": str(exc)})
+            if not dry_run:
+                write_audit_event(
+                    "cli",
+                    actor,
+                    "autonomous_action_refused",
+                    model,
+                    {"attempted": "drift_auto_retrain_triggered", "reason": str(exc)},
+                )
             continue
 
         if dry_run:
@@ -561,7 +608,14 @@ def trigger(
     trigger_ctx.__exit__(None, None, None)
 
     if _output.json_mode:
-        _output.print_json({"triggered": triggered, "skipped": skipped, "suppressed": suppressed})
+        _output.print_json(
+            {
+                "triggered": triggered,
+                "skipped": skipped,
+                "suppressed": suppressed,
+                "refused": refused,
+            }
+        )
         return
     if triggered:
         cols = ["Model", "Z-Score", "Flow Run ID"]
@@ -569,6 +623,12 @@ def trigger(
             "Triggered Retrains" + (" (dry-run)" if dry_run else ""),
             cols,
             [[t["model"], f"{t['z']:.2f}", t.get("flow_run_id") or "—"] for t in triggered],
+        )
+    if refused:
+        _output.print_table(
+            "Refused — no declared way to undo the action (ADR 0113)",
+            ["Model", "Action", "Reason"],
+            [[r["model"], r["action"], r["reason"]] for r in refused],
         )
     if suppressed:
         _output.print_table(
@@ -579,7 +639,7 @@ def trigger(
     if skipped:
         cols = ["Model", "Reason"]
         _output.print_table("Skipped", cols, [[s["model"], s["reason"]] for s in skipped])
-    if not triggered and not skipped and not suppressed:
+    if not triggered and not skipped and not suppressed and not refused:
         _output.ok("All enabled models below drift threshold — no retrains triggered")
 
 

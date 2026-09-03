@@ -9,7 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.postgres
-    image: examlops-postgres
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-postgres:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-postgres
     mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
     environment:
@@ -74,6 +74,7 @@ services:
       context: .
       dockerfile: Dockerfile.mlflow
       network: host
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-mlflow:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-mlflow
     mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
     command: >
@@ -112,7 +113,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.orchestrator
-    image: examlops-orchestrator
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-orchestrator:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-orchestrator
     mem_limit: ${ORCHESTRATOR_MEM_LIMIT:-2g}
     command: prefect server start --host 0.0.0.0
@@ -140,7 +141,7 @@ services:
       context: ../../..
       dockerfile: serving/ray_serving/Dockerfile
       network: host
-    image: examlops-ray-serving
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-ray-serving:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-ray-serving
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -192,7 +193,7 @@ services:
       context: ../../..
       dockerfile: platform/services/control_plane/Dockerfile
       network: host
-    image: examlops-control-plane
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-control-plane:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-control-plane
     mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
     environment:
@@ -247,7 +248,7 @@ services:
       context: ../../..
       dockerfile: platform/services/agent/Dockerfile
       network: host
-    image: examlops-agent
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-agent:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-agent
     mem_limit: ${AGENT_MEM_LIMIT:-2g}
     environment:
@@ -306,7 +307,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prometheus
-    image: examlops-prometheus
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-prometheus:${EXAMLOPS_IMAGE_TAG:-latest}
     profiles: [monitoring]
     container_name: examlops-prometheus
     command:
@@ -359,7 +360,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.grafana
-    image: examlops-grafana
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-grafana:${EXAMLOPS_IMAGE_TAG:-latest}
     profiles: [monitoring]
     container_name: examlops-grafana
     environment:
@@ -452,7 +453,7 @@ services:
       context: ../../..
       dockerfile: platform/infra/docker-compose/Dockerfile.dashboard
       network: host
-    image: examlops-dashboard
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-dashboard:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-dashboard
     mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}
     environment:
@@ -559,7 +560,7 @@ services:
       context: .
       dockerfile: Dockerfile.jupyterhub
       network: host
-    image: examlops-jupyterhub
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-jupyterhub:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-jupyterhub
     mem_limit: ${JUPYTERHUB_MEM_LIMIT:-2g}
     profiles: [jupyter]
@@ -601,6 +602,7 @@ services:
       # context is the parent seanergys/ dir so both repos are accessible
       context: ../../../..
       dockerfile: ai-productions/platform/infra/docker-compose/Dockerfile.bridge
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-bridge:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-seanerbus-bridge
     mem_limit: ${BRIDGE_MEM_LIMIT:-1g}
     networks:
@@ -654,7 +656,7 @@ services:
     build:
       context: ../../..
       dockerfile: platform/infra/docker-compose/Dockerfile.backup
-    image: examlops-backup
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-backup:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-backup
     command: ["backup", "schedule", "--all"]
     profiles:

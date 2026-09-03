@@ -40,8 +40,16 @@ def _jobs() -> set[str]:
 
 
 def _documented() -> set[str]:
-    """`###` headings in the guide that look like a job name (`stage:thing`)."""
-    return set(re.findall(r"^### ([a-z][\w.-]*(?::[\w.-]+)+)\s*$", GUIDE.read_text(), re.M))
+    """`###` headings in the guide that look like a job name.
+
+    Most job names carry a colon (`stage:thing`), and the pattern originally required one.
+    GitLab reserves one name that cannot: the Pages job must be called exactly `pages`, so
+    requiring a colon made that job impossible to document and permanently failed the guard.
+    A colon is now optional. Prose headings are still excluded because they begin with a
+    capital or a backtick, and the phantom-heading test below catches anything that slips
+    through by checking the other direction.
+    """
+    return set(re.findall(r"^### ([a-z][\w.-]*(?::[\w.-]+)*)\s*$", GUIDE.read_text(), re.M))
 
 
 def test_there_are_jobs_and_headings_to_compare():

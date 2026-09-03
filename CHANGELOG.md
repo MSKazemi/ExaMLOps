@@ -4,7 +4,83 @@ All notable changes to ExaMLOps are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [SemVer](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.50.0] - 2026-09-04
 ### Added
+
+- **The LXP node no longer builds what it deploys — CI does, once, and the node pulls it
+  (opt-in behind `EXAMLOPS_USE_REGISTRY`).** `lxp_release.sh` ran `docker compose up --build`
+  on every activation, which meant the deploy built from the internet on a node whose
+  container egress has been firewalled before; that two deploys of one commit could differ;
+  and — worst of the three — that **rollback rebuilt**. The path taken when the platform is
+  already unwell could therefore produce an image that had never existed before. Images are
+  now built once by `build:images` from a tree that passed every blocking check, pushed to
+  the GitLab Container Registry, and pinned **per release** in `.examlops-image.env`, so
+  reactivating an older release restores that release's own images rather than the current
+  pipeline's. `build_image.sh` resolves each service's context and Dockerfile from the
+  compose file itself, so the CI matrix names only services and cannot drift from what the
+  deploy runs (`tests/unit/test_ci_image_matrix.py` holds both directions). Unset, the
+  pipeline and the node behave exactly as before.
+- **The same digests are mirrored outward for visibility** — `publish:ghcr` and
+  `publish:dockerhub` `skopeo copy` (never rebuild) to `ghcr.io/mskazemi/*` and
+  `docker.io/mskazemi/*`, so a public image is bit-identical to the one production runs
+  rather than a lookalike built at a different moment. Both `allow_failure`: a mirror outage
+  must never redden a healthy deploy.
+- **A rollback button that works when the pipeline is red.** `smoke:lxp` already auto-rolls
+  back on a failed health gate; nothing covered a release that passes every probe and is
+  found wrong later by a human, which needed SSH and a SHA typed by hand under pressure. New
+  manual `rollback:lxp` lists the node's releases, restores one (default: the newest that is
+  not running), and ends by running the same `smoke_check.sh` — a rollback that is not
+  verified is a hope, not a recovery. Deliberately `needs: []`, because a dependency list
+  would make the button unavailable in exactly the situation it exists for.
+- **Release directories are now pruned** (`EXAMLOPS_KEEP_RELEASES`, default 5). They were
+  never removed, which on an NFS share is a slow-motion outage: the deploy that finally fills
+  the volume is the one that fails, long after the commits that consumed it. The running
+  release and the one a rollback would restore are never deleted, and when that puts the
+  budget out of reach the prune says so rather than reporting a budget it did not meet.
+- **Deployment enters the audit chain.** The platform hash-chains what it does to itself, but
+  deployment was missing — so `exa audit` could report a promotion at 14:02 and say nothing
+  about the release that changed underneath it at 14:00. `record_deploy.py` writes
+  `release_deploy` / `release_rollback` with the release path, commit, pinned image tag and
+  node. Non-fatal by construction: a missing row is a gap in the record, an aborted deploy is
+  an outage.
+- **The Helm chart is finally distributed.** `make helm-package` has always produced a
+  complete, publishable Helm repository in `dist/helm`, and nothing ever published it — the
+  chart was validated on every pipeline and installable by nobody. `publish:helm` now pushes
+  it as OCI to the GitLab registry, GHCR and Docker Hub, and the new `pages` job publishes
+  the docs site with the classic `helm repo add` index under `/charts`. `test:docs` likewise
+  built the site under `--strict` and threw it away; it is now served.
+- **Vulnerability reporting**: `test:deps:audit` (pip-audit) and `scan:images` (trivy, by
+  digest, so the report describes the exact image the node will run). **Both are advisory,
+  and the guide says so out loud** — no baseline exists, and a gate that fails for reasons
+  nobody chose is a gate somebody deletes. The path to making them real is recorded next to
+  them.
+- **A branch with an open merge request no longer builds the whole twelve-job suite twice per
+  push** (`workflow:rules`). Every other pipeline source is listed explicitly so that adding
+  the block cannot silently stop a pipeline that used to run, and the rule *order* — the
+  duplicate-suppressing `never` must precede the catch-all — is itself guarded.
+
+- **An autonomous action that cannot say how it would be undone is now refused, not reported
+  (ADR 0113 decision 2 — W2 item 3, and the enforcement ADR 0110 decision 4 was waiting for).**
+  `exa audit autonomy` could already list what the platform did on its own and which of those
+  declared no inverse; new `examlops.rollback` makes that list actionable by refusing the action
+  **before it runs**. The distinction that makes the rule workable is between an action that
+  *changed* something and one that only *recorded* something: a suppressed retrain, a policy
+  denial and a cycle-complete marker mutate nothing, and demanding an inverse for them would be a
+  tax that teaches operators to declare fake ones — a fake inverse being worse than a missing one,
+  since it reads as an undo path that does not undo. Every action an agent-drivable module writes
+  is classified `mutating` (with the command that undoes it), `record_only`, or `no_autonomy`
+  (with the reason — a baseline overwrite retains no previous value to restore, and cleared
+  snapshots are unrecoverable). **An unregistered action counts as gated**, because defaulting an
+  unknown action to "allowed" is the failure that would quietly reopen the gap, and a coverage
+  guard fails the build when a module writes an action the registry does not classify. Only
+  `autonomous` mode is gated: a person may deliberately do things the platform must not do to
+  itself. The inverse is declared **before** the action, from state read at that moment — once a
+  retrain has promoted, the version a rollback would restore is no longer the one the alias points
+  at — and where it cannot be resolved the action is declined rather than taken with an undo path
+  that does not exist. Wired into `exa autopilot run` and `exa drift trigger`, each recording an
+  `autonomous_action_refused` event. 17 tests in `tests/unit/test_rollback_registry.py`, including
+  one that runs every declared inverse's `--help` to prove it names a command that exists.
 
 - **The evidence chain can now explain causation, not just record events (ADR 0110 — W2 item 1).**
   The audit log was already tamper-evident, but an autopilot cycle that triggered a retrain which

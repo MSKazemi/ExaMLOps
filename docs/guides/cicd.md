@@ -8,8 +8,8 @@ The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions wo
 
 ## Pipeline overview
 
-Six stages arranged as a DAG. The twelve check jobs run in parallel; deploy, smoke and
-post-deploy fire only on `main`, and `release` fires only on a tag.
+Eight stages arranged as a DAG. The twelve check jobs run in parallel; build, deploy, smoke
+and post-deploy fire only on `main`, and `release` fires only on a tag.
 
 ```
 sanity:python-syntax   ─┐    test:modelzoo  (allow_failure — gates nothing by design)
@@ -24,6 +24,11 @@ sanity:secret-scan     ─┼─►  test:infra:compose     ─┐
                              test:agent              │
                              test:frontend           │
                              test:control-plane     ─┘
+                                                     │
+                                                     └─► build:images (×11, opt-in)
+                                                              ├─► publish:ghcr        (allow_failure)
+                                                              ├─► publish:dockerhub   (allow_failure)
+                                                              └─► deploy:lxp
 ```
 
 > **`needs:` is the gate, not the stage order.** `deploy:lxp` and `release:gitlab` declare
@@ -39,6 +44,8 @@ sanity:secret-scan     ─┼─►  test:infra:compose     ─┐
 |---|---|---|
 | `sanity` | all branches + MRs | Syntax check + directory structure guard — blocks everything on failure |
 | `test` | all branches + MRs | Ten parallel jobs covering all test types (change-filtered off `main`) |
+| `build` | `main` + tags, only when `EXAMLOPS_USE_REGISTRY` is set | Builds all eleven service images once and pushes them to the GitLab Container Registry |
+| `publish` | after `build`, `allow_failure` | Copies those exact digests to GHCR and Docker Hub for public visibility |
 | `release` | tags only | Turns the tag into a GitLab Release described by its CHANGELOG section |
 | `deploy` | `main` only, never on a schedule | SSH deploy to lxp-cpu01 after every blocking check named in its `needs:` passes |
 | `smoke` | after `deploy` | Post-deploy health gate with automatic rollback |
@@ -243,6 +250,142 @@ still skips when run locally without `EXAMLOPS_REDIS_TEST_URL`.
 
 ---
 
+### test:deps:audit
+
+`pip-audit` over the resolved dependency set, reported in the job log and kept as an
+artifact.
+
+**This is advisory, not a gate, and that is a deliberate state rather than an oversight.**
+No baseline has been established: making it blocking today would redden the pipeline on
+whatever advisories the current lockfile already carries, and the reliable outcome of a gate
+that fails for reasons nobody chose is that somebody deletes the gate. The intended path is
+to run it advisory, read the report, fix or explicitly accept each finding, and *then* set
+`allow_failure: false`. Until that is done it is a report.
+
+Runs on `main`, tags, the nightly schedule, and any change to a dependency manifest.
+
+## Stage: build
+
+Everything in this stage is inert until the project CI/CD variable `EXAMLOPS_USE_REGISTRY`
+is set. Without it the pipeline behaves exactly as it did before the stage existed, and
+`deploy:lxp` keeps building images on the node.
+
+### build:images
+
+Builds each service image once, from a tree that has already passed every blocking check,
+and pushes it to the Seanergys GitLab Container Registry as
+`$CI_REGISTRY_IMAGE/examlops-<service>:<sha>` (plus `:latest` on `main` and `:<tag>` on a
+tag).
+
+**Why it exists.** `platform/ci/lxp_release.sh` used to run `docker compose up --build` on
+lxp-cpu01 on every deploy. That had three problems, and this job is the answer to all three:
+
+1. **The node built from the internet.** LXP's container egress is firewalled (see
+   `design/` and the sysadmin thread on the leftover firewalld `FORWARD` drop), so every
+   deploy was one `apt-get` or `pip install` away from failing for a reason nothing in this
+   repository controls.
+2. **Rollback rebuilt.** `smoke:lxp` reactivates the previous release on a failed health
+   gate — which re-ran the same build. The "return to the known-good release" path could
+   therefore produce an image that had never existed before, at exactly the moment the
+   platform was already unwell.
+3. **Nothing was pinned.** Two deploys of the same commit could differ.
+
+**How the service list stays honest.** The `parallel: matrix` names *only* service names.
+`platform/ci/build_image.sh` then asks the compose file itself where that service's build
+context and Dockerfile are, so CI cannot build an image from a different context than the
+one the deploy runs. `tests/unit/test_ci_image_matrix.py` holds the matrix against the
+compose file in both directions and fails if a buildable service is missing from either.
+
+**`seanerbus-bridge` is deliberately not built here.** Its build context is the *parent* of
+this repository — it needs the sibling `seanerbus` checkout, which a CI clone does not have.
+It continues to build on the node. The same is true of the JupyterLab spawner image, which
+`lxp_release.sh` builds directly rather than through compose.
+
+**Runner requirement.** Docker-in-Docker, so the Seanergys runner must be privileged. If it
+is not, replace the `dind` service with `kaniko` or `buildah`: only this job's
+`before_script` changes, `build_image.sh` does not.
+
+Layer cache lives in the registry beside the image
+(`--cache-to type=registry,...,mode=max`), so a runner with a cold disk still reuses layers.
+
+## Stage: scan
+
+### scan:images
+
+`trivy` against the images `build:images` just pushed, at HIGH and CRITICAL severity, one
+report per service kept as an artifact.
+
+It scans **by digest**, so the report describes the exact image the node is about to run
+rather than a mirror or a rebuild of it. It runs before the publish stage for the same
+reason.
+
+Like `test:deps:audit` it is **advisory pending a baseline** — same reasoning, same path to
+becoming a gate (`allow_failure: false` plus `--exit-code 1`). Inert unless
+`EXAMLOPS_USE_REGISTRY` is set, since without it there are no built images to scan.
+
+## Stage: publish
+
+Mirrors, not delivery. Both jobs are `allow_failure: true` — an outage at GHCR, a rotated
+Docker Hub token or a pull-rate limit must never turn a healthy production deploy red.
+
+They copy **digests**, with `skopeo copy`, never rebuilds. The image a stranger pulls from
+GHCR is therefore bit-identical to the one lxp-cpu01 is running, rather than a lookalike
+built from the same source at a different moment.
+
+### publish:helm
+
+`make helm-package` has always produced a complete, publishable Helm repository in
+`dist/helm` — chart tarball plus `index.yaml` — and nothing ever published it. The chart was
+validated on every pipeline and installable by nobody.
+
+This publishes it in **both shapes Helm consumers actually use**:
+
+- **OCI** — `helm push` to `oci://$CI_REGISTRY_IMAGE/charts`, and to
+  `oci://ghcr.io/mskazemi/charts` and `oci://docker.io/mskazemi/charts` when those tokens are
+  set. This lands the chart in the same registries as the images it deploys, so one version
+  is one artifact set.
+- **A classic HTTP repo** — `index.yaml`, published by the `pages` job (in the `release`
+  stage), because `helm repo add` still expects that shape.
+
+`allow_failure: true`: distribution, not delivery. A missing mirror token is a configuration
+choice and is reported as a skip, not a failure.
+
+### pages
+
+Publishes the documentation site to GitLab Pages, with the classic Helm repository under
+`/charts`.
+
+`test:docs` has always run `mkdocs build --strict` — proving the site builds, catching dead
+links — and then thrown the result away. This publishes it, so:
+
+```bash
+helm repo add examlops $CI_PAGES_URL/charts
+```
+
+Unlike the registry mirrors this is **not** `allow_failure`. It depends on nothing outside
+GitLab, so a failure here is a real problem with our own content. Its dependency on
+`publish:helm` is `optional`, so when the chart job is skipped the docs still publish and the
+job says which it did.
+
+It sits in the **`release`** stage rather than `publish` for one reason: that keeps its
+`needs:` on `publish:helm` pointing at a strictly earlier stage. Same-stage `needs:` is legal
+only from GitLab 14.2, and the failure mode of guessing wrong on a self-managed instance is
+that the pipeline is never *created* — nothing runs, and nothing reports that nothing ran.
+`tests/unit/test_gitlab_ci_valid.py::test_no_job_needs_another_in_its_own_stage` keeps every
+dependency pointing backwards so the assumption never has to be made.
+
+### publish:ghcr
+
+Copies every digest to `ghcr.io/mskazemi/examlops-<service>`. Runs only when `GHCR_TOKEN`
+is set. This is the public-visibility half of the registry story: the Seanergys registry is
+internal, so nothing built there is visible outside the institute.
+
+### publish:dockerhub
+
+The same copy to `docker.io/mskazemi/examlops-<service>`, gated on `DOCKERHUB_TOKEN`.
+
+---
+
 ## Stage: release
 
 ### test:agent
@@ -375,6 +518,37 @@ The job registers a GitLab **Environment** (`production-lxp`) so every deploy is
 
 ---
 
+### Release retention on the node
+
+`lxp_release.sh` keeps each deploy as an immutable directory under
+`$LXP_DEPLOY_PATH-releases/<sha>`. Nothing removed them, which on an NFS share is a
+slow-motion outage: the deploy that finally fills the volume is the one that fails, long
+after the commits that consumed it.
+
+Each activation now prunes to the **`EXAMLOPS_KEEP_RELEASES` most recent (default 5)**. Two
+directories are never deleted even when they fall outside that budget — the running release,
+and the one the symlink pointed at before this activation, because that is exactly what
+`smoke:lxp` and `rollback:lxp` restore. When that happens the prune says so in the job log
+rather than quietly reporting the budget as met.
+
+Set it as a project CI/CD variable, or in the node's environment, to trade disk for rollback
+depth.
+
+### Deploy events in the audit chain
+
+The platform keeps a tamper-evident, hash-chained audit log of what it does to itself.
+Deployment was the one production change missing from it, so `exa audit` could report a model
+promotion at 14:02 and say nothing about the release that changed underneath it at 14:00.
+
+`platform/ci/record_deploy.py` now writes a `release_deploy` — or `release_rollback` — event
+on every activation, carrying the release path, commit SHA, pinned image tag and deploy node,
+attributed to the GitLab user who triggered it. Read it with `exa audit --last 7d` and check
+it with `exa audit verify`.
+
+An audit failure never fails a deploy. A missing row is a gap in the record; a deploy aborted
+over telemetry is an outage. The script therefore catches everything, prints a warning into
+the job log, and exits 0.
+
 ## Stage: smoke
 
 ### smoke:lxp
@@ -399,6 +573,37 @@ Two properties of that path are easy to lose and expensive to lose, so
 Activation and rollback use the same script, including CLI refresh and optional profile services,
 so the recovery path cannot silently omit deployment steps.
 
+
+### rollback:lxp
+
+A manual button, present on every `main` pipeline, that returns production to an earlier
+release without an SSH session.
+
+`smoke:lxp` already rolls back automatically when the post-deploy health gate fails. This
+covers the other case, which had no tooling at all: **a release that passes every probe and
+is found to be wrong later, by a human.** Undoing it meant SSH-ing to the node, knowing the
+release directory layout, and typing the right SHA — at the moment someone is already under
+pressure.
+
+**Running it.** Click ▶ on the job. It prints the releases on the node (`*` marks the active
+one) and, with `ROLLBACK_TO` unset, activates the most recent release that is not the running
+one — the answer to "undo the last deploy". To go further back, set the job variable
+`ROLLBACK_TO` to a SHA from that list.
+
+**Two deliberate choices:**
+
+- **`needs: []`.** You roll back *because* something went wrong, so the button must be
+  clickable in a pipeline where other jobs are red. A `needs:` list would make it unavailable
+  in exactly the situation it exists for.
+- **`allow_failure: true`.** That is what stops an un-clicked button from blocking the
+  pipeline. It does not mean a failed rollback is ignored: the job ends by running the same
+  `smoke_check.sh` the deploy gate uses, so a rollback that does not restore health is red.
+
+It shares `resource_group: production-lxp` with `deploy:lxp` and `smoke:lxp`, so it cannot
+race a deploy whose health gate is still deciding.
+
+The activation is recorded in the platform audit chain as `release_rollback`, attributed to
+the GitLab user who clicked it.
 
 ## Stage: post-deploy
 
@@ -444,6 +649,39 @@ Set these in **GitLab → Project → Settings → CI/CD → Variables** before 
 | `LXP_CONTROL_PLANE_URL` | | | `http://lxp-cpu01:18002` |
 | `LXP_CONTROL_PLANE_TOKEN` | ✅ | ✅ | Bearer token set in Control Plane's `CONTROL_PLANE_TOKEN` env var |
 | `DEPLOY_REQUIRES_APPROVAL` | | | **Optional.** Any value turns `deploy:lxp` into a manual button. Unset ⇒ `main` deploys automatically. |
+
+### Container registry (opt-in)
+
+The `build` and `publish` stages do nothing until `EXAMLOPS_USE_REGISTRY` is set. Setting it
+changes how production is deployed — the node pulls prebuilt images instead of building them
+— so check the two prerequisites below on the real infrastructure first.
+
+| Variable | Mask | Protect | Value |
+|---|---|---|---|
+| `EXAMLOPS_USE_REGISTRY` | | ✅ | **Optional.** Any value enables `build:images` and switches `deploy:lxp` to pull mode. |
+| `GHCR_USER` / `GHCR_TOKEN` | ✅ (token) | | **Optional.** GitHub PAT with `write:packages`; enables `publish:ghcr`. |
+| `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` | ✅ (token) | | **Optional.** Docker Hub access token; enables `publish:dockerhub`. |
+
+`CI_REGISTRY`, `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD` and `CI_REGISTRY_IMAGE` are
+predefined by GitLab — do not set them by hand.
+
+**Prerequisites to confirm before setting `EXAMLOPS_USE_REGISTRY`:**
+
+1. The **Container Registry** feature is enabled on the Seanergys project
+   (Settings → General → Visibility → Container Registry). It is not on by default on every
+   self-managed instance.
+2. The **lxp-cpu01 docker daemon can reach** `registry.gitlab.seanergys.fz-juelich.de`.
+   Verify on the node, not by assumption — container egress there has been blocked before
+   by a leftover firewalld `FORWARD` drop:
+
+   ```bash
+   ssh lxp-cpu01 'docker login registry.gitlab.seanergys.fz-juelich.de'
+   ```
+
+3. A **cleanup policy** is configured on the registry (Settings → Packages and registries →
+   Clean up image tags). Eleven images tagged with every commit SHA grows without bound
+   otherwise. Keeping the most recent 10 SHA tags plus `latest` and every `v*` tag is a
+   reasonable starting rule.
 
 **Masked** variables are hidden in job logs. **Protected** variables are only injected into pipelines running on protected branches (e.g. `main`).
 

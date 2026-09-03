@@ -71,6 +71,12 @@ def _tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "test.db"))
     monkeypatch.delenv("EXAMLOPS_AUTOPILOT_ENABLED", raising=False)
     init_db()
+    # ADR 0113: an autonomous retrain is refused unless the cycle can name the version a
+    # rollback would restore, which needs MLflow. These tests are about the cycle's other
+    # behaviour — policy, cooldown, storm cap — so the precondition is supplied rather than
+    # re-asserted here; the gate itself is exercised in test_rollback_registry.py, including
+    # the case where it cannot be resolved and the retrain is declined.
+    monkeypatch.setattr(autopilot_cmd, "_alias_version", lambda model, alias="Production": "4")
 
 
 # ── platform_db helpers ───────────────────────────────────────────────────────
