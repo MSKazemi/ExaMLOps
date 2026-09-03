@@ -87,17 +87,50 @@ refusal that enforces it is not built yet, so for now they are reported and the 
 cycle, so the retrains they fire — and the ADR-0114 suppressions they record — carry the mode.
 Anything those paths call inherits it.
 
+## Generalised rollback — the refusal
+
+`exa audit autonomy` lists what the platform did on its own and which of those declared no
+inverse. `examlops.rollback` is the half that makes the list actionable: **an autonomous action
+with no `rollback_ref` is refused before it runs**, not reported after.
+
+The distinction that makes the rule workable is between an action that *changed* something and
+one that only *recorded* something. A suppressed retrain, a policy denial and a cycle-complete
+marker mutate nothing, so demanding an inverse for them would be a tax that teaches operators to
+declare fake ones — and a fake inverse is worse than a missing one, because it reads as an undo
+path that does not undo. Every registered action is one of three kinds:
+
+| Kind | Meaning | Gated? |
+|---|---|---|
+| `mutating` | changed state; declares the command that undoes it | yes — needs a `rollback_ref` |
+| `record_only` | changed nothing | no |
+| `no_autonomy` | changed state with no safe inverse; a person may still do it deliberately | always refused autonomously |
+
+**An unregistered action counts as gated.** Defaulting an unknown action to "allowed" is the
+failure that would quietly reopen the gap: the next autonomous action somebody adds would sail
+through by virtue of nobody having thought about it. A coverage guard fails the build when an
+agent-drivable module writes an audit action the registry does not classify.
+
+Only `autonomous` mode is gated. A person may deliberately do things the platform must not do to
+itself — that asymmetry is ADR 0113's autonomy model, not an oversight.
+
+The inverse is declared **before** the action runs, from state read at that moment: once a
+retrain has promoted, the version a rollback would restore is no longer the one the alias points
+at. Where the previous version cannot be resolved, no inverse can be built and the action is
+declined rather than taken with an undo path that does not exist.
+
 ## Not yet implemented
 
-This is the first of W2's six items. Still open, all from ADRs 0110 and 0113:
+Two of W2's six items are done. Still open, from ADRs 0110 and 0113:
 
 - **Anchored telemetry** — lineage and resource events into side tables with a periodic
   checkpoint hash, so high-volume telemetry is tamper-evident without serialising it through the
   chain.
-- **Generalised rollback** — every mutating command declares an inverse or is explicitly marked
-  not-autonomously-executable, and an autonomous action with `rollback_ref = NULL` is **refused**
-  rather than reported.
-- **Blast-radius contracts**, **live-run interrupt**, **per-rule autonomy**.
+- **Blast-radius contracts** — a declarative `may_change` / `may_not_change` per behaviour, with
+  denials naming the clause.
+- **Live-run interrupt** — freeze, kill or quarantine a single in-flight run. Today only a global
+  kill-switch exists.
+- **Per-rule autonomy** — autonomy declared per behaviour rather than globally, individually
+  pausable without losing its configuration.
 
 ## Design
 

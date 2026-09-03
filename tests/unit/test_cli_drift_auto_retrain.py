@@ -49,9 +49,15 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def isolate_db(tmp_path):
+def isolate_db(tmp_path, monkeypatch):
     os.environ["PLATFORM_DB"] = str(tmp_path / "test.db")
     init_db()
+    # ADR 0113: an autonomous retrain is refused unless the platform can name the version a
+    # rollback would restore, which needs MLflow. These tests are about drift behaviour, so the
+    # precondition is supplied; the gate is exercised in test_rollback_registry.py.
+    from examlops.cli.commands import drift as _drift_cmd
+
+    monkeypatch.setattr(_drift_cmd, "_alias_version", lambda model, alias="Production": "4")
     yield
     del os.environ["PLATFORM_DB"]
 

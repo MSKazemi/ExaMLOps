@@ -41,6 +41,7 @@ from examlops.data.autopilot import (
 from examlops.data.drift import claim_drift_trigger, get_drift_baseline, list_drift_auto_retrain
 from examlops.data.serving import get_promotion_rule
 from examlops.evidence import AUTONOMOUS, correlated
+from examlops.rollback import AutonomousActionRefused, require_rollback
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -189,6 +190,36 @@ def _staging_version(model: str) -> str | None:
         return None
 
 
+def _alias_version(model: str, alias: str) -> str | None:
+    """The version an alias currently points at — i.e. the one a rollback would restore."""
+    try:
+        import mlflow
+
+        return str(mlflow.MlflowClient().get_model_version_by_alias(model.lower(), alias).version)
+    except Exception:
+        return None
+
+
+def _declare_rollback(action: str, model: str, alias: str = "Production") -> str | None:
+    """Record how this action would be undone, before it is taken (ADR 0113 decision 2).
+
+    The inverse is built from the alias's *current* version, read now: once the action has run,
+    the thing a rollback would restore is no longer what the alias points at. Returns the ref, or
+    ``None`` when the previous version cannot be resolved — in which case the caller is refused
+    rather than proceeding with an undo path that does not exist.
+    """
+    from examlops.evidence import with_rollback_ref
+    from examlops.rollback import build_rollback_ref
+
+    previous = _alias_version(model, alias)
+    if previous is None:
+        return None
+    ref = build_rollback_ref(action, model=model, previous_version=previous, alias=alias)
+    if ref:
+        with_rollback_ref(ref)
+    return ref
+
+
 def _do_promote(model: str, from_alias: str = "Staging", to_alias: str = "Production") -> None:
     """Promote the model's Staging version to Production via MLflow."""
     import mlflow
@@ -310,6 +341,7 @@ def run_cycle(
         hitl: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         suppressed: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
 
         cfg = load_config()
 
@@ -426,6 +458,25 @@ def run_cycle(
                         "reason": f"per-cycle retrain cap ({max_retrains}) reached",
                     }
                 )
+                continue
+
+            # ADR 0113 decision 2: declare the inverse, then refuse if there is none. Evaluated
+            # *before* the dry-run branch, for the reason the storm cap above already learned —
+            # a preview whose numbers do not match the cycle it previews is worse than no
+            # preview. Reading the alias version is a read; nothing is mutated here.
+            _declare_rollback("autopilot_retrain_triggered", model)
+            try:
+                require_rollback("autopilot_retrain_triggered")
+            except AutonomousActionRefused as exc:
+                refused.append({"model": model, "action": "retrain", "reason": str(exc)})
+                if not dry_run:
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autonomous_action_refused",
+                        model,
+                        {"attempted": "autopilot_retrain_triggered", "reason": str(exc)},
+                    )
                 continue
 
             # Trigger retrain (or dry-run)
@@ -704,6 +755,7 @@ def run_cycle(
             "human_required": hitl,
             "skipped": skipped,
             "suppressed": suppressed,
+            "refused": refused,
         }
         update_autopilot_run(
             run_id,
@@ -727,6 +779,7 @@ def run_cycle(
                 "policy_blocks": len(blocks),
                 "human_required": len(hitl),
                 "suppressed": len(suppressed),
+                "refused": len(refused),
             },
         )
         # Publish to the NovaFabric event backbone (item 1.3) so subscribers (dashboard SSE,
@@ -788,6 +841,7 @@ def run(
     blocks = result.get("policy_blocks", [])
     hitl = result.get("human_required", [])
     suppressed = result.get("suppressed", [])
+    refused = result.get("refused", [])
     suffix = " [dry-run]" if dry_run else ""
 
     if retrains:
@@ -823,6 +877,12 @@ def run(
             ["Model", "Gate", "Reason"],
             [[b["model"], b["gate"], b.get("reason") or "—"] for b in blocks],
         )
+    if refused:
+        _output.print_table(
+            "Refused — no declared way to undo the action (ADR 0113)",
+            ["Model", "Action", "Reason"],
+            [[r["model"], r["action"], r["reason"]] for r in refused],
+        )
     if suppressed:
         _output.print_table(
             "Suppressed — classification did not permit an autonomous retrain (ADR 0114)",
@@ -835,7 +895,7 @@ def run(
                 f"HUMAN ACTION REQUIRED — model {h['model']} gate {h['gate']} "
                 "blocked by require_approval policy. See: exa audit"
             )
-    if not retrains and not promotions and not hitl and not suppressed:
+    if not retrains and not promotions and not hitl and not suppressed and not refused:
         _output.ok("Autopilot cycle complete — no actions needed")
     elif not dry_run:
         _output.ok(
