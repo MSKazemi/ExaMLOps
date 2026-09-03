@@ -101,10 +101,23 @@ def verify_worm() -> dict[str, Any]:
                 e = json.loads(raw)
             except json.JSONDecodeError:
                 return {"ok": False, "reason": f"corrupt JSON at line {i}", "entries": len(entries)}
+            if not isinstance(e, dict):
+                # Valid JSON but not an entry (a foreign/injected line) — a broken chain, not
+                # a crash: this function documents that it never raises for a bad anchor.
+                return {
+                    "ok": False,
+                    "reason": f"non-object entry at line {i}",
+                    "entries": len(entries),
+                }
+            # .get(): a truncated entry missing a field must read as a broken chain (the
+            # recomputed hash cannot match), never as a KeyError (C10).
             recomputed = _line_hash(
                 prev,
                 json.dumps(
-                    {k: e[k] for k in ("head_id", "head_hash", "key_id", "ts", "prev_worm_hash")},
+                    {
+                        k: e.get(k)
+                        for k in ("head_id", "head_hash", "key_id", "ts", "prev_worm_hash")
+                    },
                     sort_keys=True,
                 ),
             )
@@ -122,7 +135,7 @@ def verify_worm() -> dict[str, Any]:
         from examlops.data.audit import list_audit_checkpoints
 
         db_hashes = {c["head_hash"] for c in list_audit_checkpoints(10_000)}
-        worm_hashes = {e["head_hash"] for e in entries}
+        worm_hashes = {e.get("head_hash") for e in entries}
         missing = db_hashes - worm_hashes
         if missing:
             return {

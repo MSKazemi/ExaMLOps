@@ -4,6 +4,7 @@ import os
 import threading
 from typing import Any
 
+import audit_write
 from auth import require_role
 from docker_client import get_docker_client, get_own_project
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -133,27 +134,33 @@ async def list_containers(_user=Depends(_viewer_dep)):
     return {"containers": await loop.run_in_executor(None, _fetch)}
 
 
+def _audit(actor: str, action: str, service: str) -> None:
+    """Chained audit event for a container mutation (D11). Blocking — call off the loop."""
+    audit_write.audit(actor, action, service, {"service": service})
+
+
 @router.post("/containers/{service}/start")
 async def start_container(service: str, _user=Depends(_admin_dep)):
     client, project = _require_docker()
-    c = _find_container(client, project, service)
+    # The Docker SDK is blocking; keep every call off the event loop (D5).
+    c = await asyncio.to_thread(_find_container, client, project, service)
     if c.status == "running":
         raise HTTPException(409, "Container already running")
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, c.start)
-    await loop.run_in_executor(None, c.reload)
+    await asyncio.to_thread(c.start)
+    await asyncio.to_thread(c.reload)
+    await asyncio.to_thread(_audit, _user.get("sub", "?"), "service_started", service)
     return _container_info(c)
 
 
 @router.post("/containers/{service}/stop")
 async def stop_container(service: str, _user=Depends(_admin_dep)):
     client, project = _require_docker()
-    c = _find_container(client, project, service)
+    c = await asyncio.to_thread(_find_container, client, project, service)
     if c.status not in ("running", "restarting"):
         raise HTTPException(409, "Container not running")
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, c.stop)
-    await loop.run_in_executor(None, c.reload)
+    await asyncio.to_thread(c.stop)
+    await asyncio.to_thread(c.reload)
+    await asyncio.to_thread(_audit, _user.get("sub", "?"), "service_stopped", service)
     return _container_info(c)
 
 
@@ -169,39 +176,57 @@ async def restart_container(
     _user=Depends(_admin_dep),
 ):
     client, project = _require_docker()
-    c = _find_container(client, project, service)
+    c = await asyncio.to_thread(_find_container, client, project, service)
 
-    # Detect if we are restarting the dashboard container itself
-    hostname = os.environ.get("HOSTNAME", "")
-    is_self = False
-    try:
-        own_c = client.containers.get(hostname)
-        is_self = own_c.labels.get("com.docker.compose.service", "") == service
-    except Exception:
-        pass
+    def _detect_self() -> bool:
+        # Detect if we are restarting the dashboard container itself (blocking SDK call).
+        hostname = os.environ.get("HOSTNAME", "")
+        try:
+            own_c = client.containers.get(hostname)
+            return own_c.labels.get("com.docker.compose.service", "") == service
+        except Exception:
+            return False
 
-    if is_self:
+    if await asyncio.to_thread(_detect_self):
+        await asyncio.to_thread(_audit, _user.get("sub", "?"), "service_restarted", service)
         background_tasks.add_task(_restart_after_delay, c, 2.0)
         return {"status": "restarting", "reconnect_after_ms": 4000}
 
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, c.restart)
-    await loop.run_in_executor(None, c.reload)
+    await asyncio.to_thread(c.restart)
+    await asyncio.to_thread(c.reload)
+    await asyncio.to_thread(_audit, _user.get("sub", "?"), "service_restarted", service)
     return _container_info(c)
 
 
 @router.get("/containers/{service}/logs")
 async def get_logs(service: str, lines: int = 100, _user=Depends(_viewer_dep)):
     client, project = _require_docker()
-    c = _find_container(client, project, service)
-    raw = c.logs(tail=lines, timestamps=True)
-    return {"logs": raw.decode("utf-8", errors="replace")}
+
+    def _fetch() -> str:
+        # Blocking Docker SDK calls run in a worker thread (D5), like list_containers.
+        c = _find_container(client, project, service)
+        raw = c.logs(tail=lines, timestamps=True)
+        return raw.decode("utf-8", errors="replace")
+
+    return {"logs": await asyncio.to_thread(_fetch)}
 
 
 @router.get("/containers/{service}/logs/stream")
 async def stream_logs(service: str, _user=Depends(_viewer_dep)):
     client, project = _require_docker()
-    c = _find_container(client, project, service)
+    c = await asyncio.to_thread(_find_container, client, project, service)
+    log_stream = await asyncio.to_thread(lambda: c.logs(stream=True, follow=True, timestamps=True))
+    # Set when the client disconnects (or the response ends) so the worker thread stops
+    # instead of following the container's logs forever (D15).
+    stop = threading.Event()
+
+    def _close_stream() -> None:
+        close = getattr(log_stream, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
 
     async def _generate():
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
@@ -209,20 +234,32 @@ async def stream_logs(service: str, _user=Depends(_viewer_dep)):
 
         def _worker():
             try:
-                for chunk in c.logs(stream=True, follow=True, timestamps=True):
+                for chunk in log_stream:
+                    if stop.is_set():
+                        break
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception:
                 pass
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _close_stream()
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                except RuntimeError:
+                    pass  # loop already closed — nothing left to notify
 
         threading.Thread(target=_worker, daemon=True).start()
 
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                return
-            line = chunk.decode("utf-8", errors="replace").rstrip().replace("\n", " ")
-            yield f"data: {line}\n\n"
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    return
+                line = chunk.decode("utf-8", errors="replace").rstrip().replace("\n", " ")
+                yield f"data: {line}\n\n"
+        finally:
+            # Client disconnect surfaces here as GeneratorExit/CancelledError: flag the
+            # worker and close the docker stream so a read blocked on new output unblocks.
+            stop.set()
+            _close_stream()
 
     return StreamingResponse(_generate(), media_type="text/event-stream")

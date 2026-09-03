@@ -15,6 +15,7 @@ store (Redis); the dependency seam here stays the same.
 
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict, deque
 
@@ -101,6 +102,14 @@ class RateLimiter:
 
 
 def _client_key(request: Request) -> str:
+    # X-Forwarded-For is honoured only when DASHBOARD_TRUSTED_PROXY says a reverse proxy
+    # sits in front (D13): the header is client-forgeable, so trusting it without a proxy
+    # would let any caller pick its own rate bucket. Behind a proxy, ignoring it collapses
+    # every user into the proxy's address — one shared bucket. Leftmost entry = the client.
+    if os.getenv("DASHBOARD_TRUSTED_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 

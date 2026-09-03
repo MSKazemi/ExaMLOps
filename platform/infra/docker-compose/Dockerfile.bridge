@@ -20,6 +20,13 @@ ARG AI_PRODUCTIONS_DIR=ai-productions
 COPY ${SEANERBUS_DIR}/bindings/python /app/seanerbus-pkg
 RUN pip install --no-cache-dir /app/seanerbus-pkg
 
+# Install the examlops platform library — WITHOUT it, the bridge's
+# `from examlops.platform_db import …` fails at startup, _PLATFORM_DB_AVAILABLE flips False,
+# and every per-inference drift/input/audit write becomes a silent no-op: the entire
+# Phase 19/20/21 telemetry loop sees zero data from the bus path in Docker.
+COPY ${AI_PRODUCTIONS_DIR}/platform/cli /app/examlops-cli
+RUN pip install --no-cache-dir /app/examlops-cli
+
 # Copy bridge client code from ai-productions
 COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
 COPY ${AI_PRODUCTIONS_DIR}/usecases/seanergy/models /app/usecases/seanergy/models

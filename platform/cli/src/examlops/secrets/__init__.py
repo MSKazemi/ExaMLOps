@@ -137,13 +137,25 @@ def _tenant_allowed(path: str, tenant: str) -> bool:
     """Path-prefix tenant scoping (spec R5).
 
     A ``tenant/...``-prefixed path is readable only by that tenant (or the ``admin``
-    tenant). Unprefixed paths are shared. D6 policy can tighten this later.
+    tenant). Unprefixed paths (no ``/``) are shared. D6 policy can tighten this later.
+
+    Under multitenancy (``EXAMLOPS_MULTITENANCY`` truthy) this **fails closed** (C9): *any*
+    ``<seg>/...`` prefix is treated as tenant-scoped, whether or not ``seg`` is registered in
+    ``EXAMLOPS_SECRET_TENANTS`` — otherwise a site that enabled multitenancy but never set
+    that variable had no isolation at all. Single-tenant mode keeps the legacy behaviour
+    (only registered prefixes are scoped) so existing shared ``a/b``-style paths still work.
     """
     if tenant == "admin":
         return True
     parts = path.split("/", 1)
-    if len(parts) == 2 and parts[0] in _known_tenant_prefixes():
+    if len(parts) != 2 or not parts[0]:
+        return True  # unprefixed → shared
+    if parts[0] in _known_tenant_prefixes():
         return parts[0] == tenant
+    from examlops.authz import multitenancy_enabled
+
+    if multitenancy_enabled():
+        return parts[0] == tenant  # fail closed on any prefix mismatch under multitenancy
     return True
 
 

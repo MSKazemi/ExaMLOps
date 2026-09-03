@@ -146,3 +146,81 @@ def test_predict_times_out_returns_504():
     with pytest.raises(rs_app.HTTPException) as exc_info:
         server.predict("M", req)
     assert exc_info.value.status_code == 504
+
+
+# ─── reload keeps last-known-good on artifact-store failure (S5) ─────────────
+
+
+def test_reload_keeps_last_known_good_when_load_fails(monkeypatch):
+    """A reload during an artifact-store outage must not evict healthy in-memory models."""
+    server = _make_server()
+    good_entry = {"model": MagicMock(), "version": "3", "run_id": "r1"}
+    server._hot[("jpcp", "Production")] = good_entry
+
+    fake_client = MagicMock()
+    fake_client.search_registered_models.return_value = [SimpleNamespace(name="jpcp")]
+    fake_client.get_model_version_by_alias.return_value = SimpleNamespace(version="4")
+    monkeypatch.setattr(rs_app.mlflow, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(rs_app, "_get_serve_aliases_for", lambda name: ["Production"])
+    server._load_by_flavour = MagicMock(side_effect=RuntimeError("MinIO down"))
+
+    server._load_hot_aliases()
+
+    assert server._hot[("jpcp", "Production")] is good_entry, (
+        "reload evicted a healthy model because the artifact store was down"
+    )
+
+
+def test_reload_replaces_entry_when_load_succeeds(monkeypatch):
+    server = _make_server()
+    server._hot[("jpcp", "Production")] = {"model": MagicMock(), "version": "3", "run_id": "r1"}
+
+    new_model = MagicMock()
+    new_model.metadata.run_id = "r2"
+    fake_client = MagicMock()
+    fake_client.search_registered_models.return_value = [SimpleNamespace(name="jpcp")]
+    fake_client.get_model_version_by_alias.return_value = SimpleNamespace(version="4")
+    monkeypatch.setattr(rs_app.mlflow, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(rs_app, "_get_serve_aliases_for", lambda name: ["Production"])
+    server._load_by_flavour = MagicMock(return_value=new_model)
+
+    server._load_hot_aliases()
+
+    assert server._hot[("jpcp", "Production")]["version"] == "4"
+
+
+# ─── cold-load single-flight (S9) ────────────────────────────────────────────
+
+
+def test_cold_alias_load_is_single_flight(monkeypatch):
+    """N concurrent requests for a cold alias trigger exactly one artifact load."""
+    server = _make_server()
+    loads = []
+    load_started = threading.Event()
+
+    def slow_load(name, alias, mv):
+        loads.append((name, alias))
+        load_started.set()
+        time.sleep(0.2)
+        m = MagicMock()
+        m.metadata.run_id = "r9"
+        return m
+
+    fake_client = MagicMock()
+    fake_client.get_model_version_by_alias.return_value = SimpleNamespace(version="7")
+    monkeypatch.setattr(rs_app.mlflow, "MlflowClient", lambda: fake_client)
+    server._load_by_flavour = slow_load
+
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(server._resolve("jpcp", "Canary", None)))
+        for _ in range(6)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(results) == 6
+    assert all(r["version"] == "7" for r in results)
+    assert len(loads) == 1, f"expected one single-flight load, got {len(loads)}"

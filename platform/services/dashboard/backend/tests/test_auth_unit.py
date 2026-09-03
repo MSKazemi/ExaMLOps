@@ -37,6 +37,8 @@ def test_issue_and_verify_token_round_trip():
     payload = verify_token(token)
     assert payload["role"] == "admin"
     assert len(payload["jti"]) == 32
+    # D6: a stable actor id so audit events do not record "?" as the actor.
+    assert payload["sub"] == f"admin@{payload['jti'][:8]}"
     assert isinstance(expires_at, datetime)
 
 

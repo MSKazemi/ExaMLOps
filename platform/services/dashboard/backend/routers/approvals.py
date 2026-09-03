@@ -91,7 +91,9 @@ async def approve_model(
             ) from exc
 
     if not resp.is_success:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        # Same masking as the GET above: log the upstream body, never forward it (D15).
+        log.warning("Control Plane /approve returned %s: %s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=resp.status_code, detail="Control Plane returned an error")
     result = resp.json()
     # Push a live event onto the realtime gateway (F8) so open dashboards update without polling.
     bus.publish("approval.approved", {"model": model_id, **_as_dict(result)})
@@ -123,7 +125,8 @@ async def reject_model(
             ) from exc
 
     if not resp.is_success:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        log.warning("Control Plane /reject returned %s: %s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=resp.status_code, detail="Control Plane returned an error")
     result = resp.json()
     bus.publish("approval.rejected", {"model": model_id, "reason": body.reason, **_as_dict(result)})
     return result

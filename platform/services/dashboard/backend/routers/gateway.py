@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 
 import audit_write
 from auth import require_role
@@ -71,8 +72,16 @@ async def list_keys(_=Depends(_viewer)) -> list[dict]:
             return out
         finally:
             conn.close()
-    except Exception:
-        return []
+    except sqlite3.OperationalError as exc:
+        # A missing table just means nothing was recorded yet (D12); any other
+        # datastore failure must surface, not masquerade as an empty list.
+        if "no such table" in str(exc).lower():
+            return []
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
 
 
 @router.post("/keys", status_code=status.HTTP_201_CREATED)
@@ -94,7 +103,12 @@ async def issue_key(
     if models is not None and not isinstance(models, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "models must be a list of model names")
     budget = payload.get("budgetUsd")
-    budget_usd = float(budget) if budget not in (None, "") else None
+    try:
+        budget_usd = float(budget) if budget not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "budgetUsd must be a number"
+        ) from None
     gateway, _gov = _examlops_gateway()
     raw = gateway.issue_virtual_key(
         tenant, project, models, budget_usd, principal.get("sub", "?"), source="dashboard"

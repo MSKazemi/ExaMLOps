@@ -68,6 +68,10 @@ class CircuitBreaker:
         self._failures = 0
         self._state = self.CLOSED
         self._opened_at = 0.0
+        # True while the single HALF-OPEN trial call is in flight (C12): without it, every
+        # caller arriving after reset_timeout elapsed passed at once — a probe *stampede*
+        # against an upstream that just proved itself unhealthy.
+        self._probing = False
         self._lock = threading.Lock()
 
     @property
@@ -85,19 +89,34 @@ class CircuitBreaker:
             if self._state == self.OPEN:
                 if time.monotonic() - self._opened_at >= self._reset_timeout:
                     self._state = self.HALF_OPEN
+                    self._probing = True
                     logger.info("circuit '%s' HALF-OPEN — probing", self.name)
                 else:
                     raise CircuitOpenError(self.name)
+            elif self._state == self.HALF_OPEN:
+                # Exactly one trial call is admitted; concurrent callers fail fast until the
+                # in-flight probe resolves (success → CLOSED, failure → OPEN).
+                if self._probing:
+                    raise CircuitOpenError(self.name)
+                self._probing = True
 
         try:
             result = fn()
         except BaseException as exc:  # noqa: BLE001 — re-raised below
             if self._is_failure(exc):
                 self._on_failure()
+            else:
+                # A non-failure exception (e.g. a client error under a custom predicate) still
+                # ends the trial call — release the probe slot so the breaker cannot wedge.
+                self._release_probe()
             raise
         else:
             self._on_success()
             return result
+
+    def _release_probe(self) -> None:
+        with self._lock:
+            self._probing = False
 
     def _on_success(self) -> None:
         with self._lock:
@@ -105,10 +124,12 @@ class CircuitBreaker:
                 logger.info("circuit '%s' CLOSED — upstream recovered", self.name)
             self._state = self.CLOSED
             self._failures = 0
+            self._probing = False
 
     def _on_failure(self) -> None:
         tripped = False
         with self._lock:
+            self._probing = False
             self._failures += 1
             if self._failures >= self._fail_max or self._state == self.HALF_OPEN:
                 if self._state != self.OPEN:

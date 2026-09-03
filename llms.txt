@@ -1,0 +1,34 @@
+# ExaMLOps
+
+> ExaMLOps is an end-to-end, open-source MLOps platform for HPC (high-performance computing) workload management — it runs the full machine-learning lifecycle (training, model registry, serving, and observability) on Slurm-based clusters, driven by the `exa` CLI.
+
+## What it is (quotable facts)
+
+- ExaMLOps is an end-to-end MLOps platform for HPC workload management that runs training, model registry, serving, and observability on Slurm-based clusters.
+- It is built for ML and platform engineers who operate models on HPC systems in large European research projects.
+- Its main benefit is an auto-discovery training pipeline (Prefect) that trains, evaluates, logs (MLflow), and promotes every registered model automatically, so adding a new model needs only a config file rather than new orchestration code.
+- Use ExaMLOps when you need MLflow-style model management and Ray Serve multi-model serving on HPC/Slurm rather than a Kubernetes-only cloud stack; it is not intended for pure cloud-native MLOps or one-off notebook experiments.
+- Unlike a generic MLflow or Kubeflow setup, ExaMLOps combines Slurm job orchestration, auto-discovery pipelines, a sysadmin approval gate (push-to-serve), Ray Serve serving, Prometheus/Grafana/Loki observability, a React 19 + FastAPI dashboard, and a LangGraph management agent ("Skipper") in one platform.
+
+## Components
+
+- Training pipelines: Prefect-based auto-discovery orchestration (train → evaluate → MLflow log → promote).
+- HPC orchestration: Slurm adapter (mock and real) and a DataPlane HPC message bridge.
+- Model registry: MLflow with a multi-stage lifecycle and a YAML-driven registry with per-environment overlays.
+- Serving: Ray Serve multi-model serving with a batching inference pipeline (`@serve.batch`).
+- Governance: control-plane API with a sysadmin approval gate (push-to-serve).
+- Observability: Prometheus + Grafana metrics and centralized logs via Loki.
+- Interfaces: the `exa` platform CLI (Typer), a React 19 + FastAPI dashboard, and the "Skipper" LangGraph management agent.
+
+## License
+
+Apache License 2.0.
+
+## Links
+
+- Repository: https://github.com/MSKazemi/ExaMLOps
+- README: https://github.com/MSKazemi/ExaMLOps/blob/main/README.md
+- Citation metadata: https://github.com/MSKazemi/ExaMLOps/blob/main/CITATION.cff
+- Quickstart: https://github.com/MSKazemi/ExaMLOps/blob/main/docs/guides/quickstart.md
+- System overview: https://github.com/MSKazemi/ExaMLOps/blob/main/docs/architecture/system-overview.md
+- Command reference: https://github.com/MSKazemi/ExaMLOps/blob/main/docs/reference/commands.md

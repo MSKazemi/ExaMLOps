@@ -115,3 +115,15 @@ async def test_revoke_requires_admin(client, platform_db):
         "/api/gateway/keys/deadbeef/revoke", headers={"Authorization": f"Bearer {token}"}
     )
     assert r.status_code == 403
+
+
+async def test_issue_rejects_non_numeric_budget_with_400(client, platform_db):
+    """D14: a bad budgetUsd is a client error (400), never an unhandled 500."""
+    token = await _login(client, ADMIN_PW)
+    r = await client.post(
+        "/api/gateway/keys",
+        json={"project": "research", "budgetUsd": "not-a-number"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 400
+    assert "budgetUsd" in r.json()["detail"]

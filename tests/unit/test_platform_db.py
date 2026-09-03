@@ -242,3 +242,16 @@ def test_project_budget_and_carbon(db_path):
         row = conn.execute("SELECT model, kwh, co2e_g FROM carbon_records").fetchone()
     assert row["model"] == "JPCP"
     assert abs(row["co2e_g"] - 812.0) < 1e-6
+
+
+def test_hot_telemetry_tables_are_indexed(db_path):
+    """C6: drift/input snapshots get one row per inference and are read with
+    `WHERE model=? ORDER BY ts DESC` — the covering indexes must exist."""
+    from examlops.platform_db import get_db, init_db
+
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    indexes = {r[0] for r in rows}
+    assert "ix_drift_snapshots_model_ts" in indexes
+    assert "ix_input_snapshots_model_ts" in indexes

@@ -151,3 +151,35 @@ async def test_reject_publishes_event(client, monkeypatch):
         assert evt.data["reason"] == "needs review"
     finally:
         bus.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_approve_and_reject_hide_upstream_error_body(client, monkeypatch):
+    """D15: the POST proxies mask upstream bodies exactly like the GET does."""
+
+    class _FailResp:
+        is_success = False
+        status_code = 500
+        text = "upstream stack trace with internals"
+
+    class _FailClient(_FakeAsyncClient):
+        async def post(self, *a, **k):
+            return _FailResp()
+
+    async def no_token(_db):
+        return None
+
+    monkeypatch.setattr("routers.approvals._get_control_plane_token", no_token)
+    monkeypatch.setattr("routers.approvals.httpx.AsyncClient", _FailClient)
+    token = await _login(client, ADMIN_PW)
+    h = {"Authorization": f"Bearer {token}"}
+
+    r = await client.post("/api/approvals/approve/JPCP", headers=h)
+    assert r.status_code == 500
+    assert r.json() == {"detail": "Control Plane returned an error"}
+    assert "stack trace" not in r.text
+
+    r = await client.post("/api/approvals/reject/JPCP", json={"reason": "nope"}, headers=h)
+    assert r.status_code == 500
+    assert r.json() == {"detail": "Control Plane returned an error"}
+    assert "stack trace" not in r.text

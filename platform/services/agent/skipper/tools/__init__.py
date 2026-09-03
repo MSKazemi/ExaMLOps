@@ -4,6 +4,7 @@ from skipper.tools import (
     approvals,
     baselines,
     docs,
+    finops,
     inference,
     knowledge,
     metrics,
@@ -28,4 +29,5 @@ TOOLS = [
     *knowledge.TOOLS,
     *baselines.TOOLS,
     *platform_ops.TOOLS,
+    *finops.TOOLS,
 ]

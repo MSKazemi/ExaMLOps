@@ -11,6 +11,7 @@ deliberately NO reveal endpoint.
 from __future__ import annotations
 
 import os
+import sqlite3
 
 from auth import require_role
 from capabilities import SECRETS_MANAGE, can, deny_reason
@@ -47,7 +48,7 @@ def _examlops_secrets():
 
 @router.get("")
 async def list_secrets(_=Depends(_viewer)) -> list[dict]:
-    """Secret METADATA only — never the value (path/tenant/version/updated_by/updated_at). Fail-open."""
+    """Secret METADATA only — never the value (path/tenant/version/updated_by/updated_at)."""
     try:
         conn = connect(_db_path())
         try:
@@ -60,8 +61,16 @@ async def list_secrets(_=Depends(_viewer)) -> list[dict]:
             return [{**dict(r), "hasValue": True} for r in rows]
         finally:
             conn.close()
-    except Exception:
-        return []
+    except sqlite3.OperationalError as exc:
+        # A missing table just means nothing was recorded yet (D12); any other
+        # datastore failure must surface, not masquerade as an empty list.
+        if "no such table" in str(exc).lower():
+            return []
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

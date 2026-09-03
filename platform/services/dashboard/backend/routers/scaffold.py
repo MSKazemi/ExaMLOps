@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import subprocess
 import sys
 from pathlib import Path
 
+import audit_write
 from auth import require_role
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -62,7 +64,9 @@ async def preview(body: ScaffoldBody, _=Depends(_admin)) -> dict:
     """Render model files in memory; returns {relative_path: content}."""
     if not _SCAFFOLD_SCRIPT.exists():
         raise HTTPException(503, "Scaffold script not available — rebuild the dashboard image")
-    result = subprocess.run(  # noqa: S603
+    # subprocess.run blocks; keep it off the event loop (D5).
+    result = await asyncio.to_thread(
+        subprocess.run,  # noqa: S603
         _build_cmd(body, ["--stdout-json"]),
         capture_output=True,
         text=True,
@@ -77,7 +81,7 @@ async def preview(body: ScaffoldBody, _=Depends(_admin)) -> dict:
 
 
 @router.post("/create")
-async def create(body: ScaffoldBody, _=Depends(_admin)) -> dict:
+async def create(body: ScaffoldBody, claims: dict = Depends(_admin)) -> dict:
     """Write model files to the bind-mounted repo. Requires REPO_ROOT."""
     if not _SCAFFOLD_SCRIPT.exists():
         raise HTTPException(503, "Scaffold script not available — rebuild the dashboard image")
@@ -86,7 +90,8 @@ async def create(body: ScaffoldBody, _=Depends(_admin)) -> dict:
             503,
             "REPO_ROOT not set — add '../../../:/repo:rw' bind mount to the dashboard service in docker-compose.yml",
         )
-    result = subprocess.run(  # noqa: S603
+    result = await asyncio.to_thread(
+        subprocess.run,  # noqa: S603
         _build_cmd(body, []),
         capture_output=True,
         text=True,
@@ -94,4 +99,12 @@ async def create(body: ScaffoldBody, _=Depends(_admin)) -> dict:
     )
     if result.returncode != 0:
         raise HTTPException(422, result.stderr.strip() or "scaffold failed")
+    # Audit the mutation (D11) — chained via the shared dashboard audit writer.
+    await asyncio.to_thread(
+        audit_write.audit,
+        claims.get("sub", "?"),
+        "model_scaffolded",
+        body.name,
+        {"task": body.task, "task_type": body.task_type},
+    )
     return {"message": result.stdout.strip()}

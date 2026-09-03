@@ -8,6 +8,12 @@ import pytest
 from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
+@pytest.fixture(autouse=True)
+def _platform_db(tmp_path, monkeypatch):
+    """Keep the D11 audit write on /create inside a per-test scratch DB."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+
+
 async def _login(client, pw: str) -> str:
     r = await client.post("/api/auth/login", json={"password": pw})
     assert r.status_code == 200, r.text
@@ -122,3 +128,31 @@ async def test_create_calls_subprocess_with_repo_root(client, monkeypatch):
     assert "/repo" in call_args
     assert "--name" in call_args
     assert "TestModel" in call_args
+
+
+@pytest.mark.asyncio
+async def test_create_writes_audit_event(client, monkeypatch):
+    """POST /api/scaffold/create records a model_scaffolded audit event (D11)."""
+    from unittest.mock import MagicMock as _MM
+
+    from settings import settings
+
+    token = await _login(client, ADMIN_PW)
+    monkeypatch.setattr(settings, "repo_root", "/repo")
+
+    fake_result = SimpleNamespace(returncode=0, stdout="Created 4 files", stderr="")
+    mock_audit = _MM()
+
+    with (
+        patch("routers.scaffold._SCAFFOLD_SCRIPT", _mock_script(exists=True)),
+        patch("routers.scaffold.subprocess.run", return_value=fake_result),
+        patch("routers.scaffold.audit_write", mock_audit),
+    ):
+        r = await client.post("/api/scaffold/create", json=_BODY, headers=_hdr(token))
+
+    assert r.status_code == 200
+    args = mock_audit.audit.call_args[0]
+    assert args[1] == "model_scaffolded"
+    assert args[2] == "TestModel"
+    # The actor comes from the JWT sub claim (D6), never "?".
+    assert args[0] != "?"

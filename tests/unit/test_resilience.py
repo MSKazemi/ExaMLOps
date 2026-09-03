@@ -272,3 +272,94 @@ def test_concurrent_writers_no_lock_error(tmp_path):
     count = check.execute("SELECT COUNT(*) FROM t").fetchone()[0]
     check.close()
     assert count == 8 * 20
+
+
+def test_half_open_admits_exactly_one_probe():
+    """C12: when OPEN flips HALF-OPEN, exactly one caller probes; the rest fail fast."""
+    cb = CircuitBreaker(fail_max=1, reset_timeout=0.0)
+    with pytest.raises(RuntimeError):
+        cb.call(_boom)
+
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+    outcome = {}
+
+    def _probe():
+        def _slow_ok():
+            probe_entered.set()
+            assert release_probe.wait(5)
+            return "ok"
+
+        outcome["probe"] = cb.call(_slow_ok)
+
+    t = threading.Thread(target=_probe)
+    t.start()
+    assert probe_entered.wait(5)
+    # While the single probe is in flight, concurrent callers must NOT reach the upstream.
+    for _ in range(3):
+        with pytest.raises(CircuitOpenError):
+            cb.call(lambda: pytest.fail("second probe must not run"))
+    release_probe.set()
+    t.join(5)
+    assert outcome["probe"] == "ok"
+    assert cb.state == CircuitBreaker.CLOSED
+    assert cb.call(lambda: "after") == "after"  # breaker fully usable again
+
+
+def test_failed_probe_releases_slot_for_next_window():
+    """C12: a failed trial re-opens the breaker AND frees the probe slot for the next window."""
+    cb = CircuitBreaker(fail_max=1, reset_timeout=0.0)
+    with pytest.raises(RuntimeError):
+        cb.call(_boom)
+    with pytest.raises(RuntimeError):
+        cb.call(_boom)  # the probe itself fails → back to OPEN
+    # reset_timeout=0 → next window is immediate; a fresh probe must be admitted.
+    assert cb.call(lambda: "ok") == "ok"
+    assert cb.state == CircuitBreaker.CLOSED
+
+
+def test_non_failure_exception_during_probe_releases_slot():
+    """C12: a probe ending in a non-failure exception must not wedge the breaker."""
+    cb = CircuitBreaker(
+        fail_max=1, reset_timeout=0.0, is_failure=lambda e: not isinstance(e, ValueError)
+    )
+    with pytest.raises(RuntimeError):
+        cb.call(_boom)
+    with pytest.raises(ValueError):
+        cb.call(lambda: (_ for _ in ()).throw(ValueError("client error during probe")))
+    # The slot was released — the next caller can probe and close the breaker.
+    assert cb.call(lambda: "ok") == "ok"
+    assert cb.state == CircuitBreaker.CLOSED
+
+
+# ─── Optional httpx (C11) ────────────────────────────────────────────────────
+
+
+def test_resilience_imports_without_httpx():
+    """C11: examlops.resilience (incl. .db) must import on a host without httpx installed."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "class _Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'httpx' or name.startswith('httpx.'):\n"
+        "            raise ImportError('httpx blocked for test')\n"
+        "sys.meta_path.insert(0, _Block())\n"
+        "sys.modules.pop('httpx', None)\n"
+        "import examlops.resilience.db as rdb\n"
+        "from examlops.resilience import httpx_timeout, request_json\n"
+        "try:\n"
+        "    httpx_timeout()\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('httpx_timeout must raise when httpx is absent')\n"
+        "print('IMPORT-OK')\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert out.returncode == 0, f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    assert "IMPORT-OK" in out.stdout

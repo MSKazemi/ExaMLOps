@@ -1,4 +1,4 @@
-fastapi==0.115.12
+fastapi==0.115.12  # pinned exact: upgrade deliberately (aligned with the serving stack), never by float
 uvicorn[standard]==0.34.2
 sqlalchemy[asyncio]==2.0.41
 asyncpg==0.30.0

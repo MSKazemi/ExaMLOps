@@ -109,3 +109,30 @@ def test_end_to_end_checkpoint_anchors_and_verifies(env, monkeypatch):
     assert r1.exit_code == 0, r1.output
     r2 = runner.invoke(app, ["audit", "verify-worm"])
     assert r2.exit_code == 0, r2.output
+
+
+def test_verify_reports_broken_chain_on_truncated_entry(env):
+    """C10: an entry missing required fields is a broken chain, not a KeyError crash."""
+    from examlops import audit_worm
+
+    audit_worm.anchor_checkpoint(_cp(1, "aaa"), ts="t1")
+    path = env[1] / "worm.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"head_id": 2}) + "\n")  # truncated: no hashes, no ts
+    result = audit_worm.verify_worm()
+    assert result["ok"] is False
+    assert "broken" in result["reason"].lower()
+    assert result["entries"] == 1  # the intact first entry was counted
+
+
+def test_verify_reports_broken_chain_on_non_object_line(env):
+    """C10: a foreign JSON line (valid JSON, not an entry dict) must not crash verify."""
+    from examlops import audit_worm
+
+    audit_worm.anchor_checkpoint(_cp(1, "aaa"), ts="t1")
+    path = env[1] / "worm.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("[1, 2, 3]\n")
+    result = audit_worm.verify_worm()
+    assert result["ok"] is False
+    assert "non-object" in result["reason"]

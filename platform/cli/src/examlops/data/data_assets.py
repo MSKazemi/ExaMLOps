@@ -9,6 +9,7 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 from __future__ import annotations
 
 import json
+import os
 from typing import Any  # noqa: F401
 
 from examlops.data._rowid import last_insert_id
@@ -437,13 +438,25 @@ def purge_telemetry(
             if not dry_run and n:
                 conn.execute(f"DELETE FROM {table} WHERE ts < datetime('now', ?)", (cutoff,))
     if vacuum and not dry_run and any(result.values()):
-        conn2 = _rdb.connect(_db_path())
-        conn2.isolation_level = None  # VACUUM cannot run inside a transaction
-        try:
-            conn2.execute("VACUUM")
-        finally:
-            conn2.close()
+        if _is_sqlite_backend():
+            conn2 = _rdb.connect(_db_path())
+            conn2.isolation_level = None  # VACUUM cannot run inside a transaction
+            try:
+                conn2.execute("VACUUM")
+            finally:
+                conn2.close()
+        else:
+            # C5: the file-level VACUUM opens PLATFORM_DB directly; under
+            # EXAMLOPS_DB_BACKEND=postgres that would hit (and may create) a stray local
+            # platform.db while the real data lives in Postgres. Skip it and say so —
+            # Postgres reclaims space via autovacuum on its own schedule.
+            result["vacuum_skipped"] = 1
     return result
+
+
+def _is_sqlite_backend() -> bool:
+    """Is the active datastore the SQLite file? Same selector ``storage.get_backend`` reads."""
+    return os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() != "postgres"
 
 
 def record_data_quality_check(

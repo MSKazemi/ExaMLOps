@@ -334,6 +334,11 @@ class MultiModelServer:
         self._version_cache_size = VERSION_CACHE_SIZE
         self._preload_aliases: list[str] = list(PRELOAD_ALIASES)
 
+        # Single-flight guards for cold-alias/version one-shot loads: N concurrent requests for
+        # a not-yet-hot (model, alias) must trigger ONE artifact download, not N. Keys are
+        # bounded by the registry size × aliases, so the dict never needs eviction.
+        self._load_locks: dict[tuple[str, str], threading.Lock] = {}
+
         self._poll_task: asyncio.Task[None] | None = None
         self._poller_alive = False
         # Bounded pool used to run model.predict() under a hard timeout so one hung
@@ -460,6 +465,20 @@ class MultiModelServer:
                     logger.info("Loaded '%s'@%s (v%s)", rm.name, alias, mv.version)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Failed to load '%s'@%s: %s", rm.name, alias, exc)
+                    # Keep the last-known-good copy (mirrors _reload_one_model): a reload during
+                    # an artifact-store outage must not evict a model we're serving healthily
+                    # from memory — that would turn "MinIO briefly down" into a total serving
+                    # outage triggered by the documented post-promotion runbook step.
+                    with self._cache_lock:
+                        previous = self._hot.get((rm.name, alias))
+                    if previous is not None:
+                        new_hot[(rm.name, alias)] = previous
+                        logger.warning(
+                            "Keeping last-known-good '%s'@%s (v%s) after failed reload",
+                            rm.name,
+                            alias,
+                            previous.get("version"),
+                        )
 
         with self._cache_lock:
             self._hot = new_hot
@@ -642,6 +661,14 @@ class MultiModelServer:
             entry = self._hot.get((model_name.lower(), alias))
         return entry
 
+    def _single_flight(self, model_name: str, key2: str) -> threading.Lock:
+        """Per-(model, alias-or-version) load lock. Lazy so hand-built test instances work."""
+        with self._cache_lock:
+            locks = getattr(self, "_load_locks", None)
+            if locks is None:
+                locks = self._load_locks = {}
+            return locks.setdefault((model_name, key2), threading.Lock())
+
     def _resolve(self, model_name: str, alias: str | None, version: str | None) -> dict[str, Any]:
         """Return ``{"model", "version", "alias", "run_id"}`` for the request.
 
@@ -652,20 +679,25 @@ class MultiModelServer:
             entry = self._hot_get(model_name, alias)
             if entry is not None:
                 return {**entry, "alias": alias}
-            # Alias not in the hot set — try a one-shot load.
+            # Alias not in the hot set — try a one-shot load, single-flight per key so
+            # concurrent cold requests share one download instead of a thundering herd.
             try:
-                client = mlflow.MlflowClient()
-                # Any: reused below for the raw-version path where it may be None.
-                mv: Any = client.get_model_version_by_alias(model_name, alias)
-                model = self._load_by_flavour(model_name, alias, mv)
-                entry = {
-                    "model": model,
-                    "version": str(mv.version),
-                    "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
-                }
-                with self._cache_lock:
-                    self._hot[(model_name, alias)] = entry
-                return {**entry, "alias": alias}
+                with self._single_flight(model_name, alias):
+                    entry = self._hot_get(model_name, alias)
+                    if entry is not None:  # loaded by the request we waited on
+                        return {**entry, "alias": alias}
+                    client = mlflow.MlflowClient()
+                    # Any: reused below for the raw-version path where it may be None.
+                    mv: Any = client.get_model_version_by_alias(model_name, alias)
+                    model = self._load_by_flavour(model_name, alias, mv)
+                    entry = {
+                        "model": model,
+                        "version": str(mv.version),
+                        "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
+                    }
+                    with self._cache_lock:
+                        self._hot[(model_name, alias)] = entry
+                    return {**entry, "alias": alias}
             except Exception as exc:  # noqa: BLE001
                 if _is_mlflow_unreachable(exc):
                     raise HTTPException(
@@ -687,12 +719,30 @@ class MultiModelServer:
             if entry is not None:
                 return {**entry, "alias": None}
             try:
-                client = mlflow.MlflowClient()
-                try:
-                    mv = client.get_model_version(model_name, str(version))
-                except Exception:  # noqa: BLE001
-                    mv = None
-                model = self._load_by_flavour(model_name, None, mv or _StubMV(version))
+                with self._single_flight(model_name, f"v{version}"):
+                    with self._cache_lock:
+                        entry = self._version_cache.get(key)
+                        if entry is not None:  # loaded by the request we waited on
+                            self._version_cache.move_to_end(key)
+                    if entry is not None:
+                        return {**entry, "alias": None}
+                    client = mlflow.MlflowClient()
+                    try:
+                        mv = client.get_model_version(model_name, str(version))
+                    except Exception:  # noqa: BLE001
+                        mv = None
+                    model = self._load_by_flavour(model_name, None, mv or _StubMV(version))
+                    entry = {
+                        "model": model,
+                        "version": str(version),
+                        "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
+                    }
+                    with self._cache_lock:
+                        self._version_cache[key] = entry
+                        self._version_cache.move_to_end(key)
+                        while len(self._version_cache) > self._version_cache_size:
+                            self._version_cache.popitem(last=False)
+                    return {**entry, "alias": None}
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -705,17 +755,6 @@ class MultiModelServer:
                     status_code=404,
                     detail=f"Version '{version}' not found for model '{model_name}': {exc}",
                 ) from exc
-            entry = {
-                "model": model,
-                "version": str(version),
-                "run_id": getattr(getattr(model, "metadata", None), "run_id", None),
-            }
-            with self._cache_lock:
-                self._version_cache[key] = entry
-                self._version_cache.move_to_end(key)
-                while len(self._version_cache) > self._version_cache_size:
-                    self._version_cache.popitem(last=False)
-            return {**entry, "alias": None}
 
         # 3. Default alias (MODEL_STAGE).
         entry = self._hot_get(model_name, MODEL_STAGE)
@@ -791,7 +830,6 @@ class MultiModelServer:
             for (name, alias), entry in hot_items
         ]
 
-    @_app.post("/predict/{model_name}", response_model=PredictResponse)
     # ── ADR 0024 clause 1 — shadow mirroring ─────────────────────────────────
 
     def _shadow_target(self, model_name: str) -> str | None:
@@ -908,6 +946,7 @@ class MultiModelServer:
             with self._shadow_lock:
                 self._shadow_inflight -= 1
 
+    @_app.post("/predict/{model_name}", response_model=PredictResponse)
     def predict(self, model_name: str, request: PredictRequest) -> PredictResponse:
         """Run inference for *model_name* with optional alias / version selection."""
         try:
