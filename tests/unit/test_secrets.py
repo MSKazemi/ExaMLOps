@@ -246,3 +246,30 @@ def test_no_vault_configured_is_not_reported_as_an_error(monkeypatch, caplog):
     assert not caplog.records
     detail = _audit_details()[-1]
     assert detail["backend"] == "local" and "vault_error" not in detail
+
+
+def test_c9_multitenancy_fails_closed_on_unregistered_prefix(monkeypatch):
+    """C9: with multitenancy ON and EXAMLOPS_SECRET_TENANTS unset, tenantX/... is still scoped."""
+    monkeypatch.setenv("EXAMLOPS_MULTITENANCY", "1")
+    sec.set_secret("acme/api-key", "k", tenant="acme", actor="me")
+    assert sec.get_secret("acme/api-key", tenant="acme", actor="me") == "k"
+    with pytest.raises(sec.SecretAccessDenied):
+        sec.get_secret("acme/api-key", tenant="globex", actor="mallory")
+    assert "secret_denied" in _audit_actions()
+
+
+def test_c9_tenant_gate_semantics(monkeypatch):
+    """The prefix gate: legacy sharing single-tenant, fail-closed under multitenancy."""
+    monkeypatch.delenv("EXAMLOPS_MULTITENANCY", raising=False)
+    # single-tenant (legacy): an unregistered prefix stays shared
+    assert sec._tenant_allowed("acme/api-key", "globex") is True
+    monkeypatch.setenv("EXAMLOPS_MULTITENANCY", "1")
+    # multitenancy: any <seg>/ prefix is tenant-scoped even without EXAMLOPS_SECRET_TENANTS
+    assert sec._tenant_allowed("acme/api-key", "globex") is False
+    assert sec._tenant_allowed("acme/api-key", "acme") is True
+    assert sec._tenant_allowed("acme/api-key", "admin") is True  # admin reads everything
+    assert sec._tenant_allowed("plain-token", "globex") is True  # unprefixed stays shared
+    # registered prefixes keep working the same way under multitenancy
+    monkeypatch.setenv("EXAMLOPS_SECRET_TENANTS", "acme")
+    assert sec._tenant_allowed("acme/api-key", "globex") is False
+    assert sec._tenant_allowed("acme/api-key", "acme") is True

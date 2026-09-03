@@ -125,3 +125,71 @@ def test_the_chain_start_is_reported_so_the_two_causes_are_separable(tmp_path, m
 
     result = verify_audit_chain()
     assert result["chain_begins_at"], "no boundary reported, so the causes cannot be told apart"
+
+
+# ─── C1: the conn= path must serialize the head read on Postgres ──────────────
+
+
+class _Row(dict):
+    def __getitem__(self, k):
+        return dict.__getitem__(self, k)
+
+
+class _Cursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class PgConnection:  # noqa: N801 — name is the contract _lock_chain_head keys on
+    """Recorder standing in for examlops.storage.pg.PgConnection."""
+
+    def __init__(self):
+        self.executed: list[str] = []
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+        if sql.startswith("PRAGMA table_info"):
+            names = [
+                "id", "source", "actor", "action", "target", "details", "tenant",
+                "prev_hash", "hash", "ts", "correlation_id", "parent_correlation_id",
+                "mode", "on_behalf_of", "rollback_ref",
+            ]
+            return _Cursor([_Row(name=n) for n in names])
+        if "CURRENT_TIMESTAMP" in sql:
+            return _Cursor([_Row(t="2026-09-04 00:00:00")])
+        if sql.startswith("SELECT hash FROM audit_events"):
+            return _Cursor([])
+        return _Cursor([])
+
+
+def test_pg_conn_path_takes_advisory_lock_before_head_read():
+    from examlops.data.audit import _append_on
+
+    conn = PgConnection()
+    _append_on(conn, "test", None, "unit_test", "t", None, "default")
+
+    assert "BEGIN IMMEDIATE" in conn.executed, "Pg conn= path must take the advisory lock"
+    lock_at = conn.executed.index("BEGIN IMMEDIATE")
+    head_at = next(
+        i for i, s in enumerate(conn.executed) if s.startswith("SELECT hash FROM audit_events")
+    )
+    assert lock_at < head_at, "the lock must precede the chain-head read"
+
+
+def test_sqlite_conn_path_takes_no_extra_lock():
+    """On SQLite the caller already holds RESERVED; no BEGIN inside their transaction."""
+
+    class SqliteishConn(PgConnection):
+        pass
+
+    conn = SqliteishConn()
+    from examlops.data.audit import _append_on
+
+    _append_on(conn, "test", None, "unit_test", "t", None, "default")
+    assert "BEGIN IMMEDIATE" not in conn.executed

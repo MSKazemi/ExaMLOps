@@ -9,8 +9,10 @@ timeout from here so operators can tune resilience without editing code.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
-import httpx
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import httpx
 
 
 def _f(env: str, default: float) -> float:
@@ -46,7 +48,13 @@ def httpx_timeout(
 
     Callers that need a longer read budget (e.g. model downloads, LLM streams)
     pass ``read=...`` explicitly; everything else inherits the platform defaults.
+
+    ``httpx`` is imported lazily so that importing this module (and everything that
+    pulls it in transitively, e.g. ``examlops.resilience.db``) works without httpx
+    installed — mirroring the optional-import guard in ``retry.py`` (C11).
     """
+    import httpx
+
     return httpx.Timeout(
         connect=CONNECT_TIMEOUT if connect is None else connect,
         read=READ_TIMEOUT if read is None else read,

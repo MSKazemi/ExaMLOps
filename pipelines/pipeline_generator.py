@@ -1171,7 +1171,11 @@ def _notify_ray_serve(model_id: str) -> None:
     Failures are swallowed — the Ray Serve background poller (Phase 3c) is the
     safety net, so we never block the pipeline on a webhook outage.
     """
-    url = os.getenv("RAY_SERVE_RELOAD_URL", "").strip()
+    # RAY_SERVE_RELOAD_URL was wired nowhere, so the "reflected in serving within seconds"
+    # contract silently never fired anywhere and promotion visibility was solely the 60s
+    # poller. Fall back to RAY_SERVE_URL (set in every containerized context) so the webhook
+    # actually fires there; unset both ⇒ poller-only, as before.
+    url = (os.getenv("RAY_SERVE_RELOAD_URL") or os.getenv("RAY_SERVE_URL") or "").strip()
     if not url:
         return
     try:

@@ -104,3 +104,45 @@ async def test_search_endpoint_rate_limited(client, monkeypatch):
     assert (await client.get("/api/v1/search?q=a", headers=hdr)).status_code == 200
     assert (await client.get("/api/v1/search?q=b", headers=hdr)).status_code == 200
     assert (await client.get("/api/v1/search?q=c", headers=hdr)).status_code == 429
+
+
+# ── client key derivation behind a reverse proxy (D13) ───────────────────────
+
+
+def _request_with(headers: list[tuple[bytes, bytes]], client_host: str = "10.0.0.9"):
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": headers,
+        "client": (client_host, 12345),
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+def test_client_key_ignores_forwarded_for_by_default(monkeypatch):
+    from security import _client_key
+
+    monkeypatch.delenv("DASHBOARD_TRUSTED_PROXY", raising=False)
+    req = _request_with([(b"x-forwarded-for", b"1.2.3.4, 5.6.7.8")])
+    # Header is client-forgeable — without a trusted proxy it must not pick the bucket.
+    assert _client_key(req) == "10.0.0.9"
+
+
+def test_client_key_honors_forwarded_for_behind_trusted_proxy(monkeypatch):
+    from security import _client_key
+
+    monkeypatch.setenv("DASHBOARD_TRUSTED_PROXY", "1")
+    req = _request_with([(b"x-forwarded-for", b"1.2.3.4, 5.6.7.8")])
+    assert _client_key(req) == "1.2.3.4"
+
+
+def test_client_key_falls_back_when_proxy_sends_no_header(monkeypatch):
+    from security import _client_key
+
+    monkeypatch.setenv("DASHBOARD_TRUSTED_PROXY", "1")
+    req = _request_with([])
+    assert _client_key(req) == "10.0.0.9"

@@ -88,6 +88,21 @@ def test_internal_surfaces_agree():
     _semver_tuple(root_v)  # must be valid semver
 
 
+def test_workspace_member_versions_agree_with_root():
+    """pipelines/ and serving/ pyprojects must carry the root version (X7).
+
+    Both sat at 0.33.0 while root/cli moved to 0.50.0 — nothing gated the workspace
+    members, so they silently drifted. Now they cannot.
+    """
+    root_v = _pyproject_version(_ROOT / "pyproject.toml")
+    for member in ("pipelines", "serving"):
+        member_v = _pyproject_version(_ROOT / member / "pyproject.toml")
+        assert member_v == root_v, (
+            f"version drift: {member}/pyproject.toml={member_v!r} vs root pyproject={root_v!r}"
+            " — workspace member versions must match the root version"
+        )
+
+
 def test_version_is_monotonic_vs_latest_tag():
     tag = _latest_git_tag()
     if tag is None:

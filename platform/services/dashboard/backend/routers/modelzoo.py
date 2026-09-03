@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import urllib.parse
 from typing import Any
@@ -25,6 +26,20 @@ router = APIRouter(prefix="/modelzoo", tags=["modelzoo"])
 
 def _http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=10.0)
+
+
+def _tls_verify() -> bool:
+    """TLS verification for GitLab calls — on by default (a PRIVATE-TOKEN travels on these).
+
+    Set ``DASHBOARD_GITLAB_INSECURE_TLS=1`` (truthy) only for a self-signed on-prem GitLab
+    where installing the CA is not an option; anywhere else unverified TLS invites MITM (D9).
+    """
+    return os.getenv("DASHBOARD_GITLAB_INSECURE_TLS", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 # Paths within the standalone modelzoo repo (e.g. software/modelzoo on GitLab)
@@ -68,7 +83,7 @@ async def _gitlab_get(
     base = gitlab_url.rstrip("/")
     url = f"{base}/api/v4/projects/{urllib.parse.quote(project_id, safe='')}/repository/{path}"
     headers = {"PRIVATE-TOKEN": token, "Accept": "application/json"}
-    async with httpx.AsyncClient(timeout=15.0, verify=False) as client:  # noqa: S501
+    async with httpx.AsyncClient(timeout=15.0, verify=_tls_verify()) as client:
         r = await client.get(url, headers=headers, params=params or {})
     if r.status_code == 401:
         raise HTTPException(status_code=502, detail="GitLab token invalid or expired (401)")
@@ -99,7 +114,7 @@ async def _gitlab_raw(
     base = gitlab_url.rstrip("/")
     url = f"{base}/api/v4/projects/{encoded_id}/repository/files/{encoded_path}/raw"
     headers = {"PRIVATE-TOKEN": token}
-    async with httpx.AsyncClient(timeout=10.0, verify=False) as client:  # noqa: S501
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls_verify()) as client:
         r = await client.get(url, headers=headers, params={"ref": branch})
     return r.text if r.is_success else ""
 

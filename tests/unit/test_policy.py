@@ -173,3 +173,32 @@ def test_the_gate_really_does_disappear_when_the_file_breaks(tmp_path, monkeypat
     assert decide(
         "autopilot_promote", policies=policy._load_policies(broken), audit=False
     ).allowed, "documented behaviour: fail-open — which is exactly why it must be loud"
+
+
+def test_unknown_effect_fails_closed():
+    """C8: a typo'd effect ('block', 'Denied', …) must deny — never silently allow."""
+    rules = [{"action": "promote", "effect": "block", "name": "typo"}]
+    d = decide("promote", {}, policies=rules, audit=False)
+    assert d.denied and not d.allowed and not d.requires_approval
+
+
+def test_effect_is_case_insensitive():
+    """C8: 'effect: Deny' is deny, not an unknown string that behaves as allow."""
+    assert decide("p", {}, policies=[{"action": "p", "effect": "Deny"}], audit=False).denied
+    assert decide("p", {}, policies=[{"action": "p", "effect": "ALLOW"}], audit=False).allowed
+    d = decide("p", {}, policies=[{"action": "p", "effect": "Require_Approval"}], audit=False)
+    assert d.requires_approval
+
+
+def test_unknown_effect_normalized_to_deny_at_load(tmp_path, caplog):
+    """C8: rule-load normalizes/validates effects, warning with the file and rule name."""
+    import logging
+
+    p = tmp_path / "policy.yaml"
+    p.write_text("policies:\n  - action: promote\n    effect: Blocked\n    name: bad-rule\n")
+    with caplog.at_level(logging.WARNING, logger="examlops.policy"):
+        rules, err = policy.load_policies_with_status(p)
+    assert err is None
+    assert rules[0]["effect"] == "deny"  # fail closed, normalized in place
+    warned = " ".join(r.getMessage() for r in caplog.records)
+    assert "Blocked" in warned and "bad-rule" in warned and str(p) in warned

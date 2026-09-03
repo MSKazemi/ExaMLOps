@@ -1,7 +1,14 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _platform_db(tmp_path, monkeypatch):
+    """Keep the D11 audit writes (start/stop/restart) inside a per-test scratch DB."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
 
 
 def _make_mock_container(service: str, status: str = "running", health: str = "healthy"):
@@ -226,3 +233,109 @@ def test_get_logs_returns_text(mock_client_fn, _mock_proj):
     data = resp.json()
     assert "model loaded" in data["logs"]
     c.logs.assert_called_once_with(tail=50, timestamps=True)
+
+
+# ── D11: container mutations are audited ─────────────────────────────────────
+
+
+@patch("routers.containers.audit_write")
+@patch("routers.containers.get_own_project", return_value="test-project")
+@patch("routers.containers.get_docker_client")
+def test_start_writes_audit_event(mock_client_fn, _mock_proj, mock_audit):
+    mock_docker = MagicMock()
+    c = _make_mock_container("mlflow", status="exited")
+    mock_docker.containers.list.return_value = [c]
+    mock_client_fn.return_value = mock_docker
+
+    client = _make_client([c])
+    resp = client.post("/api/containers/mlflow/start")
+
+    assert resp.status_code == 200
+    mock_audit.audit.assert_called_once_with("t", "service_started", "mlflow", {"service": "mlflow"})
+
+
+@patch("routers.containers.audit_write")
+@patch("routers.containers.get_own_project", return_value="test-project")
+@patch("routers.containers.get_docker_client")
+def test_stop_writes_audit_event(mock_client_fn, _mock_proj, mock_audit):
+    mock_docker = MagicMock()
+    c = _make_mock_container("mlflow", status="running")
+    mock_docker.containers.list.return_value = [c]
+    mock_client_fn.return_value = mock_docker
+
+    client = _make_client([c])
+    resp = client.post("/api/containers/mlflow/stop")
+
+    assert resp.status_code == 200
+    mock_audit.audit.assert_called_once_with("t", "service_stopped", "mlflow", {"service": "mlflow"})
+
+
+@patch("routers.containers.audit_write")
+@patch("routers.containers.get_own_project", return_value="test-project")
+@patch("routers.containers.get_docker_client")
+def test_restart_writes_audit_event(mock_client_fn, _mock_proj, mock_audit):
+    mock_docker = MagicMock()
+    c = _make_mock_container("mlflow", status="running")
+    mock_docker.containers.list.return_value = [c]
+    mock_docker.containers.get.side_effect = Exception("no such container")
+    mock_client_fn.return_value = mock_docker
+
+    client = _make_client([c])
+    resp = client.post("/api/containers/mlflow/restart")
+
+    assert resp.status_code == 200
+    mock_audit.audit.assert_called_once_with(
+        "t", "service_restarted", "mlflow", {"service": "mlflow"}
+    )
+
+
+# ── D15: the log-stream worker thread stops when the client goes away ────────
+
+
+def test_stream_logs_closes_docker_stream_on_client_disconnect():
+    """Cancelling the SSE generator must close the docker log stream (no leaked thread)."""
+    import asyncio as _asyncio
+    import time
+
+    from routers.containers import stream_logs
+
+    class _FakeStream:
+        """Iterable docker CancellableStream stand-in: one chunk, then blocks until closed."""
+
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            yield b"2026-05-18 INFO one\n"
+            while not self.closed:  # follow=True keeps waiting for output
+                time.sleep(0.01)
+
+        def close(self):
+            self.closed = True
+
+    fake_stream = _FakeStream()
+    c = _make_mock_container("mlflow")
+    c.logs.return_value = fake_stream
+    mock_docker = MagicMock()
+    mock_docker.containers.list.return_value = [c]
+
+    async def _run():
+        with (
+            patch("routers.containers.get_own_project", return_value="test-project"),
+            patch("routers.containers.get_docker_client", return_value=mock_docker),
+        ):
+            resp = await stream_logs("mlflow", _user={"sub": "t", "role": "viewer"})
+        gen = resp.body_iterator
+        first = await gen.__anext__()
+        assert "INFO one" in first
+        # Client disconnect = the generator is closed without being exhausted.
+        await gen.aclose()
+
+    _asyncio.run(_run())
+
+    # The finally block flags the worker and closes the stream, unblocking its read.
+    for _ in range(100):
+        if fake_stream.closed:
+            break
+        time.sleep(0.02)
+    assert fake_stream.closed

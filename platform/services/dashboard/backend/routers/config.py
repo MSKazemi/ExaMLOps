@@ -1,5 +1,6 @@
 """Config router: GET masks secrets, PUT encrypts + audits."""
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -238,6 +239,7 @@ async def export_env(
         "",
     ]
 
+    exported_keys: list[str] = []
     for dashboard_key, env_var in ENV_VAR_MAP.items():
         row = row_map.get(dashboard_key)
         if row is None:
@@ -251,14 +253,27 @@ async def export_env(
                 continue
             value = row.value
         lines.append(f"{env_var}={value}")
+        exported_keys.append(dashboard_key)
 
     content = "\n".join(lines) + "\n"
+
+    # Audit the bulk export (D3): it decrypts every stored secret. Key NAMES only — never values.
+    db.add(
+        DashboardAudit(
+            role="admin",
+            action="config_exported",
+            key=",".join(sorted(exported_keys)),
+        )
+    )
+    await db.commit()
 
     # Write server-side copy so docker-compose env_file picks it up on restart.
     try:
         export_path = Path(settings.env_export_path)
         export_path.parent.mkdir(parents=True, exist_ok=True)
         export_path.write_text(content)
+        # The file holds decrypted secrets — owner-only, never the image default umask (D3).
+        os.chmod(export_path, 0o600)
     except OSError:
         pass  # In test environments the path may not be writable — still return the download.
 

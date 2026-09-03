@@ -97,3 +97,39 @@ class TestResolve:
         payload = {"model_name": "JPCP", "features": {}}
         _, alias = m.ModelRouter._resolve(payload)
         assert alias == "Production"
+
+
+class TestTrafficSplitCache:
+    """S3/S8 regression guards: the split cache must expire, and must cache negatives."""
+
+    def test_negative_result_cached_within_ttl(self, monkeypatch):
+        import serving.inference_pipeline.app as m
+
+        m._traffic_rules.clear()
+        calls = []
+        monkeypatch.setattr(m, "_db_get_traffic", lambda name: calls.append(name) or None)
+        assert m._get_split("jpcp") is None
+        assert m._get_split("jpcp") is None
+        assert len(calls) == 1, "a split-less model must not pay a DB read per request"
+
+    def test_split_change_applies_after_ttl(self, monkeypatch):
+        import serving.inference_pipeline.app as m
+
+        m._traffic_rules.clear()
+        monkeypatch.setattr(m, "_TRAFFIC_TTL_SECONDS", 0.0)
+        vals = iter([{"Production": 90, "Canary": 10}, {"Production": 100}])
+        monkeypatch.setattr(m, "_db_get_traffic", lambda name: next(vals))
+        assert m._get_split("jpcp") == {"Production": 90, "Canary": 10}
+        # TTL expired → the rolled-back split must be re-read, not served stale forever.
+        assert m._get_split("jpcp") == {"Production": 100}
+
+    def test_db_error_degrades_to_no_split(self, monkeypatch):
+        import serving.inference_pipeline.app as m
+
+        m._traffic_rules.clear()
+
+        def boom(name):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(m, "_db_get_traffic", boom)
+        assert m._get_split("jpcp") is None

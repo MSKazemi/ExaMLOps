@@ -65,10 +65,20 @@ def check_password(plaintext: str) -> Role | None:
 
 
 def issue_token(role: Role) -> tuple[str, datetime]:
-    """Create a JWT for the given role; return (token, expires_at_utc)."""
+    """Create a JWT for the given role; return (token, expires_at_utc).
+
+    ``sub`` is a stable per-session actor id (``<role>@<jti prefix>``) so audit events
+    record who acted instead of "?" — shared-password auth has no username to use (D6).
+    """
     expires_at = datetime.now(UTC) + timedelta(hours=settings.dashboard_jwt_ttl_hours)
+    jti = secrets.token_hex(16)
     token = jwt.encode(
-        {"role": role, "jti": secrets.token_hex(16), "exp": int(expires_at.timestamp())},
+        {
+            "sub": f"{role}@{jti[:8]}",
+            "role": role,
+            "jti": jti,
+            "exp": int(expires_at.timestamp()),
+        },
         settings.dashboard_jwt_secret,
         algorithm="HS256",
     )

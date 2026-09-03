@@ -249,6 +249,22 @@ _CORRELATION_COLS = (
 )
 
 
+def _lock_chain_head(conn: Any) -> None:
+    """Serialize head-read + append across writers when the engine doesn't already.
+
+    On SQLite the caller's own write holds the RESERVED lock, so the chain cannot fork. On
+    Postgres (MVCC) an open transaction serializes nothing: two concurrent ``conn=`` callers
+    (e.g. two dashboard mutations) would read the same chain head and both append with the same
+    ``prev_hash`` — a permanent fork that ``verify_audit_chain`` reports as tampering forever.
+    ``BEGIN IMMEDIATE`` translates on the Pg connection to the platform's transaction-scoped
+    advisory lock (released at commit), which is exactly the serialization the standalone
+    ``_immediate_write`` path already gets. Re-acquiring it there is safe: advisory xact locks
+    stack within a session and all release at transaction end.
+    """
+    if type(conn).__name__ == "PgConnection":
+        conn.execute("BEGIN IMMEDIATE")
+
+
 def _append_on(
     conn: Any,
     source: str,
@@ -259,6 +275,7 @@ def _append_on(
     tenant: str,
 ) -> None:
     """The chaining itself, on whichever connection/transaction it is handed."""
+    _lock_chain_head(conn)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
     if not {"prev_hash", "hash"} <= cols:  # pre-migration DB — plain append
         conn.execute(

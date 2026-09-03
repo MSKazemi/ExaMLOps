@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use ExaMLOps in your work, please cite it as below."
+title: "ExaMLOps: End-to-End MLOps Platform for HPC Workload Management"
+abstract: >-
+  ExaMLOps is an end-to-end, open-source MLOps platform for HPC (high-performance
+  computing) workload management. It runs the full machine-learning lifecycle —
+  auto-discovery training pipelines (Prefect), Slurm job orchestration, an MLflow
+  model registry with a multi-stage lifecycle, Ray Serve multi-model serving,
+  Prometheus/Grafana/Loki observability, a React 19 + FastAPI dashboard, a
+  LangGraph management agent ("Skipper"), and the `exa` platform CLI — on
+  Slurm-based clusters used in large European research projects.
+type: software
+authors:
+  - family-names: "Seyedkazemi Ardebili"
+    given-names: "Mohsen"
+repository-code: "https://github.com/MSKazemi/ExaMLOps"
+url: "https://github.com/MSKazemi/ExaMLOps"
+license: Apache-2.0
+keywords:
+  - MLOps
+  - HPC
+  - Slurm
+  - MLflow
+  - Prefect
+  - Ray Serve
+  - model registry
+  - machine learning
+  - LangGraph
+  - FastAPI

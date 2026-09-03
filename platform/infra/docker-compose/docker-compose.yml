@@ -14,7 +14,7 @@ services:
     mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
     environment:
       POSTGRES_USER: mlops
-      POSTGRES_PASSWORD: mlops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops}
       POSTGRES_DB: mlflow
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -31,6 +31,7 @@ services:
   minio:
     image: minio/minio:latest
     container_name: examlops-minio
+    mem_limit: ${MINIO_MEM_LIMIT:-1g}
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -79,7 +80,7 @@ services:
     mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
     command: >
       mlflow server
-      --backend-store-uri postgresql://mlops:mlops@postgres/mlflow
+      --backend-store-uri postgresql://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
       --default-artifact-root s3://mlflow-artifacts/
       --artifacts-destination s3://mlflow-artifacts/
       --host 0.0.0.0
@@ -122,7 +123,7 @@ services:
       PREFECT_SERVER_ANALYTICS_ENABLED: "false"
       # Persist Prefect metadata in Postgres (shares the postgres_data volume)
       # instead of the default ephemeral SQLite inside the container.
-      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://mlops:mlops@postgres/prefect
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/prefect
     ports:
       - "14200:4200"
     restart: unless-stopped
@@ -221,6 +222,10 @@ services:
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: control-plane
+      # ONE shared platform DB across the stack (X1) + datastore engine pass-through (X2).
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
     env_file:
       - path: .env
         required: true
@@ -231,6 +236,7 @@ services:
         condition: service_healthy
     volumes:
       - control_plane_data:/data
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
     ports:
       - "18002:8002"
     restart: unless-stopped
@@ -274,7 +280,11 @@ services:
       CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
       DASHBOARD_URL: http://dashboard:8099
       DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-}
-      PLATFORM_DB: /data/platform.db
+      # ONE shared platform DB across the stack (X1): /data/platform.db was a private volume
+      # copy — the agent answered drift/audit questions from a database nothing else wrote to.
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       AGENT_DB: /data/agent_memory.db
       AGENT_MEMORY_DB: /data/skipper_memory.db
       AGENT_MEMORY_REVIEW_DB: /data/skipper_review.db
@@ -286,6 +296,7 @@ services:
       - "127.0.0.1:18004:18004"
     volumes:
       - agent_data:/data
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
     depends_on:
       control-plane:
         condition: service_healthy
@@ -310,6 +321,7 @@ services:
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-prometheus:${EXAMLOPS_IMAGE_TAG:-latest}
     profiles: [monitoring]
     container_name: examlops-prometheus
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-1g}
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
@@ -330,6 +342,7 @@ services:
     image: prom/alertmanager:v0.27.0
     profiles: [monitoring]
     container_name: examlops-alertmanager
+    mem_limit: ${ALERTMANAGER_MEM_LIMIT:-256m}
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     volumes:
@@ -346,6 +359,7 @@ services:
     image: grafana/tempo:2.5.0
     profiles: [monitoring]
     container_name: examlops-tempo
+    mem_limit: ${TEMPO_MEM_LIMIT:-1g}
     # Run as root so the named volume under /var/tempo is writable (dev convenience).
     user: "0"
     command: ["-config.file=/etc/tempo/tempo-config.yml"]
@@ -363,13 +377,16 @@ services:
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-grafana:${EXAMLOPS_IMAGE_TAG:-latest}
     profiles: [monitoring]
     container_name: examlops-grafana
+    mem_limit: ${GRAFANA_MEM_LIMIT:-512m}
     environment:
-      # Env-driven so production overrides the dev default (item 0.8). In prod set a strong
-      # GRAFANA_ADMIN_PASSWORD and GRAFANA_ANONYMOUS_ENABLED=false — see production-hardening.md.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Fail closed (item 0.8): no admin/admin default and no anonymous access unless the
+      # operator explicitly opts in — this port is published on all interfaces, so on an
+      # internet-reachable node the old defaults were an unauthenticated metrics browser
+      # plus a well-known admin login. Set GRAFANA_ADMIN_PASSWORD in .env.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env (refusing the admin/admin default)}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-true}
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-false}
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - grafana_data:/var/lib/grafana
@@ -386,6 +403,7 @@ services:
     image: grafana/loki:2.9.10
     profiles: [monitoring]
     container_name: examlops-loki
+    mem_limit: ${LOKI_MEM_LIMIT:-1g}
     command: -config.file=/etc/loki/loki-config.yml
     volumes:
       - ./loki-config.yml:/etc/loki/loki-config.yml:ro
@@ -406,6 +424,7 @@ services:
     image: grafana/promtail:2.9.10
     profiles: [monitoring]
     container_name: examlops-promtail
+    mem_limit: ${PROMTAIL_MEM_LIMIT:-256m}
     command: -config.file=/etc/promtail/promtail-config.yml
     volumes:
       - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro
@@ -423,6 +442,7 @@ services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.2.0
     container_name: examlops-docker-socket-proxy
+    mem_limit: ${SOCKET_PROXY_MEM_LIMIT:-128m}
     environment:
       CONTAINERS: "1"   # list/inspect/logs
       POST: "1"         # allow POST → start/stop/restart (scoped to permitted sections)
@@ -469,7 +489,7 @@ services:
       PUBLIC_GRAFANA_URL: "http://${PUBLIC_HOST:-localhost}:13000"
       MINIO_URL: http://minio:9000
       PUBLIC_MINIO_CONSOLE_URL: http://${PUBLIC_HOST:-localhost}:19001
-      DATABASE_URL: postgresql+asyncpg://mlops:mlops@postgres/mlflow
+      DATABASE_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
       DASHBOARD_VIEWER_PASSWORD: ${DASHBOARD_VIEWER_PASSWORD:?must be set in .env}
       DASHBOARD_ADMIN_PASSWORD:  ${DASHBOARD_ADMIN_PASSWORD:?must be set in .env}
       DASHBOARD_JWT_SECRET:      ${DASHBOARD_JWT_SECRET:?must be set in .env}
@@ -506,6 +526,10 @@ services:
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099
       SLURM_MODE: ${EXAMLOPS_SLURM_MODE:-mock}
       PLATFORM_DB: /state/platform.db
+      # Datastore engine pass-through (X2): docs/guides/postgres-backend.md says these must
+      # reach EVERY state-touching process, or that process silently stays on SQLite.
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       # Point the /documents docs router (routers/docs.py) at the bind-mounted repo so the
       # Documents page serves the live README.md + docs/** during dev. Takes precedence over the
       # image's baked docs/ copy (Dockerfile.dashboard) — that copy is the fallback for K8s/PVC
@@ -623,6 +647,14 @@ services:
       SEANERBUS_DEFAULT_MODEL: "${SEANERBUS_DEFAULT_MODEL:-JPCP}"
       SEANERBUS_DEFAULT_ALIAS: "${SEANERBUS_DEFAULT_ALIAS:-Production}"
       MODELS_YAML_DIR: "/app/usecases/seanergy/models"
+      # ONE shared platform DB across the stack (X1): without this the bridge wrote its
+      # drift/audit/input telemetry into an ephemeral container-local ./platform.db that
+      # nothing else could see and a recreate erased.
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
     env_file:
       - path: .env
         required: true
@@ -711,6 +743,7 @@ services:
     profiles: ["vllm"]
     image: ${EXAMLOPS_VLLM_IMAGE_TAG:-vllm/vllm-openai:latest}
     container_name: examlops-vllm
+    mem_limit: ${VLLM_MEM_LIMIT:-8g}
     command: >
       --model ${EXAMLOPS_VLLM_MODEL:-EXAMLOPS_VLLM_MODEL-is-not-set}
       --host 0.0.0.0

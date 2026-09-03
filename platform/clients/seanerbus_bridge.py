@@ -349,6 +349,18 @@ async def run_status_server(port: int = 8003) -> None:
 # ── drift tracker ──────────────────────────────────────────────────────────────
 
 
+class ModelInferenceError(RuntimeError):
+    """The ingress served the request but the MODEL failed to produce a prediction.
+
+    Raised when the pipeline answers 5xx with ``{"error": "inference_failed"}`` — a
+    model-quality signal that MUST reach the drift tracker. Distinct from transport failures
+    (connect/timeout/unreachable), which stay excluded so an outage never masquerades as drift.
+    Without this distinction the tracker could never see a model failure at all: the ingress
+    converts them to HTTP 500 and ``raise_for_status`` turned every one into an excluded
+    ``httpx.HTTPError``, so the error rate was permanently 0 and drift-retrain was dead code.
+    """
+
+
 class DriftTracker:
     """Per-model rolling-error tracker; auto-triggers control-plane retrain on drift."""
 
@@ -409,6 +421,25 @@ class DriftTracker:
                     },
                     headers=headers,
                 )
+            if r.status_code >= 400:
+                # A rejected trigger (bad token, control plane 503) is NOT a retrain: don't
+                # count it, don't audit it as one, and release the cooldown so the next window
+                # breach retries instead of silently waiting out a cooldown nothing earned.
+                log.error("Retrain trigger REJECTED for %s → HTTP %d", model, r.status_code)
+                self._last_retrain.pop(model, None)
+                await asyncio.to_thread(
+                    write_audit_event,
+                    "bridge",
+                    None,
+                    "retrain_trigger_failed",
+                    model,
+                    {
+                        "reason": "drift",
+                        "error_rate": round(rate, 4),
+                        "http_status": r.status_code,
+                    },
+                )
+                return
             log.info("Retrain triggered for %s → HTTP %d", model, r.status_code)
             _RETRAINS.inc()
             _bridge_stats["retrains_total"] += 1
@@ -430,9 +461,22 @@ class DriftTracker:
             )
         except httpx.HTTPError as exc:
             log.error("Retrain trigger failed for %s: %s", model, exc)
+            self._last_retrain.pop(model, None)
 
 
 _drift_tracker = DriftTracker()
+
+
+# One long-lived HTTP client for the bridge→ingress hop: a fresh AsyncClient per inference pays
+# TCP + pool construction on the hot path (the bus can deliver jobs at line rate).
+_http_client: httpx.AsyncClient | None = None
+
+
+def _shared_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=_httpx_timeout())
+    return _http_client
 
 
 # ── inference pipeline call ────────────────────────────────────────────────────
@@ -457,18 +501,32 @@ async def _call_pipeline(
     )
 
     t0 = time.perf_counter()
-    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-        resp = await client.post(
-            f"{RAY_SERVE_URL}/infer-pipeline/infer",
-            json={
-                **features,  # spread first so fixed metadata fields always win
-                "job_id": str(job.job_id),
-                "model_name": model_name,
-                "alias": alias,
-                "num_nodes": job.num_nodes,
-                "user_id": str(job.user_id),
-            },
-        )
+    client = _shared_http_client()
+    resp = await client.post(
+        f"{RAY_SERVE_URL}/infer-pipeline/infer",
+        json={
+            **features,  # spread first so fixed metadata fields always win
+            "job_id": str(job.job_id),
+            "model_name": model_name,
+            "alias": alias,
+            "num_nodes": job.num_nodes,
+            "user_id": str(job.user_id),
+        },
+    )
+    if resp.status_code >= 400:
+        # Classify before raise_for_status: an ingress 5xx carrying inference_failed is the
+        # MODEL failing (drift signal), an ingress 422 is a schema problem (ValueError path);
+        # everything else stays a transport/HTTP error excluded from the drift tracker.
+        detail: Any = None
+        try:
+            detail = resp.json()
+        except Exception:  # noqa: BLE001
+            detail = None
+        if isinstance(detail, dict):
+            if detail.get("error") == "inference_failed":
+                raise ModelInferenceError(str(detail.get("detail") or "inference_failed"))
+            if detail.get("error") == "validation_error":
+                raise ValueError(str(detail.get("detail") or "validation_error"))
         resp.raise_for_status()
     latency_s = time.perf_counter() - t0
     _INFERENCES.labels(model=model_name).inc()
@@ -560,6 +618,16 @@ async def _run_pubsub(conn: Connection) -> None:
             m["inferences"] += 1
             if prediction is None:
                 m["errors"] += 1
+        except ModelInferenceError as exc:
+            # The model itself failed — the one error class that IS a drift signal.
+            _drift_tracker.record(model, False)
+            _ERRORS.labels(model=model).inc()
+            error_msg = str(exc)
+            log.error("Model inference failed for pubsub job %s: %s", job.job_id, exc)
+            _bridge_stats["inferences_total"] += 1
+            m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
+            m["inferences"] += 1
+            m["errors"] += 1
         except ValueError as exc:
             # Schema misconfiguration — do NOT feed into drift tracker
             _ERRORS.labels(model=model).inc()
@@ -630,6 +698,16 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
             prediction=prediction if prediction is not None else 0.0,
             run_id=run_id or "",
         )
+    except ModelInferenceError as exc:
+        # The model itself failed — the one error class that IS a drift signal.
+        _drift_tracker.record(model, False)
+        _ERRORS.labels(model=model).inc()
+        log.error("Model inference failed in req/res inference handler: %s", exc)
+        _bridge_stats["inferences_total"] += 1
+        m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
+        m["inferences"] += 1
+        m["errors"] += 1
+        return HpcInferenceResV1(job_id=req.job_id, model_name=model, error_msg=str(exc))
     except ValueError as exc:
         # Schema misconfiguration — do NOT feed into drift tracker
         _ERRORS.labels(model=model).inc()

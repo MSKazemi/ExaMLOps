@@ -126,3 +126,28 @@ async def test_pipeline_status_proxies_gitlab(client, db_engine, monkeypatch):
     assert body["status"] == "passed"
     assert body["duration_seconds"] == 87
     assert body["finished_at"] == "2026-05-15T10:01:27Z"
+
+
+# ── D9: GitLab TLS verification ───────────────────────────────────────────────
+
+
+def test_gitlab_tls_verification_on_by_default(monkeypatch):
+    from routers.modelzoo import _tls_verify
+
+    monkeypatch.delenv("DASHBOARD_GITLAB_INSECURE_TLS", raising=False)
+    assert _tls_verify() is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_gitlab_tls_verification_opt_out_only_via_env(monkeypatch, value):
+    from routers.modelzoo import _tls_verify
+
+    monkeypatch.setenv("DASHBOARD_GITLAB_INSECURE_TLS", value)
+    assert _tls_verify() is False
+
+
+def test_gitlab_tls_verification_ignores_falsy_env(monkeypatch):
+    from routers.modelzoo import _tls_verify
+
+    monkeypatch.setenv("DASHBOARD_GITLAB_INSECURE_TLS", "0")
+    assert _tls_verify() is True

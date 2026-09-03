@@ -147,7 +147,14 @@ SPECIALISTS: tuple[Specialist, ...] = (
     Specialist(
         name="finops",
         use_cases=("finops",),
-        inrepo=("get_metrics", "get_platform_summary"),
+        inrepo=(
+            "get_metrics",
+            "get_platform_summary",
+            "get_cost_summary",
+            "get_model_cost_history",
+            "get_carbon_summary",
+            "get_budget_status",
+        ),
         triggers=("cost", "spend", "budget", "carbon", "green", "gpu-hour", "gpu hours", "finops"),
         playbook=(
             "You are the FinOps / Green-AI specialist. Report GPU-hour and USD cost, carbon "

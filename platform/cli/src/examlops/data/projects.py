@@ -186,7 +186,15 @@ def create_project(
 
 
 def delete_project(name: str) -> bool:
-    """Delete a project and its model assignments. Returns True if found."""
+    """Delete a project with its FULL cascade. Returns True if found.
+
+    Removes membership (``project_models``/``project_resources``), the authz grants
+    (``authz_relations`` on ``project:<name>``), and the per-project budget/storage/pipeline
+    rows. The authz cascade is security-relevant: leaving grants behind means re-creating a
+    project with the same name silently resurrects every previous member's role. This is the
+    ONE delete path — the dashboard router calls it too (Phase 42 shared-code-path rule).
+    Underlying models/connections themselves are never deleted, only the grouping.
+    """
     init_db()
     with get_db() as conn:
         row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
@@ -194,6 +202,12 @@ def delete_project(name: str) -> bool:
             return False
         conn.execute("DELETE FROM project_models WHERE project=?", (name,))
         conn.execute("DELETE FROM project_resources WHERE project=?", (name,))
+        conn.execute("DELETE FROM authz_relations WHERE object=?", (f"project:{name}",))
+        for tbl in ("project_budgets", "project_storage", "project_pipelines"):
+            try:
+                conn.execute(f"DELETE FROM {tbl} WHERE project=?", (name,))  # noqa: S608
+            except Exception:  # noqa: BLE001 — optional table absent in an older DB
+                pass
         conn.execute("DELETE FROM projects WHERE name=?", (name,))
     return True
 

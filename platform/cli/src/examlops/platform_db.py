@@ -191,6 +191,10 @@ def init_db(*, force: bool = False) -> None:
                 prediction REAL NOT NULL,
                 job_id     TEXT
             );
+            -- One row per inference; every reader filters `WHERE model=? ORDER BY ts DESC`.
+            -- Index it so drift status doesn't full-scan the hottest table (C6).
+            CREATE INDEX IF NOT EXISTS ix_drift_snapshots_model_ts
+                ON drift_snapshots (model, ts DESC);
             CREATE TABLE IF NOT EXISTS drift_baselines (
                 model  TEXT PRIMARY KEY,
                 stats  TEXT NOT NULL,
@@ -230,6 +234,10 @@ def init_db(*, force: bool = False) -> None:
                 emb_std  REAL NOT NULL,
                 job_id   TEXT
             );
+            -- Same access pattern as drift_snapshots: per-inference rows read newest-first
+            -- per model (C6).
+            CREATE INDEX IF NOT EXISTS ix_input_snapshots_model_ts
+                ON input_snapshots (model, ts DESC);
             CREATE TABLE IF NOT EXISTS input_baselines (
                 model     TEXT PRIMARY KEY,
                 stats     TEXT NOT NULL,

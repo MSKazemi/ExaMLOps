@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -33,33 +34,54 @@ _RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:8001").rstrip("/")
 # Transient-error retries for the ingress→MultiModelServer hop.
 _ROUTE_RETRIES = int(os.getenv("INFERENCE_ROUTE_RETRIES", "2"))
 
-_traffic_rules: dict[str, dict[str, int]] = {}
+# The router and the ingress are separate Serve actors (separate processes), and the
+# `exa serve traffic` CLI writes splits from yet another process — so the cache must expire,
+# or a split change (e.g. a canary rollback to --production 100) silently never applies to a
+# router that already cached the old rules.
+_TRAFFIC_TTL_SECONDS = float(os.getenv("TRAFFIC_RULES_TTL_SECONDS", "30"))
+# model → (rules or None, monotonic expiry). Negative results are cached too, so a model with
+# no configured split doesn't pay a DB read on every request.
+_traffic_rules: dict[str, tuple[dict[str, int] | None, float]] = {}
 _traffic_lock = threading.Lock()
 
 
 def _get_split(model_name: str) -> dict[str, int] | None:
     """Return the traffic split for *model_name*.
 
-    In-memory per-replica cache first; on a miss, fall back to the durable
-    ``platform_db`` copy so rules survive replica restarts and stay consistent
-    across replicas (and with the ``exa serve traffic`` CLI). DB errors degrade
-    to "no split" rather than failing inference.
+    Short-TTL per-replica cache over the durable ``platform_db`` copy, so rules survive replica
+    restarts, stay consistent across replicas and with the ``exa serve traffic`` CLI, and
+    cross-process changes apply within ``TRAFFIC_RULES_TTL_SECONDS``. DB errors degrade to
+    "no split" rather than failing inference.
     """
+    now = time.monotonic()
     with _traffic_lock:
-        cached = _traffic_rules.get(model_name)
-    if cached is not None:
-        return cached
+        hit = _traffic_rules.get(model_name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
     if _db_get_traffic is None:
         return None
     try:
-        rules = _db_get_traffic(model_name)
+        rules = _db_get_traffic(model_name) or None
     except Exception as exc:  # noqa: BLE001
         _log.warning("traffic-rule DB read failed for %s: %s", model_name, exc)
         return None
-    if rules:
-        with _traffic_lock:
-            _traffic_rules[model_name] = rules
-    return rules or None
+    with _traffic_lock:
+        _traffic_rules[model_name] = (rules, now + _TRAFFIC_TTL_SECONDS)
+    return rules
+
+
+# One long-lived HTTP client for the router→model-server hop: a new AsyncClient per request
+# pays TCP + pool construction on the inference hot path, twice per bus job end-to-end.
+_http_client: httpx.AsyncClient | None = None
+_http_client_lock = threading.Lock()
+
+
+def _shared_http_client() -> httpx.AsyncClient:
+    global _http_client
+    with _http_client_lock:
+        if _http_client is None or _http_client.is_closed:
+            _http_client = httpx.AsyncClient(timeout=_httpx_timeout())
+        return _http_client
 
 
 # No-op unless OTEL_SDK_DISABLED=false; get_tracer returns a no-op tracer otherwise.
@@ -85,7 +107,9 @@ class ModelRouter:
         return model_name, requested_alias
 
     async def route(self, payload: dict[str, Any]) -> dict[str, Any]:
-        model_name, alias = self._resolve(payload)
+        # _resolve may read platform_db on a cache miss — a blocking sqlite call that must not
+        # run on this single-replica actor's event loop (the QW10 rule).
+        model_name, alias = await asyncio.to_thread(self._resolve, payload)
         features = payload["features"]
         with _tracer.start_as_current_span("inference_pipeline.model_router") as span:
             span.set_attribute("model_name", model_name)
@@ -95,11 +119,11 @@ class ModelRouter:
             # surface as inference_failed); HTTP status errors are definitive.
             for attempt in range(_ROUTE_RETRIES + 1):
                 try:
-                    async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
-                        resp = await client.post(
-                            f"{_RAY_SERVE_URL}/predict/{model_name}",
-                            json={"features": features, "alias": alias},
-                        )
+                    client = _shared_http_client()
+                    resp = await client.post(
+                        f"{_RAY_SERVE_URL}/predict/{model_name}",
+                        json={"features": features, "alias": alias},
+                    )
                     if resp.status_code == 404:
                         return {
                             "error": "model_not_found",
@@ -236,19 +260,28 @@ class InferencePipelineIngress:
                 status_code=422,
             )
         with _traffic_lock:
-            _traffic_rules[model.lower()] = rules
-        # Persist so the split survives replica restarts and is shared across replicas.
+            _traffic_rules[model.lower()] = (rules, time.monotonic() + _TRAFFIC_TTL_SECONDS)
+        # Persist so the split survives replica restarts and is shared across replicas. Note the
+        # in-memory copy above only covers THIS actor; the router actor picks the change up from
+        # the DB within _TRAFFIC_TTL_SECONDS.
         if _db_set_traffic is not None:
             try:
-                _db_set_traffic(model.lower(), rules, updated_by="inference_pipeline")
+                await asyncio.to_thread(
+                    _db_set_traffic, model.lower(), rules, updated_by="inference_pipeline"
+                )
             except Exception as exc:  # noqa: BLE001
                 _log.warning("traffic-rule DB write failed for %s: %s", model, exc)
         return {"ok": True, "model": model, "rules": rules}
 
     @_ingress_app.get("/traffic-rules")
     async def get_traffic(self) -> dict[str, Any]:
+        now = time.monotonic()
         with _traffic_lock:
-            return dict(_traffic_rules)
+            return {
+                model: rules
+                for model, (rules, expiry) in _traffic_rules.items()
+                if rules is not None and expiry > now
+            }
 
     @_ingress_app.post("/infer")
     async def infer(self, body: dict[str, Any]) -> Any:

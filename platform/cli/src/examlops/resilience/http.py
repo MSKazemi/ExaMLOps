@@ -16,17 +16,31 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
+# httpx is optional at import time (mirrors retry.py's guard, C11): the package __init__
+# imports this module eagerly, so a hard import here would break `import examlops.resilience.db`
+# on hosts without httpx. The request helpers themselves still require httpx to run.
+try:  # pragma: no cover - trivial import guard
+    import httpx
+except ImportError:  # pragma: no cover - exercised only where httpx is absent
+    httpx = None  # type: ignore[assignment]
 
 from .circuit import CircuitBreaker, CircuitOpenError
 from .retry import is_transient_network, retry_call
 from .timeouts import httpx_timeout
 
 
+def _require_httpx() -> None:
+    if httpx is None:  # pragma: no cover - exercised only where httpx is absent
+        raise ModuleNotFoundError(
+            "httpx is required for examlops.resilience.http request helpers "
+            "(the module imports without it; making requests does not)"
+        )
+
+
 def _format_error(service: str, url: str, exc: Exception) -> str:
     if isinstance(exc, CircuitOpenError):
         return f"Error: {service} circuit open (repeated failures) — not attempting {url}"
-    if isinstance(exc, httpx.HTTPStatusError):
+    if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
         body = exc.response.text[:300]
         return f"Error: {service} returned {exc.response.status_code}: {body}"
     return f"Error: cannot reach {service} at {url} — {exc}"
@@ -55,6 +69,7 @@ def request_json(
     **kwargs,
 ):
     """Synchronous resilient JSON request. Returns ``(data, None)`` or ``(None, error)``."""
+    _require_httpx()
 
     def _once():
         with httpx.Client(timeout=httpx_timeout(read=read_timeout)) as client:
@@ -94,6 +109,7 @@ async def arequest_json(
     HTTP status errors immediately. An optional shared ``client`` is reused across
     calls; otherwise a short-lived client is created per attempt.
     """
+    _require_httpx()
 
     async def _once() -> object:
         if breaker is not None and breaker.state == CircuitBreaker.OPEN:

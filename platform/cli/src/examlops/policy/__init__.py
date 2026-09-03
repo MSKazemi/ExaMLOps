@@ -40,6 +40,30 @@ log = logging.getLogger("examlops.policy")
 ALLOW = "allow"
 DENY = "deny"
 REQUIRE_APPROVAL = "require_approval"
+_VALID_EFFECTS = {ALLOW, DENY, REQUIRE_APPROVAL}
+
+
+def _normalized_effect(rule: Mapping[str, Any], *, origin: str) -> str:
+    """Validate a rule's ``effect``, failing **closed** on anything unrecognized (C8).
+
+    ``effect: Deny`` or ``effect: block`` used to behave as *allow* (any unknown string is not
+    ``deny``/``require_approval``, so every ``.allowed``-style check passed). Effects are
+    case-insensitive; a value outside {allow, deny, require_approval} is treated as ``deny``
+    and logged with the rule's name and where it came from.
+    """
+    raw = rule.get("effect", ALLOW)
+    effect = str(raw).strip().lower()
+    if effect not in _VALID_EFFECTS:
+        label = str(rule.get("name") or rule.get("action") or "*")
+        log.warning(
+            "unknown policy effect %r on rule %r (%s) — failing closed (deny); "
+            "valid effects: allow, deny, require_approval",
+            raw,
+            label,
+            origin,
+        )
+        return DENY
+    return effect
 
 
 def _config_dir() -> Path:
@@ -107,7 +131,10 @@ def load_policies_with_status(
         return [], f"{p} has no 'policies:' list"
     if not isinstance(rules, list):
         return [], f"{p}: 'policies' must be a list, got {type(rules).__name__}"
-    return [dict(r) for r in rules if isinstance(r, Mapping)], None
+    loaded = [dict(r) for r in rules if isinstance(r, Mapping)]
+    for r in loaded:  # normalize/validate effects at load time; unknown → deny (fail closed)
+        r["effect"] = _normalized_effect(r, origin=str(p))
+    return loaded, None
 
 
 def _load_policies(path: Path | str | None = None) -> list[dict[str, Any]]:
@@ -154,7 +181,9 @@ def decide(
     decision = Decision(ALLOW, None, "no matching policy — default allow")
     for i, rule in enumerate(rules):
         if _rule_matches(rule, action, ctx):
-            effect = str(rule.get("effect", ALLOW))
+            # Injected rules (tests / programmatic callers) skip the load-time pass, so the
+            # effect is re-validated here; already-normalized values pass through unchanged.
+            effect = _normalized_effect(rule, origin="injected policies")
             label = str(rule.get("name") or f"{rule.get('action', '*')}#{i}")
             decision = Decision(effect, label, f"matched policy rule {label!r} → {effect}")
             break

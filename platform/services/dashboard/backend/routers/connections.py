@@ -137,8 +137,16 @@ async def list_connections_view(
         out = [_row_to_view(r) for r in rows]
         conn.close()
         return out
-    except Exception:
-        return []
+    except sqlite3.OperationalError as exc:
+        # A missing table just means nothing was recorded yet (D12); any other
+        # datastore failure must surface, not masquerade as an empty list.
+        if "no such table" in str(exc).lower():
+            return []
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

@@ -1968,7 +1968,11 @@ def platform_status() -> dict[str, Any]:
     }
 
 
-@app.get("/models", response_model=list[ModelEntry])
+@app.get(
+    "/models",
+    response_model=list[ModelEntry],
+    dependencies=[Depends(_require_read_context)],
+)
 def list_models() -> list[ModelEntry]:
     return [ModelEntry(model_name=n, datasets=d) for n, d in _get_registry().items()]
 
@@ -2195,7 +2199,7 @@ async def webhook_github(request: Request) -> dict[str, Any]:
     )
 
 
-@app.get("/models/{name}/meta")
+@app.get("/models/{name}/meta", dependencies=[Depends(_require_read_context)])
 def get_model_meta_endpoint(name: str) -> dict[str, Any]:
     if _model_meta_mod is None:
         raise HTTPException(503, "Model metadata service not available")
@@ -2221,7 +2225,7 @@ def get_model_meta_endpoint(name: str) -> dict[str, Any]:
     }
 
 
-@app.get("/models/{name}/readme")
+@app.get("/models/{name}/readme", dependencies=[Depends(_require_read_context)])
 def get_model_readme(name: str) -> dict[str, str]:
     if _model_meta_mod is None:
         raise HTTPException(503, "Model metadata service not available")
@@ -2229,7 +2233,7 @@ def get_model_readme(name: str) -> dict[str, str]:
     return {"text": text, "sha": sha}
 
 
-@app.get("/models/{name}/images/{filename}")
+@app.get("/models/{name}/images/{filename}", dependencies=[Depends(_require_read_context)])
 def get_model_bundled_image(name: str, filename: str) -> Response:
     if _model_meta_mod is None:
         raise HTTPException(503, "Model metadata service not available")

@@ -171,6 +171,7 @@ async def test_handle_vector_success(mock_http_client):
     mock_response = MagicMock()
     mock_response.json.return_value = {"prediction": 42.0, "run_id": "abc", "model_version": "3"}
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
 
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
@@ -204,6 +205,7 @@ async def test_handle_vector_increments_stat(mock_http_client, monkeypatch):
     mock_response = MagicMock()
     mock_response.json.return_value = {"prediction": 7.0}
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
 
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
@@ -231,6 +233,7 @@ async def test_call_pipeline_uses_schema_registry(mock_http_client):
         "model_version": "2",
     }
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
@@ -276,6 +279,7 @@ async def test_call_pipeline_success(mock_http_client):
         "model_version": "18",
     }
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job()
@@ -299,6 +303,7 @@ async def test_call_pipeline_logs_res_line(mock_http_client, caplog):
         "model_version": "18",
     }
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job()
@@ -314,6 +319,8 @@ async def test_call_pipeline_logs_res_line(mock_http_client, caplog):
 async def test_call_pipeline_ray_serve_error_propagates(mock_http_client):
     """_call_pipeline propagates HTTPStatusError raised by resp.raise_for_status()."""
     mock_response = MagicMock()
+    mock_response.status_code = 503
+    mock_response.json.return_value = {"detail": "upstream down"}  # no "error" key → transport
     mock_response.raise_for_status = MagicMock(
         side_effect=_HTTPStatusError("503 Service Unavailable")
     )
@@ -335,6 +342,7 @@ async def test_call_inference_success(mock_http_client):
         "model_version": "18",
     }
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job(job_id="job-xtest001", model_name="JPCP", alias="Production")
@@ -382,6 +390,7 @@ async def test_make_inference_handler_binds_model_name(mock_http_client):
             "model_version": "7",
         }
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 200
         return mock_resp
 
     mock_http_client.post = _fake_post
@@ -431,6 +440,7 @@ async def test_successful_inference_records_drift_success(mock_http_client):
     mock_response = MagicMock()
     mock_response.json.return_value = {"prediction": 42.0, "run_id": "r", "model_version": "1"}
     mock_response.raise_for_status = MagicMock()
+    mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job(model_name=model)
@@ -647,3 +657,85 @@ async def test_failed_retrain_is_not_audited_as_triggered(mock_http_client, monk
 
     assert getattr(res, "error_msg", "")
     assert seen == [], "a failed trigger must not be recorded as a retrain"
+
+
+# ─── S4: model failures ARE drift signals; transport failures are not ─────────
+
+
+@pytest.mark.asyncio
+async def test_ingress_inference_failed_feeds_drift_tracker(mock_http_client):
+    """An ingress 500 {"error": "inference_failed"} is the MODEL failing → recorded False."""
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_response.json.return_value = {"error": "inference_failed", "detail": "predict blew up"}
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    bridge._drift_tracker._results.pop("JPCP", None)
+    req = _make_hpc_job()
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._call_inference(req)
+
+    assert getattr(res, "error_msg", "")
+    bucket = bridge._drift_tracker._results.get("JPCP", [])
+    assert bucket == [False], "a model failure must reach the drift tracker"
+
+
+@pytest.mark.asyncio
+async def test_transport_500_still_excluded_from_drift(mock_http_client):
+    """A 5xx without the inference_failed marker stays a transport error (no drift record)."""
+    mock_response = MagicMock()
+    mock_response.status_code = 502
+    mock_response.json.return_value = {"detail": "bad gateway"}
+    mock_response.raise_for_status = MagicMock(side_effect=_HTTPStatusError("502"))
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    bridge._drift_tracker._results.pop("JPCP", None)
+    req = _make_hpc_job()
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._call_inference(req)
+
+    assert getattr(res, "error_msg", "")
+    assert bridge._drift_tracker._results.get("JPCP", []) == []
+
+
+# ─── S7: a rejected drift-retrain trigger is not a retrain ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rejected_drift_trigger_not_counted_and_cooldown_released(
+    mock_http_client, monkeypatch
+):
+    seen: list[tuple] = []
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    tracker = bridge.DriftTracker(window=4, threshold=0.5, cooldown=300)
+    before = bridge._bridge_stats["retrains_total"]
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        await tracker._maybe_trigger("JPCP", 0.75)
+
+    assert bridge._bridge_stats["retrains_total"] == before
+    assert "JPCP" not in tracker._last_retrain, "cooldown must be released on rejection"
+    actions = [a[2] for a in seen]
+    assert actions == ["retrain_trigger_failed"]
+
+
+@pytest.mark.asyncio
+async def test_accepted_drift_trigger_counts_and_audits(mock_http_client, monkeypatch):
+    seen: list[tuple] = []
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+    mock_response = MagicMock()
+    mock_response.status_code = 202
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    tracker = bridge.DriftTracker(window=4, threshold=0.5, cooldown=300)
+    before = bridge._bridge_stats["retrains_total"]
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        await tracker._maybe_trigger("JPCP", 0.75)
+
+    assert bridge._bridge_stats["retrains_total"] == before + 1
+    assert "JPCP" in tracker._last_retrain
+    actions = [a[2] for a in seen]
+    assert actions == ["retrain_triggered"]

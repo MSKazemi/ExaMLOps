@@ -184,6 +184,7 @@ def deploy_from_registry(
             schedules=[schedule] if schedule else [],
             tags=_tags,
             work_pool_name=p["work_pool"],
+            concurrency_limit=p.get("concurrency_limit"),
         )
         deployments.append(dep)
         print(f"[deploy] queued '{p['deployment_name']}' for {model_name} (cron={p['cron']!r})")
