@@ -54,8 +54,11 @@ jobs:
       - name: Ruff (format)
         run: .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
+      # `-n auto`: the suite is 2781 tests and was running in one process. Measured locally,
+      # 520s serial vs 66s across cores. Safe because every test gets a private PLATFORM_DB
+      # (tests/conftest.py) — the shared-state leak that made parallel runs fail is closed.
       - name: Unit tests
-        run: .venv/bin/pytest tests/unit/ -q --tb=short --junit-xml=reports/examlops-unit.xml
+        run: .venv/bin/pytest tests/unit/ -n auto -q --tb=short --junit-xml=reports/examlops-unit.xml
 
       - name: Upload test report
         if: always()

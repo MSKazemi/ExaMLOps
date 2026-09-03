@@ -28,6 +28,7 @@ import os
 import re
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlencode
 
 import typer
@@ -148,8 +149,9 @@ def status() -> None:
             _memory_line(bool(memory.get("enabled")), bool(memory.get("active")), tick, cross),
         ],
     ]
-    if record.get("backends_skipped"):
-        rows.append(["Rejected first", ", ".join(record["backends_skipped"])])
+    skipped = record.get("backends_skipped")
+    if isinstance(skipped, list):
+        rows.append(["Rejected first", ", ".join(str(s) for s in skipped)])
     _output.print_table("Skipper agent", ["", ""], rows)
 
     if not backend_ok:
@@ -258,7 +260,10 @@ def _chat_info(base: str, token: str) -> dict:
 
 
 def _print_chat_status(base: str, session_id: str, info: dict) -> None:
-    memory = info.get("memory") if isinstance(info.get("memory"), dict) else {}
+    # Read once, then test: two `.get("memory")` calls could disagree, and the second one is
+    # what gets used — the check would be guarding a value that is no longer the one in hand.
+    raw_memory = info.get("memory")
+    memory: dict[str, Any] = raw_memory if isinstance(raw_memory, dict) else {}
     rows = [
         ["Session", session_id],
         ["Project", active_project() or "(default)"],
@@ -640,9 +645,10 @@ def memory_list(
             {k: v for k, v in {"scope": scope, "limit": limit}.items() if v is not None}
         )
         response = _remote_memory_get(f"/api/memory/list/{quote(kind)}?{query}")
-        records = response.get("items") if isinstance(response, dict) else None
-        if not isinstance(records, list):
+        items = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(items, list):
             _output.error("The agent returned an invalid memory list.")
+        records = items
     if _output.json_mode:
         _output.print_json(records)
         return

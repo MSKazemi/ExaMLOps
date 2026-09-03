@@ -19,6 +19,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.unit._guard_deps import require_binary
+
 ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = ROOT / "Makefile"
 
@@ -27,6 +29,7 @@ _PROSE = {
     "a",
     "active",
     "an",
+    "every",  # "would make every downstream model stale" — `make <verb-object>` is ordinary English
     "exact",
     "here",
     "it",
@@ -68,6 +71,7 @@ def test_every_target_is_phony():
 
 
 def test_make_help_lists_every_target():
+    require_binary("make", "`make help` lists every target the Makefile defines")
     out = subprocess.run(["make", "help"], cwd=ROOT, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out.stdout)  # help is colourised
@@ -151,6 +155,59 @@ def test_the_generated_cli_reference_is_not_stale():
         raise AssertionError(
             "docs/reference/cli-generated.md no longer matches the live command tree. "
             "Regenerate it with `make docs-cli` and commit the result."
+        )
+
+
+def test_typecheck_reads_every_python_source_root():
+    """`make typecheck` ran mypy over three roots and silently skipped the largest.
+
+    `platform/cli/src/` is the `examlops` package — 243 source files, the CLI, the data layer,
+    the gate — and it was in the lint scope, in the test scope, and in neither typecheck
+    invocation. A gate whose name says "type check" and whose recipe reads two thirds of the
+    tree reports green over code it never opened; that is how a pre-existing `arg-type` error
+    in `autopilot_cmd` sat in the tree with the gate passing. Ratcheted rather than clean is
+    fine here — unread is not.
+    """
+    lines = MAKEFILE.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("typecheck:"))
+    body = [lines[start]]
+    for ln in lines[start + 1 :]:
+        if ln and not ln.startswith(("\t", " ", "#")):
+            break
+        body.append(ln)
+    recipe = "\n".join(body)
+    roots = [
+        "pipelines/",
+        "serving/",
+        "platform/services/",
+        "platform/cli/src/",
+    ]
+    missing = [r for r in roots if r not in recipe]
+    assert not missing, f"make typecheck never reads {missing}"
+
+
+def test_every_place_that_runs_mypy_also_checks_the_cli_package():
+    """The mypy invocation is written in three places, and all three skipped the same package.
+
+    `Makefile:typecheck`, `Makefile:ci-examlops` and `.gitlab-ci.yml`'s examlops job each ran
+    `mypy pipelines/ serving/ platform/services/`. Widening only the local target would have
+    left CI checking a narrower tree than the laptop — the same one-directional silence the lint
+    scope guard above exists to prevent. `platform/cli/src/` is ratcheted, so it is reached
+    through the `typecheck-cli` target rather than added to those lines; what this asserts is
+    that nowhere runs the strict line *without* it.
+    """
+    places = {
+        "Makefile": MAKEFILE,
+        ".gitlab-ci.yml": ROOT / ".gitlab-ci.yml",
+    }
+    strict = re.compile(r"mypy pipelines/ serving/ platform/services/")
+    for label, path in places.items():
+        text = path.read_text()
+        runs = len(strict.findall(text))
+        assert runs, f"no strict mypy invocation found in {label} — the scan is broken"
+        assert text.count("typecheck-cli") >= runs, (
+            f"{label} runs mypy {runs}× but reaches the ratcheted platform/cli/src/ check "
+            f"{text.count('typecheck-cli')}×, so one gate reads less of the tree than another"
         )
 
 

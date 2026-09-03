@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from skipper import knowledge
+from skipper import config, knowledge
 from skipper.tools import docs
 
 
@@ -24,7 +24,9 @@ def search_knowledge(query: str) -> str:
     how the platform works or how to perform an operation — the docs are authoritative. Falls back
     to a keyword search when the semantic index is unavailable.
     """
-    hits = knowledge.query(query)
+    # k comes from config, not a literal: the default 5 was measured to cut off the correct
+    # answer for a realistic operator question (see AGENT_KNOWLEDGE_K).
+    hits = knowledge.query(query, k=config.AGENT_KNOWLEDGE_K)
     if not hits:
         # Degrade to the ripgrep docs tool — identical to the pre-T2 behaviour.
         # search_docs is a LangChain @tool, so invoke it rather than calling directly.

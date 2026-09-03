@@ -107,7 +107,7 @@ def slice_metrics(
     Uses Fairlearn's ``MetricFrame`` when available; otherwise pure-Python. Reads samples
     from ``platform_db.fairness_samples``.
     """
-    cfg = platform_db.get_fairness_config(model)
+    cfg, _source = effective_fairness_config(model)
     if min_samples is None:
         min_samples = cfg["min_samples"] if cfg else DEFAULT_MIN_SAMPLES
     threshold = cfg["threshold"] if cfg else DEFAULT_THRESHOLD
@@ -166,6 +166,129 @@ def _fill_disparities(result: FairnessResult) -> None:
     result.disparity_exceeded = any(d > result.threshold for d in disparities)
 
 
+_FAIRNESS_KEYS = {"slices", "threshold", "min_samples", "gate_promotion", "enabled"}
+
+
+def validate_fairness_block(block: dict[str, Any] | None, *, model: str = "") -> list[str]:
+    """Validate a model YAML ``fairness:`` block; returns human-readable errors (clause 1).
+
+    Mirrors ``engines.validate_engine_block`` and is called by the registry-integrity CI guard,
+    so a typo is caught at review time rather than by a gate that quietly never fires. An
+    **unknown key is an error, not ignored**: ``slice:`` instead of ``slices:`` would otherwise
+    parse into a registry that declares nothing, and a fairness gate over zero attributes passes
+    every model.
+    """
+    if not block:
+        return []
+    where = f"{model}: " if model else ""
+    errors: list[str] = []
+    if not isinstance(block, dict):
+        return [f"{where}fairness block must be a mapping"]
+    for key in block:
+        if key not in _FAIRNESS_KEYS:
+            errors.append(f"{where}unknown fairness key {key!r}; expected {sorted(_FAIRNESS_KEYS)}")
+    slices = block.get("slices")
+    if slices is None:
+        errors.append(f"{where}fairness block must declare 'slices'")
+    elif not isinstance(slices, list) or not all(isinstance(s, str) and s for s in slices):
+        errors.append(f"{where}fairness.slices must be a list of attribute names")
+    elif not slices:
+        errors.append(f"{where}fairness.slices is empty; remove the block or name an attribute")
+    # YAML parses `threshold: 1` as an int, so a float-only check would reject a valid value.
+    # bool is a subclass of int and is not a number here.
+    threshold = block.get("threshold")
+    if "threshold" in block:
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            errors.append(f"{where}fairness.threshold must be a number between 0 and 1")
+        elif not 0 <= float(threshold) <= 1:
+            errors.append(f"{where}fairness.threshold must be between 0 and 1")
+    min_samples = block.get("min_samples")
+    if "min_samples" in block:
+        if isinstance(min_samples, bool) or not isinstance(min_samples, int):
+            errors.append(f"{where}fairness.min_samples must be an integer")
+        elif min_samples < 1:
+            errors.append(f"{where}fairness.min_samples must be at least 1")
+    for key in ("gate_promotion", "enabled"):
+        if key in block and not isinstance(block[key], bool):
+            errors.append(f"{where}fairness.{key} must be a boolean")
+    return errors
+
+
+def _yaml_fairness_config(model: str) -> dict[str, Any] | None:
+    """The model YAML's ``fairness:`` block as a config dict, or None.
+
+    Best-effort: the platform runs against packs it may not be able to load (no use-case dir in
+    a bare container), and a missing pack must not turn a fairness gate into an error.
+    """
+    try:
+        from pathlib import Path
+
+        import yaml as _yaml
+
+        from examlops import usecase
+
+        directory = Path(usecase.models_dir())
+        if not directory.is_dir():
+            return None
+        for path in sorted(directory.glob("*.yaml")):
+            raw = _yaml.safe_load(path.read_text()) or {}
+            if str(raw.get("name", "")).lower() != model.lower():
+                continue
+            block = raw.get("fairness") or {}
+            if not block or validate_fairness_block(block, model=model):
+                return None
+            return {
+                "model": model,
+                "slice_attrs": list(block["slices"]),
+                "threshold": float(block.get("threshold", DEFAULT_THRESHOLD)),
+                "min_samples": int(block.get("min_samples", DEFAULT_MIN_SAMPLES)),
+                "gate_promotion": bool(block.get("gate_promotion", False)),
+                "enabled": bool(block.get("enabled", True)),
+            }
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def effective_fairness_config(model: str) -> tuple[dict[str, Any] | None, str]:
+    """The config actually in force, and where it came from — ``db``, ``yaml`` or ``none``.
+
+    **A runtime row wins over the declaration.** Writing it is a deliberate act by an operator on
+    a live system (the CLI or the dashboard console), and having the YAML silently override it
+    would make a shipped write surface look broken. The YAML block is the declaration and the
+    default: it is in force wherever nobody has overridden it, so **declaring slices in code is
+    immediately effective** — no apply step stands between a declaration and its gate. That
+    matters more than the precedence: a registry that only counts once someone remembers to
+    materialise it is a protection that silently does not exist.
+
+    Use :func:`fairness_config_drift` to see when the two disagree.
+    """
+    row = platform_db.get_fairness_config(model)
+    if row:
+        return row, "db"
+    from_yaml = _yaml_fairness_config(model)
+    if from_yaml:
+        return from_yaml, "yaml"
+    return None, "none"
+
+
+def fairness_config_drift(model: str) -> list[str]:
+    """Fields where a materialised row disagrees with the model YAML's declaration.
+
+    Reported rather than resolved. Silently preferring one is how a reviewed declaration and a
+    live gate come to differ with nobody able to see it.
+    """
+    row = platform_db.get_fairness_config(model)
+    declared = _yaml_fairness_config(model)
+    if not row or not declared:
+        return []
+    drift = []
+    for key in ("slice_attrs", "threshold", "min_samples", "gate_promotion", "enabled"):
+        if row.get(key) != declared.get(key):
+            drift.append(f"{key}: yaml={declared.get(key)!r} db={row.get(key)!r}")
+    return drift
+
+
 def fairness_disparity(model: str, slice_attr: str, *, tenant: str = "default") -> dict[str, Any]:
     """Fairness disparities (DP/EO diff, selection-rate range) for a slice attr (R2)."""
     return slice_metrics(model, slice_attr, tenant=tenant).as_dict()
@@ -173,14 +296,14 @@ def fairness_disparity(model: str, slice_attr: str, *, tenant: str = "default") 
 
 def fairness_report(model: str, *, tenant: str = "default") -> list[FairnessResult]:
     """Full fairness report across all declared slicing attributes (R5)."""
-    cfg = platform_db.get_fairness_config(model)
+    cfg, _source = effective_fairness_config(model)
     attrs = cfg["slice_attrs"] if cfg else []
     return [slice_metrics(model, a, tenant=tenant) for a in attrs]
 
 
 def fairness_gate(model: str, *, tenant: str = "default") -> bool:
     """True if any declared slice attr exceeds the disparity threshold (R4, used by C3)."""
-    cfg = platform_db.get_fairness_config(model)
+    cfg, _source = effective_fairness_config(model)
     if not cfg or not cfg["gate_promotion"]:
         return False
     for attr in cfg["slice_attrs"]:
@@ -196,4 +319,7 @@ __all__ = [
     "fairness_disparity",
     "fairness_report",
     "fairness_gate",
+    "validate_fairness_block",
+    "effective_fairness_config",
+    "fairness_config_drift",
 ]

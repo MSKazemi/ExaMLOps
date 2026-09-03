@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit._guard_deps import require_binary
+
 REPO = Path(__file__).resolve().parents[2]
 
 # COPY sources that are NOT in the published tree, with the reason and the fix owner.
@@ -35,6 +37,7 @@ _COPY = re.compile(r"^\s*COPY\s+(?P<args>.+)$", re.IGNORECASE)
 
 
 def _public_tree() -> set[str]:
+    require_binary("git", "no Dockerfile reaches outside its published build context")
     out = subprocess.run(
         ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
     ).stdout

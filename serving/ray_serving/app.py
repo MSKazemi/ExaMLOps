@@ -346,6 +346,20 @@ class MultiModelServer:
         )
         self._predict_timeout = PREDICT_TIMEOUT
 
+        # ADR 0024 clause 1 — shadow mirroring. A pool of its own, never `_predict_pool`: a
+        # shadow that is slower than the champion must not take threads away from the traffic
+        # it is shadowing. In-flight work is capped and excess is dropped rather than queued,
+        # so a slow shadow costs a gap in the scoreboard, never memory on a serving replica.
+        self._shadow_pool = ThreadPoolExecutor(
+            max_workers=int(os.getenv("RAY_SHADOW_WORKERS", "2")),
+            thread_name_prefix="shadow",
+        )
+        self._shadow_max_inflight = int(os.getenv("RAY_SHADOW_MAX_INFLIGHT", "16"))
+        self._shadow_ttl = float(os.getenv("RAY_SHADOW_CONFIG_TTL", "30"))
+        self._shadow_inflight = 0
+        self._shadow_lock = threading.Lock()
+        self._shadow_cache: dict[str, tuple[str | None, float]] = {}
+
         import os as _os
 
         self._replica_id = _os.getenv("RAY_WORKER_ID", "default")
@@ -390,6 +404,11 @@ class MultiModelServer:
         # that matches nothing. RayServeNoModelsLoaded ("inference is impossible") was therefore
         # silent in exactly the case it is named for. See _load_hot_aliases.
         self._models_gauge.set(len(self._hot), tags={"replica": self._replica_id})
+        self._shadow_counter = Counter(
+            "examlops_shadow_total",
+            description="Shadow mirror outcomes by status (recorded, error, dropped).",
+            tag_keys=("model_name", "status"),
+        )
         self._reload_counter = Counter(
             "examlops_reload_total",
             description="Number of hot-reload operations",
@@ -773,6 +792,122 @@ class MultiModelServer:
         ]
 
     @_app.post("/predict/{model_name}", response_model=PredictResponse)
+    # ── ADR 0024 clause 1 — shadow mirroring ─────────────────────────────────
+
+    def _shadow_target(self, model_name: str) -> str | None:
+        """The alias to mirror ``model_name`` to, or ``None``. Cached, and never raising.
+
+        Read through a short TTL cache because this is consulted on **every** request and the
+        answer changes when an operator runs `exa serve shadow enable` — minutes, not
+        milliseconds. A per-request SQLite read would put the shadow feature's cost on the
+        production path, which is the one thing clause 1 forbids.
+
+        Any failure — no database, no table, a locked file — returns ``None``. A shadow that
+        cannot read its own configuration must look exactly like a shadow that is switched off.
+        """
+        now = time.time()
+        cached = self._shadow_cache.get(model_name)
+        if cached is not None and now - cached[1] < self._shadow_ttl:
+            return cached[0]
+        target: str | None = None
+        try:
+            from examlops.platform_db import get_db
+
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT shadow_alias, enabled FROM shadow_config WHERE model=?",
+                    (model_name,),
+                ).fetchone()
+            if row and row["enabled"]:
+                target = str(row["shadow_alias"])
+        except Exception:
+            target = None
+        self._shadow_cache[model_name] = (target, now)
+        return target
+
+    def _run_shadow(
+        self, model_name: str, shadow_alias: str, input_array: Any, production_pred: Any
+    ) -> None:
+        """Predict with the shadow model and record the comparison. Never raises.
+
+        Runs on the shadow pool, off the request thread. Everything here is best-effort by
+        construction: this function's contract is that no outcome of it — a missing alias, a model
+        that throws, an unwritable database — can reach the caller, because the caller has already
+        returned a production response.
+        """
+        try:
+            resolved = self._resolve(model_name, shadow_alias, None)
+            raw = resolved["model"].predict(input_array)
+            pred: Any = raw.tolist() if hasattr(raw, "tolist") else raw
+            if isinstance(pred, list) and len(pred) == 1:
+                pred = pred[0]
+            if not isinstance(pred, (int, float)) or not isinstance(production_pred, (int, float)):
+                # `shadow_results` stores REAL columns and a percentage difference. A
+                # non-numeric prediction has no diff to compute, and writing NULLs would put
+                # rows in the scoreboard that no comparison can ever use.
+                return
+            prod = float(production_pred)
+            shadow = float(pred)
+            diff_pct = ((shadow - prod) / abs(prod) * 100.0) if prod else None
+            from examlops.platform_db import get_db
+
+            with get_db() as conn:
+                conn.execute(
+                    """INSERT INTO shadow_results (model, production_pred, shadow_pred, diff_pct)
+                       VALUES (?,?,?,?)""",
+                    (model_name, prod, shadow, diff_pct),
+                )
+            self._shadow_counter.inc(tags={"model_name": model_name, "status": "recorded"})
+        except Exception as exc:  # noqa: BLE001 - a shadow must never surface anywhere
+            logger.debug("shadow mirror failed for %s: %s", model_name, exc)
+            try:
+                self._shadow_counter.inc(tags={"model_name": model_name, "status": "error"})
+            except Exception:
+                pass
+
+    def _mirror(self, model_name: str, input_array: Any, production_pred: Any) -> None:
+        """Fire-and-forget the shadow request (ADR 0024 clause 1). Never raises, never waits.
+
+        Three properties this ADR asks for, and the way each is obtained:
+
+        * **Asynchronous** — submitted to a pool the production path never joins on. `submit`
+          returns immediately; the future is deliberately discarded.
+        * **Never returned** — the caller has the champion's response already; this writes to
+          `shadow_results` and gives nothing back.
+        * **Failures never affect production** — the pool is separate from `_predict_pool`, so a
+          slow shadow cannot starve inference of its threads, and every path here swallows.
+
+        The queue is **bounded and drops when full**. An unbounded one would turn a shadow model
+        that is merely slower than the champion into unbounded memory growth on a production
+        replica — the shadow outliving the traffic that produced it, at the expense of the traffic
+        that follows. A dropped sample is counted, because a scoreboard silently built from the
+        requests that happened to fit would misrepresent the comparison it exists to make.
+        """
+        shadow_alias = self._shadow_target(model_name)
+        if not shadow_alias:
+            return
+        with self._shadow_lock:
+            if self._shadow_inflight >= self._shadow_max_inflight:
+                try:
+                    self._shadow_counter.inc(tags={"model_name": model_name, "status": "dropped"})
+                except Exception:
+                    pass
+                return
+            self._shadow_inflight += 1
+
+        def _task() -> None:
+            try:
+                self._run_shadow(model_name, shadow_alias, input_array, production_pred)
+            finally:
+                with self._shadow_lock:
+                    self._shadow_inflight -= 1
+
+        try:
+            self._shadow_pool.submit(_task)
+        except Exception:  # pool shutting down — drop, never raise into the request
+            with self._shadow_lock:
+                self._shadow_inflight -= 1
+
     def predict(self, model_name: str, request: PredictRequest) -> PredictResponse:
         """Run inference for *model_name* with optional alias / version selection."""
         try:
@@ -887,6 +1022,12 @@ class MultiModelServer:
             prediction,
             _latency,
         )
+        # ADR 0024 clause 1. Last thing before returning, and only on the success path: a
+        # request that 4xx'd or timed out has no champion prediction to compare against, so
+        # mirroring it would add a shadow row with nothing on the other side of it. Fire-and-
+        # forget — `_mirror` never waits, never raises, and never touches this response.
+        self._mirror(model_name, input_array, prediction)
+
         return PredictResponse(
             model_name=model_name,
             alias=alias,

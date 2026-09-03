@@ -16,6 +16,14 @@ external service**.
 
 ## Modes
 
+At the gateway the mode comes from `EXAMLOPS_GUARDRAIL_MODE`, and the default is **`monitor`** —
+not `off` and not `enforce`. Monitor scans everything and records what it finds to
+`guardrail_events` while changing nothing a caller can observe, so the boundary can be switched on
+without breaking traffic that was working, and an operator can see what their prompts actually
+contain before deciding to block any of it. An unrecognised value falls back to `monitor`, so a
+typo cannot silently disable the boundary.
+
+
 - **`off`** — allow everything (no scanning).
 - **`monitor`** — detect + log/alert, but never block (findings recorded, action stays
   `allow`).
@@ -39,6 +47,40 @@ exa guardrails stats                                                           #
 | **Input** (R1–R3) | prompt-injection/jailbreak, PII (redact/block), secret leak; RAG-retrieved content is scanned as untrusted |
 | **Output** (R4) | PII/secret leakage redaction, toxicity moderation |
 | **Tool calls** (R7) | per-session/tenant allow-list; disallowed tools blocked + audited |
+
+## Where it runs
+
+Two boundaries, both real:
+
+| Boundary | What is scanned |
+|---|---|
+| **Gateway** (`GatewayClient.chat`) | every request in, every response out |
+| **Agent / RAG** (`skipper/knowledge.py`) | retrieved context, treated as untrusted content |
+
+The gateway is the boundary ADR 0026 names first, and it is the one that scans *both* directions.
+Ordering there is deliberate and is covered by tests, because both mistakes are silent:
+
+- **Inbound runs before the semantic cache** — otherwise a blocked prompt could still be answered
+  from cache, and a redacted prompt and its raw form would become two cache entries.
+- **Outbound runs after cost accounting but before the cache** — the tokens were spent whatever the
+  guardrail decides, so a blocked answer must still appear on the bill it really incurred; and it
+  must never be stored, or the violation would be served to everyone afterwards without a backend
+  call and therefore without another scan.
+- **A block is not a backend failure.** `GuardrailBlocked` is a typed `GatewayError` that is not
+  retried against the next backend — retrying would spend money re-asking for the same violation
+  and would surface "all backends failed" instead of the real reason.
+
+```python
+from examlops.gateway import GatewayClient, GuardrailBlocked
+
+try:
+    comp = client.chat("gpt-4o", [{"role": "user", "content": prompt}])
+except GuardrailBlocked as exc:
+    print(exc.direction, exc.findings)   # "request" | "response"
+```
+
+Set `guardrail=` on the client to override the environment, or `guardrail=None` to disable it for
+one client.
 
 ## Interface
 

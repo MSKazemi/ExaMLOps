@@ -214,11 +214,24 @@ def adopt(
         _output.error("Give a model name or --all. Known models: " + ", ".join(zoo_models()))
         raise typer.Exit(1)
 
-    kw = {"connection_name": connection_name, "provision_connection": not no_connection}
+    # Passed by name rather than splatted from a dict: a `**kw` built here is typed as
+    # `dict[str, object]`, so nothing checks that these two names and types are the ones
+    # `adopt_model` actually takes — a renamed keyword would only fail at runtime.
     results = (
-        adopt_all(dry_run=dry_run, **kw)
+        adopt_all(
+            dry_run=dry_run,
+            connection_name=connection_name,
+            provision_connection=not no_connection,
+        )
         if all_models
-        else [adopt_model(model, dry_run=dry_run, **kw)]
+        else [
+            adopt_model(
+                model,
+                dry_run=dry_run,
+                connection_name=connection_name,
+                provision_connection=not no_connection,
+            )
+        ]
     )
 
     if _output.json_mode:

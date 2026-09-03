@@ -319,6 +319,11 @@ def storage_cmd(
     if refresh:
         refresh_project_usage(name)
     rec = get_project_storage(name)
+    if rec is None:
+        # ensure_project_storage() above should have created it; if it did not, the record is
+        # genuinely absent and every line below would read a field off None. Report the
+        # absence — a traceback here says "bug", when the truth is "no storage provisioned".
+        _output.error(f"Project '{name}' has no storage record — run: exa project storage {name}")
     if _output.json_mode:
         _output.print_json(rec)
         return

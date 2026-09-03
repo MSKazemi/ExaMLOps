@@ -21,6 +21,7 @@ from routers import (
     batch,
     bff,
     cards,
+    challenger,
     collab,
     compliance,
     config,
@@ -236,6 +237,7 @@ app.include_router(platform_data.router, prefix="/api")
 app.include_router(platform_ops.router, prefix="/api")
 app.include_router(rollback.router, prefix="/api")
 app.include_router(quality.router, prefix="/api")
+app.include_router(challenger.router, prefix="/api")
 app.include_router(shadow.router, prefix="/api")
 app.include_router(ab_testing.router, prefix="/api")
 app.include_router(batch.router, prefix="/api")

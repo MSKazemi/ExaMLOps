@@ -12,6 +12,7 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.data.audit import write_audit_event
 
 app = typer.Typer(
     help="EU AI Act compliance — risk classification, Annex-IV file, Art.12 logging",
@@ -175,6 +176,96 @@ def declare(
         _output.error(str(e))
         return
     _output.ok(f"{model} conformity state → {state}")
+    _disclaimer()
+
+
+@app.command("declaration")
+def declaration(
+    model: str = typer.Argument(..., help="Model name"),
+    issued_at: str = typer.Option(
+        ...,
+        "--issued-at",
+        help="Place and date of issue, e.g. 'Julich, 2026-09-02' (Annex V(8))",
+    ),
+    provider: str = typer.Option(None, "--provider", help="Provider legal name (Annex V(2))"),
+    provider_address: str = typer.Option(
+        None, "--provider-address", help="Provider address (Annex V(2))"
+    ),
+    signatory: str = typer.Option(None, "--signatory", help="Name of the signatory (Annex V(8))"),
+    signatory_function: str = typer.Option(
+        None, "--signatory-function", help="Function of the signatory (Annex V(8))"
+    ),
+    standard: list[str] = typer.Option(
+        None, "--standard", help="Harmonised standard or common specification (repeatable)"
+    ),
+    notified_body: str = typer.Option(
+        None, "--notified-body", help="Notified body name + identification number (Annex V(7))"
+    ),
+    personal_data: bool = typer.Option(
+        False,
+        "--personal-data/--no-personal-data",
+        help="Whether the system processes personal data (Annex V(5))",
+    ),
+    out: str = typer.Option(None, "--out", help="Write the declaration Markdown to this file"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Generate the Annex-V EU Declaration of Conformity (ADR 0012 clause 4).
+
+    Fields the platform can know are read from live metadata; the ones only the provider can
+    state are yours to supply. Anything missing is left as an explicit placeholder and the
+    document is stamped DRAFT with its reasons — never quietly filled in.
+    """
+    from examlops.compliance import generate_declaration
+    from examlops.data.governance import DECLARATION, save_technical_file
+
+    doc = generate_declaration(
+        model,
+        tenant=tenant,
+        issued_at=issued_at,
+        provider=provider,
+        provider_address=provider_address,
+        signatory=signatory,
+        signatory_function=signatory_function,
+        standards=list(standard or []),
+        notified_body=notified_body,
+        processes_personal_data=personal_data,
+    )
+    md = doc.to_markdown()
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+    version = save_technical_file(
+        model,
+        md,
+        tenant=tenant,
+        gaps=len(doc.blockers),
+        generated_by=actor,
+        kind=DECLARATION,
+    )
+    write_audit_event(
+        "exa-compliance",
+        actor,
+        "conformity_declaration_generated",
+        model,
+        {"version": version, "draft": doc.draft, "blockers": doc.blockers},
+    )
+    if out:
+        with open(out, "w") as fh:
+            fh.write(md)
+        _output.ok(f"Wrote {'DRAFT ' if doc.draft else ''}declaration v{version} to {out}")
+    elif _output.json_mode:
+        _output.print_json(
+            {
+                "model": model,
+                "version": version,
+                "draft": doc.draft,
+                "blockers": doc.blockers,
+                "conformity_state": doc.conformity_state,
+            }
+        )
+        return
+    else:
+        _output.detail(md)
+    for blocker in doc.blockers:
+        _output.warning(blocker)
     _disclaimer()
 
 

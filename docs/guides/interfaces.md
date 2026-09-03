@@ -352,7 +352,7 @@ All commands support `--json` for machine-readable output (pipe to `jq`).
 
 Config is resolved from: per-command flags → environment variables → `~/.config/examlops/config.toml` → hardcoded dev defaults.
 
-See [Command Reference](../reference/commands.md) for the complete command tree with examples.
+See [Command Reference](../reference/cli-generated.md) for the complete command tree with examples.
 
 ---
 

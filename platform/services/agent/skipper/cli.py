@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from skipper import config
 from skipper.confirm import _is_affirmative
+from skipper.genai_trace import traced
 from skipper.graph import build_graph
 from skipper.llm import _FIX_HINT, check_backend
 
@@ -273,7 +274,7 @@ def run_turn(graph, state: CliState, user_input: str) -> None:
         in_ai_block = False
 
         try:
-            for item in graph.stream(inp, cfg, stream_mode="messages"):
+            for item in graph.stream(inp, traced(cfg), stream_mode="messages"):
                 if not isinstance(item, tuple) or len(item) != 2:
                     continue
                 msg, _meta = item

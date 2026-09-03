@@ -17,11 +17,13 @@ from __future__ import annotations
 # The schema bootstrap + connection are cross-cutting (every domain needs them), so they're re-exported
 # at the package root — a fully-migrated caller does ``from examlops.data import init_db`` +
 # ``from examlops.data.<dom> import …`` and no longer references ``platform_db`` at all.
+from examlops.data._rowid import last_insert_id
 from examlops.platform_db import get_db, init_db
 
 __all__ = [
     "init_db",
     "get_db",
+    "last_insert_id",
     "admission",
     "agent",
     "audit",
@@ -51,7 +53,7 @@ def __getattr__(name: str):  # PEP 562
     the current ``platform_db.<helper>``. The per-domain submodules remain the *preferred* owned
     surface; this root proxy just eases migrating attribute-style call sites off the monolith.
     """
-    if name in __all__ and name not in ("init_db", "get_db"):
+    if name in __all__ and name not in ("init_db", "get_db", "last_insert_id"):
         import importlib
 
         return importlib.import_module(f"{__name__}.{name}")

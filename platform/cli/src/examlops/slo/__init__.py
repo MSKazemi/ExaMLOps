@@ -13,6 +13,7 @@ present, specs load from YAML; otherwise pass dict specs directly.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -244,6 +245,230 @@ def unmeasured_gates(model: str, *, tenant: str = "default") -> list[str]:
             for spec in platform_db.list_slo_specs(model=model, tenant=tenant)
         )
     ]
+
+
+# ── Breach auditing (ADR 0023 clause 5) ──────────────────────────────────────
+
+
+def _is_breached(model: str, name: str, tenant: str) -> bool:
+    st = slo_status(model, name, tenant=tenant)
+    return bool(st) and st[0].measured and st[0].budget_remaining <= 0.0
+
+
+def record_sample(
+    model: str,
+    name: str,
+    good: float,
+    total: float,
+    *,
+    tenant: str = "default",
+    source: str = "exa-slo",
+) -> bool:
+    """Record one SLI interval and audit the moment an SLO **breaks**. Returns True if it just did.
+
+    Every path that adds SLI data goes through here rather than calling
+    ``record_slo_sample`` directly, because the breach is only visible as a *difference*: the
+    sample that spends the last of an error budget looks exactly like the thousand before it, and
+    the status read afterwards cannot tell you when it happened or what caused it.
+
+    ADR 0023 clause 5 asks for the breach to be audited and it was the one third of the clause not
+    built — `exa slo status` would show an exhausted budget with no D4 record of it ever having
+    been spent, which is precisely the event a governance layer exists to keep.
+
+    **On transition only.** Auditing every sample recorded while a budget is already spent would
+    write one row per interval for as long as the breach lasts, and an audit trail that grows
+    without new information is one nobody reads. Recovery is not audited here: a budget that
+    refills is a rolling-window artefact, not a decision anyone made.
+    """
+    from examlops.data.audit import write_audit_event
+    from examlops.data.governance import record_slo_sample
+
+    before = _is_breached(model, name, tenant)
+    record_slo_sample(model, name, good, total, tenant=tenant)
+    after = _is_breached(model, name, tenant)
+    if after and not before:
+        st = slo_status(model, name, tenant=tenant)[0]
+        try:
+            write_audit_event(
+                source=source,
+                actor=os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER"),
+                action="slo_breached",
+                target=f"{model}/{name}",
+                details={
+                    "sli": round(st.sli, 6),
+                    "target": st.target,
+                    "budget_remaining": round(st.budget_remaining, 6),
+                    "burn_rate": round(st.burn_rate, 6) if st.burn_rate != float("inf") else None,
+                    "samples": st.n,
+                },
+                tenant=tenant,
+            )
+        except Exception:
+            # An unwritable audit log must not swallow the measurement that was just taken —
+            # losing the sample would also lose the breach.
+            pass
+        return True
+    return False
+
+
+# ── SLI ingestion (ADR 0023 clause 3) ────────────────────────────────────────
+
+#: Sources this platform can supply SLI data for today, and why the others cannot yet.
+#: Named explicitly rather than silently recording nothing: a spec whose source yields no samples
+#: reads downstream as *unmeasured*, and "we have no ingester for this" and "the system is healthy"
+#: must not be the same observation.
+UNSUPPORTED_SOURCES = {
+    "c1": "gateway_calls records cost and tokens but neither latency nor an error flag, "
+    "so a latency or error SLI cannot be derived from it yet",
+    "availability": "no serving-availability probe is persisted anywhere in platform_db",
+    "prometheus": "needs a live Prometheus; use `exa slo generate` to emit recording rules "
+    "and let Prometheus evaluate them there",
+}
+
+#: Sources with an ingester. Named so an unrecognised value is reported as a **typo** rather than
+#: as "unknown source" — `c5` was in the ADR and not in this module, and the message a user got
+#: ("unknown sli_source 'c5'") said the source did not exist rather than that it was unbuilt.
+SUPPORTED_SOURCES = ("c2", "c5", "c8")
+
+#: How many recorded drift verdicts one c5 ingest looks back over. Bounded so a long-lived
+#: model's SLI reflects its recent behaviour rather than its whole history — an SLO is a
+#: statement about a rolling window, and the window's own length lives on the spec.
+_DRIFT_WINDOW = 200
+
+
+def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+    """Good/total for a drift SLO, from recorded drift **verdicts** (ADR 0023 clause 3, c5).
+
+    One recorded ``drift_events`` row is one evaluation the real detectors already made, so
+    ``good = severity OK`` over ``total = evaluations`` is a proportion without a second copy of
+    the threshold rule anywhere. Deriving it instead from raw ``drift_snapshots`` would mean
+    re-implementing the scoring the drift provider owns, and the SLI would drift from
+    `exa drift status` the moment a provider is swapped.
+
+    ``--query`` optionally pins one ``drift_kind``; without it every kind counts.
+
+    **What this does not cover:** prediction drift, which `exa drift status` computes on the fly
+    and never records, so it contributes no events. An SLO here measures the kinds that persist a
+    verdict — concept, label and feature drift.
+    """
+    kind = (spec.get("sli_query") or "").strip() or None
+    events = platform_db.list_drift_events(model=model, drift_kind=kind, last_n=_DRIFT_WINDOW)
+    if not events:
+        return (
+            f"no drift_events rows for {model}"
+            + (f" of kind '{kind}'" if kind else "")
+            + " — prediction drift is computed live and records none; run a detector "
+            "(`exa drift concept|label|feature`) to persist verdicts"
+        )
+    total = len(events)
+    good = sum(1 for e in events if str(e.get("severity", "")).upper() == "OK")
+    return (float(good), float(total))
+
+
+def _c8_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+    """Good/total for a fairness SLO (ADR 0025 clause 3 — the C6 fairness SLI).
+
+    ``good`` counts the model's declared slice attributes whose disparity is within threshold;
+    ``total`` counts the ones that could actually be **measured**. An attribute whose slices are
+    all below the min-sample guard has no disparity, and counting it as good would let a model
+    with no data score a perfect fairness SLI — unmeasured and healthy must not be the same
+    observation, which is the rule the rest of this module already follows.
+    """
+    from examlops.fairness import effective_fairness_config, fairness_report
+
+    cfg, source = effective_fairness_config(model)
+    if not cfg:
+        return (
+            f"{model} declares no slice registry — add a `fairness:` block to its model YAML "
+            "or run `exa fairness config`"
+        )
+    results = fairness_report(model, tenant=tenant)
+    measured = [r for r in results if r.demographic_parity_diff is not None or r.accuracy_range]
+    if not measured:
+        return (
+            f"none of {model}'s {len(cfg['slice_attrs'])} declared slice attribute(s) has enough "
+            f"samples to measure a disparity (min_samples={cfg['min_samples']}, registry "
+            f"source={source})"
+        )
+    good = sum(1 for r in measured if not r.disparity_exceeded)
+    return (float(good), float(len(measured)))
+
+
+def _c2_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+    """Good/total for an eval-quality SLO, or a string saying why it could not be derived.
+
+    An `eval_suite_results` row is already a proportion over a known sample size, which is the
+    one shape an SLI needs — so this source needs no arithmetic beyond turning the stored rate
+    back into a count.
+    """
+    query = (spec.get("sli_query") or "").strip()
+    if not query:
+        return (
+            "c2 needs --query naming the eval metric (e.g. `pass_rate`, or `suite:metric` "
+            "to pin one suite); without it there is no way to know which of a model's metrics "
+            "this SLO is about"
+        )
+    suite, _, metric = query.rpartition(":")
+    rows = [
+        r
+        for r in platform_db.get_eval_results(model)
+        if r["metric"] == metric and (not suite or r["suite"] == suite)
+    ]
+    if not rows:
+        return f"no eval_suite_results rows for metric '{metric}'" + (
+            f" in suite '{suite}'" if suite else ""
+        )
+    latest = rows[0]
+    n = int(latest.get("sample_size") or 0)
+    if n <= 0:
+        return f"the newest '{metric}' result records no sample_size, so it is not a proportion"
+    score = float(latest["score"])
+    if not 0.0 <= score <= 1.0:
+        return (
+            f"'{metric}' is {score}, which is not a ratio — an SLI must be good/total, so a "
+            "unit-bearing metric (latency, tokens, cost) cannot back an SLO directly"
+        )
+    return (round(score * n), float(n))
+
+
+def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
+    """Pull SLI samples for ``model`` from the platform's own telemetry (ADR 0023 clause 3).
+
+    Until this existed every SLI arrived by hand through ``exa slo record``, so an SLO measured
+    whatever someone remembered to type — and the specs already carried an ``sli_source`` column
+    that nothing ever read.
+
+    Returns one row per spec describing what happened, including the ones that were skipped and
+    why. Reporting the skips is the point: a source with no ingester records no samples, which
+    downstream is indistinguishable from a healthy service that simply has not been asked.
+    """
+    out: list[dict[str, Any]] = []
+    for spec in platform_db.list_slo_specs(model=model, tenant=tenant):
+        source = (spec.get("sli_source") or "prometheus").strip().lower()
+        row: dict[str, Any] = {"name": spec["name"], "source": source}
+        if source in UNSUPPORTED_SOURCES:
+            out.append({**row, "ingested": False, "reason": UNSUPPORTED_SOURCES[source]})
+            continue
+        if source == "c2":
+            result = _c2_samples(model, spec, tenant)
+        elif source == "c5":
+            result = _c5_samples(model, spec, tenant)
+        elif source == "c8":
+            result = _c8_samples(model, spec, tenant)
+        else:
+            result = (
+                f"unrecognised sli_source '{source}' — expected one of "
+                f"{sorted({*SUPPORTED_SOURCES, *UNSUPPORTED_SOURCES})}"
+            )
+        if isinstance(result, str):
+            out.append({**row, "ingested": False, "reason": result})
+            continue
+        good, total = result
+        breached = record_sample(
+            model, spec["name"], good, total, tenant=tenant, source="exa-slo-ingest"
+        )
+        out.append({**row, "ingested": True, "good": good, "total": total, "breached": breached})
+    return out
 
 
 def apply_spec(spec: dict[str, Any]) -> None:

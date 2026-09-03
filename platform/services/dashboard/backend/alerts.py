@@ -15,6 +15,7 @@ import json
 import sqlite3
 from typing import Any
 
+import audit_write
 from dbconn import connect
 
 # Severity ordering for sorting the inbox (most severe first).
@@ -176,9 +177,8 @@ def acknowledge(db_path: str, alert_id: str, actor: str) -> bool:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
             ).fetchone():
                 return False
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-                ("dashboard-alerts", actor, "alert_ack", alert_id, ""),
+            audit_write.audit(
+                actor, "alert_ack", alert_id, None, source="dashboard-alerts", conn=conn
             )
             conn.commit()
             return True

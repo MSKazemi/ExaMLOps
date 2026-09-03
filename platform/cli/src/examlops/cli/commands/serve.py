@@ -145,14 +145,18 @@ def traffic(
     init_db()
 
     if production is None and canary is None and staging is None:
-        rules = get_traffic_rules(model)
-        if rules is None:
+        # Named apart from the `rules` built below: one is what is stored (and may be absent),
+        # the other is what this invocation is about to set. Sharing the name made every use of
+        # the second one an optional-typed value, which is how ten type errors came from one
+        # variable that is never None where it is used.
+        current = get_traffic_rules(model)
+        if current is None:
             _output.ok(f"No traffic rules for {model} — 100% Production (default)")
             return
         if _output.json_mode:
-            _output.print_json(rules)
+            _output.print_json(current)
         else:
-            rows = [[alias, f"{pct}%"] for alias, pct in rules.items()]
+            rows = [[alias, f"{pct}%"] for alias, pct in current.items()]
             _output.print_table(f"Traffic split — {model}", ["Alias", "Weight"], rows)
         return
 

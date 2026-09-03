@@ -40,6 +40,9 @@ const Llmops = lazy(() => import('@/pages/Llmops').then((m) => ({ default: m.Llm
 const Gateway = lazy(() => import('@/pages/Gateway').then((m) => ({ default: m.Gateway })))
 const Prompts = lazy(() => import('@/pages/Prompts').then((m) => ({ default: m.Prompts })))
 const Autopilot = lazy(() => import('@/pages/Autopilot').then((m) => ({ default: m.Autopilot })))
+const Challenger = lazy(() =>
+  import('@/pages/Challenger').then((m) => ({ default: m.Challenger })),
+)
 const Slo = lazy(() => import('@/pages/Slo').then((m) => ({ default: m.Slo })))
 const Scaling = lazy(() => import('@/pages/Scaling').then((m) => ({ default: m.Scaling })))
 const Admission = lazy(() => import('@/pages/Admission').then((m) => ({ default: m.Admission })))
@@ -156,6 +159,7 @@ export default function App() {
                       <Route path="/operate/drift" element={<Drift />} />
                       <Route path="/operate/alerts" element={<Alerts />} />
                       <Route path="/operate/autopilot" element={<Autopilot />} />
+                      <Route path="/serve/challenger" element={<Challenger />} />
                       <Route path="/operate/slos" element={<Slo />} />
                       <Route path="/operate/admission" element={<Admission />} />
                       <Route path="/operate/finops" element={<Finops />} />

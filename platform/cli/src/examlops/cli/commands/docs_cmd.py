@@ -50,7 +50,7 @@ def _walk(cmd: click.Command, path: list[str]) -> dict[str, Any]:
         "help": _clean(cmd.help or cmd.get_short_help_str() or ""),
     }
     ctx = click.Context(cmd, info_name=path[-1])
-    options = []
+    options: list[dict[str, object]] = []
     for param in cmd.get_params(ctx):
         # NB: don't use ``isinstance(param, click.Option)`` — Typer's ``TyperOption``
         # subclasses ``click.Parameter`` (not ``click.Option``) in current Typer/Click,
@@ -70,6 +70,16 @@ def _walk(cmd: click.Command, path: list[str]) -> dict[str, Any]:
                 "help": _clean(getattr(param, "help", "") or ""),
             }
         )
+    # A command that parses its own flags out of ``ctx.args`` (``allow_extra_args``) declares
+    # nothing to Click, so every introspection surface — this reference, ``exa --json docs``,
+    # MCP tool generation, the ADR and prompt guards — sees a documented, working flag as
+    # missing. `exa pipeline promote --if-<metric>-<op>` is the one such family in the CLI.
+    # Letting a command state those flags in machine-readable form is what keeps a generated
+    # reference honest; the alternative is a permanent "…or it is mentioned in the help text"
+    # fallback in every consumer, which is weaker than reading a real declaration.
+    for dyn in getattr(cmd.callback, "dynamic_options", None) or []:
+        options.append({"opts": dyn["opts"], "help": _clean(dyn.get("help", "")), "dynamic": True})
+
     if options:
         node["options"] = options
 

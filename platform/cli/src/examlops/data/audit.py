@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any  # noqa: F401
 
+from examlops.data._rowid import last_insert_id
 from examlops.platform_db import (  # noqa: F401
     _audit_canonical,
     _audit_hash,
@@ -95,6 +96,14 @@ def verify_audit_chain() -> dict[str, Any]:
             "SELECT id, source, actor, action, target, details, tenant, prev_hash, hash, ts "
             "FROM audit_events WHERE hash IS NOT NULL ORDER BY id ASC"
         ).fetchall()
+        # Rows with no hash are outside the chain and cannot be verified. They must be *counted*,
+        # not silently skipped: a verifier that ignores what it cannot check reports `ok: True`
+        # over a log it has only partly read, and "we did not look at these" then reads as "these
+        # are fine". Found 2026-09-02, when every dashboard-written event turned out to be
+        # unchained and `verify` still answered ok with a count that excluded all of them.
+        unchained = int(
+            conn.execute("SELECT COUNT(*) FROM audit_events WHERE hash IS NULL").fetchone()[0]
+        )
     prev = "GENESIS"
     for r in rows:
         canonical = _audit_canonical(
@@ -112,13 +121,38 @@ def verify_audit_chain() -> dict[str, Any]:
                 "ok": False,
                 "verified": True,
                 "count": len(rows),
+                "unchained": unchained,
                 "broken_at_id": r["id"],
                 "reason": "prev_hash mismatch"
                 if r["prev_hash"] != prev
                 else "hash mismatch (event altered)",
             }
         prev = r["hash"]
-    return {"ok": True, "verified": True, "count": len(rows), "head_hash": prev}
+    out: dict[str, Any] = {
+        "ok": True,
+        "verified": True,
+        "count": len(rows),
+        "unchained": unchained,
+        "head_hash": prev,
+    }
+    if unchained and rows:
+        # The oldest chained event dates the migration. An unchained row *after* it is the one
+        # worth investigating; everything before is pre-chain history that cannot be retro-fitted
+        # without rewriting the log, which would defeat the point of having one.
+        out["chain_begins_at"] = rows[0]["ts"]
+    if unchained:
+        # `ok` stays True — the chain that exists is intact, and saying otherwise would cry wolf.
+        # But the claim is narrowed out loud, because the guarantee D4 advertises ("any edit,
+        # deletion or reordering breaks the chain") simply does not hold for these rows.
+        out["warning"] = (
+            f"{unchained} event(s) carry no hash and were not verified — they are outside the "
+            "chain, so their order and presence are not tamper-evident (the append-only triggers "
+            "still protect them from SQL edits). Two causes, and they need telling apart: events "
+            "written before the chain columns were added are expected and age out, whereas a "
+            "recent one means a writer is bypassing `write_audit_event`. Compare their timestamps "
+            "against the oldest chained event."
+        )
+    return out
 
 
 def write_audit_event(
@@ -129,8 +163,12 @@ def write_audit_event(
     details: dict[str, Any] | None = None,
     *,
     tenant: str = "default",
+    conn: Any = None,
 ) -> None:
     """Append a tamper-evident, hash-chained audit event (D4, R1/R7).
+
+    Pass ``conn`` to append inside a transaction the caller already holds — see
+    :func:`append_audit_event` for when that is required.
 
     Each row stores ``prev_hash`` and ``hash = H(prev_hash ‖ canonical(event))`` so any
     edit/deletion/reordering breaks the chain (verify with :func:`verify_audit_chain`).
@@ -139,35 +177,91 @@ def write_audit_event(
     """
     details_json = json.dumps(details) if details else None
 
+    # Every read path in this module bootstraps the schema; this write path did not, so a
+    # command whose *first* database touch was its own audit event died on
+    # `no such table: audit_events` instead of working. Near-free after the first call per
+    # process (`_INITIALIZED_PATHS`). A caller supplying `conn` is already inside a
+    # transaction on an initialised database, and re-entering init there would deadlock.
+    if conn is None:
+        init_db()
+
+    if conn is not None:
+        append_audit_event(conn, source, actor, action, target, details=details, tenant=tenant)
+        return
+
     def _append() -> None:
         # IMMEDIATE lock makes head-read + append atomic across writer processes, so the
         # hash chain cannot fork under concurrency; write_retry re-runs the whole txn if the
         # lock is lost after busy_timeout.
-        with _immediate_write() as conn:
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
-            if not {"prev_hash", "hash"} <= cols:  # pre-migration DB — plain append
-                conn.execute(
-                    "INSERT INTO audit_events (source, actor, action, target, details) "
-                    "VALUES (?,?,?,?,?)",
-                    (source, actor, action, target, details_json),
-                )
-                return
-            # Chain over the current head. CURRENT_TIMESTAMP is resolved here so the stored
-            # ts matches what we hash.
-            ts = conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
-            head = conn.execute(
-                "SELECT hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            prev_hash = head["hash"] if head and head["hash"] else "GENESIS"
-            canonical = _audit_canonical(source, actor, action, target, details_json, tenant, ts)
-            h = _audit_hash(prev_hash, canonical)
-            conn.execute(
-                "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
-                "prev_hash, hash, ts) VALUES (?,?,?,?,?,?,?,?,?)",
-                (source, actor, action, target, details_json, tenant, prev_hash, h, ts),
-            )
+        with _immediate_write() as conn_:
+            _append_on(conn_, source, actor, action, target, details_json, tenant)
 
     write_retry(_append)
+
+
+def append_audit_event(
+    conn: Any,
+    source: str,
+    actor: str | None,
+    action: str,
+    target: str | None,
+    details: dict[str, Any] | None = None,
+    *,
+    tenant: str = "default",
+) -> None:
+    """Append a chained event **on an existing connection**, inside the caller's transaction.
+
+    For a caller that is already writing — a dashboard router that has just changed the thing it
+    is about to audit. Opening a second connection there deadlocks: SQLite admits one writer, the
+    caller holds the write lock, and the audit blocks until `busy_timeout` and fails. Worse, a
+    caller that swallows the failure loses the event entirely, which is how a fix for *unchained*
+    audit rows turns into *missing* ones.
+
+    Writing on the caller's connection also makes the audit **atomic with the mutation**: they
+    commit together or not at all, so an action can no longer succeed while its record is lost.
+
+    **Must be called inside an open write transaction.** The chain's integrity rests on
+    head-read and append being indivisible; the standalone path buys that with an IMMEDIATE
+    lock, and here it comes from the caller already holding a RESERVED lock through its own
+    write. Called on an idle connection, a concurrent writer could interleave between the two
+    statements and fork the chain.
+    """
+    _append_on(
+        conn, source, actor, action, target, json.dumps(details) if details else None, tenant
+    )
+
+
+def _append_on(
+    conn: Any,
+    source: str,
+    actor: str | None,
+    action: str,
+    target: str | None,
+    details_json: str | None,
+    tenant: str,
+) -> None:
+    """The chaining itself, on whichever connection/transaction it is handed."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+    if not {"prev_hash", "hash"} <= cols:  # pre-migration DB — plain append
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+            (source, actor, action, target, details_json),
+        )
+        return
+    # Chain over the current head. CURRENT_TIMESTAMP is resolved here so the stored ts matches
+    # what we hash.
+    ts = conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+    head = conn.execute(
+        "SELECT hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prev_hash = head["hash"] if head and head["hash"] else "GENESIS"
+    canonical = _audit_canonical(source, actor, action, target, details_json, tenant, ts)
+    h = _audit_hash(prev_hash, canonical)
+    conn.execute(
+        "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
+        "prev_hash, hash, ts) VALUES (?,?,?,?,?,?,?,?,?)",
+        (source, actor, action, target, details_json, tenant, prev_hash, h, ts),
+    )
 
 
 def write_training_checkpoint(
@@ -190,7 +284,7 @@ def write_training_checkpoint(
                VALUES (?,?,?,?,?,?,?,?)""",
             (run_id, step, epoch, shard_count, uri, state_json, integrity_hash, mlflow_run_id),
         )
-        return int(cur.lastrowid)
+        return last_insert_id(cur)
 
 
 install_write_retry(__name__)

@@ -47,7 +47,14 @@ class Freshness:
 
 
 def apply_view(view: FeatureView) -> None:
-    """Register/patch a feature view — the single definition for train + serve (R1)."""
+    """Register/patch a feature view — the single definition for train + serve (R1).
+
+    Also declares the view as an A4 asset with its source dataset upstream (ADR 0036), so the
+    dependency graph gains the feature layer without anyone entering it twice. A view already
+    names both halves of that edge — an entity-level `name` and the `source` it is built from —
+    at exactly the granularity assets use, which is why this wiring is unambiguous where
+    deriving assets from lineage events is not (see ADR 0036's note on granularity).
+    """
     platform_db.upsert_feature_view(
         view.name,
         view.entity,
@@ -56,6 +63,30 @@ def apply_view(view: FeatureView) -> None:
         ttl_seconds=view.ttl_seconds,
         dataset_revision=view.dataset_revision,
     )
+    _declare_feature_asset(view)
+
+
+def _declare_feature_asset(view: FeatureView) -> None:
+    """Declare the view as a `feature` asset depending on its source dataset. Best-effort.
+
+    Re-applying a view with the same source is idempotent, and changing the source is a genuine
+    definition change that *should* move the edge — so unlike a per-run derivation, the deps here
+    cannot flip-flop between runs.
+
+    The view definition is the durable fact; the asset graph is a derived view of it. Failing to
+    update the graph must never lose the definition.
+    """
+    try:
+        from examlops.assets import declare_asset
+
+        declare_asset(
+            view.name,
+            kind="feature",
+            deps=[view.source] if view.source else [],
+            description=f"feature view over {view.source or 'an unnamed source'}",
+        )
+    except Exception:
+        pass
 
 
 def get_view(name: str) -> FeatureView | None:

@@ -63,3 +63,65 @@ def test_chain_head_advances_monotonically(db):
     assert head2["id"] > head1["id"]
     assert head2["hash"] != head1["hash"]
     assert db.verify_audit_chain()["ok"] is True
+
+
+# ── what "unchained" means, and what it does not ─────────────────────────────
+
+
+def test_verify_counts_rows_it_could_not_check_instead_of_skipping_them(tmp_path, monkeypatch):
+    """`verify_audit_chain` selects `WHERE hash IS NOT NULL`. Until 2026-09-02 that meant an
+    unchained row was invisible: `ok: True` with a `count` that silently excluded it. A verifier
+    that ignores what it cannot check reports success over a log it has only partly read.
+    """
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import verify_audit_chain, write_audit_event
+    from examlops.platform_db import get_db, init_db
+
+    init_db()
+    write_audit_event("cli", "m", "chained", "t", None)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+            ("legacy", "m", "unchained", "t", None),
+        )
+
+    result = verify_audit_chain()
+    assert result["ok"] is True, "the chain that exists is intact — crying wolf would be wrong"
+    assert result["count"] == 1
+    assert result["unchained"] == 1, "an unverifiable row was skipped rather than counted"
+    assert "warning" in result
+
+
+def test_a_clean_chain_reports_no_warning(tmp_path, monkeypatch):
+    """The warning must mean something. If it appeared on every run it would be ignored."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import verify_audit_chain, write_audit_event
+    from examlops.platform_db import init_db
+
+    init_db()
+    write_audit_event("cli", "m", "a", "t", None)
+    result = verify_audit_chain()
+    assert result["unchained"] == 0
+    assert "warning" not in result and "chain_begins_at" not in result
+
+
+def test_the_chain_start_is_reported_so_the_two_causes_are_separable(tmp_path, monkeypatch):
+    """Unchained rows have two causes: history written before the chain columns existed
+    (expected, ages out, must NOT be back-filled because that would rewrite the log), and a
+    writer still bypassing `write_audit_event` (a bug). Only the timestamp tells them apart —
+    and mistaking the first for the second is exactly the error this test exists to prevent.
+    """
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import verify_audit_chain, write_audit_event
+    from examlops.platform_db import get_db, init_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+            ("legacy", "m", "pre_migration", "t", None),
+        )
+    write_audit_event("cli", "m", "first_chained", "t", None)
+
+    result = verify_audit_chain()
+    assert result["chain_begins_at"], "no boundary reported, so the causes cannot be told apart"

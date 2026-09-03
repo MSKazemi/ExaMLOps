@@ -165,7 +165,8 @@ def governance_report(
 
     report = CoverageReport(tenant=tenant, version=catalogue_version(), model=model)
     for control in controls:
-        present, missing = [], []
+        present: list[str] = []
+        missing: list[str] = []
         for ev in control.evidence:
             collector = _COLLECTORS.get(ev)
             ok = False

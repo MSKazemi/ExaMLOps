@@ -62,6 +62,45 @@ exa embedding reindex docs <new-id> --recall 0.5 --recall-floor 0.9
 # Reindex NOT switched: recall 0.500 < floor 0.900 — kept old index
 ```
 
+### Where a reindex runs
+
+Re-embedding a large corpus in the calling process blocks whatever asked. Submit it instead:
+
+```bash
+exa embedding reindex docs <new-id> --scheduler
+# submitted to the scheduler as job 41273
+
+export EXAMLOPS_REINDEX_ORCHESTRATOR=scheduler   # or make it the default
+```
+
+`inline` remains the default: a reindex that silently became a cluster submission on upgrade
+would strand every existing caller waiting for a result that now arrives elsewhere. The submitted
+command re-enters the CLI pinned to `--inline`, so a job never submits another job — and an
+**unreachable scheduler runs the work here** and records `inline-fallback`, because not
+reindexing at all is the worse answer.
+
+Each job records where it ran, the scheduler job id, how many documents it re-embedded and a
+measured `duration_s` — on the aborted path too, since the time was spent either way. A
+*submitted* job records **no recall** rather than 0.0: nothing has been measured yet, and 0.0
+reads as "verified and terrible". **Monetary cost is not recorded**, because it needs device-hours
+this path does not know, and an invented figure is worse than none.
+
+### When the vector store finds a mismatch
+
+A cross-encoder operation still **refuses** — that is what prevents the silent corruption the
+compatibility guard exists for. It now also leaves a trail:
+
+```
+EncoderMismatch: collection 'docs' was built with encoder 'enc-old' but the vector comes from
+'enc-new' … Reindex it: exa embedding reindex docs enc-new
+```
+
+and records a **reindex recommendation** visible in `exa embedding status`. It deliberately does
+**not** start one: a search that quietly re-embedded a large corpus would turn one query into an
+unbounded, unbudgeted job, and the caller asked for a search. Recommendations are idempotent per
+collection and target encoder — a mismatched collection is queried many times, and one row per
+query would bury the signal.
+
 ## Governance
 
 - **Audited (D4):** switches and aborts write `reindex_switched` / `reindex_aborted` events.

@@ -36,7 +36,12 @@ def set_slo(
     target: float = typer.Option(0.99, "--target", help="Objective ratio 0..1"),
     window: str = typer.Option("30d", "--window", help="Rolling window (e.g. 30d)"),
     sli_source: str = typer.Option(
-        "prometheus", "--source", help="c1|c2|c5|availability|prometheus"
+        "prometheus",
+        "--source",
+        help=(
+            "c2 (eval quality) | c5 (drift verdicts) | c8 (fairness disparity) "
+            "| c1 | availability | prometheus"
+        ),
     ),
     sli_query: str = typer.Option(None, "--query", help="PromQL SLI expression (good ratio)"),
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
@@ -146,6 +151,44 @@ def status(
     )
 
 
+@app.command("export-metrics")
+def export_metrics(
+    model: str = typer.Option(None, "--model", help="One model (default: every declared SLO)"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+    out: str = typer.Option(
+        None, "--out", help="Write to a .prom file for the node_exporter textfile collector"
+    ),
+) -> None:
+    """Publish platform-recorded metrics in Prometheus text format (ADR 0023/0020/0025).
+
+    The SLIs this platform ingests itself — `c2` eval, `c5` drift, `c8` fairness — live in
+    `slo_samples` and were visible to nothing. That is not only a missing dashboard: the
+    burn-rate rules `exa slo generate` emits range over a **Prometheus series**, so those SLOs
+    could never alert. Point node_exporter's textfile collector at the output and they can.
+
+    Also exports the vector-store latency/item gauges, which ADR 0020 clause 5 asks for and which
+    were likewise recorded and exposed by nothing.
+
+    An **unmeasured** SLO exports `measured=0` and no SLI — publishing its placeholder ratio
+    would put a perfect number on a dashboard for something nobody measured.
+    """
+    from examlops.telemetry.exposition import export
+
+    text = export(model, tenant)
+    if out:
+        with open(out, "w") as fh:
+            fh.write(text)
+        _output.ok(f"Wrote {text.count(chr(10))} line(s) of metrics to {out}")
+        _output.hint(
+            "Serve it: point node_exporter --collector.textfile.directory at that file's folder"
+        )
+        return
+    if _output.json_mode:
+        _output.print_json({"exposition": text})
+        return
+    _output.info(text or "No metrics to export — declare an SLO or record vector operations.")
+
+
 @app.command("generate")
 def generate(
     model: str = typer.Argument(..., help="Model name"),
@@ -206,10 +249,63 @@ def record(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Record one SLI measurement interval (R4) — feeds budget + burn rate."""
-    from examlops.data.governance import record_slo_sample
+    from examlops.slo import record_sample
 
-    record_slo_sample(model, name, good, total, tenant=tenant)
+    # Through `record_sample`, not `record_slo_sample`: the sample that spends the last of an
+    # error budget must leave a D4 record wherever it came from, and a hand-typed one is still
+    # a breach (ADR 0023 clause 5).
+    breached = record_sample(model, name, good, total, tenant=tenant)
     _output.ok(f"Recorded SLI sample for {model}/{name}: {good}/{total}")
+    if breached:
+        _output.warning(
+            f"{model}/{name} has just exhausted its error budget — audited as `slo_breached`."
+        )
+
+
+@app.command("ingest")
+def ingest(
+    model: str = typer.Argument(..., help="Model whose SLOs should be refreshed"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Pull SLI samples from the platform's own telemetry instead of typing them in.
+
+    Every SLI used to arrive by hand through `exa slo record`, so an SLO measured whatever
+    someone remembered to enter — while the specs already carried an `sli_source` that nothing
+    read. This reads it.
+
+    Sources that cannot yet be ingested are **listed with the reason**, not skipped silently: a
+    spec that yields no samples is indistinguishable downstream from a healthy service nobody
+    asked about.
+    """
+    from examlops.slo import ingest_slis
+
+    rows = ingest_slis(model, tenant=tenant)
+    if _output.json_mode:
+        _output.print_json({"model": model, "tenant": tenant, "results": rows})
+        return
+    if not rows:
+        _output.ok(f"No SLO specs for {model} — nothing to ingest.")
+        return
+    _output.print_table(
+        f"SLI ingestion — {model}",
+        ["SLO", "Source", "Ingested", "Detail"],
+        [
+            [
+                r["name"],
+                r["source"],
+                "yes" if r["ingested"] else "no",
+                (
+                    f"{r['good']:g}/{r['total']:g}"
+                    + ("  ⚠ budget exhausted" if r.get("breached") else "")
+                    if r["ingested"]
+                    else r["reason"]
+                ),
+            ]
+            for r in rows
+        ],
+    )
+    done = sum(1 for r in rows if r["ingested"])
+    _output.ok(f"{done}/{len(rows)} SLO(s) ingested.")
 
 
 # Env flag consulted by the C3 promotion gate (imported for discoverability).

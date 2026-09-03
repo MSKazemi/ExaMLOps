@@ -18,6 +18,7 @@ import json
 import os
 import sqlite3
 
+import audit_write
 from auth import require_role
 from capabilities import CONNECTION_MANAGE, can, deny_reason
 from dbconn import connect
@@ -61,10 +62,7 @@ def _ensure_audit(conn: sqlite3.Connection) -> None:
 
 def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, details: dict) -> None:
     _ensure_audit(conn)
-    conn.execute(
-        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-        ("dashboard", actor, action, target, json.dumps(details)),
-    )
+    audit_write.audit(actor, action, target, details, conn=conn)
 
 
 def _row_to_view(r: sqlite3.Row) -> dict:

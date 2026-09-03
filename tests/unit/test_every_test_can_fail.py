@@ -123,3 +123,46 @@ def test_the_exemption_list_has_no_dead_entries():
     """An exemption for a test that no longer exists hides the next one that needs arguing for."""
     stale = sorted(_ASSERTION_FREE_BY_DESIGN - set(_assertion_free()))
     assert not stale, f"exemptions no longer needed (remove them): {stale}"
+
+
+# ── Registered markers must be real ───────────────────────────────────────────
+
+
+def _registered_markers() -> list[str]:
+    """Marker names declared in ``[tool.pytest.ini_options]``, read from pyproject itself."""
+    import tomllib
+
+    with open(_ROOT / "pyproject.toml", "rb") as fh:
+        declared = tomllib.load(fh)["tool"]["pytest"]["ini_options"].get("markers", [])
+    return [entry.split(":", 1)[0].strip() for entry in declared]
+
+
+def test_the_marker_guard_actually_reads_pyproject():
+    """The guard below is an absence-check, so it must be shown to be reading something."""
+    assert _registered_markers(), "no markers parsed — the guard cannot fail as written"
+
+
+def test_every_registered_marker_is_applied_to_at_least_one_test():
+    """A registered marker nothing applies is a claim the suite does not keep.
+
+    `--strict-markers` catches the opposite mistake — using a marker that was never registered.
+    Nothing catches this one: a marker declared in `pyproject.toml` and applied to no test reads,
+    to anyone selecting with `-m`, as a category that exists and is empty. The `slow` marker was
+    exactly this for a day: registered, described as being excluded from `make test-fast`, applied
+    to nothing, and excluded by nothing. It was removed rather than retro-fitted, because
+    `make test-slowest` measures real durations and a hand-applied label cannot stay true.
+    """
+    unused = []
+    for marker in _registered_markers():
+        needle = f"pytest.mark.{marker}"
+        if not any(
+            needle in path.read_text(encoding="utf-8")
+            for directory in _TEST_DIRS
+            for path in (_ROOT / directory).rglob("test_*.py")
+        ):
+            unused.append(marker)
+    assert not unused, (
+        f"markers registered but applied to no test: {unused} — either mark the tests they "
+        "describe, or drop the registration. An empty category is worse than no category: "
+        "`-m <marker>` silently selects nothing and reports success."
+    )

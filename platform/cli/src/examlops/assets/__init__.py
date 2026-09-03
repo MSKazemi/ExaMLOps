@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from examlops import data as platform_db
 
@@ -150,10 +150,19 @@ def materialize(
     actor: str | None = None,
     force: bool = False,
     run_id: str | None = None,
+    no_deps: bool = False,
+    orchestrator: str | None = None,
 ) -> MaterializeResult:
     """Rebuild ``name`` + its stale ancestors only (R4/GWT-3), emit lineage (R6), audit (R7).
 
     Governed by policy (D5): a ``deny`` on ``asset_materialize`` blocks the run.
+
+    ``no_deps`` builds only ``name``. It exists for the scheduler orchestrator, whose submitted
+    job re-enters this command for one asset — without it the job would re-walk the graph and
+    submit again, once per ancestor, forever.
+
+    ``orchestrator`` overrides ``EXAMLOPS_ASSET_ORCHESTRATOR`` for this call. The submitted job
+    passes ``local`` explicitly for the same reason.
     """
     from examlops.data.audit import write_audit_event
 
@@ -165,7 +174,7 @@ def materialize(
         )
         return MaterializeResult(name, rebuilt=[], skipped=[], blocked=blocked)
 
-    order = _topo_order(name)
+    order = [name] if no_deps else _topo_order(name)
     rebuilt: list[str] = []
     skipped: list[str] = []
     for node in order:
@@ -173,28 +182,136 @@ def materialize(
         if not needs:
             skipped.append(node)
             continue
-        _run_asset(node, run_id=run_id, actor=actor)
+        _run_asset(node, run_id=run_id, actor=actor, orchestrator=orchestrator)
         rebuilt.append(node)
     write_audit_event(
         "exa-assets",
         actor,
         "asset_materialize",
         name,
-        {"rebuilt": rebuilt, "skipped": skipped, "forced": force},
+        {
+            "rebuilt": rebuilt,
+            "skipped": skipped,
+            "forced": force,
+            "orchestrator": get_orchestrator(orchestrator).name,
+        },
     )
     return MaterializeResult(name, rebuilt=rebuilt, skipped=skipped)
 
 
-def _run_asset(name: str, *, run_id: str | None, actor: str | None) -> int:
+# ── The AssetOrchestrator seam (ADR 0036 clause 1, clause 3's "via the scheduler") ──────────
+#
+# The seam was named in this module's docstring and existed nowhere as code, so nothing was
+# swappable and clause 3's "via the scheduler (phase 23)" could not be true: materializing an
+# asset called a local Python function and bumped a row.
+
+
+@runtime_checkable
+class AssetOrchestrator(Protocol):
+    """How an asset's production function is executed. Two implementations ship."""
+
+    name: str
+
+    def run(self, definition: Any, upstream: dict[str, int]) -> dict[str, Any]:
+        """Execute one asset's production. Returns provenance for the version record."""
+        ...
+
+
+class LocalOrchestrator:
+    """Call the production function in this process — what materialization has always done.
+
+    The default, and byte-identical to the previous behaviour. An asset layer that suddenly
+    started submitting scheduler jobs on upgrade would surprise every existing caller.
+    """
+
+    name = "local"
+
+    def run(self, definition: Any, upstream: dict[str, int]) -> dict[str, Any]:
+        if definition is not None and definition.fn is not None:
+            definition.fn(**upstream)
+        return {"orchestrator": self.name}
+
+
+class SchedulerOrchestrator:
+    """Submit the materialization through the phase-23 scheduler seam (clause 3).
+
+    Submits ``exa assets materialize <name> --no-deps`` under the **local** orchestrator, because
+    a scheduler job is a separate process and cannot call an in-process closure. The job id is
+    returned as provenance and recorded on the asset version.
+
+    **What this requires of a deployment, stated rather than assumed:** the job must be able to
+    reach the same ``platform.db`` (shared filesystem, or the Postgres backend) and have `exa`
+    installed, since it is the job that bumps the version. Under
+    ``EXAMLOPS_HPC_SCHEDULER=mock`` the job runs inline and both hold trivially. Where they do
+    not, the submission still records its job id and the version bump happens in the submitting
+    process — the graph stays correct, and the compute simply ran elsewhere.
+    """
+
+    name = "scheduler"
+
+    def run(self, definition: Any, upstream: dict[str, int]) -> dict[str, Any]:
+        asset_name = getattr(definition, "name", None) or "asset"
+        try:
+            adapter = _scheduler_adapter()
+        except Exception as exc:  # noqa: BLE001
+            # A missing scheduler is an environment fact, not an asset failure. Fall back to
+            # local execution and say so, rather than leaving the asset unbuilt.
+            LocalOrchestrator().run(definition, upstream)
+            return {"orchestrator": self.name, "fallback": f"local ({exc})"}
+        job_id = adapter.submit_job(
+            script_path=None,
+            resources={"job_name": f"asset-{asset_name}"},
+            training_data={
+                "command": (f"exa assets materialize {asset_name} --no-deps --orchestrator local")
+            },
+        )
+        return {"orchestrator": self.name, "hpc_job_id": str(job_id)}
+
+
+def _scheduler_adapter() -> Any:
+    """The phase-23 adapter for the configured scheduler (mock / slurm / flux)."""
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[5]
+    adapter_dir = root / "platform" / "infra" / "slurm-adapter"
+    if str(adapter_dir) not in sys.path:
+        sys.path.insert(0, str(adapter_dir))
+    from adapter import get_scheduler_adapter  # noqa: PLC0415
+
+    return get_scheduler_adapter()
+
+
+_ORCHESTRATORS: dict[str, Callable[[], Any]] = {
+    "local": LocalOrchestrator,
+    "scheduler": SchedulerOrchestrator,
+}
+
+
+def get_orchestrator(name: str | None = None) -> Any:
+    """Resolve the orchestrator — explicit name, else ``EXAMLOPS_ASSET_ORCHESTRATOR``, else local.
+
+    An unrecognised name resolves to ``local``: a typo must leave the asset built, not silently
+    routed to an engine nobody configured.
+    """
+    import os
+
+    chosen = (name or os.getenv("EXAMLOPS_ASSET_ORCHESTRATOR") or "local").strip().lower()
+    return _ORCHESTRATORS.get(chosen, LocalOrchestrator)()
+
+
+def _run_asset(
+    name: str, *, run_id: str | None, actor: str | None, orchestrator: str | None = None
+) -> int:
     row = platform_db.get_asset(name)
     deps = row["deps"] if row else []
     definition = _REGISTRY.get(name)
-    if definition is not None and definition.fn is not None:
-        # Provide upstream versions so a production fn can be revision-aware.
-        definition.fn(**{d: _current_version(d) for d in deps if d in _REGISTRY})
+    # Provide upstream versions so a production fn can be revision-aware.
+    upstream = {d: _current_version(d) for d in deps if d in _REGISTRY}
+    provenance = get_orchestrator(orchestrator).run(definition, upstream)
     built_from = {d: _current_version(d) for d in deps}
     version = platform_db.bump_asset_version(name, built_from, run_id=run_id, actor=actor)
-    _emit_lineage(name, deps, version, run_id)
+    _emit_lineage(name, deps, version, run_id, provenance=provenance)
     return version
 
 
@@ -210,17 +327,36 @@ def mark_source_changed(name: str, *, actor: str | None = None) -> int:
     return version
 
 
-def _emit_lineage(name: str, deps: list[str], version: int, run_id: str | None) -> None:
-    """Emit an OpenLineage event so the asset DAG coincides with the lineage graph (R6)."""
-    try:
-        from examlops.lineage import Node, emit_lineage
+def _emit_lineage(
+    name: str,
+    deps: list[str],
+    version: int,
+    run_id: str | None,
+    *,
+    provenance: dict[str, Any] | None = None,
+) -> None:
+    """Emit an OpenLineage event so the asset DAG coincides with the lineage graph (R6).
 
+    The orchestrator that produced the version, and the scheduler job when there was one, ride
+    along as facets: an asset built on a cluster and one built in a notebook are different facts,
+    and a graph that cannot tell them apart cannot answer where a version came from.
+    """
+    try:
+        from examlops.lineage import Node, emit_lineage, hpc_job_id_facet
+
+        prov = provenance or {}
+        facets: dict[str, Any] = {"orchestrator": prov.get("orchestrator", "local")}
+        if prov.get("fallback"):
+            facets["fallback"] = prov["fallback"]
+        if prov.get("hpc_job_id"):
+            facets.update(hpc_job_id_facet(str(prov["hpc_job_id"])))
         emit_lineage(
             "COMPLETE",
             job=f"asset:{name}",
             run_id=run_id or f"asset-{name}-v{version}",
             inputs=[Node(name=d, type="dataset") for d in deps],
             outputs=[Node(name=f"{name}/v{version}", type="dataset")],
+            facets=facets,
         )
     except Exception:  # fail-open — lineage is bookkeeping (R6)
         pass

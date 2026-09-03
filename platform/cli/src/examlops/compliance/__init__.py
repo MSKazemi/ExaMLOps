@@ -342,6 +342,207 @@ def generate_technical_file(model: str, *, tenant: str = "default") -> Document:
     return doc
 
 
+#: Annex V requires eight items. Five are statements only the **provider** can make — the
+#: platform holds no legal entity, no signatory and no notified-body relationship — so they are
+#: inputs, never defaults. Inventing a provider name or a standards reference would produce a
+#: document that looks signed and says something untrue, which is worse than an empty field.
+PROVIDER_FIELDS = ("provider", "provider_address", "signatory", "signatory_function")
+
+_TODO = "⚠️ **TO BE COMPLETED BY THE PROVIDER**"
+
+
+@dataclass
+class Declaration:
+    """An Annex-V EU Declaration of Conformity assembled from live metadata (clause 4).
+
+    ``draft`` is the important field. A declaration is **final only** when the conformity state
+    machine has reached ``declared``, every provider-supplied field is present, and the Annex-IV
+    technical file it references has no evidence gaps. Anything else is stamped DRAFT with its
+    reasons listed on the face of the document — a Declaration of Conformity that looks final
+    while resting on an incomplete technical file is exactly the artifact clause 5's disclaimer
+    exists to prevent.
+    """
+
+    model: str
+    tenant: str
+    risk_tier: str | None = None
+    conformity_state: str = "draft"
+    technical_file_version: int | None = None
+    technical_file_gaps: int | None = None
+    audit_chain_head: str | None = None
+    provider: str | None = None
+    provider_address: str | None = None
+    signatory: str | None = None
+    signatory_function: str | None = None
+    standards: list[str] = field(default_factory=list)
+    notified_body: str | None = None
+    processes_personal_data: bool = False
+    issued_at: str = ""
+    blockers: list[str] = field(default_factory=list)
+
+    @property
+    def draft(self) -> bool:
+        return bool(self.blockers)
+
+    def _or_todo(self, value: str | None) -> str:
+        return value if value else _TODO
+
+    def to_markdown(self) -> str:
+        status = "DRAFT — NOT A DECLARATION" if self.draft else "FINAL"
+        lines = [
+            f"# EU Declaration of Conformity (Annex V) — {self.model}",
+            "",
+            f"**Status: {status}**",
+            "",
+            f"> {DISCLAIMER}",
+            "",
+        ]
+        if self.blockers:
+            lines += ["## Why this is a draft", ""]
+            lines += [f"- {b}" for b in self.blockers]
+            lines.append("")
+        lines += [
+            "## 1. AI system identification",
+            "",
+            f"- **System:** {self.model}",
+            f"- **Tenant:** {self.tenant}",
+            f"- **Risk tier:** {self.risk_tier or _TODO}",
+            f"- **Conformity state:** {self.conformity_state}",
+            "- **Traceability:** Annex-IV technical file "
+            f"v{self.technical_file_version if self.technical_file_version else _TODO}"
+            + (f" ({self.technical_file_gaps} evidence gap(s))" if self.technical_file_gaps else "")
+            + (f"; audit-trail head `{self.audit_chain_head}`" if self.audit_chain_head else ""),
+            "",
+            "## 2. Provider",
+            "",
+            f"- **Name:** {self._or_todo(self.provider)}",
+            f"- **Address:** {self._or_todo(self.provider_address)}",
+            "",
+            "## 3. Responsibility",
+            "",
+            "This declaration is issued under the sole responsibility of the provider named above.",
+            "",
+            "## 4. Conformity statement",
+            "",
+            "The provider declares that the AI system identified above is in conformity with "
+            "Regulation (EU) 2024/1689 and, where applicable, with other relevant Union law "
+            "providing for this declaration.",
+            "",
+            "## 5. Personal data",
+            "",
+            (
+                "The provider declares that this AI system complies with Regulations (EU) "
+                "2016/679 and (EU) 2018/1725 and Directive (EU) 2016/680."
+                if self.processes_personal_data
+                else "The provider has recorded that this AI system does not process personal "
+                "data; no statement under Annex V(5) is made."
+            ),
+            "",
+            "## 6. Standards and common specifications",
+            "",
+        ]
+        lines += [f"- {s}" for s in self.standards] or [_TODO]
+        lines += [
+            "",
+            "## 7. Notified body",
+            "",
+            self.notified_body or "Not applicable — no notified body involvement recorded.",
+            "",
+            "## 8. Signature",
+            "",
+            f"- **Place and date of issue:** {self.issued_at or _TODO}",
+            f"- **Name:** {self._or_todo(self.signatory)}",
+            f"- **Function:** {self._or_todo(self.signatory_function)}",
+            "- **Signed for, or on behalf of:** the provider named in section 2",
+            "- **Signature:** ______________________",
+            "",
+        ]
+        return "\n".join(lines)
+
+
+def generate_declaration(
+    model: str,
+    *,
+    tenant: str = "default",
+    issued_at: str,
+    provider: str | None = None,
+    provider_address: str | None = None,
+    signatory: str | None = None,
+    signatory_function: str | None = None,
+    standards: list[str] | None = None,
+    notified_body: str | None = None,
+    processes_personal_data: bool = False,
+) -> Declaration:
+    """Assemble the Annex-V Declaration of Conformity for one system (clause 4).
+
+    Everything the platform can know is read from live metadata — risk tier, conformity state,
+    the technical file it references and its gap count, the audit-chain head that makes the
+    claim traceable. Everything only the provider can state is passed in and left as an explicit
+    placeholder when absent.
+
+    ``issued_at`` is required rather than defaulted to "now": the issue date of a declaration is
+    a legal fact about when a person signed, not about when a generator ran.
+    """
+    system = platform_db.get_compliance_system(model) or {}
+    files = platform_db.list_technical_files(model)
+    latest = files[0] if files else None
+
+    doc = Declaration(
+        model=model,
+        tenant=tenant,
+        risk_tier=system.get("risk_tier"),
+        conformity_state=system.get("conformity_state", "draft"),
+        technical_file_version=latest["version"] if latest else None,
+        technical_file_gaps=latest["gaps"] if latest else None,
+        audit_chain_head=_audit_head(),
+        provider=provider,
+        provider_address=provider_address,
+        signatory=signatory,
+        signatory_function=signatory_function,
+        standards=list(standards or []),
+        notified_body=notified_body,
+        processes_personal_data=processes_personal_data,
+        issued_at=issued_at,
+    )
+    doc.blockers = _declaration_blockers(doc, latest)
+    return doc
+
+
+def _declaration_blockers(doc: Declaration, latest: dict[str, Any] | None) -> list[str]:
+    """Every reason this declaration is not final. Listed, never silently applied."""
+    blockers: list[str] = []
+    if doc.conformity_state != "declared":
+        blockers.append(
+            f"conformity state is '{doc.conformity_state}', not 'declared' "
+            f"(advance it with `exa compliance declare {doc.model} --state …`)"
+        )
+    missing = [f for f in PROVIDER_FIELDS if not getattr(doc, f)]
+    if missing:
+        blockers.append("provider-supplied field(s) missing: " + ", ".join(missing))
+    if latest is None:
+        blockers.append(
+            "no Annex-IV technical file has been generated "
+            f"(`exa compliance technical-file {doc.model}`)"
+        )
+    elif latest["gaps"]:
+        blockers.append(
+            f"the referenced technical file (v{latest['version']}) has "
+            f"{latest['gaps']} evidence gap(s)"
+        )
+    return blockers
+
+
+def _audit_head() -> str | None:
+    """The audit chain head hash, so the declaration points at a verifiable record."""
+    try:
+        from examlops.data.audit import audit_chain_head
+
+        head = audit_chain_head()
+        return str(head["hash"])[:16] if head and head.get("hash") else None
+    except Exception:  # noqa: BLE001 - traceability is best-effort, the document is not
+        return None
+
+
 def check_art12_logging(model: str) -> dict[str, Any]:
     """Verify Art. 12 record-keeping coverage in the immutable audit trail (R7)."""
     coverage: dict[str, bool] = {}
@@ -392,6 +593,9 @@ __all__ = [
     "DISCLAIMER",
     "RISK_TIERS",
     "CONFORMITY_STATES",
+    "Declaration",
+    "PROVIDER_FIELDS",
+    "generate_declaration",
     "FRAMEWORK",
     "ART12_REQUIRED_EVENTS",
     "Document",

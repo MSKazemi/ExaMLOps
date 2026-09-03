@@ -3,6 +3,32 @@ You are Skipper — the ExaMLOps platform management assistant for HPC research 
 You have deep expertise in MLOps, machine learning lifecycle management, HPC job scheduling,
 distributed model serving, and observability. Apply careful reasoning to every request.
 
+## Name the command — hard rule, applies to every answer
+Running a tool and reporting the result is only half an answer. Whenever you use a tool, or
+explain how something is done, you MUST also name the exact `exa …` command an operator would
+type to get the same result themselves — in a fenced code block, with the real model/cluster
+name substituted in. This holds even when you already have the answer, and even when the
+operator did not use the word "how": an operator asking "where did this version come from?" or
+"can it retrain automatically?" needs the command, not just the fact. If no `exa` command
+covers what you did, say that explicitly rather than staying silent.
+
+Common operator intents and the command to name (all verified to exist):
+- lineage of a version → `exa models lineage <MODEL>`
+- compare two versions → `exa models diff <model> <vA> <vB>`
+- metric-gated promotion → `exa pipeline promote <model> --if-rmse-lt <X>`
+- traffic / canary split → `exa serve traffic <MODEL> --production 90 --canary 10`
+- is the canary really better → `exa serve ab analyze <MODEL>`
+- prediction vs input drift → `exa drift status` · `exa drift input status <MODEL>`
+- retrain automatically on drift → `exa drift auto-retrain enable <MODEL> --dataset <DS>`,
+  and the closed loop is `exa autopilot run`
+- which cluster should a job go to → `exa hpc place --gpus <N>` · `exa hpc clusters`
+- what has a model cost → `exa models cost <model>` · carbon → `exa finops carbon`
+- who changed what → `exa audit --last 7d --model <MODEL>`
+
+This list is representative, not exhaustive — for anything else, look the command up with
+search_knowledge / search_docs rather than inventing one. Never name a command you have not
+seen in the docs or tool output.
+
 ## Tool groups
 - registry: list_models, describe_model, list_datasets
 - inference: predict, predict_pipeline, list_loaded_models, reload_models
@@ -65,9 +91,74 @@ When asked a general question ("how are things?", "any issues?", "status report?
 - Use Markdown headers, tables, and code blocks for structured output
 - Lead with an executive summary, then drill into detail
 - Highlight anomalies prominently (CRITICAL drift, service down, etc.)
-- When explaining a workflow or reporting a tool result, include the exact reusable `exa ...`
-  command when one exists; never leave an operator with only prose
+- Every answer names its `exa` command — see the hard rule above; never leave an operator with
+  only prose or only a tool result
 - For retrains: prefer is_dummy=True unless the operator explicitly asks for real data
 - Always use scaffold_preview before scaffold_create to confirm scaffold parameters
 - When comparing model versions, show metric deltas and highlight regressions
 """
+
+
+# --- registry-backed resolution (ADR 0009 clause 3) ----------------------------------------
+#
+# The literal above stays the seed and the fail-safe. `system_prompt()` is the reader the
+# prompt registry never had: it resolves `skipper-system@<label>` through
+# `examlops.prompts.get_prompt`, which already carries a short-TTL cache and a
+# last-known-good fallback, and degrades to the literal when the registry is unreachable,
+# empty, or `examlops` is not importable in this environment.
+#
+# Seed the registry from the literal with `seed_system_prompt()` (or
+# `exa prompt create skipper-system --template …`), then move the label to roll the agent's
+# behaviour forward or back with no code deploy — which is the whole point of ADR 0009 and
+# was impossible while every consumer imported the constant directly.
+
+import os  # noqa: E402
+
+PROMPT_NAME = "skipper-system"
+
+
+def _label() -> str:
+    return os.getenv("SKIPPER_PROMPT_LABEL", "prod")
+
+
+def system_prompt() -> str:
+    """The active system prompt: the registry's `skipper-system@<label>`, else the literal.
+
+    Never raises. A registry that is absent, empty or broken must not stop the agent from
+    starting — the literal is always a correct answer, just not a versioned one.
+    """
+    if os.getenv("SKIPPER_PROMPT_REGISTRY", "1").lower() in {"0", "false", "no", "off"}:
+        return SYSTEM_PROMPT
+    try:
+        from examlops.prompts import get_prompt
+
+        template = get_prompt(PROMPT_NAME, _label()).template
+    except Exception:
+        return SYSTEM_PROMPT
+    # An empty or whitespace-only version is a registry mistake, not an instruction to run
+    # the agent with no system prompt.
+    return template if template.strip() else SYSTEM_PROMPT
+
+
+def seed_system_prompt(*, actor: str | None = None) -> int | None:
+    """Seed the literal as `skipper-system` v1 and point `<label>` at it (clause 3: "no
+    behaviour change"). Returns the version created, or None if one already exists there.
+    """
+    from examlops.data.prompts import (
+        create_prompt_version,
+        get_prompt_by_label,
+        set_prompt_label,
+    )
+
+    label = _label()
+    if get_prompt_by_label(PROMPT_NAME, label) is not None:
+        return None
+    version = create_prompt_version(
+        PROMPT_NAME,
+        SYSTEM_PROMPT,
+        variables=[],
+        tags={"source": "skipper/prompts.py", "seeded": "literal"},
+        actor=actor,
+    )
+    set_prompt_label(PROMPT_NAME, label, version)
+    return version

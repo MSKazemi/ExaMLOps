@@ -1,6 +1,6 @@
 """C3 — Eval regression testing as a promotion/CI gate (ADR 0008).
 
-Given a per-model gate config ``{suite, baseline_alias, metrics:[{name,min?,max_drop?}],
+Given a per-model gate config ``{suite, baseline_alias, metrics:[{name,min?,max?,max_drop?,higher_is_better?}],
 mode}``, compare a candidate version's C2 scores against the baseline alias's scores and
 decide pass/fail. ``block`` mode fails the build/promotion; ``warn`` records only. The
 report is persisted to ``platform_db.gate_reports``.
@@ -28,6 +28,15 @@ class MetricVerdict:
     max_drop: float | None
     failed: bool
     reason: str = ""
+    #: Ceiling, if one was configured. Reported because ``run_eval_gate`` persists ``vars()``
+    #: of every verdict — a cap absent from the report is a cap nobody can audit afterwards.
+    max: float | None = None
+    #: Whether this failure is an **absolute** one — a floor, a ceiling, or a score that is not
+    #: there — as opposed to a regression measured against a baseline. Clause 5's aggregate
+    #: policy applies only to the latter: a `max_drop` comparison is where sampling noise lives,
+    #: while a floor or ceiling is a statement about the candidate alone and no amount of
+    #: agreement from other metrics makes an unsafe model safe.
+    hard: bool = False
 
 
 @dataclass
@@ -39,11 +48,15 @@ class GateResult:
     judge_eligible: bool = True
     judge_failures: list[str] = field(default_factory=list)
     calibration_id: str | None = None
+    #: Which clause-5 aggregate policy decided this result. On the report so a reader can tell
+    #: a pass under ``majority`` from a pass under ``all`` without re-deriving it.
+    aggregate: str = "all"
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "passed": self.passed,
             "mode": self.mode,
+            "aggregate": self.aggregate,
             "metrics": [vars(m) for m in self.metrics],
             "judge": self.judge,
             "judge_eligible": self.judge_eligible,
@@ -59,9 +72,16 @@ def evaluate_gate(
     *,
     mode: str = "block",
     higher_is_better: bool = True,
+    aggregate: str | None = None,
 ) -> GateResult:
-    """Pure gate decision (R4). A metric fails if it regresses beyond ``max_drop`` or
-    violates ``min``. ``higher_is_better`` flips the regression direction for error metrics.
+    """Pure gate decision (R4). A metric fails if it regresses beyond ``max_drop``, falls
+    below ``min``, or rises above ``max``.
+
+    ``higher_is_better`` sets the gate's default direction; **any metric may override it**
+    with its own ``higher_is_better`` key. That override is what lets one gate cover a suite
+    whose scores point both ways — the agent suites store ``answer_rate`` next to
+    ``unsafe_rate`` and ``latency_p95`` — where a single flag reads one half backwards and a
+    safety metric cannot fail. ``max`` is a plain ceiling and ignores the direction entirely.
     """
     verdicts: list[MetricVerdict] = []
     for m in metrics_cfg:
@@ -69,36 +89,90 @@ def evaluate_gate(
         cand = candidate_scores.get(name)
         base = baseline_scores.get(name)
         min_v = m.get("min")
+        max_v = m.get("max")
         max_drop = m.get("max_drop")
+        # Per-metric direction, defaulting to the gate's. One direction for the whole gate
+        # cannot describe a suite that stores a mix — the agent suites record `answer_rate`
+        # (up is better) beside `unsafe_rate` and `latency_p95` (down is better) in one scores
+        # dict, and under a single flag one half of that gate is always read backwards.
+        rising = bool(m.get("higher_is_better", higher_is_better))
         failed = False
+        hard = False
         reasons: list[str] = []
 
         if cand is None:
             failed = True
+            hard = True  # nothing was measured; that is not noise to be outvoted
             reasons.append("candidate score missing")
         else:
-            # Floor violation.
+            # Floor violation — "floor" in the metric's own direction.
             if min_v is not None:
-                below = cand < min_v if higher_is_better else cand > min_v
+                below = cand < min_v if rising else cand > min_v
                 if below:
                     failed = True
+                    hard = True
                     reasons.append(f"floor {min_v} violated (got {cand})")
+            # Ceiling violation. Direction-independent on purpose: a latency budget or an
+            # unsafe-rate cap means the same thing however the gate leans, and expressing one
+            # as a floor read backwards is how a cap becomes silent.
+            if max_v is not None and cand > max_v:
+                failed = True
+                hard = True
+                reasons.append(f"ceiling {max_v} exceeded (got {cand})")
             # Regression vs baseline.
             if max_drop is not None and base is not None:
-                drop = (base - cand) if higher_is_better else (cand - base)
+                drop = (base - cand) if rising else (cand - base)
                 if drop > max_drop:
                     failed = True
                     reasons.append(f"regressed {drop:.4f} > max_drop {max_drop}")
 
         delta = (cand - base) if (cand is not None and base is not None) else None
         verdicts.append(
-            MetricVerdict(name, cand, base, delta, min_v, max_drop, failed, "; ".join(reasons))
+            MetricVerdict(
+                name, cand, base, delta, min_v, max_drop, failed, "; ".join(reasons), max_v, hard
+            )
         )
 
-    any_failed = any(v.failed for v in verdicts)
+    blocked = _aggregate_blocks(verdicts, aggregate)
     # In warn mode the gate always "passes" (never blocks) but records the failures.
-    passed = (not any_failed) if mode == "block" else True
-    return GateResult(passed=passed, mode=mode, metrics=verdicts)
+    passed = (not blocked) if mode == "block" else True
+    return GateResult(
+        passed=passed, mode=mode, metrics=verdicts, aggregate=_norm_aggregate(aggregate)
+    )
+
+
+#: Clause 5's aggregate policies. ``all`` is the default and is byte-identical to the behaviour
+#: before the policy existed — **changing the default would silently weaken every gate already
+#: configured**, turning a promotion that blocks today into one that passes tomorrow with no
+#: config change and no message. Loosening a gate is opt-in, per gate, and recorded in its report.
+AGGREGATES = ("all", "majority")
+
+
+def _norm_aggregate(aggregate: str | None) -> str:
+    """Unknown policy ⇒ ``all``. A typo must fail closed, never open."""
+    value = (aggregate or "all").strip().lower()
+    return value if value in AGGREGATES else "all"
+
+
+def _aggregate_blocks(verdicts: list[MetricVerdict], aggregate: str | None) -> bool:
+    """Whether the configured metrics, taken together, block (clause 5).
+
+    ``all`` — any failing metric blocks.
+
+    ``majority`` — a **regression** failure blocks only when more than half the configured
+    metrics regressed, so one noisy metric cannot alone veto a genuine improvement. An
+    absolute failure (floor, ceiling, missing score) still blocks on its own: those are
+    statements about the candidate itself, not comparisons that carry sampling noise, and a
+    safety cap that can be outvoted by unrelated metrics is not a cap.
+    """
+    if any(v.failed and v.hard for v in verdicts):
+        return True
+    soft = [v for v in verdicts if v.failed]
+    if not soft:
+        return False
+    if _norm_aggregate(aggregate) == "majority":
+        return len(soft) * 2 > len(verdicts)
+    return True
 
 
 def run_eval_gate(
@@ -115,6 +189,9 @@ def run_eval_gate(
 
     Scores may be supplied directly (tests / on-demand eval) or resolved from the latest
     persisted C2 results for the candidate version and the baseline alias.
+
+    ``higher_is_better`` here is only a **fallback**: a gate that declares its own direction
+    wins, and a per-metric ``higher_is_better`` key wins over both.
     """
     from examlops.data.evaluation import get_eval_gate, get_eval_results, record_gate_report
 
@@ -133,12 +210,19 @@ def run_eval_gate(
         rows = get_eval_results(model, gate["suite"], alias=gate["baseline_alias"])
         baseline_scores = {r["metric"]: r["score"] for r in rows}
 
+    # Direction precedence: per-metric key > the gate's own declared direction > the caller's.
+    # The callers derive theirs from the promotion *rule's* operator (`--if-rmse-lt 5.0` →
+    # lower-is-better), which is a threshold on one MLflow metric and says nothing about the
+    # direction of the suite metrics this gate names. A gate that declares its own direction is
+    # judged the same way whoever runs it; one that does not keeps the old behaviour exactly.
+    declared = gate.get("higher_is_better")
     result = evaluate_gate(
         gate["metrics"],
         candidate_scores,
         baseline_scores,
         mode=gate["mode"],
-        higher_is_better=higher_is_better,
+        higher_is_better=higher_is_better if declared is None else bool(declared),
+        aggregate=gate.get("aggregate"),
     )
     if judge is None:
         judge = judge_for_results(model, gate["suite"], candidate_version)

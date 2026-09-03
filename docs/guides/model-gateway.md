@@ -53,7 +53,70 @@ Each successful call emits a C1 GenAI span (`gen_ai.*` + `examlops.cost.usd`), r
 per-call cost to `platform_db.gateway_calls`, and increments the key's `spent_usd` so the
 budget is enforced on the next call.
 
+## Versioned prompts (ADR 0009)
+
+```python
+client.chat("gpt-4o", [{"role": "user", "content": q}], prompt_ref="support-bot@prod")
+```
+
+`prompt_ref` names a registry prompt (`name`, or `name@label` — default label `prod`). Its
+template is prepended as a system message, so changing what the service says is an
+`exa prompt label` move rather than a caller redeploy, and the serving version is recorded on
+the span as `examlops.prompt.version`. The caller's own messages are never rewritten and their
+list is not mutated. An unresolvable reference raises `LookupError` **before** any backend is
+called, rather than silently serving the request without the prompt. See
+[Prompt management](prompt-management.md).
+
+## Structured output (ADR 0035)
+
+Ask for a schema and the response comes back as a **validated object**, or not at all:
+
+```python
+comp = client.chat(
+    "gpt-4o",
+    [{"role": "user", "content": "Score this model"}],
+    response_schema={"type": "object", "required": ["name", "score"]},
+)
+comp.parsed        # {"name": "JPCP", "score": 0.9} — validated
+comp.text          # the raw completion, unchanged
+```
+
+A response that cannot be made to validate raises `StructuredOutputError` rather than returning
+unchecked text. `max_repairs` (default 1) controls the repair attempts.
+
+Parsing tolerates what models actually emit — a ``` fence, prose above the object — so the repair
+budget is spent on data problems, not formatting habits. `parsed` is `None` only when no schema was
+requested; a failure raises.
+
+Two orderings matter: enforcement runs **after** the guardrail, so the validated object is the
+redacted one (otherwise `text` and `parsed` would disagree about what the response said), and
+**before** the cache, so an invalid response is never stored.
+
+> **What this is not.** ADR 0035 clause 1 also calls for *constrained decoding* (guided decoding,
+> grammars, provider structured-output APIs). None of that is in the tree, so the guarantee here is
+> reached by parse-validate-repair after the fact rather than by constraining generation. The
+> outcome for a caller is the same — a valid object or a typed error — but the model is not
+> prevented from producing invalid output in the first place, and every repair costs a round of
+> validation rather than nothing.
+
+## Guardrails (D8, ADR 0026)
+
+Every request through `GatewayClient.chat` is scanned on the way in and every response on the way
+out. Default mode is `monitor` (observe + audit, no caller-visible change);
+`EXAMLOPS_GUARDRAIL_MODE=enforce` blocks prompt injection and toxic output and redacts PII and
+secrets, raising the typed `GuardrailBlocked`. A guardrail denial never fails over to the next
+backend, and a blocked answer is never cached. See [Guardrails](guardrails.md).
+
 ## Semantic caching (B3)
+
+> **Set `encoder_id` when you configure the cache.** A hit is decided by cosine similarity, so an
+> entry embedded by one encoder and a query embedded by another are compared on axes that have
+> nothing to do with each other — and the result is not a miss, it is a similarity *number*, which
+> can clear the threshold by coincidence and return a cached answer to an unrelated question. With
+> `encoder_id` set, entries from a previous encoder become unreachable and the next request
+> recomputes: a miss, which is the cache working correctly, rather than an exception, which would
+> be an outage caused by an upgrade. Old entries are hidden, not destroyed, so a rollback finds its
+> cache intact (ADR 0043).
 
 The gateway can return a stored completion for an embedding-**similar**, cacheable prompt
 via the `cache_lookup`/`cache_store` hooks — no change to the caller API. Design: ADR 0018 ·

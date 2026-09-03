@@ -218,9 +218,9 @@ Run all CI checks locally: `make ci`
 
 - [Quickstart](docs/guides/quickstart.md)
 - [System Overview](docs/architecture/system-overview.md)
-- [Command Reference](docs/reference/commands.md)
+- [Command Reference (full command tree)](docs/reference/cli-generated.md)
 - [Environment Variables](docs/reference/env-vars.md)
 - [SeanerBUS Integration](docs/guides/seanerbus.md)
 - [Add a New Model](docs/guides/add-a-new-model.md)
-- [exa CLI Reference](docs/reference/commands.md#exa-cli)
+- [exa CLI Command Guide (use cases + examples)](docs/reference/cli-commands-guide.md)
 - [Approval Gate](docs/guides/control-plane.md#approval-gate-phase-11)

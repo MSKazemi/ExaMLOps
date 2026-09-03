@@ -78,7 +78,11 @@ def test_set_override_persists_and_audits(tmp_path, monkeypatch):
     conn = dbconn.connect(db, row_factory=None)
     row = conn.execute("SELECT action, target, details FROM audit_events").fetchone()
     conn.close()
-    assert row == ("flag_set", "mlopsConsole", "enabled=False")
+    # `details` is JSON now, not the ad-hoc `enabled=False` string this used to store. Flag
+    # writes went through a raw INSERT that bypassed the audit hash chain; routing them through
+    # `write_audit_event` puts them in the chain and serializes details the way every other audit
+    # event already does. The old free-text form was the outlier.
+    assert row == ("flag_set", "mlopsConsole", '{"enabled": false}')
 
 
 def test_set_override_rejects_unknown_flag(tmp_path, monkeypatch):

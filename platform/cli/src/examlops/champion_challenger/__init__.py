@@ -22,7 +22,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from examlops import data as platform_db
@@ -104,17 +104,111 @@ def enable_shadow(
     )
 
 
-def _score_errors(samples: list[dict[str, Any]]) -> tuple[list[float], list[float]]:
-    """Per-sample absolute error for champion and challenger over labelled samples."""
-    champ, chall = [], []
+def _score_errors(samples: list[dict[str, Any]]) -> tuple[list[float], list[float], str]:
+    """Per-sample error for champion and challenger, and which evidence produced it.
+
+    **Ground truth wins wherever it exists.** A judge is the fallback for samples no label ever
+    arrived for — clause 2's "when labels arrive (ground-truth) **or** via a C2 judge" — not a
+    second opinion on samples that have one. Preferring the judge where a label exists would
+    replace a measurement with an estimate.
+
+    Judge scores are quality in [0,1], so the error is ``1 - score``: higher is better for a
+    judge and lower is better for an error, and the Welch machinery downstream compares errors.
+
+    Returns ``(champion_errors, challenger_errors, evidence)`` where evidence is
+    ``labels`` / ``judge`` / ``mixed`` / ``none`` — a scoreboard that cannot say what it rests on
+    is a promotion decision of unknown provenance.
+    """
+    champ: list[float] = []
+    chall: list[float] = []
+    used_label = used_judge = False
     for s in samples:
-        if s["label"] is None:
+        if s["label"] is not None:
+            used_label = True
+            if s["champion_pred"] is not None:
+                champ.append(abs(s["champion_pred"] - s["label"]))
+            if s["challenger_pred"] is not None:
+                chall.append(abs(s["challenger_pred"] - s["label"]))
             continue
-        if s["champion_pred"] is not None:
-            champ.append(abs(s["champion_pred"] - s["label"]))
-        if s["challenger_pred"] is not None:
-            chall.append(abs(s["challenger_pred"] - s["label"]))
-    return champ, chall
+        cj, gj = s.get("champion_judge"), s.get("challenger_judge")
+        if cj is None and gj is None:
+            continue
+        used_judge = True
+        if cj is not None:
+            champ.append(1.0 - float(cj))
+        if gj is not None:
+            chall.append(1.0 - float(gj))
+    evidence = (
+        "mixed"
+        if used_label and used_judge
+        else "labels"
+        if used_label
+        else "judge"
+        if used_judge
+        else "none"
+    )
+    return champ, chall, evidence
+
+
+def judge_of(samples: list[dict[str, Any]]) -> str | None:
+    """The judge whose scores are in this scoreboard, or None if no judge contributed."""
+    for s in samples:
+        if s.get("judge_model") and s.get("label") is None:
+            return str(s["judge_model"])
+    return None
+
+
+def score_samples_with_judge(
+    model: str,
+    judge_fn: Any,
+    *,
+    judge_model: str = "judge",
+    tenant: str = "default",
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Score unlabelled challenger samples with a C2 judge (ADR 0024 clause 2).
+
+    ``judge_fn(champion_pred, challenger_pred) -> (champion_score, challenger_score)``, each in
+    [0,1]. The seam is the same shape C2 uses: any callable, wired to the B2 gateway in
+    production and mocked in tests.
+
+    Only samples that have **no label** are scored — see :func:`_score_errors`. A sample the
+    judge fails on is left unscored rather than scored 0: a judge error is not a bad prediction,
+    and recording it as one would move the promotion decision.
+    """
+    samples = platform_db.get_challenger_samples(model, tenant=tenant, last_n=limit)
+    scored = failed = 0
+    for s in samples:
+        if s["label"] is not None or s.get("judge_model"):
+            continue
+        try:
+            champion, challenger = judge_fn(s["champion_pred"], s["challenger_pred"])
+        except Exception:  # noqa: BLE001 - a judge error is not a bad prediction
+            failed += 1
+            continue
+        platform_db.set_challenger_judge_scores(
+            int(s["id"]),
+            champion=_clamp(champion),
+            challenger=_clamp(challenger),
+            judge_model=judge_model,
+        )
+        scored += 1
+    platform_db.write_audit_event(
+        "cli",
+        None,
+        "challenger_judge_scored",
+        model,
+        {"scored": scored, "failed": failed, "judge": judge_model, "tenant": tenant},
+    )
+    return {"model": model, "judge": judge_model, "scored": scored, "failed": failed}
+
+
+def _clamp(value: Any) -> float | None:
+    """A judge score is a quality in [0,1]; anything else is not scoreable."""
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _welch(a: list[float], b: list[float]) -> dict[str, Any]:
@@ -157,6 +251,11 @@ class ChallengerStatus:
     slo_ok: bool
     slo_reason: str
     policy_met: bool
+    #: Which evidence produced the scores — ``labels`` / ``judge`` / ``mixed`` / ``none``.
+    evidence: str = "labels"
+    judge: str | None = None
+    judge_eligible: bool = True
+    judge_failures: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +270,10 @@ class ChallengerStatus:
             "slo_ok": self.slo_ok,
             "slo_reason": self.slo_reason,
             "policy_met": self.policy_met,
+            "evidence": self.evidence,
+            "judge": self.judge,
+            "judge_eligible": self.judge_eligible,
+            "judge_failures": list(self.judge_failures),
         }
 
 
@@ -221,8 +324,11 @@ def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatu
     cfg = platform_db.get_challenger_config(model)
     if not cfg:
         return None
-    samples = platform_db.get_challenger_samples(model, tenant=tenant, labelled_only=True)
-    champ_err, chall_err = _score_errors(samples)
+    # Not `labelled_only=True`: a judge-scored sample has no label and is exactly what clause 2
+    # exists to score. `_score_errors` skips samples with neither, so a deployment where no judge
+    # has run produces the identical scoreboard it did before.
+    samples = platform_db.get_challenger_samples(model, tenant=tenant, labelled_only=False)
+    champ_err, chall_err, evidence = _score_errors(samples)
     n = min(len(champ_err), len(chall_err))
     champion_error = (sum(champ_err) / len(champ_err)) if champ_err else None
     challenger_error = (sum(chall_err) / len(chall_err)) if chall_err else None
@@ -238,12 +344,15 @@ def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatu
         p_value = res["p_value"]
         significant = p_value < cfg["alpha"]
     slo_ok, slo_reason = _slo_verdict(model, tenant)
+    judge = judge_of(samples)
+    judge_eligible, judge_failures = _judge_eligibility(judge)
     policy_met = (
         delta is not None
         and delta >= cfg["min_delta"]
         and significant
         and n >= cfg["min_samples"]
         and slo_ok
+        and judge_eligible
     )
     return ChallengerStatus(
         model=model,
@@ -257,7 +366,29 @@ def challenger_status(model: str, *, tenant: str = "default") -> ChallengerStatu
         slo_ok=slo_ok,
         slo_reason=slo_reason,
         policy_met=policy_met,
+        evidence=evidence,
+        judge=judge,
+        judge_eligible=judge_eligible,
+        judge_failures=judge_failures,
     )
+
+
+def _judge_eligibility(judge: str | None) -> tuple[bool, list[str]]:
+    """ADR 0111 on this road too: no uncalibrated judge may decide a promotion.
+
+    A scoreboard resting on ground truth has no judge and is unaffected. One resting on a judge
+    is an instrument deciding what reaches production, and the MVVP applies wherever that is
+    true — `exa eval gate` and `exa pipeline promote` already refuse it, and a challenger
+    promotion is the same decision reached by a different road.
+    """
+    if not judge:
+        return True, []
+    try:
+        from examlops.evaluation.calibration import is_gate_eligible
+
+        return is_gate_eligible(judge)
+    except Exception:  # noqa: BLE001 - an unanswerable question is not a pass
+        return False, ["judge_calibration_unavailable"]
 
 
 @dataclass

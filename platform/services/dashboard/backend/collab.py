@@ -16,6 +16,7 @@ import secrets
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import audit_write
 from dbconn import connect
 
 _MENTION = re.compile(r"@([A-Za-z0-9._-]+)")
@@ -65,9 +66,13 @@ def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, detai
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
     ).fetchone():
-        conn.execute(
-            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-            ("dashboard-collab", actor, action, target, details),
+        audit_write.audit(
+            actor,
+            action,
+            target,
+            {"detail": details} if details else None,
+            source="dashboard-collab",
+            conn=conn,
         )
 
 

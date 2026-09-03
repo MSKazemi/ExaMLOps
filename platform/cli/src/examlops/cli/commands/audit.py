@@ -122,6 +122,11 @@ def verify() -> None:
             f"Audit chain verified — {result['count']} chained event(s) intact "
             f"(head {result.get('head_hash', '')[:12]}…)."
         )
+        # Say what was NOT verified. A green tick over a partially-read log is the failure this
+        # exists to prevent: until 2026-09-02 every dashboard-written event was unchained, and
+        # this command reported success with a count that silently excluded all of them.
+        if result.get("unchained"):
+            _output.warning(result["warning"])
     else:
         _output.error(
             f"AUDIT CHAIN BROKEN at event id {result['broken_at_id']}: {result['reason']}. "
@@ -155,6 +160,11 @@ def checkpoint() -> None:
         raise typer.Exit(1) from exc
     key_id = "d3-hmac"
     cp = sign_audit_checkpoint(signature, key_id=key_id)
+    if cp is None:
+        # None means the chain has no head to sign over. The caller checked that a moment ago,
+        # so this is the concurrent-truncation case; refusing beats anchoring an empty dict to
+        # a WORM store, which would look like a valid checkpoint forever after.
+        _output.error("The audit chain has no head to checkpoint — nothing was signed.")
     # Anchor to the external WORM store (item 2.4) so the checkpoint is tamper-evident even against
     # a full-DB rewrite. Best-effort + no-op when EXAMLOPS_AUDIT_WORM_PATH is unset.
     worm_hash = None

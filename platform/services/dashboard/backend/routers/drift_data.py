@@ -13,6 +13,7 @@ import json
 import math
 import os
 
+import audit_write
 from auth import require_role
 from capabilities import DRIFT_BASELINE, can, deny_reason
 from dbconn import connect
@@ -45,10 +46,7 @@ def _require_manage(principal: dict) -> None:
 
 
 def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
-    conn.execute(
-        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-        ("dashboard", actor, action, target, json.dumps(details)),
-    )
+    audit_write.audit(actor, action, target, details, conn=conn)
 
 
 def _db_path() -> str:

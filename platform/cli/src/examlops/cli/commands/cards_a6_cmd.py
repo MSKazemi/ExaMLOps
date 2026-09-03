@@ -93,6 +93,84 @@ def model_card(
     _output.info(f"Completeness: {card.completeness:.0%}")
 
 
+@app.command("export")
+def export(
+    subject: str = typer.Argument(..., help="Model name, or dataset name with --dataset"),
+    dataset: bool = typer.Option(False, "--dataset", help="Export a dataset (Croissant) card"),
+    out: str = typer.Option(None, "--out", help="Write the publishable card to this file"),
+    force: bool = typer.Option(False, "--force", help="Publish despite a secret finding (audited)"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Export a card for publication with PII, locations and internal fields scrubbed (clause 4).
+
+    Internal fields are dropped, PII and site-specific locations are redacted, and a detected
+    **secret blocks the export** — redacting it would hide that a credential reached a generated
+    artifact at all. `--force` overrides that, audited, because the scanner is a regex heuristic
+    and can be wrong; the dropped and redacted parts are not overridable, because they are not
+    judgement calls.
+    """
+    from examlops.cards import build_model_card, croissant_record, export_card
+    from examlops.data.audit import write_audit_event
+
+    if dataset:
+        card = croissant_record(subject)
+    else:
+        card = build_model_card(subject, tenant=tenant).as_dict()
+
+    result = export_card(card)
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+    blocked = bool(result.secret_findings) and not force
+
+    write_audit_event(
+        "exa-cards",
+        actor,
+        "card_export_blocked" if blocked else "card_exported",
+        subject,
+        {
+            "kind": "dataset" if dataset else "model",
+            "removed_fields": result.removed_fields,
+            "redactions": result.redactions,
+            "secret_rules": [f["rule"] for f in result.secret_findings],
+            "forced": bool(result.secret_findings) and force,
+        },
+    )
+
+    if blocked:
+        rules = ", ".join(sorted({f["rule"] for f in result.secret_findings}))
+        _output.error(
+            f"Refusing to export {subject}: the card contains likely secret(s) [{rules}]. "
+            "Fix the source data; use --force to publish anyway (audited).",
+        )
+
+    payload = json.dumps(result.content, indent=2, default=str)
+    if out:
+        with open(out, "w") as fh:
+            fh.write(payload)
+        _output.ok(f"Wrote publishable card for {subject} to {out}")
+    elif _output.json_mode:
+        _output.print_json(
+            {
+                "subject": subject,
+                "card": result.content,
+                "removed_fields": result.removed_fields,
+                "redactions": result.redactions,
+                "secret_findings": [f["rule"] for f in result.secret_findings],
+            }
+        )
+        return
+    else:
+        _output.detail(payload)
+
+    for removed in result.removed_fields:
+        _output.info(f"removed internal field: {removed}")
+    for redaction in result.redactions:
+        _output.info(f"redacted: {redaction}")
+    if result.secret_findings:
+        _output.warning(
+            f"exported despite {len(result.secret_findings)} secret finding(s) (--force, audited)"
+        )
+
+
 @app.command("completeness")
 def completeness(
     model: str = typer.Argument(..., help="Model name"),

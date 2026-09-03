@@ -7,6 +7,18 @@ revisions, and D8 guardrails over untrusted retrieved content.
 
 Design: ADR 0019 · spec `design/vision/specs/B4-rag-pipeline.md`.
 
+## Encoder compatibility
+
+`ingest(..., encoder="…")` stamps the KB's vector collection with the encoder that produced its
+embeddings, and `query` looks that value up and asks the store under it. A query embedded by a
+different encoder is refused rather than answered.
+
+Retrieval is where cross-encoder scoring is most convincing and least detectable: every hit still
+arrives with a plausible score and a real citation attached, so nothing about the answer looks
+wrong. A KB ingested before the stamp existed records no encoder and still queries — that is the
+absence of a check, not a guarantee (ADR 0043).
+
+
 ## Graceful degrade
 
 Every dependency has a fallback, so the full round-trip runs with **no external service**:

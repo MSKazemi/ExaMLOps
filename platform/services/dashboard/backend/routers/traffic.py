@@ -24,8 +24,7 @@ All reads fail open (never a 500); every mutation is audited ``source=dashboard`
 
 from __future__ import annotations
 
-import json
-
+import audit_write
 from auth import require_role
 from capabilities import TRAFFIC_MANAGE, can, deny_reason
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -43,10 +42,7 @@ def _require_manage(principal: dict) -> None:
 
 def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
     """Append a plain ``source=dashboard`` audit row (same helper events.py/admission.py use)."""
-    conn.execute(
-        "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
-        ("dashboard", actor, action, target, json.dumps(details)),
-    )
+    audit_write.audit(actor, action, target, details, conn=conn)
 
 
 def _examlops_data():

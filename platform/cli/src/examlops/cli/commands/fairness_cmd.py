@@ -63,6 +63,87 @@ def config(
     )
 
 
+@app.command("show")
+def show(
+    model: str = typer.Argument(..., help="Model name"),
+) -> None:
+    """Show the slice registry actually in force, and where it came from (ADR 0025 clause 1).
+
+    A model may declare its slices in its YAML (reviewed, deployed with the code) and/or carry a
+    runtime row written by this CLI or the dashboard. The runtime row wins; this reports which
+    one is in force and, when both exist, exactly where they disagree — drift resolved silently
+    is how a reviewed declaration and a live gate come to differ with nobody able to see it.
+    """
+    from examlops.fairness import effective_fairness_config, fairness_config_drift
+
+    cfg, source = effective_fairness_config(model)
+    drift = fairness_config_drift(model)
+    if _output.json_mode:
+        _output.print_json({"model": model, "source": source, "config": cfg, "drift": drift})
+        return
+    if cfg is None:
+        _output.ok(
+            f"No slice registry for {model} — neither a `fairness:` block in its model YAML "
+            "nor a runtime config. Fairness gating does not apply."
+        )
+        return
+    _output.print_table(
+        f"Fairness slice registry — {model}",
+        ["Source", "Slices", "Threshold", "Min samples", "Gates promotion"],
+        [
+            [
+                source,
+                ", ".join(cfg["slice_attrs"]),
+                str(cfg["threshold"]),
+                str(cfg["min_samples"]),
+                "yes" if cfg["gate_promotion"] else "no",
+            ]
+        ],
+    )
+    for line in drift:
+        _output.warning(f"declaration drift — {line}")
+
+
+@app.command("apply")
+def apply(
+    model: str = typer.Argument(..., help="Model name"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Materialise the model YAML's `fairness:` block as the runtime config (audited).
+
+    Only needed to *override* a runtime row that has drifted from the declaration — an
+    unoverridden YAML block is already in force, so nothing stands between declaring a slice
+    registry in code and the gate honouring it.
+    """
+    from examlops.data.audit import write_audit_event
+    from examlops.data.governance import set_fairness_config
+    from examlops.fairness import _yaml_fairness_config
+
+    declared = _yaml_fairness_config(model)
+    if not declared:
+        _output.error(
+            f"{model} has no valid `fairness:` block in its model YAML.",
+            hint="Add one, or declare the registry directly with `exa fairness config`.",
+        )
+    set_fairness_config(
+        model,
+        declared["slice_attrs"],
+        tenant=tenant,
+        threshold=declared["threshold"],
+        min_samples=declared["min_samples"],
+        gate_promotion=declared["gate_promotion"],
+        enabled=declared["enabled"],
+    )
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+    write_audit_event(
+        "cli", actor, "fairness_config_applied", model, {"source": "yaml", **declared}
+    )
+    _output.ok(
+        f"Applied {model}'s declared slice registry: "
+        f"slices={', '.join(declared['slice_attrs'])} threshold={declared['threshold']}"
+    )
+
+
 @app.command("slice")
 def slice_cmd(
     model: str = typer.Argument(..., help="Model name"),

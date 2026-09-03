@@ -107,9 +107,24 @@ def reindex_cmd(
     corpus_size: int = typer.Option(0, "--corpus-size", help="Docs to re-embed"),
     recall: float = typer.Option(1.0, "--recall", help="Measured recall of the new index"),
     recall_floor: float = typer.Option(0.9, "--recall-floor", help="Minimum recall to switch"),
+    inline: bool = typer.Option(
+        False, "--inline", help="Run here even if EXAMLOPS_REINDEX_ORCHESTRATOR=scheduler"
+    ),
+    scheduler: bool = typer.Option(
+        False, "--scheduler", help="Submit to the HPC scheduler instead of running here"
+    ),
 ) -> None:
-    """Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5)."""
+    """Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5).
+
+    Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` submits the job and
+    returns its id instead of re-embedding in this process. `--inline` forces the local path and
+    is what the submitted job itself runs, so a job never submits another job.
+    """
     from examlops.embeddings import reindex
+
+    if inline and scheduler:
+        _output.error("--inline and --scheduler are mutually exclusive.")
+    mode = "inline" if inline else ("scheduler" if scheduler else None)
 
     try:
         result = reindex(
@@ -119,6 +134,7 @@ def reindex_cmd(
             corpus_size=corpus_size,
             recall_fn=lambda: recall,
             recall_floor=recall_floor,
+            orchestrator=mode,
             actor=_actor(),
         )
     except ValueError as exc:

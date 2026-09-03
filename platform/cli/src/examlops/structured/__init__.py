@@ -56,7 +56,7 @@ def _minimal_validate(obj: Any, schema: dict[str, Any]) -> list[str]:
     """Dependency-free fallback: type + required + basic property types."""
     errors: list[str] = []
     stype = schema.get("type")
-    type_map = {
+    type_map: dict[str, type | tuple[type, ...]] = {
         "object": dict,
         "array": list,
         "string": str,
@@ -106,14 +106,18 @@ def repair_object(obj: Any, schema: dict[str, Any]) -> Any:
 
 
 def _zero_value(schema: dict[str, Any]) -> Any:
-    return {
+    zeros: dict[str, Any] = {
         "object": {},
         "array": [],
         "string": "",
         "number": 0.0,
         "integer": 0,
         "boolean": False,
-    }.get(schema.get("type"), None)
+    }
+    stype = schema.get("type")
+    # A schema with no `type` (or a non-string one) has no zero value, which is exactly what
+    # the None default means — looking it up with an unhashable key would raise instead.
+    return zeros.get(stype) if isinstance(stype, str) else None
 
 
 def generate_structured(

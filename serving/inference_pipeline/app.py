@@ -173,6 +173,50 @@ class FeatureTransformer:
         return results  # type: ignore[return-value]
 
 
+# ── A5 inference gate (ADR 0005 clause 2) ─────────────────────────────────────
+#
+# The contract layer shipped with a `validate_request` written for exactly this ingress — its
+# docstring says "so the ingress can return a 4xx instead of a 5xx" — and nothing outside its own
+# tests called it, while the ingress hand-rolled a two-field presence check. Two validators, one
+# of which knew about embedding dimensionality and was never asked.
+
+#: Fields every inference request must carry. Kept here rather than derived from a dataset
+#: contract: a `DataContract` describes training **columns**, and a request is not a row of the
+#: training table — deriving one from the other would be a guess wearing a contract's name.
+_REQUIRED_FIELDS = ("embedding", "num_nodes")
+
+
+def _embedding_dim() -> int | None:
+    """Declared embedding width, or None. Never defaulted — 384 is a fact about a use case."""
+    raw = os.environ.get("EXAMLOPS_INFERENCE_EMBEDDING_DIM", "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        _log.warning("EXAMLOPS_INFERENCE_EMBEDDING_DIM=%r is not an integer; ignoring", raw)
+        return None
+
+
+def _validate_payload(body: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Validate one inference request through the A5 contract layer (R8/R9).
+
+    Degrades to the previous presence check if the contract package is not importable in this
+    process — a serving replica that cannot import `pipelines` must still serve, and refusing
+    every request because a *validator* is missing would be a far worse failure than the one
+    this gate prevents.
+    """
+    try:
+        from pipelines.contracts import validate_request
+    except Exception:  # noqa: BLE001
+        missing = [f"missing required field '{f}'" for f in _REQUIRED_FIELDS if f not in body]
+        return (not missing, missing)
+    return validate_request(
+        body,
+        required=_REQUIRED_FIELDS,
+        embedding_field="embedding",
+        embedding_dim=_embedding_dim(),
+    )
+
+
 class InferencePipelineIngress:
     def __init__(self, transformer: Any) -> None:
         self._transformer = transformer
@@ -211,12 +255,12 @@ class InferencePipelineIngress:
         with _tracer.start_as_current_span("inference_pipeline.ingress") as span:
             span.set_attribute("model_name", body.get("model_name") or "")
             span.set_attribute("alias", body.get("alias") or "")
-            for field in ("embedding", "num_nodes"):
-                if field not in body:
-                    return JSONResponse(
-                        {"error": "validation_error", "detail": f"{field} is required"},
-                        status_code=422,
-                    )
+            ok, errors = _validate_payload(body)
+            if not ok:
+                return JSONResponse(
+                    {"error": "validation_error", "detail": "; ".join(errors)},
+                    status_code=422,
+                )
             result = await self._transformer.handle_batch.remote(body)
             if "error" not in result:
                 return result

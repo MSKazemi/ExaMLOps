@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+pytestmark = pytest.mark.live
+
 
 @pytest.fixture
 def coordinator(monkeypatch):

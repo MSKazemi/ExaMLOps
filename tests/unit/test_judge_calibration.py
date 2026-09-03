@@ -350,3 +350,68 @@ def test_a_non_proportion_metric_gets_no_fabricated_interval():
     record_eval_result("s", "M", {"rmse": 4.2}, run_id="r1", sample_size=10)
     row = next(r for r in get_eval_results("M", "s") if r["metric"] == "rmse")
     assert row["score_lo"] is None and row["score_hi"] is None
+
+
+def test_a_unit_bearing_metric_inside_zero_to_one_also_gets_no_interval():
+    """The gap `rmse` did not cover: a non-proportion that happens to be small.
+
+    `rmse = 4.2` is excluded by the range test alone. A latency of 0.01 s and a cost of $0.0225
+    are not — both land inside [0, 1] and were given a Wilson interval, which claimed a p50
+    latency of 0.01 s might really be 0.45 s. Wilson is defined for k successes out of n trials
+    and says nothing about a duration or a price.
+    """
+    record_eval_result(
+        "s",
+        "M",
+        {"latency_p50": 0.01, "cost_usd": 0.0225},
+        run_id="r1",
+        sample_size=5,
+        non_proportion_metrics={"latency_p50", "cost_usd"},
+    )
+    rows = {r["metric"]: r for r in get_eval_results("M", "s")}
+    for metric in ("latency_p50", "cost_usd"):
+        assert rows[metric]["score_lo"] is None, f"{metric} kept a fabricated interval"
+        assert rows[metric]["score_hi"] is None
+
+
+def test_declaring_units_does_not_take_the_interval_off_a_real_proportion():
+    """`usage_reported_rate` is a genuine k/n and must keep its interval — the declaration is a
+    list of units, not a blanket opt-out for the run."""
+    record_eval_result(
+        "s",
+        "M",
+        {"usage_reported_rate": 1.0, "tokens_per_answer": 1200.0},
+        run_id="r1",
+        sample_size=5,
+        non_proportion_metrics={"tokens_per_answer"},
+    )
+    rows = {r["metric"]: r for r in get_eval_results("M", "s")}
+    assert rows["usage_reported_rate"]["score_lo"] is not None
+    assert rows["tokens_per_answer"]["score_lo"] is None
+
+
+def test_an_undeclared_metric_keeps_the_previous_behaviour():
+    """The change fails closed: callers that declare nothing — `run_suite` and every evaluator
+    metric it persists — are unaffected."""
+    record_eval_result("s", "M", {"accuracy": 0.8}, run_id="r1", sample_size=10)
+    row = next(r for r in get_eval_results("M", "s") if r["metric"] == "accuracy")
+    assert row["score_lo"] is not None and row["score_hi"] is not None
+
+
+def test_the_suites_declare_every_unit_metric_they_record():
+    """The guard against this recurring: a new unit-bearing score added to `_latency_scores` or
+    `usage_scores` must join the declaration, or it silently acquires an interval again the first
+    time it happens to be small."""
+    from examlops.cli.commands.eval_cmd import _NON_PROPORTION_METRICS, _latency_scores
+    from examlops.evaluation.usage import Usage, usage_scores
+
+    # Derived by *running* the two producers, not by restating their keys here — a list copied
+    # into the test would keep passing after a new score was added to the helper.
+    produced = set(_latency_scores([0.5, 1.5])) | set(
+        usage_scores([Usage(1000, 1000, 2000)], model="gpt-4o")
+    )
+    # Everything they emit carries a unit except this one, which is a genuine k/n.
+    proportions = {"usage_reported_rate"}
+    undeclared = (produced - proportions) - _NON_PROPORTION_METRICS
+    assert not undeclared, f"undeclared unit metrics: {sorted(undeclared)}"
+    assert proportions <= produced, "the known-proportion list names a score nothing produces"

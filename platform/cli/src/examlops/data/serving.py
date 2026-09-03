@@ -27,6 +27,7 @@ __all__ = [
     "get_autoscale_config",
     "get_challenger_config",
     "get_challenger_samples",
+    "set_challenger_judge_scores",
     "get_device_pools",
     "list_autoscale_configs",
     "list_challenger_configs",
@@ -194,6 +195,25 @@ def record_challenger_sample(
                    (model, tenant, request_hash, champion_pred, challenger_pred, label)
                VALUES (?,?,?,?,?,?)""",
             (model, tenant, request_hash, champion_pred, challenger_pred, label),
+        )
+
+
+def set_challenger_judge_scores(
+    sample_id: int, *, champion: float | None, challenger: float | None, judge_model: str
+) -> None:
+    """Attach a C2 judge's scores to one challenger sample (ADR 0024 clause 2).
+
+    Written to their own columns, never to ``label``. A judge's opinion is not ground truth, and
+    a judged sample indistinguishable from a measured one turns the scoreboard into a mixture
+    nobody can separate afterwards — the promotion decision would rest on evidence of unknown
+    provenance.
+    """
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE challenger_samples SET champion_judge=?, challenger_judge=?, judge_model=? "
+            "WHERE id=?",
+            (champion, challenger, judge_model, sample_id),
         )
 
 

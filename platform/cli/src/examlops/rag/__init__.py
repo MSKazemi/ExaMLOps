@@ -114,6 +114,23 @@ class RagPipeline:
     chunk_size: int = 40
     chunk_overlap: int = 10
 
+    def _kb_encoder(self, kb: str, tenant: str) -> str | None:
+        """The encoder this KB was ingested with, or ``None`` if it was never recorded.
+
+        ``None`` is deliberately not an error: a KB ingested before the encoder was stamped has
+        nothing to compare against, and refusing would break every corpus already indexed.
+        """
+        try:
+            from examlops.data import get_db
+
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT encoder FROM rag_kbs WHERE kb=? AND tenant=?", (kb, tenant)
+                ).fetchone()
+            return str(row["encoder"]) if row and row["encoder"] else None
+        except Exception:
+            return None
+
     def _store(self):
         from examlops.vector_store import select_store
 
@@ -135,7 +152,11 @@ class RagPipeline:
         init_db()
         store = self._store()
         try:
-            store.create_collection(kb, _EMBED_DIM, "cosine", tenant)
+            # The encoder is stamped on the collection, not merely recorded in `rag_kbs`
+            # alongside it (ADR 0043 clause 2). It was already carried into this function and
+            # written to that table, and never reached the store — so the B5 guard added for
+            # exactly this had nothing to compare against.
+            store.create_collection(kb, _EMBED_DIM, "cosine", tenant, encoder_id=encoder)
         except Exception:
             pass
         items: list[VecItem] = []
@@ -151,7 +172,7 @@ class RagPipeline:
                         {"text": chunk, "doc_id": doc_id, "source_revision": source_revision or ""},
                     )
                 )
-        store.upsert(kb, items, tenant)
+        store.upsert(kb, items, tenant, encoder_id=encoder)
         with get_db() as conn:
             conn.execute(
                 """INSERT INTO rag_kbs (kb, tenant, source_revision, encoder, chunk_count)
@@ -176,7 +197,13 @@ class RagPipeline:
         """embed→retrieve→rerank→assemble→generate, citing chunks (R2/R3/GWT-1)."""
         store = self._store()
         qv = self.embed_fn(question)
-        hits = store.search(kb, qv, max(k * 3, k), None, tenant)  # over-retrieve for rerank
+        # Ask under the encoder this KB was indexed with. If the query embedding comes from a
+        # different one the store refuses rather than returning ranked nonsense — retrieval is
+        # the case where cross-encoder scoring is most convincing and least detectable, because
+        # every hit still arrives with a plausible score and a real citation attached.
+        hits = store.search(
+            kb, qv, max(k * 3, k), None, tenant, encoder_id=self._kb_encoder(kb, tenant)
+        )  # over-retrieve for rerank
         hits = self.reranker(question, hits)[:k]  # rerank then trim (GWT-3)
 
         span_id = self._retriever_span(question, hits, tenant)
