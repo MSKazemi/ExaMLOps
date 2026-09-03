@@ -120,6 +120,7 @@ nav:
           - Secrets: guides/secrets.md
           - Supply-chain security: guides/supply-chain-security.md
           - Immutable audit trail: guides/audit-trail.md
+          - Evidence chain (ADR 0110): guides/evidence-chain.md
           - EU AI Act: guides/eu-ai-act-compliance.md
           - NIST RMF: guides/governance-nist-rmf.md
           - Policy-as-code: guides/policy-as-code.md

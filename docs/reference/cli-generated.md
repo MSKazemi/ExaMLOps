@@ -213,6 +213,26 @@ Audit log — tamper-evident, hash-chained (D4)
 - `--source, -s` — Filter by source (cli/agent/bridge)
 - `--limit, -n` — Max events to show
 
+### `exa audit autonomy`
+
+Every autonomous action in the window, and whether it declared an inverse.
+
+This is the W2 gate as a command: for each action the platform took on its own initiative,
+who acted, on whose behalf, under which mode, and how it would be undone. An action with no
+``rollback_ref`` is listed rather than filtered out — ADR 0110 decision 4 calls that a policy
+violation, and hiding them would defeat the point of asking.
+
+- `--last` — Time window (e.g. 7d, 30d)
+
+### `exa audit chain`
+
+Reconstruct one unit of work and everything it caused (ADR 0110).
+
+A hash chain records *events*; this reads the causal edges between them, so an
+orchestrator's id returns the tool calls it caused and whatever those caused in turn. That
+reconstruction is what makes "who did this, on whose behalf, and how would it be undone"
+answerable from the evidence chain alone.
+
 ### `exa audit checkpoint`
 
 Sign the current chain head, producing a detached checkpoint signature (D4·R5).

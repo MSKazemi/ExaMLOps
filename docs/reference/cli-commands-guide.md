@@ -902,6 +902,8 @@ The audit trail is an append-only, hash-chained record of who did what and when 
 |---|---|---|---|
 | `exa audit` | Query the log; filters `--last` (default 30d), `--model/-m`, `--action/-a`, `--source/-s`, `--limit/-n` (default 100) | Trace platform activity over a window | `exa audit --last 7d --model JPCP` |
 | `exa audit verify` | Recompute the hash chain and report integrity; exit 1 if broken (read-only) | Prove the trail was not tampered with | `exa audit verify` |
+| `exa audit chain <correlation-id>` | Reconstruct one unit of work and everything it caused, from the causal edges in the chain. | Trace an autopilot cycle from trigger to promotion. | `exa audit chain 9f2c…` |
+| `exa audit autonomy` | Every autonomous action in the window, with who acted, on whose behalf, and whether it declared an inverse. `--last`. | Answer the governance question: what did the platform do on its own, and can it be undone? | `exa audit autonomy --last 30d` |
 | `exa audit checkpoint` | **[mutation]** Sign the current chain head, producing a detached checkpoint signature (D4·R5) | Anchor the chain state at a point in time | `exa audit checkpoint` |
 | `exa audit checkpoints` | List signed audit checkpoints; `--limit/-n` | Review prior checkpoint anchors | `exa audit checkpoints -n 20` |
 | `exa audit export` | **[mutation]** Append-only archival export; `--out <file>`, `--before <ISO>` (never deletes) | Produce an archival copy for retention | `exa audit export --out audit-2026.json --before 2026-07-01` |

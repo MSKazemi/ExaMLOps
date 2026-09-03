@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 ## [Unreleased]
 ### Added
 
+- **The evidence chain can now explain causation, not just record events (ADR 0110 — W2 item 1).**
+  The audit log was already tamper-evident, but an autopilot cycle that triggered a retrain which
+  promoted a model wrote three unrelated rows and nothing joined them — so the question worth
+  asking about an autonomous platform, *who did this, on whose behalf, under which mode, and how
+  would it be undone*, was not answerable from the chain. Every event can now carry
+  `correlation_id`, `parent_correlation_id`, `mode` (`manual`/`delegated`/`autonomous`),
+  `on_behalf_of` and `rollback_ref`. **The fields are inside the hash, not beside it** — a causal
+  edge an attacker could rewrite without breaking the chain would be evidence of nothing — and the
+  canonical form is unchanged when they are empty, so every event written before this keeps
+  verifying against the hash it was stored with (guarded in both directions). New
+  `examlops.evidence` makes correlation **ambient** rather than a parameter: `with correlated(...)`
+  is inherited by everything the unit of work calls, and nesting sets the parent automatically,
+  which is what turns a set of rows into an orchestrator → tool → downstream chain. That choice is
+  deliberate — ~200 call sites already write audit events, and threading an id through all of them
+  is a change whose failure mode is silent, since one missed call site is an unexplained gap that
+  nothing would report. `mode` and `on_behalf_of` are inherited by nested work; `rollback_ref` is
+  **not**, because a parent's inverse does not undo a child. New `exa audit chain` reconstructs a
+  causal tree, and `exa audit autonomy --last 30d` is the governance question as a command —
+  listing actions that declared **no** inverse rather than filtering them out, and saying that the
+  refusal which would enforce ADR 0110 decision 4 is not built yet. `exa drift trigger` and
+  `exa autopilot run` now declare themselves autonomous for the whole cycle. Guide
+  `docs/guides/evidence-chain.md`; 23 tests in `tests/unit/test_evidence_correlation.py`.
+
 - **A promotion that changes the numerics can no longer ship on a green latency check (ADR 0117 —
   W1 item 5).** Every gate the platform had was **single-target**: `validate-model` smoke-tests a
   model on the backend it is already running on, and `promote --if-<metric>` reads a metric from

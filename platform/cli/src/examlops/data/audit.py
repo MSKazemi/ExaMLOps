@@ -24,6 +24,8 @@ from examlops.platform_db import (  # noqa: F401
 
 __all__ = [
     "audit_chain_head",
+    "autonomous_actions",
+    "correlation_chain",
     "export_audit_events",
     "list_audit_checkpoints",
     "list_training_checkpoints",
@@ -92,9 +94,11 @@ def verify_audit_chain() -> dict[str, Any]:
     """Recompute the hash chain and report the first broken link, if any (R2/R6)."""
     init_db()
     with get_db() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+        corr_select = ", " + ", ".join(_CORRELATION_COLS) if set(_CORRELATION_COLS) <= cols else ""
         rows = conn.execute(
-            "SELECT id, source, actor, action, target, details, tenant, prev_hash, hash, ts "
-            "FROM audit_events WHERE hash IS NOT NULL ORDER BY id ASC"
+            "SELECT id, source, actor, action, target, details, tenant, prev_hash, hash, ts"
+            f"{corr_select} FROM audit_events WHERE hash IS NOT NULL ORDER BY id ASC"
         ).fetchall()
         # Rows with no hash are outside the chain and cannot be verified. They must be *counted*,
         # not silently skipped: a verifier that ignores what it cannot check reports `ok: True`
@@ -106,6 +110,10 @@ def verify_audit_chain() -> dict[str, Any]:
         )
     prev = "GENESIS"
     for r in rows:
+        # The correlation fields are inside the hash, so verification has to feed them back in.
+        # An event written outside any context has them all NULL and canonicalises exactly as it
+        # did before ADR 0110, which is what keeps every historical row verifying.
+        correlation = {c: r[c] for c in _CORRELATION_COLS} if corr_select else {}
         canonical = _audit_canonical(
             r["source"],
             r["actor"],
@@ -114,6 +122,7 @@ def verify_audit_chain() -> dict[str, Any]:
             r["details"],
             r["tenant"] or "default",
             r["ts"],
+            correlation,
         )
         expected = _audit_hash(prev, canonical)
         if r["prev_hash"] != prev or r["hash"] != expected:
@@ -231,6 +240,15 @@ def append_audit_event(
     )
 
 
+_CORRELATION_COLS = (
+    "correlation_id",
+    "parent_correlation_id",
+    "mode",
+    "on_behalf_of",
+    "rollback_ref",
+)
+
+
 def _append_on(
     conn: Any,
     source: str,
@@ -248,6 +266,19 @@ def _append_on(
             (source, actor, action, target, details_json),
         )
         return
+
+    # ADR 0110: the causal edges come from the ambient context, so the ~200 existing call sites
+    # gain correlation by being *inside* a unit of work rather than by each remembering to pass
+    # one — a threading change whose failure mode is a silent gap in a causal chain.
+    from examlops.evidence import current as _current_correlation
+
+    correlation = _current_correlation().as_dict()
+    has_corr_cols = set(_CORRELATION_COLS) <= cols
+    if not has_corr_cols:
+        # A DB predating the migration: the fields cannot be stored, so they must not be hashed
+        # either — hashing what is not written would make every such row unverifiable.
+        correlation = {}
+
     # Chain over the current head. CURRENT_TIMESTAMP is resolved here so the stored ts matches
     # what we hash.
     ts = conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
@@ -255,13 +286,102 @@ def _append_on(
         "SELECT hash FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1"
     ).fetchone()
     prev_hash = head["hash"] if head and head["hash"] else "GENESIS"
-    canonical = _audit_canonical(source, actor, action, target, details_json, tenant, ts)
+    canonical = _audit_canonical(
+        source, actor, action, target, details_json, tenant, ts, correlation
+    )
     h = _audit_hash(prev_hash, canonical)
+    if has_corr_cols:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
+            "prev_hash, hash, ts, correlation_id, parent_correlation_id, mode, on_behalf_of, "
+            "rollback_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                source,
+                actor,
+                action,
+                target,
+                details_json,
+                tenant,
+                prev_hash,
+                h,
+                ts,
+                *(correlation.get(c) for c in _CORRELATION_COLS),
+            ),
+        )
+        return
     conn.execute(
         "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
         "prev_hash, hash, ts) VALUES (?,?,?,?,?,?,?,?,?)",
         (source, actor, action, target, details_json, tenant, prev_hash, h, ts),
     )
+
+
+def correlation_chain(correlation_id: str, *, max_depth: int = 50) -> list[dict[str, Any]]:
+    """Every event in the causal tree rooted at ``correlation_id``, oldest first (ADR 0110).
+
+    Walks *down* through ``parent_correlation_id`` so an orchestrator's id returns the tool calls
+    it caused and whatever those caused in turn — the reconstruction the W2 gate asks for. The
+    depth bound is a cycle guard: ``parent_correlation_id`` is written by the process that acted
+    and nothing at the database level stops a loop, so an unbounded walk would hang rather than
+    report.
+    """
+    init_db()
+    with get_db() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+        if "correlation_id" not in cols:
+            return []
+        seen: set[str] = set()
+        frontier = {correlation_id}
+        for _ in range(max_depth):
+            frontier -= seen
+            if not frontier:
+                break
+            seen |= frontier
+            placeholders = ",".join("?" * len(frontier))
+            children = conn.execute(
+                f"SELECT DISTINCT correlation_id FROM audit_events "
+                f"WHERE parent_correlation_id IN ({placeholders}) AND correlation_id IS NOT NULL",
+                tuple(frontier),
+            ).fetchall()
+            frontier = {r["correlation_id"] for r in children}
+        if not seen:
+            return []
+        placeholders = ",".join("?" * len(seen))
+        rows = conn.execute(
+            f"SELECT * FROM audit_events WHERE correlation_id IN ({placeholders}) ORDER BY id ASC",
+            tuple(seen),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("details"):
+            try:
+                d["details"] = json.loads(d["details"])
+            except (ValueError, TypeError):
+                pass
+        out.append(d)
+    return out
+
+
+def autonomous_actions(*, since_days: int = 30, limit: int = 500) -> list[dict[str, Any]]:
+    """Autonomous actions in the recent window, with what the W2 gate asks of each.
+
+    Each row reports who acted, on whose behalf, under which mode, and whether it declared an
+    inverse. A row whose ``rollback_ref`` is NULL is exactly what ADR 0110 decision 4 calls a
+    policy violation, so it is returned rather than filtered out — the point is to see them.
+    """
+    init_db()
+    with get_db() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+        if "mode" not in cols:
+            return []
+        rows = conn.execute(
+            "SELECT id, ts, source, actor, action, target, tenant, correlation_id, "
+            "parent_correlation_id, mode, on_behalf_of, rollback_ref FROM audit_events "
+            "WHERE mode = 'autonomous' AND ts >= datetime('now', ?) ORDER BY id DESC LIMIT ?",
+            (f"-{int(since_days)} days", limit),
+        ).fetchall()
+    return [{**dict(r), "undoable": bool(r["rollback_ref"])} for r in rows]
 
 
 def write_training_checkpoint(
