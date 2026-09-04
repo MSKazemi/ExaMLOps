@@ -350,6 +350,7 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `RAY_PRELOAD_ALIASES` | `Production,Canary,Staging` | Comma-separated MLflow aliases pre-loaded into the hot set at startup and on reload |
 | `RAY_VERSION_CACHE_SIZE` | `8` | LRU cache size for raw-version (`/predict` with `version=`) lookups |
 | `RAY_RELOAD_POLL_SECONDS` | `60` | Background MLflow alias-poll interval in seconds; `0` disables polling |
+| `TRAFFIC_RULES_TTL_SECONDS` | `30` | TTL of the inference-pipeline router's per-replica traffic-split cache. Split changes written by the ingress or `exa serve traffic` (other processes) apply within this window; negative results are cached too. |
 | `RAY_SERVE_RELOAD_URL` | unset | Ray Serve URL for the Prefect promotion webhook (`POST /reload/{model_id}`); unset disables the webhook |
 | `RAY_METRICS_EXPORT_PORT` | `8080` | Prometheus metrics export port used by Ray |
 
@@ -395,6 +396,8 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `DASHBOARD_JWT_SECRET` | **required** | HS256 signing secret for JWT tokens (minimum 32 characters) |
 | `DASHBOARD_SECRET_KEY` | **required** | Fernet key (base64-encoded, 44 characters) for secrets-at-rest encryption |
 | `DASHBOARD_JWT_TTL_HOURS` | `12` | JWT token expiry in hours |
+| `DASHBOARD_TRUSTED_PROXY` | unset | When truthy, the login/BFF rate limiter keys on the leftmost `X-Forwarded-For` address instead of the socket peer. Set ONLY behind a trusted reverse proxy — the header is spoofable when clients connect directly. |
+| `DASHBOARD_GITLAB_INSECURE_TLS` | unset | Opt-out of TLS verification on the dashboard→GitLab modelzoo calls (private-CA escape hatch). Default verifies; prefer shipping the CA bundle. |
 | `DASHBOARD_PORT` | `8099` | Dashboard HTTP port (host-exposed as `18099`) |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL for ModelZoo repository integration |
 | `GITLAB_TOKEN` | unset | GitLab PAT with `read_repository` scope; used by the Datasets and Models pages to list files from the modelzoo repo. Also used as a last-resort fallback for the "Run CI Pipeline" button when no DB or env trigger token is configured. |

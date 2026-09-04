@@ -54,11 +54,30 @@ jobs:
       - name: Ruff (format)
         run: .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
+      # Mirror the GitLab `test:examlops` job (the deploy gate): without these two steps a PR
+      # with a mypy regression in the ratcheted platform/cli/src/ (baseline 0) or a broken
+      # dashboard-backend test merged green on GitHub and only reddened the pipeline that
+      # gates the production deploy — the v0.26.x "passed locally, failed in deploy CI" saga
+      # relocated to a new surface.
+      - name: mypy
+        run: .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
+
+      - name: mypy (ratcheted CLI package)
+        run: make typecheck-cli
+
       # `-n auto`: the suite is 2781 tests and was running in one process. Measured locally,
       # 520s serial vs 66s across cores. Safe because every test gets a private PLATFORM_DB
       # (tests/conftest.py) — the shared-state leak that made parallel runs fail is closed.
       - name: Unit tests
         run: .venv/bin/pytest tests/unit/ -n auto -q --tb=short --junit-xml=reports/examlops-unit.xml
+
+      - name: Dashboard backend tests
+        run: |
+          pip install -r platform/services/dashboard/backend/requirements.txt -q
+          pip install -e platform/cli -q
+          EXAMLOPS_DOCS_ROOT="$GITHUB_WORKSPACE" pytest platform/services/dashboard/backend/tests/ -q --tb=short \
+            --ignore=platform/services/dashboard/backend/tests/test_storage.py \
+            --junit-xml=reports/dashboard-backend.xml
 
       - name: Upload test report
         if: always()

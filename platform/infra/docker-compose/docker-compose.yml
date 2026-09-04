@@ -379,11 +379,12 @@ services:
     container_name: examlops-grafana
     mem_limit: ${GRAFANA_MEM_LIMIT:-512m}
     environment:
-      # Fail closed (item 0.8): no admin/admin default and no anonymous access unless the
-      # operator explicitly opts in — this port is published on all interfaces, so on an
-      # internet-reachable node the old defaults were an unauthenticated metrics browser
-      # plus a well-known admin login. Set GRAFANA_ADMIN_PASSWORD in .env.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env (refusing the admin/admin default)}
+      # Hardened defaults (item 0.8): anonymous access is opt-in, and the port below binds to
+      # 127.0.0.1 unless GRAFANA_BIND widens it — so the well-known dev admin password is never
+      # reachable from off-host by default (remote access goes through the ssh port-forwards).
+      # A compose-level required var is NOT usable here: compose interpolates before profile
+      # filtering, so `:?` on this profile-gated service would abort every compose command.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-false}
@@ -392,7 +393,7 @@ services:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "13000:3000"
+      - "${GRAFANA_BIND:-127.0.0.1}:13000:3000"
     depends_on:
       - prometheus
       - loki

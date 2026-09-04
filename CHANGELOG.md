@@ -5,6 +5,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — enterprise audit wave (2026-09-04)
+
+Four parallel audits (core lib · dashboard/control-plane · serving/bridge · consistency/infra)
+followed by a deep fix pass. Highlights, by tier:
+
+- **Serving (outage-class):** the `/predict/{model_name}` route decorator had become detached
+  from `predict` (bound to a shadow-mirroring helper inserted between them), breaking every
+  HTTP inference request while method-level tests stayed green — fixed, with a route-binding
+  guard (`tests/unit/test_ray_serve_routes.py`) that also forbids routes bound to private
+  helpers. `POST /reload` now keeps last-known-good models when the artifact store is down
+  instead of evicting the whole hot set; cold-alias/version loads are single-flight (one
+  download for N concurrent requests); the inference-pipeline traffic-split cache gained a TTL
+  (`TRAFFIC_RULES_TTL_SECONDS`, default 30s — a canary rollback now actually applies) plus
+  negative-result caching and off-loop DB reads; router and bridge reuse one HTTP client.
+- **Bridge (drift loop was dead code):** an ingress 500 `inference_failed` is now classified as
+  a MODEL failure (`ModelInferenceError`) and fed to the drift tracker — previously
+  `raise_for_status` turned every model failure into an excluded transport error, so the error
+  rate was permanently 0 and drift-retrain could never fire. A rejected retrain trigger
+  (401/503) is no longer counted/audited as a retrain and releases its cooldown. The bridge
+  image now installs `examlops` and compose mounts one shared `/state/platform.db` for bridge +
+  control-plane + agent + dashboard — previously four services wrote four different databases
+  and the bridge's telemetry writes were a silent no-op in Docker.
+- **Core library:** the audit hash chain no longer forks on Postgres under concurrent `conn=`
+  writers (advisory lock before the head read); `delete_project` performs the full cascade
+  including `authz_relations` (deleting + re-creating a project no longer resurrects old
+  members' roles) and the dashboard delete routes through it; `INSERT OR REPLACE` helpers with
+  engine-divergent semantics rewritten as explicit upserts (auto-retrain reconfiguration
+  preserves the cooldown stamp; traffic-rule updates stamp `updated_at` on both engines);
+  autopilot and `exa drift trigger` now agree that the configured `min_z_score` is the one
+  threshold; autopilot promotions declare their rollback inverse and are refused without one
+  (ADR 0113), and per-model rollback refs no longer leak across loop iterations
+  (`evidence.clear_rollback_ref`); policy rules with a mistyped `effect` now fail closed
+  (deny + warning) instead of silently allowing; hot telemetry tables gained `(model, ts)`
+  indexes; the circuit breaker admits exactly one HALF_OPEN probe; `purge_telemetry --vacuum`
+  no longer vacuums a stray local file under the Postgres backend; secrets tenant prefixes fail
+  closed under multitenancy; `verify-worm` returns broken-chain instead of crashing on a
+  truncated line; `examlops.resilience` imports without httpx installed.
+- **Dashboard/control plane:** dashboard model promotion now runs the same eval-regression +
+  ADR-0111 judge-calibration gate as `exa pipeline promote` (blocked = 403, gate-broken = 503,
+  both audited) and every alias mutation is audited; control-plane `/models*` endpoints require
+  read scope; `export-env` audits (key names only) and chmods the export 0600; BFF sources can
+  be plain `def` and run off-loop (the per-source timeout is now real for sqlite sources — one
+  locked query no longer freezes `/health`); subprocess/docker-SDK calls moved off the event
+  loop; JWTs carry a `sub` claim so audit actors are no longer `?`; UI pipeline triggers are
+  audited as `retrain_triggered` with a 30s double-fire guard; project create/assign/delete and
+  facility cluster approve/reject route through the shared `examlops` helpers; GitLab modelzoo
+  calls verify TLS by default (`DASHBOARD_GITLAB_INSECURE_TLS` opt-out); fail-open
+  `except: return []` list endpoints now 503 on real datastore failure; the login rate limiter
+  can honor `X-Forwarded-For` behind a trusted proxy (`DASHBOARD_TRUSTED_PROXY`); log streaming
+  no longer leaks a follow thread per disconnected client.
+- **Consistency/infra:** compose passes `EXAMLOPS_DB_BACKEND`/`EXAMLOPS_POSTGRES_DSN` to every
+  state-touching service (the Postgres guide's "must reach every process" rule was impossible
+  to satisfy before); `POSTGRES_PASSWORD` is honored by the server and all four DSNs (rotation
+  no longer silently breaks only backups); Grafana binds `127.0.0.1` by default (`GRAFANA_BIND`)
+  with anonymous access off; mem limits on the remaining 8 services; the GitHub `examlops` job
+  now mirrors the GitLab deploy gate (mypy, ratcheted `typecheck-cli`, dashboard-backend tests);
+  workspace member pyprojects re-pinned to the root version with a guard test; the
+  promotion→reload webhook falls back to `RAY_SERVE_URL` so it actually fires in containers;
+  registry `concurrency_limit` reaches Prefect deployments.
+- **Skipper:** the router tie-break safety property (ambiguous → read-only `general`, never the
+  write pack) now has its regression guard (`test_router.py`, 18 tests); new read-only FinOps
+  tools (`get_cost_summary`/`get_model_cost_history`/`get_carbon_summary`/`get_budget_status`)
+  so the finops specialist can finally answer cost/carbon/budget questions.
+
+
 ## [0.50.0] - 2026-09-04
 ### Added
 
