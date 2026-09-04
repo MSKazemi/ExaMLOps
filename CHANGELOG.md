@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — blast-radius contracts, per-behaviour autonomy, live-run interrupt (ADR 0113, AIDC W2)
+
+- **`examlops.blast_radius`** — every autonomous behaviour now publishes a versioned,
+  machine-readable contract (`may_change` / `may_not_change` / `max_extent_per_action` /
+  rollback / kill-switch), enforced in the autopilot cycle: a change outside the contract is
+  denied with the exact clause named (`contract_denied` audit event). `exa autopilot contract`
+  and `exa autopilot status` print every contract verbatim; a YAML overlay
+  (`EXAMLOPS_CONTRACTS_FILE`) can only narrow a contract, never widen it.
+- **Per-behaviour autonomy** — `exa autopilot autonomy <behaviour> AUTONOMOUS|REVIEW|DISABLED`,
+  individually pausable without losing configuration; granting AUTONOMOUS requires a recorded
+  human acknowledgment (`--ack`, audited) and an unacknowledged grant degrades to REVIEW.
+- **Live-run interrupt** — `exa autopilot interrupt <run_id> --freeze|--kill` flags ONE
+  in-flight cycle (polled at its checkpoints; freeze pauses until `exa autopilot resume`, kill
+  aborts with the run record saying so), plus `exa autopilot quarantine/release <model>` to
+  contain a single model while everything else stays automated. All audited.
+- 20 tests (`tests/unit/test_blast_radius.py`); ADR 0113 decisions 1–4 now implemented
+  (decision 5, reviewed audit, remains open); guide section in `docs/guides/evidence-chain.md`.
+
+
 ### Fixed — enterprise audit wave (2026-09-04)
 
 Four parallel audits (core lib · dashboard/control-plane · serving/bridge · consistency/infra)

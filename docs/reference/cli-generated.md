@@ -262,6 +262,16 @@ Verify the external WORM anchor: its own chain + agreement with the DB checkpoin
 
 Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)
 
+### `exa autopilot autonomy`
+
+Set one behaviour's autonomy level (per rule, pausable, acknowledgment recorded).
+
+- `--ack` — Required when granting AUTONOMOUS: your recorded acknowledgment
+
+### `exa autopilot contract`
+
+Show a behaviour's blast-radius contract verbatim (ADR 0113).
+
 ### `exa autopilot disable`
 
 Disable the autopilot kill-switch (persistent, stored in platform.db).
@@ -269,6 +279,28 @@ Disable the autopilot kill-switch (persistent, stored in platform.db).
 ### `exa autopilot enable`
 
 Enable the autopilot kill-switch (persistent, stored in platform.db).
+
+### `exa autopilot interrupt`
+
+Freeze or kill ONE in-flight autopilot run (ADR 0113 decision 4; audited).
+
+- `--kill` — Abort the run at its next checkpoint
+- `--freeze` — Pause the run until resumed
+- `--reason` — Why (recorded in the audit event)
+
+### `exa autopilot quarantine`
+
+Quarantine a model: the autopilot skips it until released (audited).
+
+- `--reason` — Why (recorded and shown on skips)
+
+### `exa autopilot release`
+
+Release a quarantined model back to autonomous eligibility (audited).
+
+### `exa autopilot resume`
+
+Release a frozen run so it continues from its checkpoint.
 
 ### `exa autopilot run`
 

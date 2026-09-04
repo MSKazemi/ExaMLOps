@@ -88,6 +88,7 @@ the usual cause of "it works from the CLI but not in the dashboard".
 |---|---|---|
 | `EXAMLOPS_AUTOPILOT_ENABLED` | unset (disabled) | Master kill-switch for the self-driving loop. Falls back to the `autopilot_config` table when unset; `exa autopilot enable/disable` sets it persistently. |
 | `EXAMLOPS_AUTOPILOT_LEASE_TTL` | `900` | TTL (s) of the distributed cycle lease — only one cycle runs at a time, and a crashed holder's lease expires. |
+| `EXAMLOPS_CONTRACTS_FILE` | unset | YAML overlay for the ADR-0113 blast-radius contracts. May only NARROW the built-ins (autonomy toward REVIEW/DISABLED, extra `may_not_change` entries, smaller extent caps); widening is a code change. |
 | `EXAMLOPS_AUTOPILOT_MAX_RETRAINS` | `1` | Per-cycle cap on retrains, so a storm of drift cannot become a storm of jobs. |
 
 ### Data versioning & fleet

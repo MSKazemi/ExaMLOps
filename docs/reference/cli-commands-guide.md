@@ -658,6 +658,12 @@ with `enabled_state="disabled"` so history never implies the loop was live. A re
 | `exa autopilot disable` | **[mutation]** Disable the autopilot kill-switch (persisted in `platform.db`). | Emergency stop for all autopilot activity. | `exa autopilot disable` |
 | `exa autopilot run [model]` | **[mutation]** Run one cycle: drift scan → policy → retrain → metrics → policy → promote. `--dry-run`, optional `model` to restrict. | Manually drive (or preview) one autopilot pass. | `exa autopilot run --dry-run` |
 | `exa autopilot status` | Show recent autopilot run history. `--last` (10). | Audit what the loop did and when. | `exa autopilot status --last 20` |
+| `exa autopilot contract [behaviour]` | Print a behaviour's blast-radius contract verbatim — what it may/may not change, extent caps, its rollback and kill-switch (ADR 0113). | Read the autopilot's bounds instead of trusting reassurance; diff after an overlay change. | `exa autopilot contract drift_auto_retrain` |
+| `exa autopilot autonomy <behaviour> <level>` | **[mutation]** Set one behaviour's autonomy: `AUTONOMOUS` (requires `--ack "<text>"`, recorded), `REVIEW`, or `DISABLED` — pausable without losing its configuration. | Pause just the promote loop while keeping retrains autonomous, or grant autonomy with a recorded acknowledgment. | `exa autopilot autonomy autopilot_promote REVIEW` |
+| `exa autopilot interrupt <run_id>` | **[mutation]** Flag ONE in-flight cycle: `--freeze` pauses it at its next checkpoint, `--kill` aborts it (both audited). | Stop a live run you distrust without flipping the global kill-switch. | `exa autopilot interrupt 42 --kill --reason "wild retrain storm"` |
+| `exa autopilot resume <run_id>` | **[mutation]** Release a frozen run so it continues from its checkpoint. | Let a held cycle finish after you've looked. | `exa autopilot resume 42` |
+| `exa autopilot quarantine <model>` | **[mutation]** Exclude one model from all autonomous action until released (audited; shown in skip reasons). | Contain a misbehaving model while everything else stays automated. | `exa autopilot quarantine JPCP --reason "drift sensor suspect"` |
+| `exa autopilot release <model>` | **[mutation]** Release a quarantined model back to autonomous eligibility. | End the containment once the cause is fixed. | `exa autopilot release JPCP` |
 
 ### `exa mcp` — MCP server + Agent-to-Agent (A2A) surface
 

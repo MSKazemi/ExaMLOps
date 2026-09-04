@@ -119,6 +119,18 @@ REGISTRY: dict[str, Inverse] = {
     "drift_retrain_suppressed": _r("drift_retrain_suppressed"),
     "policy_denied": _r("policy_denied"),
     "human_approval_required": _r("human_approval_required"),
+    # ADR 0113 decisions 1/3/4 — contract, autonomy and interrupt events. All record-only:
+    # a denial, a grant record, or an interrupt flag changes governance state that is itself
+    # audited; none of them is an autonomous mutation needing an inverse.
+    "contract_denied": _r("contract_denied"),
+    "autonomy_changed": _r("autonomy_changed"),
+    "run_kill_requested": _r("run_kill_requested"),
+    "run_freeze_requested": _r("run_freeze_requested"),
+    "run_killed": _r("run_killed"),
+    "run_frozen": _r("run_frozen"),
+    "run_resumed": _r("run_resumed"),
+    "model_quarantined": _r("model_quarantined"),
+    "model_released": _r("model_released"),
     "corruption_detection_error": _r("corruption_detection_error"),
     "parity_gate_evaluated": _r("parity_gate_evaluated"),
     # ── operator switches: mutating, and their inverse is the opposite command ──

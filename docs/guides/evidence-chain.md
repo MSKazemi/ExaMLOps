@@ -118,22 +118,57 @@ retrain has promoted, the version a rollback would restore is no longer the one 
 at. Where the previous version cannot be resolved, no inverse can be built and the action is
 declined rather than taken with an undo path that does not exist.
 
+## Blast-radius contracts, per-behaviour autonomy, live-run interrupt (ADR 0113)
+
+Every autonomous behaviour publishes a **versioned, machine-readable contract** stating what it
+may and may not change, how far one action may reach, and how it is undone. The contract is
+*enforced* at the decision point — a change outside `may_change` is denied and the denial names
+the exact clause (a `contract_denied` audit event carries it) — so contract drift surfaces as a
+failure, never as a stale document.
+
+```bash
+exa autopilot contract                      # every behaviour's contract, verbatim
+exa autopilot contract drift_auto_retrain   # one behaviour
+exa autopilot status                        # contracts + effective autonomy + run history
+```
+
+An operator can **narrow** a contract with a YAML overlay (`EXAMLOPS_CONTRACTS_FILE`): move
+autonomy toward REVIEW/DISABLED, add `may_not_change` entries, shrink extent caps. Widening is
+deliberately impossible from config — that is a code change with review.
+
+**Autonomy is per behaviour, not global** (`AUTONOMOUS | REVIEW | DISABLED`), each individually
+pausable without losing its configuration. Granting AUTONOMOUS records an explicit human
+acknowledgment; a grant without one degrades to REVIEW:
+
+```bash
+exa autopilot autonomy autopilot_promote REVIEW           # pause just promotions
+exa autopilot autonomy drift_auto_retrain AUTONOMOUS \
+    --ack "retrain autonomy accepted for the staging fleet"  # recorded + audited
+```
+
+**One in-flight run can be interrupted** — no more all-or-nothing kill-switch:
+
+```bash
+exa autopilot interrupt 42 --freeze     # pause run 42 at its next checkpoint
+exa autopilot resume 42                 # let it continue
+exa autopilot interrupt 42 --kill       # abort it (audited; the run record says so)
+exa autopilot quarantine JPCP --reason "drift sensor suspect"   # contain one model
+exa autopilot release JPCP
+```
+
 ## Not yet implemented
 
-Two of W2's six items are done. Still open, from ADRs 0110 and 0113:
+Still open, from ADRs 0110 and 0113:
 
 - **Anchored telemetry** — lineage and resource events into side tables with a periodic
   checkpoint hash, so high-volume telemetry is tamper-evident without serialising it through the
   chain.
-- **Blast-radius contracts** — a declarative `may_change` / `may_not_change` per behaviour, with
-  denials naming the clause.
-- **Live-run interrupt** — freeze, kill or quarantine a single in-flight run. Today only a global
-  kill-switch exists.
-- **Per-rule autonomy** — autonomy declared per behaviour rather than globally, individually
-  pausable without losing its configuration.
+- **Reviewed audit** (ADR 0113 decision 5) — sampled review on a schedule by a named owner, the
+  review itself recorded.
 
 ## Design
 
 - ADR 0110 — *Evidence chain: synchronous actions, anchored telemetry* (G1.6 · G1.7 · G8.3 · G8.4)
+- ADR 0113 — *Blast-radius contracts and a provable L3 autonomy* (`examlops.blast_radius`)
 - `examlops.evidence` — the correlation context
 - Related: [audit trail](audit-trail.md) for the hash chain itself

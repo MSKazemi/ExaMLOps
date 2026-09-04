@@ -26,6 +26,7 @@ from typing import Any
 
 import typer
 
+from examlops import blast_radius
 from examlops.cli import _output
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
@@ -232,6 +233,90 @@ def _do_promote(model: str, from_alias: str = "Staging", to_alias: str = "Produc
 # ── core cycle logic ─────────────────────────────────────────────────────────
 
 
+class _RunKilled(RuntimeError):
+    """Raised when a live-run interrupt kills this cycle (ADR 0113 decision 4)."""
+
+
+def _interrupt_checkpoint(run_id: int, actor: str) -> None:
+    """Poll the live-run interrupt flag between actions.
+
+    ``kill`` aborts the cycle (audited). ``freeze`` pauses here — polling until the flag is
+    cleared (resume) or escalated to kill — so an operator can hold a cycle mid-flight while
+    they look at something, without losing it.
+    """
+    import time as _time
+
+    action = blast_radius.pending_interrupt(run_id)
+    if action == "kill":
+        write_audit_event("autopilot", actor, "run_killed", str(run_id), None)
+        raise _RunKilled(f"run {run_id} killed by operator interrupt")
+    if action == "freeze":
+        write_audit_event("autopilot", actor, "run_frozen", str(run_id), None)
+        deadline = _time.monotonic() + _lease_ttl_s()
+        while _time.monotonic() < deadline:
+            _time.sleep(2)
+            action = blast_radius.pending_interrupt(run_id)
+            if action == "kill":
+                write_audit_event("autopilot", actor, "run_killed", str(run_id), None)
+                raise _RunKilled(f"run {run_id} killed while frozen")
+            if action is None:
+                write_audit_event("autopilot", actor, "run_resumed", str(run_id), None)
+                return
+        write_audit_event(
+            "autopilot", actor, "run_killed", str(run_id), {"reason": "freeze timed out"}
+        )
+        raise _RunKilled(f"run {run_id} froze past the lease TTL — killed")
+
+
+def _behaviour_gate(
+    behaviour: str,
+    model: str,
+    change: str,
+    extent: dict[str, float],
+    *,
+    actor: str,
+    dry_run: bool,
+    skipped: list,
+    hitl: list,
+    blocks: list,
+) -> bool:
+    """ADR 0113 per-model gate: quarantine → per-behaviour autonomy → blast-radius contract.
+
+    Returns True when the action may proceed autonomously. Every other outcome is recorded on
+    the cycle report (and audited on a live run) with the exact clause or state that stopped it.
+    """
+    q = blast_radius.quarantine_reason(model)
+    if q:
+        skipped.append({"model": model, "reason": f"quarantined: {q}"})
+        return False
+
+    level = blast_radius.get_autonomy(behaviour)
+    if level == blast_radius.DISABLED:
+        skipped.append({"model": model, "reason": f"{behaviour} autonomy is DISABLED"})
+        return False
+    if level == blast_radius.REVIEW:
+        hitl.append({"model": model, "gate": behaviour, "reason": "autonomy is REVIEW"})
+        if not dry_run:
+            write_audit_event(
+                "autopilot",
+                actor,
+                "human_approval_required",
+                model,
+                {"gate": behaviour, "reason": "per-behaviour autonomy is REVIEW"},
+            )
+        return False
+
+    allowed, clause = blast_radius.check_change(behaviour, change, extent)
+    if not allowed:
+        blocks.append({"model": model, "gate": behaviour, "reason": clause})
+        if not dry_run:
+            write_audit_event(
+                "autopilot", actor, "contract_denied", model, {"gate": behaviour, "clause": clause}
+            )
+        return False
+    return True
+
+
 def _classify_anomaly_for(model: str, drift_signal: dict[str, Any]):
     """Classify the anomaly behind a drift breach (ADR 0114), or ``None`` if it cannot be.
 
@@ -364,6 +449,19 @@ def run_cycle(
         for model in scan_models:
             # A previous iteration's declared inverse must not leak onto this model's events.
             clear_rollback_ref()
+            _interrupt_checkpoint(run_id, actor)
+            if not _behaviour_gate(
+                "drift_auto_retrain",
+                model,
+                "pipeline_run",
+                {"models": 1, "runs": 1},
+                actor=actor,
+                dry_run=dry_run,
+                skipped=skipped,
+                hitl=hitl,
+                blocks=blocks,
+            ):
+                continue
             ar = auto_retrain_cfgs[model]
 
             # Read drift snapshots
@@ -529,8 +627,21 @@ def run_cycle(
 
         for model in promo_models:
             clear_rollback_ref()
+            _interrupt_checkpoint(run_id, actor)
             rule = get_promotion_rule(model)
             if not rule:
+                continue
+            if not _behaviour_gate(
+                "autopilot_promote",
+                model,
+                f"model_alias:{rule['to_alias']}",
+                {"models": 1, "aliases": 1},
+                actor=actor,
+                dry_run=dry_run,
+                skipped=skipped,
+                hitl=hitl,
+                blocks=blocks,
+            ):
                 continue
 
             # Get Staging metrics
@@ -830,6 +941,26 @@ def run_cycle(
             pass
 
         return {"run_id": run_id, "dry_run": dry_run, "kill_switch_enabled": enabled, **summary}
+    except _RunKilled as exc:
+        # Decision 4: a killed run ends cleanly — its record says so, and the cycle report
+        # carries whatever was decided before the interrupt landed.
+        update_autopilot_run(
+            run_id,
+            retrains_triggered=len(retrains),
+            promotions_made=len(promotions),
+            policy_blocks=len(blocks),
+            human_required=len(hitl),
+            skipped=len(skipped),
+            summary={"interrupted": str(exc), "retrains": retrains, "promotions": promotions},
+        )
+        return {
+            "run_id": run_id,
+            "dry_run": dry_run,
+            "kill_switch_enabled": enabled,
+            "interrupted": str(exc),
+            "retrains": retrains,
+            "promotions": promotions,
+        }
     finally:
         if cycle_ctx is not None:
             cycle_ctx.__exit__(None, None, None)
@@ -951,11 +1082,22 @@ def status_cmd(
     """Show recent autopilot run history."""
     runs = list_autopilot_runs(last_n=last)
     enabled = _is_enabled()
+    contracts = {
+        name: {**c.as_dict(), "effective_autonomy": blast_radius.get_autonomy(name)}
+        for name, c in blast_radius.load_contracts().items()
+    }
     if _output.json_mode:
-        _output.print_json({"enabled": enabled, "runs": runs})
+        _output.print_json({"enabled": enabled, "contracts": contracts, "runs": runs})
         return
     state_str = "[green]ENABLED[/green]" if enabled else "[red]DISABLED[/red]"
     _output.info(f"Autopilot kill-switch: {state_str}")
+    # ADR 0113 decision 1: every enabled behaviour's contract is printed VERBATIM — reading
+    # the autopilot's bounds is a status command away, not a source dive.
+    import yaml as _yaml
+
+    for name, c in contracts.items():
+        _output.info(f"{name} — autonomy: {c['effective_autonomy']}")
+        _output.info(_yaml.safe_dump(c, sort_keys=False).rstrip())
     if not runs:
         _output.ok("No autopilot runs recorded yet — run: exa autopilot run --dry-run")
         return
@@ -988,6 +1130,101 @@ def enable() -> None:
     set_autopilot_config("enabled", "1")
     write_audit_event("cli", _actor(), "autopilot_enabled", None, {})
     _output.ok("Autopilot enabled — run: exa autopilot run --dry-run to test")
+
+
+@app.command()
+def contract(
+    behaviour: str = typer.Argument("", help="Behaviour name; empty shows every contract"),
+) -> None:
+    """Show a behaviour's blast-radius contract verbatim (ADR 0113)."""
+    import yaml as _yaml
+
+    contracts = blast_radius.load_contracts()
+    if behaviour:
+        c = contracts.get(behaviour)
+        if c is None:
+            _output.error(f"No contract published for {behaviour!r} — known: {sorted(contracts)}")
+            raise typer.Exit(1)
+        selected = {behaviour: c}
+    else:
+        selected = contracts
+    payload = {
+        name: {**c.as_dict(), "effective_autonomy": blast_radius.get_autonomy(name)}
+        for name, c in selected.items()
+    }
+    if _output.json_mode:
+        _output.print_json(payload)
+        return
+    for name, d in payload.items():
+        _output.info(name)
+        _output.info(_yaml.safe_dump(d, sort_keys=False).rstrip())
+
+
+@app.command()
+def autonomy(
+    behaviour: str = typer.Argument(..., help="Behaviour (e.g. drift_auto_retrain)"),
+    level: str = typer.Argument(..., help="AUTONOMOUS | REVIEW | DISABLED"),
+    ack: str = typer.Option(
+        "", "--ack", help="Required when granting AUTONOMOUS: your recorded acknowledgment"
+    ),
+) -> None:
+    """Set one behaviour's autonomy level (per rule, pausable, acknowledgment recorded)."""
+    if behaviour not in blast_radius.load_contracts():
+        _output.error(
+            f"Unknown behaviour {behaviour!r} — known: {sorted(blast_radius.load_contracts())}"
+        )
+        raise typer.Exit(1)
+    try:
+        blast_radius.set_autonomy(behaviour, level, actor=_actor(), acknowledgment=ack)
+    except ValueError as exc:
+        _output.error(str(exc))
+        raise typer.Exit(1) from exc
+    _output.ok(f"{behaviour} autonomy → {level.upper()} (audited)")
+
+
+@app.command()
+def interrupt(
+    run_id: int = typer.Argument(..., help="In-flight autopilot run id (exa autopilot status)"),
+    kill: bool = typer.Option(False, "--kill", help="Abort the run at its next checkpoint"),
+    freeze: bool = typer.Option(False, "--freeze", help="Pause the run until resumed"),
+    reason: str = typer.Option("", "--reason", help="Why (recorded in the audit event)"),
+) -> None:
+    """Freeze or kill ONE in-flight autopilot run (ADR 0113 decision 4; audited)."""
+    if kill == freeze:
+        _output.error("Pass exactly one of --kill / --freeze")
+        raise typer.Exit(1)
+    blast_radius.request_interrupt(
+        run_id, "kill" if kill else "freeze", actor=_actor(), reason=reason
+    )
+    _output.ok(f"Run {run_id} flagged: {'kill' if kill else 'freeze'} (applies at next checkpoint)")
+
+
+@app.command()
+def resume(
+    run_id: int = typer.Argument(..., help="Frozen autopilot run id"),
+) -> None:
+    """Release a frozen run so it continues from its checkpoint."""
+    blast_radius.clear_interrupt(run_id, actor=_actor())
+    _output.ok(f"Run {run_id} resumed")
+
+
+@app.command()
+def quarantine(
+    model: str = typer.Argument(..., help="Model to exclude from autonomous action"),
+    reason: str = typer.Option("", "--reason", help="Why (recorded and shown on skips)"),
+) -> None:
+    """Quarantine a model: the autopilot skips it until released (audited)."""
+    blast_radius.quarantine_model(model, actor=_actor(), reason=reason)
+    _output.ok(f"{model} quarantined — release with: exa autopilot release {model}")
+
+
+@app.command()
+def release(
+    model: str = typer.Argument(..., help="Quarantined model to release"),
+) -> None:
+    """Release a quarantined model back to autonomous eligibility (audited)."""
+    blast_radius.release_model(model, actor=_actor())
+    _output.ok(f"{model} released")
 
 
 @app.command()
