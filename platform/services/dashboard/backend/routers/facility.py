@@ -31,7 +31,7 @@ async def overview(cluster: str | None = None, _=Depends(_viewer)) -> dict[str, 
     """Facility KPIs + per-partition utilization (F6 R1)."""
     db = _platform_db_path()
 
-    async def _ov() -> dict[str, Any]:
+    def _ov() -> dict[str, Any]:
         return facility.facility_overview(db, scheduler=cluster)
 
     return await aggregate({"facility": _ov})
@@ -42,7 +42,7 @@ async def queue(cluster: str | None = None, _=Depends(_viewer)) -> dict[str, Any
     """Waiting jobs, longest-waiting first (F6 R2)."""
     db = _platform_db_path()
 
-    async def _q() -> dict[str, Any]:
+    def _q() -> dict[str, Any]:
         jobs = facility.job_queue(db, scheduler=cluster)
         return {"jobs": jobs, "count": len(jobs)}
 

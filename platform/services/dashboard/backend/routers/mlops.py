@@ -29,7 +29,7 @@ async def registry(_=Depends(_viewer)) -> dict[str, Any]:
     """Registry grid: models × latest-version × stage with health/freshness (F9 R1)."""
     db = _platform_db_path()
 
-    async def _rows() -> dict[str, Any]:
+    def _rows() -> dict[str, Any]:
         rows = mlops.registry_rows(db)
         return {"rows": rows, "count": len(rows)}
 
@@ -41,7 +41,7 @@ async def model_detail(name: str, _=Depends(_viewer)) -> dict[str, Any]:
     """Model detail 2.0 tabs: cost / drift / traffic / promotion (F9 R2)."""
     db = _platform_db_path()
 
-    async def _detail() -> dict[str, Any]:
+    def _detail() -> dict[str, Any]:
         return mlops.model_detail(db, name)
 
     return await aggregate({"detail": _detail})
@@ -52,7 +52,7 @@ async def promotion(name: str, _=Depends(_viewer)) -> dict[str, Any]:
     """Guided-promotion check: policy + eval + approval, denied with reasons (F9 R4)."""
     db = _platform_db_path()
 
-    async def _check() -> dict[str, Any]:
+    def _check() -> dict[str, Any]:
         return mlops.promotion_check(db, name)
 
     return await aggregate({"promotion": _check})

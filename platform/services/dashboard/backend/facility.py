@@ -158,7 +158,35 @@ def fleet_clusters(db_path: str) -> list[dict[str, Any]]:
 def set_cluster_state(
     db_path: str, name: str, state: str, *, actor: str, reason: str | None = None
 ) -> bool:
-    """Transition a cluster's state and write an audit event. False if unknown/no table."""
+    """Transition a cluster's state and write an audit event. False if unknown/no table.
+
+    Routed through ``examlops.data.hpc.set_cluster_state`` — the same helper the
+    ``exa hpc approve/reject`` commands use (Phase 42 shared-code-path rule) — so a change to
+    the transition semantics can never diverge between the two surfaces. Falls back to the
+    local UPDATE only when the examlops package is absent in this deployment.
+    """
+    try:
+        from examlops.data.hpc import set_cluster_state as _shared_set_state
+    except ImportError:  # pragma: no cover - degraded deployment without examlops
+        _shared_set_state = None
+
+    import os as _os
+
+    # The shared helper resolves PLATFORM_DB itself; use it only when that resolves to the
+    # same file this router was pointed at, else the write would land in a different DB.
+    if _shared_set_state is not None and _os.environ.get("PLATFORM_DB") == db_path:
+        if not _shared_set_state(name, state, approved_by=actor, reason=reason):
+            return False
+        conn = _connect(db_path)
+        try:
+            if _has_table(conn, "audit_events"):
+                action = "cluster_approved" if state == "ACTIVE" else "cluster_rejected"
+                audit_write.audit(actor, action, name, {"reason": reason}, conn=conn)
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
     conn = _connect(db_path)
     try:
         if not _has_table(conn, "hpc_clusters"):

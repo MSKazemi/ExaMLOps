@@ -35,7 +35,7 @@ async def global_search(
     """Federated global search (F2 R3): grouped, ranked, entity-linked results."""
     db = _platform_db_path()
 
-    async def _run() -> dict[str, Any]:
+    def _run() -> dict[str, Any]:
         return search_lib.search(db, q, limit=limit)
 
     return await aggregate({"search": _run})

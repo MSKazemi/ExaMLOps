@@ -27,7 +27,7 @@ async def overview(_=Depends(_viewer)) -> dict[str, Any]:
     """Governance overview: posture / compliance / cards / audit integrity (F14 R1–R5)."""
     db = _platform_db_path()
 
-    async def _wrap(fn) -> Any:
+    def _wrap(fn) -> Any:
         return fn(db)
 
     return await aggregate(

@@ -66,7 +66,9 @@ def test_health_reports_registry_and_auth(client):
 
 
 def test_models_endpoint_lists_known_models(client):
-    r = client.get("/models")
+    # /models requires read scope since the D2 hardening (it exposes per-model SeanerBUS
+    # UUIDs and promotion config — registry enumeration must not be anonymous).
+    r = client.get("/models", headers={"Authorization": "Bearer test-token"})
     assert r.status_code == 200
     body = r.json()
     names = {entry["model_name"] for entry in body}
@@ -214,3 +216,8 @@ class TestPrefectGatewaySlugParsing:
         result = gw.find_deployment_id("flowA/depB")
         assert result == "abc"
         assert captured["url"] == "http://prefect/api/deployments/name/flowA/depB"
+
+
+def test_models_endpoint_requires_token(client):
+    """D2 regression guard: the registry (incl. SeanerBUS UUIDs) is not anonymous."""
+    assert client.get("/models").status_code == 401

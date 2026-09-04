@@ -6,8 +6,10 @@ import asyncio
 import json as _json
 import uuid
 
+import audit_write
 import httpx
 from auth import require_role
+from capabilities import MODEL_PROMOTE, principal_from_claims, require_capability
 from control_plane_client import ControlPlaneClient
 from database import get_db
 from dbconn import connect
@@ -179,12 +181,33 @@ async def _fetch_versions_for_model(name: str, claims: dict) -> list[dict]:
     return await list_versions(name, _claims=claims)
 
 
+def _promotion_gate_outcome(model_id: str, version: str) -> tuple[int, str] | None:
+    """Shared C3/ADR-0111 eval-gate verdict for a dashboard-initiated promotion.
+
+    Returns None when the promotion may proceed (no gate configured, or the gate passed);
+    otherwise ``(http_status, reason)``. A gate that cannot run BLOCKS — a broken gate must not
+    masquerade as a pass (the same stance as ``exa pipeline promote``, which this mirrors so the
+    dashboard can never be the surface that skips the calibration refusal). There is
+    deliberately no --force here: overrides go through the audited CLI path.
+    """
+    try:
+        from examlops.evaluation.gate import run_eval_gate
+
+        result = run_eval_gate(model_id, str(version))
+    except Exception as exc:  # noqa: BLE001
+        return (503, f"promotion gate could not run: {exc}")
+    if result is not None and not result.passed:
+        failing = [m.name for m in result.metrics if m.failed]
+        return (403, "promotion blocked by eval gate: " + (", ".join(failing) or result.mode))
+    return None
+
+
 @router.put("/{name}/versions/{version}/alias")
 async def set_version_alias(
     name: str,
     version: str,
     body: AliasBody,
-    claims: dict = Depends(require_role("admin")),
+    claims: dict = Depends(require_capability(MODEL_PROMOTE)),
 ) -> list[dict]:
     if body.alias not in VALID_ALIASES:
         raise HTTPException(
@@ -197,6 +220,21 @@ async def set_version_alias(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown model {name!r}") from exc
     model_id: str = (meta.get("promotion") or {}).get("model_id") or name
+
+    if body.alias == "Production":
+        # The same promotion gate the CLI enforces (eval regression + ADR 0111 judge
+        # calibration). Without this the dashboard was the one surface where an admin could
+        # move Production past every gate, unaudited.
+        verdict = await asyncio.to_thread(_promotion_gate_outcome, model_id, version)
+        if verdict is not None:
+            code, reason = verdict
+            audit_write.audit(
+                principal_from_claims(claims)["sub"],
+                "promotion_blocked_by_gate",
+                name,
+                {"version": version, "reason": reason, "via": "dashboard"},
+            )
+            raise HTTPException(status_code=code, detail=reason)
 
     async with _mlflow_client() as mlflow:
         prev_version: str | None = None
@@ -242,6 +280,18 @@ async def set_version_alias(
                 json={"name": model_id, "alias": "Archived", "version": prev_version},
             )
 
+    await asyncio.to_thread(
+        audit_write.audit,
+        principal_from_claims(claims)["sub"],
+        "model_promoted" if body.alias == "Production" else "model_alias_set",
+        name,
+        {
+            "alias": body.alias,
+            "version": version,
+            "previous_production": prev_version,
+            "via": "dashboard",
+        },
+    )
     return await _fetch_versions_for_model(name, claims)
 
 
@@ -250,7 +300,7 @@ async def delete_version_alias(
     name: str,
     version: str,
     alias: str,
-    claims: dict = Depends(require_role("admin")),
+    claims: dict = Depends(require_capability(MODEL_PROMOTE)),
 ) -> list[dict]:
     if alias not in VALID_ALIASES:
         raise HTTPException(
@@ -292,6 +342,13 @@ async def delete_version_alias(
         if del_r.status_code not in (200, 204):
             raise HTTPException(status_code=502, detail=f"MLflow error: {del_r.text[:200]}")
 
+    await asyncio.to_thread(
+        audit_write.audit,
+        principal_from_claims(claims)["sub"],
+        "model_alias_deleted",
+        name,
+        {"alias": alias, "version": version, "via": "dashboard"},
+    )
     return await _fetch_versions_for_model(name, claims)
 
 

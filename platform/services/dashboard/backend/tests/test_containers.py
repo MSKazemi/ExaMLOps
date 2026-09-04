@@ -251,7 +251,9 @@ def test_start_writes_audit_event(mock_client_fn, _mock_proj, mock_audit):
     resp = client.post("/api/containers/mlflow/start")
 
     assert resp.status_code == 200
-    mock_audit.audit.assert_called_once_with("t", "service_started", "mlflow", {"service": "mlflow"})
+    mock_audit.audit.assert_called_once_with(
+        "t", "service_started", "mlflow", {"service": "mlflow"}
+    )
 
 
 @patch("routers.containers.audit_write")
@@ -267,7 +269,9 @@ def test_stop_writes_audit_event(mock_client_fn, _mock_proj, mock_audit):
     resp = client.post("/api/containers/mlflow/stop")
 
     assert resp.status_code == 200
-    mock_audit.audit.assert_called_once_with("t", "service_stopped", "mlflow", {"service": "mlflow"})
+    mock_audit.audit.assert_called_once_with(
+        "t", "service_stopped", "mlflow", {"service": "mlflow"}
+    )
 
 
 @patch("routers.containers.audit_write")

@@ -29,7 +29,7 @@ async def list_alerts(_=Depends(_viewer)) -> dict[str, Any]:
     """Unified alert inbox across sources, severity-sorted (F12 R1)."""
     db = _platform_db_path()
 
-    async def _run() -> dict[str, Any]:
+    def _run() -> dict[str, Any]:
         return alerts_lib.active_alerts(db)
 
     return await aggregate({"inbox": _run})

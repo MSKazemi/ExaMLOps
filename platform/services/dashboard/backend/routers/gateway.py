@@ -106,9 +106,7 @@ async def issue_key(
     try:
         budget_usd = float(budget) if budget not in (None, "") else None
     except (TypeError, ValueError):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "budgetUsd must be a number"
-        ) from None
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "budgetUsd must be a number") from None
     gateway, _gov = _examlops_gateway()
     raw = gateway.issue_virtual_key(
         tenant, project, models, budget_usd, principal.get("sub", "?"), source="dashboard"

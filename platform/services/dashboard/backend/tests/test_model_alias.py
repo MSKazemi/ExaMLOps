@@ -166,3 +166,85 @@ async def test_delete_alias_wrong_version_returns_409(client, fake_deps):
     detail = r.json().get("detail", "")
     assert "Staging" in detail
     assert "3" in detail  # holder version mentioned in the error
+
+
+# ─── D1: dashboard promotion goes through the shared eval/calibration gate ────
+
+
+class _FailingMetric:
+    name = "accuracy"
+    failed = True
+
+
+class _FailingGate:
+    passed = False
+    mode = "block"
+    metrics = [_FailingMetric()]
+
+
+@pytest.mark.asyncio
+async def test_promotion_blocked_by_eval_gate(client, fake_deps, monkeypatch):
+    """A failing shared gate must block the dashboard Production move (403) and audit it."""
+    import routers.models as m
+
+    monkeypatch.setattr(m, "_promotion_gate_outcome", lambda mid, v: (403, "promotion blocked"))
+    audited = []
+    monkeypatch.setattr(m.audit_write, "audit", lambda *a, **k: audited.append(a))
+
+    token = await _login(client, ADMIN_PW)
+    r = await client.put(
+        "/api/models/JPCP/versions/3/alias",
+        json={"alias": "Production"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 403
+    assert "blocked" in r.json()["detail"]
+    assert audited and audited[0][1] == "promotion_blocked_by_gate"
+
+
+@pytest.mark.asyncio
+async def test_promotion_gate_outcome_blocks_on_failing_gate(monkeypatch):
+    import routers.models as m
+
+    fake_gate_mod = type("G", (), {"run_eval_gate": staticmethod(lambda *a, **k: _FailingGate())})
+    import sys
+
+    monkeypatch.setitem(sys.modules, "examlops.evaluation.gate", fake_gate_mod)
+    verdict = m._promotion_gate_outcome("jpcp", "3")
+    assert verdict is not None and verdict[0] == 403
+    assert "accuracy" in verdict[1]
+
+
+@pytest.mark.asyncio
+async def test_promotion_gate_outcome_blocks_when_gate_cannot_run(monkeypatch):
+    """A broken gate must not masquerade as a pass — 503, not silent allow."""
+    import sys
+
+    import routers.models as m
+
+    class _Boom:
+        @staticmethod
+        def run_eval_gate(*a, **k):
+            raise RuntimeError("db unreachable")
+
+    monkeypatch.setitem(sys.modules, "examlops.evaluation.gate", _Boom)
+    verdict = m._promotion_gate_outcome("jpcp", "3")
+    assert verdict is not None and verdict[0] == 503
+
+
+@pytest.mark.asyncio
+async def test_successful_alias_set_is_audited(client, fake_deps, monkeypatch):
+    import routers.models as m
+
+    monkeypatch.setattr(m, "_promotion_gate_outcome", lambda mid, v: None)
+    audited = []
+    monkeypatch.setattr(m.audit_write, "audit", lambda *a, **k: audited.append(a))
+
+    token = await _login(client, ADMIN_PW)
+    r = await client.put(
+        "/api/models/JPCP/versions/3/alias",
+        json={"alias": "Production"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200, r.text
+    assert audited and audited[0][1] == "model_promoted"

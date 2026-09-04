@@ -28,7 +28,7 @@ async def overview(_=Depends(_viewer)) -> dict[str, Any]:
     """LLMOps overview: endpoint registry + eval scores (F10 R1/R2)."""
     db = _platform_db_path()
 
-    async def _wrap(fn) -> Any:
+    def _wrap(fn) -> Any:
         return fn(db)
 
     return await aggregate(

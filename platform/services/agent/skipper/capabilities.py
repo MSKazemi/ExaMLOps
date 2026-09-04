@@ -56,6 +56,11 @@ _READ_TOOLS = (
     "validate_model_serving",
     "get_platform_summary",
     "diagnose_platform",
+    # FinOps reads (2026-09-04): cost/carbon/budget queries against platform.db — no mutation.
+    "get_cost_summary",
+    "get_model_cost_history",
+    "get_carbon_summary",
+    "get_budget_status",
 )
 
 _WRITE_TIERS: dict[str, Literal["A", "B", "C"]] = {

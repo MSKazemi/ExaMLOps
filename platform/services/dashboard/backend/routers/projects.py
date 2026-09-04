@@ -454,24 +454,33 @@ async def create_project_view(payload: dict = Body(...), principal: dict = Depen
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "name is required")
+
+    def _num(key: str, default: float, cast=float):
+        try:
+            return cast(payload.get(key, default))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{key} must be a number") from exc
+
+    cpu = _num("cpuLimit", 4.0)
+    mem = _num("memoryLimitGb", 8.0)
+    stor = _num("storageGb", 50.0)
+    gpu = _num("gpuLimit", 0, int)
+    # Shared code path (Phase 42): creation goes through examlops.data.projects.create_project —
+    # the same helper `exa project create` uses — never a hand-rolled INSERT that can drift.
+    _pdb = _examlops_projects()
     conn = _connect()
     _ensure_tables(conn)
     if conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
         conn.close()
         raise HTTPException(status.HTTP_409_CONFLICT, f"Project '{name}' already exists")
-    conn.execute(
-        """INSERT INTO projects (name, description, cpu_limit, memory_limit_gb, storage_gb,
-           gpu_limit, network_name, created_by) VALUES (?,?,?,?,?,?,?,?)""",
-        (
-            name,
-            payload.get("description"),
-            float(payload.get("cpuLimit", 4.0)),
-            float(payload.get("memoryLimitGb", 8.0)),
-            float(payload.get("storageGb", 50.0)),
-            int(payload.get("gpuLimit", 0)),
-            f"examlops-{name}",
-            principal.get("sub"),
-        ),
+    _pdb.create_project(
+        name,
+        description=payload.get("description"),
+        cpu_limit=cpu,
+        memory_limit_gb=mem,
+        storage_gb=stor,
+        gpu_limit=gpu,
+        created_by=principal.get("sub"),
     )
     _audit(conn, principal.get("sub", "?"), "project_created", name, {"via": "dashboard"})
     conn.commit()
@@ -489,19 +498,12 @@ async def assign_resource_view(
     ref = (payload.get("ref") or "").strip()
     if kind not in _RESOURCE_KINDS or not ref:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "valid kind and ref required")
-    conn = _connect()
-    _ensure_tables(conn)
-    if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
-        conn.close()
+    # Shared code path (Phase 42): the helper validates kind, mirrors model-kind rows into
+    # project_models, and is what `exa project assign` runs — the two surfaces cannot diverge.
+    _pdb = _examlops_projects()
+    if not _pdb.assign_resource_to_project(name, kind, ref, added_by=principal.get("sub")):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
-    conn.execute(
-        "INSERT OR REPLACE INTO project_resources (project, kind, ref, added_by) VALUES (?,?,?,?)",
-        (name, kind, ref, principal.get("sub")),
-    )
-    if kind == "model":
-        conn.execute(
-            "INSERT OR REPLACE INTO project_models (project, model) VALUES (?,?)", (name, ref)
-        )
+    conn = _connect()
     _audit(
         conn,
         principal.get("sub", "?"),
@@ -634,6 +636,7 @@ async def delete_project_view(name: str, principal: dict = Depends(_admin)) -> d
     # Shared code path (Phase 42): the full cascade — membership, authz grants, budget/storage/
     # pipeline rows — lives in examlops.data.projects.delete_project, the same helper the CLI
     # uses, so the two surfaces can never disagree on a security-relevant cascade again.
+    _pdb = _examlops_projects()
     if not _pdb.delete_project(name):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
     conn = _connect()
