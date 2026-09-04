@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -224,3 +225,77 @@ def test_cold_alias_load_is_single_flight(monkeypatch):
     assert len(results) == 6
     assert all(r["version"] == "7" for r in results)
     assert len(loads) == 1, f"expected one single-flight load, got {len(loads)}"
+
+
+# ─── S6: poisoned predict pool recycles instead of 504ing forever ─────────────
+
+
+def test_pool_recycles_after_full_poisoning():
+    """When every worker is hung, the pool is swapped so new predicts get fresh threads."""
+    server = _make_server()
+    server._pool_workers = 2
+    server._pool_lock = threading.Lock()
+    server._leaked_predicts = 0
+    server._pool_recycles = 0
+    server._predict_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="predict")
+    original_pool = server._predict_pool
+
+    release = threading.Event()
+
+    def hang():
+        release.wait(10)
+
+    # Two hung predicts = every worker consumed.
+    f1 = server._predict_pool.submit(hang)
+    f2 = server._predict_pool.submit(hang)
+    time.sleep(0.05)  # let both start so cancel() fails (truly running)
+    server._note_predict_timeout(f1)
+    assert server._pool_recycles == 0  # one hung worker is not poisoning yet
+    server._note_predict_timeout(f2)
+
+    assert server._pool_recycles == 1, "fully poisoned pool must recycle"
+    assert server._predict_pool is not original_pool
+    # The fresh pool actually serves work.
+    assert server._predict_pool.submit(lambda: 42).result(timeout=5) == 42
+    release.set()
+
+
+def test_queued_timeout_does_not_count_as_leak():
+    """A timeout while still queued (cancel() succeeds) is congestion, not a hung thread."""
+    server = _make_server()
+    server._pool_workers = 1
+    server._pool_lock = threading.Lock()
+    server._leaked_predicts = 0
+    server._pool_recycles = 0
+    server._predict_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="predict")
+
+    release = threading.Event()
+    running = server._predict_pool.submit(release.wait, 10)
+    time.sleep(0.05)
+    queued = server._predict_pool.submit(lambda: 1)  # sits in the queue behind the hang
+
+    server._note_predict_timeout(queued)  # cancel() succeeds → no leak counted
+    assert server._leaked_predicts == 0
+    assert server._pool_recycles == 0
+    release.set()
+    running.result(timeout=5)
+
+
+def test_slow_but_finishing_predict_returns_its_slot():
+    """A merely-slow call that completes decrements the leak count via its done-callback."""
+    server = _make_server()
+    server._pool_workers = 4
+    server._pool_lock = threading.Lock()
+    server._leaked_predicts = 0
+    server._pool_recycles = 0
+    server._predict_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="predict")
+
+    release = threading.Event()
+    f = server._predict_pool.submit(release.wait, 10)
+    time.sleep(0.05)
+    server._note_predict_timeout(f)
+    assert server._leaked_predicts == 1
+    release.set()
+    f.result(timeout=5)
+    time.sleep(0.05)  # done-callback runs
+    assert server._leaked_predicts == 0

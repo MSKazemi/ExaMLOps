@@ -345,11 +345,20 @@ class MultiModelServer:
         # inference can't pin the (num_cpus=1) replica worker forever. Stored on the
         # instance (like _version_cache_size) so tests can override — the
         # @serve.ingress wrapper freezes module globals inside decorated methods.
+        self._pool_workers = int(os.getenv("RAY_PREDICT_WORKERS", "4"))
         self._predict_pool = ThreadPoolExecutor(
-            max_workers=int(os.getenv("RAY_PREDICT_WORKERS", "4")),
+            max_workers=self._pool_workers,
             thread_name_prefix="predict",
         )
         self._predict_timeout = PREDICT_TIMEOUT
+        # Poisoned-pool accounting (audit item S6): a timed-out predict whose thread is truly
+        # hung permanently consumes a worker — after RAY_PREDICT_WORKERS of them the pool is
+        # exhausted and EVERY model on this replica 504s forever while max_ongoing_requests
+        # keeps admitting traffic. Track live-hung predicts and recycle the pool when it is
+        # fully poisoned, restoring capacity without a replica restart.
+        self._pool_lock = threading.Lock()
+        self._leaked_predicts = 0
+        self._pool_recycles = 0
 
         # ADR 0024 clause 1 — shadow mirroring. A pool of its own, never `_predict_pool`: a
         # shadow that is slower than the champion must not take threads away from the traffic
@@ -660,6 +669,62 @@ class MultiModelServer:
         if entry is None and model_name != model_name.lower():
             entry = self._hot.get((model_name.lower(), alias))
         return entry
+
+    def _note_predict_timeout(self, future: Any) -> None:
+        """Account a timed-out predict; recycle the pool once it is fully poisoned (S6).
+
+        ``cancel()`` succeeding means the task never started — the timeout was queue
+        congestion, no thread is stuck, nothing leaks. Otherwise the call is running (possibly
+        hung): count it, and give it a done-callback so a merely-slow call that eventually
+        returns gives its slot back to the accounting. Lazy attribute init so hand-built test
+        instances (object.__new__) work.
+        """
+        if future.cancel():
+            return
+        lock = getattr(self, "_pool_lock", None)
+        if lock is None:
+            lock = self._pool_lock = threading.Lock()
+            self._leaked_predicts = 0
+            self._pool_recycles = 0
+            self._pool_workers = int(os.getenv("RAY_PREDICT_WORKERS", "4"))
+        with lock:
+            self._leaked_predicts += 1
+            leaked = self._leaked_predicts
+
+        def _release(_f: Any) -> None:
+            with lock:
+                self._leaked_predicts = max(0, self._leaked_predicts - 1)
+
+        future.add_done_callback(_release)
+        if leaked >= self._pool_workers:
+            self._recycle_predict_pool()
+
+    def _recycle_predict_pool(self) -> None:
+        """Swap in a fresh predict pool; the old one (all workers hung) is abandoned.
+
+        The hung threads themselves cannot be killed from Python — they stay until their C
+        calls return — but the REPLICA recovers: new requests get fresh workers instead of
+        queueing behind a dead pool until the 504-everything state. Each recycle is logged
+        loudly; recurring recycles are the signal to fix the model that hangs.
+        """
+        with self._pool_lock:
+            if self._leaked_predicts < self._pool_workers:
+                return  # another request already recycled
+            old_pool = self._predict_pool
+            self._predict_pool = ThreadPoolExecutor(
+                max_workers=self._pool_workers, thread_name_prefix="predict"
+            )
+            self._leaked_predicts = 0
+            self._pool_recycles += 1
+            recycle_n = self._pool_recycles
+        old_pool.shutdown(wait=False)
+        logger.error(
+            "Predict pool POISONED (%d hung predicts) — recycled into a fresh pool "
+            "(recycle #%d). The hung threads remain until their calls return; a recurring "
+            "recycle means a model reproducibly hangs and needs fixing.",
+            self._pool_workers,
+            recycle_n,
+        )
 
     def _single_flight(self, model_name: str, key2: str) -> threading.Lock:
         """Per-(model, alias-or-version) load lock. Lazy so hand-built test instances work."""
@@ -991,13 +1056,13 @@ class MultiModelServer:
         _t0 = time.time()
         try:
             # Run under a hard timeout so a hung model can't pin the replica worker.
-            raw = self._predict_pool.submit(model.predict, input_array).result(
-                timeout=self._predict_timeout
-            )
+            _predict_future = self._predict_pool.submit(model.predict, input_array)
+            raw = _predict_future.result(timeout=self._predict_timeout)
             prediction: Any = raw.tolist() if hasattr(raw, "tolist") else raw
             if isinstance(prediction, list) and len(prediction) == 1:
                 prediction = prediction[0]
         except FuturesTimeoutError as exc:
+            self._note_predict_timeout(_predict_future)
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,

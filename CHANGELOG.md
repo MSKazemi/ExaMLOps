@@ -64,6 +64,10 @@ followed by a deep fix pass. Highlights, by tier:
   workspace member pyprojects re-pinned to the root version with a guard test; the
   promotion→reload webhook falls back to `RAY_SERVE_URL` so it actually fires in containers;
   registry `concurrency_limit` reaches Prefect deployments.
+- **Serving (S6, follow-up):** a hung `model.predict` no longer poisons the replica forever —
+  timed-out predicts are counted (queued-then-cancelled ones excluded; slow-but-finishing ones
+  release their slot), and when every `RAY_PREDICT_WORKERS` thread is hung the pool is recycled
+  so new requests get fresh workers instead of queueing behind a dead pool.
 - **Skipper:** the router tie-break safety property (ambiguous → read-only `general`, never the
   write pack) now has its regression guard (`test_router.py`, 18 tests); new read-only FinOps
   tools (`get_cost_summary`/`get_model_cost_history`/`get_carbon_summary`/`get_budget_status`)
