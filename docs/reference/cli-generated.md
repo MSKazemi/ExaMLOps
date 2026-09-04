@@ -213,6 +213,13 @@ Audit log — tamper-evident, hash-chained (D4)
 - `--source, -s` — Filter by source (cli/agent/bridge)
 - `--limit, -n` — Max events to show
 
+### `exa audit anchor`
+
+Anchor the high-volume telemetry side tables into the chain (ADR 0110 decision 2).
+
+Cron-able; the autopilot also anchors at the end of each live cycle. Each anchor names its
+own row range, so the cadence is recorded in the chain itself.
+
 ### `exa audit autonomy`
 
 Every autonomous action in the window, and whether it declared an inverse.
@@ -250,9 +257,32 @@ Archival export of the audit trail (D4·R4). Append-only — never deletes.
 - `--out` — Write the archival JSON export to this file
 - `--before` — Only events before this ISO timestamp
 
+### `exa audit review`
+
+Perform and RECORD a sampled audit review (ADR 0113 decision 5).
+
+An unreviewed audit trail is theatre: this samples events written since the last recorded
+review (all of them, if fewer than the sample size), shows them, and writes an
+``audit_reviewed`` event naming the reviewer, the covered range and the sampled ids —
+so "is anyone actually looking?" is answerable from the chain. Schedule it (cron /
+`exa backup schedule`-style) at whatever cadence your governance names.
+
+- `--sample` — Events to sample for review
+- `--notes` — Reviewer notes, recorded with the review
+
+### `exa audit reviews`
+
+List recorded audit reviews — who reviewed, when, covering what.
+
+- `--last` — How many recorded reviews to show
+
 ### `exa audit verify`
 
 Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken.
+
+### `exa audit verify-anchors`
+
+Verify every telemetry anchor against its side table (ADR 0110 decision 5). Exit 1 on a break.
 
 ### `exa audit verify-worm`
 

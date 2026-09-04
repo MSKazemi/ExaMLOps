@@ -914,6 +914,10 @@ The audit trail is an append-only, hash-chained record of who did what and when 
 | `exa audit checkpoints` | List signed audit checkpoints; `--limit/-n` | Review prior checkpoint anchors | `exa audit checkpoints -n 20` |
 | `exa audit export` | **[mutation]** Append-only archival export; `--out <file>`, `--before <ISO>` (never deletes) | Produce an archival copy for retention | `exa audit export --out audit-2026.json --before 2026-07-01` |
 | `exa audit verify-worm` | Verify the external WORM anchor's own chain and its agreement with DB checkpoints (item 2.4) | Confirm the off-platform WORM anchor matches | `exa audit verify-worm` |
+| `exa audit anchor` | **[mutation]** Write a checkpoint hash over each telemetry side table's new rows into the chain (ADR 0110): tampering with an anchored row breaks the anchor. Cron-able; the autopilot also anchors each live cycle. | Make the per-inference drift/input/HPC/lineage tables tamper-evident without serialising them through the chain. | `exa audit anchor` |
+| `exa audit verify-anchors` | Recompute every telemetry anchor against its side table; audited retention prunes are reported as pruned, not tampering; rows newer than the last anchor are counted, never skipped. Exit 1 on a break. | Prove the high-volume telemetry matches what the chain vouched for. | `exa audit verify-anchors` |
+| `exa audit review` | **[mutation]** Perform and RECORD a sampled audit review: shows a sample of events since the last review, then writes an `audit_reviewed` event naming reviewer, range, sampled ids and notes (ADR 0113 decision 5). | Make "is anyone actually looking at the trail?" answerable from the chain; schedule at your governance cadence. | `exa audit review --sample 25 --notes "weekly pass"` |
+| `exa audit reviews` | List recorded audit reviews — who reviewed, when, covering what range. `--last` (10). | Verify the review cadence is being kept. | `exa audit reviews` |
 
 ### `exa secrets` — encrypted secrets, rotation, and leak scanning
 

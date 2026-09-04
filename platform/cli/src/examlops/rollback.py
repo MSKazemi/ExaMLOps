@@ -131,6 +131,10 @@ REGISTRY: dict[str, Inverse] = {
     "run_resumed": _r("run_resumed"),
     "model_quarantined": _r("model_quarantined"),
     "model_released": _r("model_released"),
+    # ADR 0110 decision 2 + ADR 0113 decision 5 — anchoring and review are records about the
+    # trail itself; neither mutates platform state autonomously.
+    "telemetry_anchor": _r("telemetry_anchor"),
+    "audit_reviewed": _r("audit_reviewed"),
     "corruption_detection_error": _r("corruption_detection_error"),
     "parity_gate_evaluated": _r("parity_gate_evaluated"),
     # ── operator switches: mutating, and their inverse is the opposite command ──

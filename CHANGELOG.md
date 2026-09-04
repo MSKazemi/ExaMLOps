@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — anchored telemetry + reviewed audit (ADRs 0110/0113 — AIDC W2 complete)
+
+- **`examlops.telemetry_anchor`** (ADR 0110 decision 2): the per-inference/per-job side tables
+  (`drift_snapshots`, `input_snapshots`, `hpc_jobs`, `dataset_revisions`) are anchored into the
+  audit chain by `telemetry_anchor` events hashing each table's new rowid range — tamper-evidence
+  for high-volume telemetry without serialising it through the chain. `exa audit anchor`
+  (cron-able; the autopilot anchors each live cycle so the cadence is recorded in the chain) and
+  `exa audit verify-anchors` (audited retention prunes report as pruned, not tampering;
+  unanchored rows are counted, never skipped; exit 1 on a break). 13 tests.
+- **Recorded audit review** (ADR 0113 decision 5): `exa audit review` samples events since the
+  last recorded review and writes a chained `audit_reviewed` event (reviewer, range, sampled
+  ids, notes); `exa audit reviews` lists the record. ADR 0113 is now **Accepted** (all
+  decisions); ADR 0110 has only decision 6 (render gaps) open. This completes the AIDC **W2**
+  gate: who / on whose behalf / under which contract / how undone is answerable from the chain.
+
+
 ### Added — blast-radius contracts, per-behaviour autonomy, live-run interrupt (ADR 0113, AIDC W2)
 
 - **`examlops.blast_radius`** — every autonomous behaviour now publishes a versioned,

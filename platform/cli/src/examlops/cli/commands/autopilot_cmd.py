@@ -921,6 +921,17 @@ def run_cycle(
                 "refused": len(refused),
             },
         )
+        # Anchor the telemetry side tables into the chain (ADR 0110 decision 2) — the cycle is
+        # the platform's natural cadence, and each anchor names its own range so the verifier
+        # knows the guarantee. Best-effort: an anchoring failure must never fail the cycle.
+        if not dry_run:
+            try:
+                from examlops.telemetry_anchor import anchor_telemetry
+
+                anchor_telemetry(actor)
+            except Exception:  # noqa: BLE001 - anchoring is best-effort here; cron covers gaps
+                pass
+
         # Publish to the NovaFabric event backbone (item 1.3) so subscribers (dashboard SSE,
         # notifiers, downstream automations) react without polling. Best-effort: a broker outage
         # must never fail the cycle — the outbox row is durable and the relay retries.

@@ -29,6 +29,10 @@ app = typer.Typer(
 )
 
 
+def _actor() -> str:
+    return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+
+
 def _parse_days(s: str) -> int:
     s = s.strip().lower()
     if s.endswith("d"):
@@ -220,6 +224,175 @@ def verify() -> None:
             f"AUDIT CHAIN BROKEN at event id {result['broken_at_id']}: {result['reason']}. "
             "The audit trail has been tampered with."
         )
+
+
+@app.command("anchor")
+def anchor() -> None:
+    """Anchor the high-volume telemetry side tables into the chain (ADR 0110 decision 2).
+
+    Cron-able; the autopilot also anchors at the end of each live cycle. Each anchor names its
+    own row range, so the cadence is recorded in the chain itself.
+    """
+    from examlops.telemetry_anchor import anchor_telemetry
+
+    results = anchor_telemetry(_actor())
+    if _output.json_mode:
+        _output.print_json(results)
+        return
+    for r in results:
+        if r.get("anchored"):
+            _output.ok(
+                f"{r['table']}: anchored rows {r['from_id']}..{r['to_id']} "
+                f"({r['rows']}) — {r['sha256'][:12]}…"
+            )
+        else:
+            _output.info(f"{r['table']}: nothing new to anchor")
+
+
+@app.command("verify-anchors")
+def verify_anchors_cmd() -> None:
+    """Verify every telemetry anchor against its side table (ADR 0110 decision 5). Exit 1 on a break."""
+    from examlops.telemetry_anchor import verify_anchors
+
+    result = verify_anchors()
+    if _output.json_mode:
+        _output.print_json(result)
+        if not result["ok"]:
+            raise typer.Exit(1)
+        return
+    if result["ok"]:
+        _output.ok(f"{result['anchors_checked']} telemetry anchor(s) verified intact.")
+    else:
+        for b in result["breaks"]:
+            _output.error(
+                f"ANCHOR BROKEN: {b['table']} rows {b.get('from_id')}..{b.get('to_id')} "
+                f"(event {b['event_id']}): {b['reason']} — the side table no longer matches "
+                "what the chain vouched for."
+            )
+    if result.get("pruned_anchors"):
+        _output.warning(
+            f"{len(result['pruned_anchors'])} older anchor(s) superseded by an audited "
+            "retention prune (reported, not counted as tampering)."
+        )
+    for table, n in (result.get("unanchored_rows") or {}).items():
+        _output.warning(f"{table}: {n} row(s) newer than the last anchor — run: exa audit anchor")
+    if not result["ok"]:
+        raise typer.Exit(1)
+
+
+@app.command("review")
+def review(
+    sample: int = typer.Option(20, "--sample", help="Events to sample for review"),
+    notes: str = typer.Option("", "--notes", help="Reviewer notes, recorded with the review"),
+) -> None:
+    """Perform and RECORD a sampled audit review (ADR 0113 decision 5).
+
+    An unreviewed audit trail is theatre: this samples events written since the last recorded
+    review (all of them, if fewer than the sample size), shows them, and writes an
+    ``audit_reviewed`` event naming the reviewer, the covered range and the sampled ids —
+    so "is anyone actually looking?" is answerable from the chain. Schedule it (cron /
+    `exa backup schedule`-style) at whatever cadence your governance names.
+    """
+    import random
+
+    init_db()
+    with get_db() as conn:
+        last = conn.execute(
+            "SELECT details FROM audit_events WHERE action='audit_reviewed' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        from_id = 1
+        if last and last["details"]:
+            try:
+                from_id = int(json.loads(last["details"]).get("to_id", 0)) + 1
+            except (TypeError, ValueError):
+                from_id = 1
+        rows = conn.execute(
+            "SELECT id, ts, source, actor, action, target FROM audit_events "
+            "WHERE id >= ? AND action != 'audit_reviewed' ORDER BY id ASC",
+            (from_id,),
+        ).fetchall()
+    if not rows:
+        _output.ok("Nothing new to review since the last recorded review.")
+        return
+    chosen = rows if len(rows) <= sample else random.sample(list(rows), sample)
+    chosen = sorted(chosen, key=lambda r: r["id"])
+    to_id = rows[-1]["id"]
+    if not _output.json_mode:
+        _output.print_table(
+            f"Audit review sample — {len(chosen)} of {len(rows)} event(s) since id {from_id}",
+            ["ID", "When", "Source", "Actor", "Action", "Target"],
+            [
+                [
+                    str(r["id"]),
+                    r["ts"],
+                    r["source"],
+                    r["actor"] or "-",
+                    r["action"],
+                    r["target"] or "-",
+                ]
+                for r in chosen
+            ],
+        )
+    from examlops.data.audit import write_audit_event
+
+    details = {
+        "reviewer": _actor(),
+        "from_id": from_id,
+        "to_id": to_id,
+        "total_events": len(rows),
+        "sample_ids": [r["id"] for r in chosen],
+        "notes": notes.strip() or None,
+    }
+    write_audit_event("audit", _actor(), "audit_reviewed", None, details)
+    if _output.json_mode:
+        _output.print_json(details)
+    else:
+        _output.ok(
+            f"Review recorded: {len(chosen)}/{len(rows)} events (ids {from_id}..{to_id}) "
+            f"by {_actor()}."
+        )
+
+
+@app.command("reviews")
+def reviews(
+    last: int = typer.Option(10, "--last", help="How many recorded reviews to show"),
+) -> None:
+    """List recorded audit reviews — who reviewed, when, covering what."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, ts, actor, details FROM audit_events WHERE action='audit_reviewed' "
+            "ORDER BY id DESC LIMIT ?",
+            (last,),
+        ).fetchall()
+    payload = []
+    for r in rows:
+        try:
+            d = json.loads(r["details"]) if r["details"] else {}
+        except (TypeError, ValueError):
+            d = {}
+        payload.append({"event_id": r["id"], "ts": r["ts"], **d})
+    if _output.json_mode:
+        _output.print_json(payload)
+        return
+    if not payload:
+        _output.warning("No audit review has ever been recorded — run: exa audit review")
+        return
+    _output.print_table(
+        "Recorded audit reviews",
+        ["When", "Reviewer", "Range", "Sampled", "Notes"],
+        [
+            [
+                p_["ts"],
+                str(p_.get("reviewer", "-")),
+                f"{p_.get('from_id', '?')}..{p_.get('to_id', '?')}",
+                str(len(p_.get("sample_ids", []))),
+                str(p_.get("notes") or "-"),
+            ]
+            for p_ in payload
+        ],
+    )
 
 
 @app.command("checkpoint")

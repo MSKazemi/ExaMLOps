@@ -156,15 +156,38 @@ exa autopilot quarantine JPCP --reason "drift sensor suspect"   # contain one mo
 exa autopilot release JPCP
 ```
 
+## Anchored telemetry (ADR 0110 decision 2)
+
+High-volume telemetry — one row per inference (`drift_snapshots`, `input_snapshots`), per job
+(`hpc_jobs`), per dataset revision (`dataset_revisions`) — cannot run through the serialised
+chain without making the chain the platform's write bottleneck. Instead each side table is
+**anchored**: a `telemetry_anchor` chain event carries a SHA-256 over the table's new rowid
+range. Tampering with an anchored row breaks the anchor; the anchor is protected by the chain.
+
+```bash
+exa audit anchor           # anchor all new rows (cron-able; the autopilot anchors each cycle)
+exa audit verify-anchors   # recompute every anchor; exit 1 on a break
+```
+
+Each anchor names its own range, so the verifier always knows the guarantee it is checking.
+An audited retention prune (`exa data retention-prune`) reports as *pruned*, never tampering;
+rows newer than the last anchor are counted and reported, never silently skipped.
+
+## Reviewed audit (ADR 0113 decision 5)
+
+An unreviewed audit trail is theatre. `exa audit review` samples everything since the last
+recorded review, shows it, and writes an `audit_reviewed` chain event naming the reviewer,
+covered range, sampled ids and notes — so the review cadence is itself auditable:
+
+```bash
+exa audit review --sample 25 --notes "weekly pass"
+exa audit reviews          # who reviewed, when, covering what
+```
+
 ## Not yet implemented
 
-Still open, from ADRs 0110 and 0113:
-
-- **Anchored telemetry** — lineage and resource events into side tables with a periodic
-  checkpoint hash, so high-volume telemetry is tamper-evident without serialising it through the
-  chain.
-- **Reviewed audit** (ADR 0113 decision 5) — sampled review on a schedule by a named owner, the
-  review itself recorded.
+- **`render()` "insufficient evidence" sections** (ADR 0110 decision 6) — the compliance-pack
+  renderer naming its own gaps instead of omitting them.
 
 ## Design
 
