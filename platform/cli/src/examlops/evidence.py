@@ -156,3 +156,14 @@ def with_rollback_ref(ref: str) -> None:
     events written afterwards carry it.
     """
     _ctx.set(replace(_ctx.get(), rollback_ref=ref))
+
+
+def clear_rollback_ref() -> None:
+    """Detach the inverse from the active unit of work — the action it named is finished.
+
+    A declared ref lives on the ambient context, so without this a loop that declares one ref
+    per action leaks the *previous* action's inverse onto the next action's events — an undo
+    path that undoes something else, which ADR 0113 calls worse than admitting there is none.
+    Call at the top of each per-action iteration (autopilot / drift trigger loops).
+    """
+    _ctx.set(replace(_ctx.get(), rollback_ref=None))

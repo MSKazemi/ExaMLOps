@@ -206,13 +206,22 @@ async def test_arequest_json_breaker_opens_and_fast_fails():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     cb = CircuitBreaker(name="ray", fail_max=2, reset_timeout=9999)
-    # First call: 1 attempt + 2 retries = 3 transport failures → trips breaker (fail_max=2).
-    data, err = await arequest_json("ray", "GET", "http://x", breaker=cb, retries=2, base_delay=0)
+    # First call: attempts 1+2 fail at the transport and trip the breaker (fail_max=2);
+    # the 3rd attempt fast-fails on the open breaker BEFORE the transport — hence 2 calls.
+    # The mock client MUST be passed: without it the "failure" was a real DNS lookup of
+    # `http://x`, which made the test order-dependent under the parallel suite (an env-proxy
+    # or resolver difference in the worker turned the failure into something else).
+    data, err = await arequest_json(
+        "ray", "GET", "http://x", breaker=cb, retries=2, base_delay=0, client=client
+    )
     assert data is None and err is not None
     before = calls["n"]
+    assert before == 2  # the mock transport really was what failed (3rd attempt fast-failed)
     assert cb.state == CircuitBreaker.OPEN
     # Second call must fast-fail without hitting the transport again.
-    data2, err2 = await arequest_json("ray", "GET", "http://x", breaker=cb, retries=2, base_delay=0)
+    data2, err2 = await arequest_json(
+        "ray", "GET", "http://x", breaker=cb, retries=2, base_delay=0, client=client
+    )
     assert data2 is None and "circuit open" in err2
     assert calls["n"] == before  # no new transport calls
     await client.aclose()
@@ -358,8 +367,6 @@ def test_resilience_imports_without_httpx():
         "    raise SystemExit('httpx_timeout must raise when httpx is absent')\n"
         "print('IMPORT-OK')\n"
     )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
-    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, f"stdout={out.stdout!r} stderr={out.stderr!r}"
     assert "IMPORT-OK" in out.stdout

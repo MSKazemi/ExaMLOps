@@ -466,6 +466,10 @@ def trigger(
     trigger_ctx.__enter__()
 
     for row in drift_rows:
+        # A previous iteration's declared inverse must not leak onto this model's events.
+        from examlops.evidence import clear_rollback_ref
+
+        clear_rollback_ref()
         model = row["model"]
         if model not in enabled_configs:
             continue

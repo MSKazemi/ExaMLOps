@@ -168,19 +168,32 @@ def set_drift_auto_retrain(
     dataset_name: str = "",  # no hardcoded dataset (ADR 0094) — caller supplies it
     cooldown_s: int = 3600,
 ) -> None:
+    # Explicit upsert, not INSERT OR REPLACE: REPLACE deletes+reinserts on SQLite (resetting
+    # unlisted columns like last_triggered to NULL — instantly re-eligible to retrain) while
+    # Postgres' translation preserves them. The two engines must agree; the chosen semantics
+    # is PRESERVE the cooldown history across reconfiguration.
     with get_db() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO drift_auto_retrain
+            """INSERT INTO drift_auto_retrain
                (model, enabled, min_z_score, dataset_name, cooldown_s)
-               VALUES (?,?,?,?,?)""",
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(model) DO UPDATE SET
+                 enabled=excluded.enabled,
+                 min_z_score=excluded.min_z_score,
+                 dataset_name=excluded.dataset_name,
+                 cooldown_s=excluded.cooldown_s""",
             (model, int(enabled), min_z_score, dataset_name, cooldown_s),
         )
 
 
 def set_drift_baseline(model: str, stats: dict[str, float]) -> None:
+    # Explicit upsert with a refreshed set_at — a re-baselined model IS newly baselined,
+    # and both engines must agree (see set_drift_auto_retrain).
     with get_db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO drift_baselines (model, stats) VALUES (?,?)",
+            """INSERT INTO drift_baselines (model, stats) VALUES (?,?)
+               ON CONFLICT(model) DO UPDATE SET
+                 stats=excluded.stats, set_at=CURRENT_TIMESTAMP""",
             (model, json.dumps(stats)),
         )
 
@@ -188,7 +201,9 @@ def set_drift_baseline(model: str, stats: dict[str, float]) -> None:
 def set_input_baseline(model: str, stats: dict[str, Any]) -> None:
     with get_db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO input_baselines (model, stats) VALUES (?,?)",
+            """INSERT INTO input_baselines (model, stats) VALUES (?,?)
+               ON CONFLICT(model) DO UPDATE SET
+                 stats=excluded.stats, set_at=CURRENT_TIMESTAMP""",
             (model, json.dumps(stats)),
         )
 

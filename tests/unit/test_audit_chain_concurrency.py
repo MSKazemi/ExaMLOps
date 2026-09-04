@@ -156,9 +156,21 @@ class PgConnection:  # noqa: N801 — name is the contract _lock_chain_head keys
         self.executed.append(sql)
         if sql.startswith("PRAGMA table_info"):
             names = [
-                "id", "source", "actor", "action", "target", "details", "tenant",
-                "prev_hash", "hash", "ts", "correlation_id", "parent_correlation_id",
-                "mode", "on_behalf_of", "rollback_ref",
+                "id",
+                "source",
+                "actor",
+                "action",
+                "target",
+                "details",
+                "tenant",
+                "prev_hash",
+                "hash",
+                "ts",
+                "correlation_id",
+                "parent_correlation_id",
+                "mode",
+                "on_behalf_of",
+                "rollback_ref",
             ]
             return _Cursor([_Row(name=n) for n in names])
         if "CURRENT_TIMESTAMP" in sql:

@@ -440,3 +440,44 @@ class TestUnifiedProjectWorkspace:
         data = json.loads(res.output)
         assert data["resources"]["model"] == ["JPCP"]
         assert data["members"][0]["subject"] == "alice"
+
+
+class TestDeleteCascade:
+    """C3 regression guard: delete must remove the FULL cascade, especially authz grants —
+    otherwise re-creating a same-named project resurrects every previous member's role."""
+
+    def test_delete_removes_authz_grants(self):
+        create_project("cascade-proj")
+        add_project_member("cascade-proj", "alice", role="owner")
+        assert any(m["subject"] == "alice" for m in list_project_members("cascade-proj"))
+
+        assert delete_project("cascade-proj") is True
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM authz_relations WHERE object=?", ("project:cascade-proj",)
+            ).fetchall()
+        assert rows == [], "authz grants must not survive project deletion"
+
+        # The resurrection scenario itself: a re-created project has NO members.
+        create_project("cascade-proj")
+        assert list_project_members("cascade-proj") == []
+
+    def test_delete_removes_budget_storage_pipeline_rows(self):
+        from examlops.platform_db import (
+            ensure_project_storage,
+            set_project_budget,
+            upsert_project_pipeline,
+        )
+
+        create_project("cascade-proj2")
+        set_project_budget("cascade-proj2", gpu_hours_budget=10.0, cost_budget=100.0)
+        ensure_project_storage("cascade-proj2")
+        upsert_project_pipeline("cascade-proj2", "prefect", "t", status="ok")
+
+        assert delete_project("cascade-proj2") is True
+        with get_db() as conn:
+            for tbl in ("project_budgets", "project_storage", "project_pipelines"):
+                rows = conn.execute(
+                    f"SELECT * FROM {tbl} WHERE project=?", ("cascade-proj2",)
+                ).fetchall()
+                assert rows == [], f"{tbl} rows must not survive project deletion"

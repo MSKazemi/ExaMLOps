@@ -40,7 +40,7 @@ from examlops.data.autopilot import (
 )
 from examlops.data.drift import claim_drift_trigger, get_drift_baseline, list_drift_auto_retrain
 from examlops.data.serving import get_promotion_rule
-from examlops.evidence import AUTONOMOUS, correlated
+from examlops.evidence import AUTONOMOUS, clear_rollback_ref, correlated
 from examlops.rollback import AutonomousActionRefused, require_rollback
 
 app = typer.Typer(
@@ -362,6 +362,8 @@ def run_cycle(
         triggered_this_cycle = 0
 
         for model in scan_models:
+            # A previous iteration's declared inverse must not leak onto this model's events.
+            clear_rollback_ref()
             ar = auto_retrain_cfgs[model]
 
             # Read drift snapshots
@@ -379,7 +381,12 @@ def run_cycle(
             baseline = get_drift_baseline(model)
             z, status = _compute_z(preds, baseline)
 
-            if status not in ("CRITICAL", "WARNING") or z < ar["min_z_score"]:
+            # The configured min_z_score is the ONE threshold — same rule as `exa drift trigger`.
+            # A hard-coded status pre-filter (WARNING = z≥2.0) on top of it silently overrode any
+            # operator-configured threshold below 2.0: the two consumers of the same
+            # drift_auto_retrain config disagreed on when to fire. Status still names
+            # OK-no-baseline (z=0.0 there, so the threshold handles it).
+            if z < ar["min_z_score"]:
                 skipped.append(
                     {"model": model, "reason": f"z={z:.2f} below threshold {ar['min_z_score']}"}
                 )
@@ -521,6 +528,7 @@ def run_cycle(
             promo_models = [m for m in promo_models if m.upper() == model_filter.upper()]
 
         for model in promo_models:
+            clear_rollback_ref()
             rule = get_promotion_rule(model)
             if not rule:
                 continue
@@ -696,6 +704,26 @@ def run_cycle(
                         "message": "autopilot promotion requires human approval",
                     },
                 )
+                continue
+
+            # ADR 0113 decision 2: a promotion is a registered MUTATING action — declare the
+            # inverse (restore the previous to_alias version) and refuse when there is none
+            # (e.g. a first promotion with nothing to restore). Declared BEFORE _do_promote
+            # moves the alias, because afterwards the previous version is unreadable; and
+            # before the dry-run branch so the preview matches the cycle it previews.
+            _declare_rollback("autopilot_promoted", model, alias=rule["to_alias"])
+            try:
+                require_rollback("autopilot_promoted")
+            except AutonomousActionRefused as exc:
+                refused.append({"model": model, "action": "promote", "reason": str(exc)})
+                if not dry_run:
+                    write_audit_event(
+                        "autopilot",
+                        actor,
+                        "autonomous_action_refused",
+                        model,
+                        {"attempted": "autopilot_promoted", "reason": str(exc)},
+                    )
                 continue
 
             # Promote
