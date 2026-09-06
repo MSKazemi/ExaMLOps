@@ -1,0 +1,65 @@
+name: Docs site
+
+# CI already builds the documentation with `mkdocs build --strict` and uploads it
+# as an artifact, with the note that this "is exactly what a Pages deploy would
+# publish" — and then throws it away, so mskazemi.github.io/ExaMLOps has always
+# 404'd while every page it should serve sat in the tree. This job is the missing
+# half: the same strict build, published.
+#
+# Deployment of the PLATFORM still belongs to .gitlab-ci.yml, which owns the
+# deploy node (see ci.yml). This deploys documentation to GitHub Pages only, so
+# the boundary that keeps deployment out of ci.yml is not crossed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; never cancel one midway, or Pages is left half-written.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MkDocs
+        run: python -m pip install --quiet mkdocs-material mkdocs-minify-plugin
+
+      # Same flags as the CI job: a broken link, a broken anchor or a page missing
+      # from the nav stops the deploy instead of reaching a reader.
+      - name: Build (strict)
+        run: mkdocs build --clean --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

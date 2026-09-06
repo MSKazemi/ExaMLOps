@@ -1,5 +1,7 @@
 site_name: ExaMLOps Documentation
 site_description: End-to-end MLOps platform for HPC workload management in EU research projects
+# Set so the theme emits correct canonical URLs and a valid sitemap once the site is served.
+site_url: https://mskazemi.github.io/ExaMLOps/
 docs_dir: docs
 
 # A link to a heading that does not exist is as broken as a link to a file that does not exist,
