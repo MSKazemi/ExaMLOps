@@ -1,6 +1,25 @@
 # ExaMLOps
 
-End-to-end MLOps platform for HPC workload management in large European research projects. Covers auto-discovery-based training pipelines (Prefect), HPC job orchestration (Slurm adapter), model versioning (MLflow registry with multi-stage lifecycle), YAML-driven model registry with per-environment overlays, multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`), real-time metrics (Prometheus + Grafana), centralized logs (Loki), a control-plane API with sysadmin approval gate (push-to-serve pipeline), a React 19 + FastAPI dashboard, a SeanerBUS HPC message bridge, **Skipper** (a LangGraph management agent with a native `exa chat` client), and the `exa` platform CLI for operator use.
+**Register a model, and the platform trains, versions, governs and serves it on a supercomputer.**
+
+End-to-end MLOps for HPC workload management, built for large European research projects.
+Training jobs are submitted to Slurm, every model is versioned in MLflow, and nothing reaches
+production until a sysadmin approves it.
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+
+In production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project.
+
+| Stage | What the platform does |
+|---|---|
+| **Train** | Auto-discovery training pipelines (Prefect), HPC job orchestration via a Slurm adapter |
+| **Version** | MLflow registry with a multi-stage lifecycle; a YAML-driven model registry with per-environment overlays |
+| **Govern** | Control-plane API with a **sysadmin approval gate** (push-to-serve) |
+| **Serve** | Multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`) |
+| **Observe** | Real-time metrics (Prometheus + Grafana), centralized logs (Loki) |
+| **Operate** | The `exa` platform CLI, a React 19 + FastAPI dashboard, and **Skipper** — a LangGraph management agent with a native `exa chat` client |
+| **Integrate** | SeanerBUS HPC message bridge |
 
 ## Quick Start
 
@@ -8,6 +27,8 @@ End-to-end MLOps platform for HPC workload management in large European research
 make help       # list all available targets
 make bootstrap  # one-shot: start dev stack + install all deps
 ```
+
+**Docs:** [Quickstart](docs/guides/quickstart.md) · [Architecture](docs/guides/architecture.md) · [Command reference](docs/reference/cli-commands-guide.md) · [Add a new model](docs/guides/add-a-new-model.md)
 
 ## Running the Auto-Pipeline
 
@@ -217,7 +238,7 @@ Run all CI checks locally: `make ci`
 ## Documentation
 
 - [Quickstart](docs/guides/quickstart.md)
-- [System Overview](docs/architecture/system-overview.md)
+- [System Architecture](docs/guides/architecture.md)
 - [Command Reference (full command tree)](docs/reference/cli-generated.md)
 - [Environment Variables](docs/reference/env-vars.md)
 - [SeanerBUS Integration](docs/guides/seanerbus.md)
