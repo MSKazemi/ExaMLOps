@@ -13,10 +13,24 @@ scheduler job id is the training flow — so the facet and its one real producer
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# ── upstream-library guard ───────────────────────────────────────────────────
+# `pipeline_generator` imports the use-case pack, which resolves its framework
+# through `seanergys_modelzoo` — an UPSTREAM library that is not vendored in
+# the public tree (ADR 0094) and that CI does not fetch. Every other test that
+# needs it skips when it is absent; these errored instead, which reads as a
+# broken platform rather than a dependency that was never meant to be here.
+_MZ = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or Path(__file__).parents[2] / "modelzoo")
+_NO_MODELZOO = not (_MZ / "seanergys_modelzoo").is_dir()
+_SKIP_REASON = (
+    "seanergys_modelzoo not present — upstream library fetched at deploy/CI "
+    "time. Set EXAMLOPS_MODELZOO_DIR to a checkout to run these tests."
+)
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 sys.path.insert(0, str(Path(__file__).parents[2] / "pipelines"))
@@ -164,6 +178,8 @@ def test_retrain_lineage_is_fail_open(monkeypatch):
 
 @pytest.fixture
 def training():
+    if _NO_MODELZOO:
+        pytest.skip(_SKIP_REASON)
     import pipeline_generator
 
     return pipeline_generator._emit_training_lineage
