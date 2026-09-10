@@ -92,6 +92,9 @@ extra_javascript:
   - assets/explore/js/scenes/decisions.js
   - assets/explore/js/scenes/hpc.js
   - assets/explore/js/scenes/signals.js
+  - assets/explore/js/scenes/llm.js
+  - assets/explore/js/scenes/llmserve.js
+  - assets/explore/js/scenes/rag.js
   - assets/explore/js/scenes/roadmap.js
   - assets/explore/js/xm-atlas.js
   - assets/explore/js/xm-roadmap.js
@@ -128,6 +131,7 @@ nav:
       - Who decides: explore/decisions.md
       - Follow a cluster job: explore/hpc.md
       - Follow the signals: explore/signals.md
+      - Follow an LLM request: explore/llm.md
       - Services and their jobs: explore/services.md
       - Every capability: explore/capabilities.md
       - Roadmap: explore/roadmap.md

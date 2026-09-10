@@ -26,9 +26,9 @@ Pick a line in the legend to follow it on its own.
 
 <h3>Data line</h3>
 
-A prediction: from a client, across the bus, through batching and routing to a model on Ray Serve, and back.
+A prediction: from a client, across the bus, through batching and routing to a model on Ray Serve, and back. A chat request takes the same line through the model gateway to a vLLM server.
 
-[Follow a prediction](prediction.md)
+[Follow a prediction](prediction.md) · [Follow an LLM request](llm.md)
 
 </div>
 <div class="xm-line-item" style="--sw: var(--xm-control)" markdown>
@@ -88,6 +88,7 @@ Dotted track marks work that is designed but not built. Every dotted segment is 
 | You want to… | Read |
 |---|---|
 | Know what each service does and which port it listens on | [Services and their jobs](services.md) |
+| Serve an LLM and put keys, budgets and guardrails in front of it | [Follow an LLM request](llm.md) |
 | Find the command for a task | [Every capability](capabilities.md) — all `exa` commands, searchable |
 | Know what is built and what is next | [Roadmap](roadmap.md) |
 | Run it yourself | [Quick Start](../guides/quickstart.md) |
