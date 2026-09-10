@@ -2,21 +2,21 @@ name: Docs site
 
 # CI already builds the documentation with `mkdocs build --strict` and uploads it
 # as an artifact, with the note that this "is exactly what a Pages deploy would
-# publish" — and then throws it away, so mskazemi.github.io/ExaMLOps has always
-# 404'd while every page it should serve sat in the tree. This job is the missing
-# half: the same strict build, published.
+# publish" — and then throws it away, so the site 404'd while every page it should
+# serve sat in the tree. This job is the missing half: the same strict build,
+# published at https://mskazemi.com/ExaMLOps/ (the user site's custom domain;
+# mskazemi.github.io/ExaMLOps redirects there).
 #
 # Deployment of the PLATFORM still belongs to .gitlab-ci.yml, which owns the
 # deploy node (see ci.yml). This deploys documentation to GitHub Pages only, so
 # the boundary that keeps deployment out of ci.yml is not crossed.
-
 #
 # Hardened like ci.yml (see its header): SHA-pinned actions, no persisted credentials, a
 # timeout on every job, and the write scopes granted only to the job that deploys.
 #
 # PREREQUISITE (a repository setting, not code): Settings → Pages → Source must be
-# "GitHub Actions". Until it is, the deploy job fails with `Failed to create deployment
-# (status: 404)` — the build job is still a valid strict-build signal.
+# "GitHub Actions" (enabled 2026-09-10). Without it the deploy job fails with
+# `Failed to create deployment (status: 404)`.
 
 on:
   push:

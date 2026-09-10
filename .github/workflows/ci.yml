@@ -43,8 +43,10 @@ concurrency:
 permissions:
   contents: read
 
+# No FORCE_COLOR: it makes rich write ANSI escapes into piped output, and on 2026-09-10 it broke
+# the `package` job's `exa --version` comparison ("\e[1mexa\e[0m version …" ≠ "exa version …").
+# Output that a step parses must be the plain text a script would see.
 env:
-  FORCE_COLOR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONUNBUFFERED: "1"
 
