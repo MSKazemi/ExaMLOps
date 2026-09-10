@@ -89,3 +89,13 @@ def test_every_in_package_data_file_is_declared():
         if not any(Path(rel).match(pattern) for pattern in declared):
             undeclared.append(rel)
     assert not undeclared, f"not shipped in the wheel (add to package-data): {undeclared}"
+
+
+def test_readme_lists_every_extra():
+    """The PyPI page is how a user learns an extra exists; a new extra must reach it."""
+    documented = set(re.findall(r"`examlops\[([a-z0-9-]+)\]`", README))
+    declared = set(PROJECT["optional-dependencies"])
+    assert declared <= documented, (
+        f"extras missing from platform/cli/README.md: {declared - documented}"
+    )
+    assert documented <= declared, f"README names extras that do not exist: {documented - declared}"

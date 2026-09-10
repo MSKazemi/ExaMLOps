@@ -30,7 +30,9 @@ enough for an HPC login node:
 | `examlops[postgres]` | the Postgres datastore engine |
 | `examlops[backup]` | object-store tier of whole-platform backup |
 | `examlops[coordination]` | Redis cross-host locks and rate limits |
+| `examlops[vector]` | pgvector vector store, independent of where platform state lives |
 | `examlops[synth]` | synthetic dataset generation |
+| `examlops[serving-vllm]` / `examlops[serving-sglang]` | in-process vLLM / SGLang engines (GPU host) |
 
 ## Point it at a platform
 
