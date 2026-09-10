@@ -30,6 +30,28 @@ logger = logging.getLogger(__name__)
 _BUSY_TIMEOUT_MS = 5000
 _warned = False
 
+# Where the compose stack bind-mounts the datastore; the default when nothing else is configured.
+_LEGACY_PLATFORM_DB = "/repo/platform.db"
+
+
+def platform_db_path() -> str:
+    """The platform datastore file — resolved in one place for the whole backend.
+
+    Same order as ``examlops.platform_db`` (ADR 0128): ``PLATFORM_DB`` (empty counts as unset),
+    then the instance-data root through ``examlops.lifecycle.datadir.data_path``, then the compose
+    bind-mount location this backend has always used. Forty-five modules used to hard-code that last
+    value each, so a deployment that set only ``EXAMLOPS_DATA_DIR`` had the shared ``examlops`` code
+    on one file and the routers on another. On Postgres ``connect()`` ignores the path entirely.
+    """
+    if explicit := os.getenv("PLATFORM_DB"):
+        return explicit
+    try:
+        from examlops.lifecycle.datadir import data_path
+    except ImportError:  # core package not importable — connect() already warns about this mode
+        return _LEGACY_PLATFORM_DB
+    in_data_root = data_path("platform.db")
+    return str(in_data_root) if in_data_root is not None else _LEGACY_PLATFORM_DB
+
 
 def _postgres_configured() -> bool:
     return os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres"

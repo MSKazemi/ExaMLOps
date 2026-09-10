@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import json
 import math
-import os
 
 import audit_write
 from auth import require_role
 from capabilities import DRIFT_BASELINE, can, deny_reason
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 router = APIRouter(prefix="/drift", tags=["drift"])
@@ -50,7 +49,7 @@ def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _compute_stats(values: list) -> dict:

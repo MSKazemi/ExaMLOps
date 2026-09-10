@@ -7,12 +7,12 @@ the F8 BFF substrate so a slow/failed source degrades to ``_partial`` instead of
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import search as search_lib
 from auth import require_role
 from bff import aggregate
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 from security import RateLimiter, rate_limit
 
@@ -25,7 +25,7 @@ _search_rate = rate_limit(_search_limiter)
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("/search")

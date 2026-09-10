@@ -8,12 +8,12 @@ query rescopes every list for the multi-cluster switcher (F6 R6).
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import facility
 from auth import require_role
 from bff import aggregate
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -23,7 +23,7 @@ _admin = require_role("admin")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("/overview")

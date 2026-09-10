@@ -7,12 +7,12 @@ scoped, expiring, read-only tokens. Viewer-gated; tenant-scoped (F15); sanitized
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import collab as collab_lib
 from auth import require_role
 from capabilities import principal_from_claims
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from realtime import bus
@@ -22,7 +22,7 @@ _viewer = require_role("viewer")
 
 
 def _db() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 class CommentBody(BaseModel):

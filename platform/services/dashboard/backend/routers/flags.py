@@ -8,11 +8,11 @@ delivery.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import feature_flags
 from auth import require_role
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from realtime import bus
@@ -23,7 +23,7 @@ _admin = require_role("admin")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("")

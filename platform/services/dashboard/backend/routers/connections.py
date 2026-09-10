@@ -15,13 +15,12 @@ lazy + guarded so the dashboard still boots (writes degrade to 503) if the packa
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 
 import audit_write
 from auth import require_role
 from capabilities import CONNECTION_MANAGE, can, deny_reason
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 router = APIRouter(prefix="/v1/connections", tags=["connections"])
@@ -32,7 +31,7 @@ _KINDS = {"s3", "uri", "dataplane"}
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _connect() -> sqlite3.Connection:

@@ -8,12 +8,12 @@ endpoint: proposals route through the existing authorized/approval/audited actio
 
 from __future__ import annotations
 
-import os
 import uuid
 from typing import Any
 
 import copilot as copilot_lib
 from auth import require_role
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from settings import settings
@@ -23,7 +23,7 @@ _viewer = require_role("viewer")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 class CopilotContext(BaseModel):

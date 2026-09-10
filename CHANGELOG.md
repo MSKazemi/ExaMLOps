@@ -115,6 +115,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   container predated the image. `/data` now exists in the image, owned by 10001, which Docker copies
   into an empty volume on first mount (verified with a fresh volume: write denied before, SQLite
   database created after).
+- **The dashboard resolves the platform datastore in one place, the same way the core does.**
+  Forty-four backend modules each defaulted to `os.getenv("PLATFORM_DB", "/repo/platform.db")`,
+  while the shared `examlops` code the dashboard also calls resolves the ADR 0128 data root — so a
+  process with `EXAMLOPS_DATA_DIR` set and `PLATFORM_DB` unset read two different files. All of them
+  now call `dbconn.platform_db_path()` (`PLATFORM_DB` → `<EXAMLOPS_DATA_DIR>/platform.db` → the
+  legacy compose location), and a test holds it equal to `examlops.platform_db`'s resolution and
+  fails if any module names the path again. Hard-coded deployment references in runtime code: 52 → 11.
 - **The release publishes a single-node install bundle** — `examlops-compose-X.Y.Z.tar.gz`, the
   pull-only compose stack pinned to that release by a `VERSION` file, alongside the other assets.
   The install guides no longer say the images or the control-plane tier cannot be published, and

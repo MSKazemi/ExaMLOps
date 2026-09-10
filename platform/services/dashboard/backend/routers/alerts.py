@@ -7,12 +7,12 @@ F8 `alert.*` channel so open dashboards update live. Viewer-gated, BFF-composed.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import alerts as alerts_lib
 from auth import require_role
 from bff import aggregate
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 from realtime import bus
 
@@ -21,7 +21,7 @@ _viewer = require_role("viewer")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("")

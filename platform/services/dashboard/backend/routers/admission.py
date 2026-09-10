@@ -12,12 +12,11 @@ audited `source=dashboard`): enqueue a work item via `examlops.admission.submit`
 from __future__ import annotations
 
 import json
-import os
 
 import audit_write
 from auth import require_role
 from capabilities import ADMISSION_MANAGE, can, deny_reason
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 router = APIRouter(prefix="/v1/admission", tags=["admission"])
@@ -26,7 +25,7 @@ _admin = require_role("admin")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _require_manage(principal: dict) -> None:

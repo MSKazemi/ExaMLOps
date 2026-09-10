@@ -15,7 +15,7 @@ import os
 import audit_write
 from auth import require_role
 from capabilities import AUTOPILOT_MANAGE, can, deny_reason
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends, HTTPException, status
 
 router = APIRouter(prefix="/autopilot", tags=["autopilot"])
@@ -24,7 +24,7 @@ _admin = require_role("admin")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _require_manage(principal: dict) -> None:

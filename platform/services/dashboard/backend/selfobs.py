@@ -10,13 +10,12 @@ Playwright synthetics) layers on top; this is the always-available, dependency-f
 
 from __future__ import annotations
 
-import os
 import time
 from collections import deque
 from typing import Any
 
 import audit_write
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -84,7 +83,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def dependency_health() -> list[dict[str, Any]]:

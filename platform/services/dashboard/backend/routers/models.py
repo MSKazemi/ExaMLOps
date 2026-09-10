@@ -12,7 +12,7 @@ from auth import require_role
 from capabilities import MODEL_PROMOTE, principal_from_claims, require_capability
 from control_plane_client import ControlPlaneClient
 from database import get_db
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from external_links import LinkInputs, build_links
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile, status
 from frontmatter import parse_readme
@@ -697,9 +697,7 @@ async def delete_image(
 @router.get("/{name}/costs")
 async def get_model_costs(name: str, _=Depends(require_role("viewer"))) -> list[dict]:
     """HPC cost history for a model from platform.db."""
-    import os as _os
-
-    db_path = _os.getenv("PLATFORM_DB", "/repo/platform.db")
+    db_path = platform_db_path()
     try:
         conn = connect(db_path)
         try:

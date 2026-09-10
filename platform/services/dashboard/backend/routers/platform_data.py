@@ -8,11 +8,10 @@ split across aliases — the same operation as ``exa serve traffic``, reusing
 from __future__ import annotations
 
 import json
-import os
 
 import audit_write
 from auth import require_role
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 router = APIRouter(prefix="/platform-data", tags=["platform-data"])
@@ -21,7 +20,7 @@ _admin = require_role("admin")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _audit(conn, actor: str, action: str, target: str, details: dict) -> None:

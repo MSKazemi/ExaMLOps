@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 
 from auth import require_role
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends, HTTPException
 
 router = APIRouter(prefix="/ab-testing", tags=["ab-testing"])
@@ -14,7 +13,7 @@ _viewer = require_role("viewer")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _connect() -> sqlite3.Connection:

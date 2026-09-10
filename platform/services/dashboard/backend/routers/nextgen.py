@@ -10,10 +10,9 @@ degrades gracefully when a feature has never been exercised.
 from __future__ import annotations
 
 import json
-import os
 
 from auth import require_role
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/nextgen", tags=["nextgen-40"])
@@ -21,7 +20,7 @@ _viewer = require_role("viewer")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict]:

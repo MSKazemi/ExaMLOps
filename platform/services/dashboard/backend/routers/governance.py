@@ -6,12 +6,12 @@ and audit-chain integrity through the F8 BFF substrate. Viewer-gated, partial-fa
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import governance
 from auth import require_role
 from bff import aggregate
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/v1/governance", tags=["governance"])
@@ -19,7 +19,7 @@ _viewer = require_role("viewer")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("/overview")

@@ -9,12 +9,11 @@ here (viewer role), satisfying "authz MUST be enforced in the BFF" (F8 R2 / F15)
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from auth import require_role
 from bff import aggregate
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from realtime import CHANNELS, bus, sse_frame
@@ -28,7 +27,7 @@ _SSE_KEEPALIVE_SECONDS = 15.0
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _query_one(sql: str, params: tuple = ()) -> Any:

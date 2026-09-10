@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 
 from auth import require_role
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/batch", tags=["batch"])
@@ -14,7 +13,7 @@ _viewer = require_role("viewer")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:

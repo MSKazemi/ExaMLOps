@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import os
-
 from auth import require_role
-from dbconn import connect
+from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/hpo", tags=["hpo"])
@@ -13,7 +11,7 @@ _viewer = require_role("viewer")
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("/studies")

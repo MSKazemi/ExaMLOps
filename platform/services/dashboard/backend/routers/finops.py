@@ -7,12 +7,12 @@ Surfaces the shipped phase 23/24 cost/carbon backend.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import finops
 from auth import require_role
 from bff import aggregate
+from dbconn import platform_db_path
 from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/v1/finops", tags=["finops"])
@@ -20,7 +20,7 @@ _viewer = require_role("viewer")
 
 
 def _platform_db_path() -> str:
-    return os.getenv("PLATFORM_DB", "/repo/platform.db")
+    return platform_db_path()
 
 
 @router.get("/overview")
