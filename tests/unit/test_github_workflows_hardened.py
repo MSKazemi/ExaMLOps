@@ -126,6 +126,26 @@ def test_no_workflow_runs_untrusted_code_with_a_privileged_token(path: Path) -> 
     assert "pull_request_target" not in names, f"{path.name} uses pull_request_target"
 
 
+_FORCED_COLOR = ("FORCE_COLOR", "CLICOLOR_FORCE", "PY_COLORS")
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_no_workflow_forces_colored_output(path: Path) -> None:
+    """Forced color turns every captured CLI string into ANSI escapes.
+
+    `FORCE_COLOR: "1"` in ci.yml's env (2026-09-10) failed 23 unit tests that assert on CLI text
+    and the wheel smoke test's `exa --version` comparison, on the first run that carried it.
+    """
+    workflow = _load(path)
+    scopes = [("workflow", workflow.get("env") or {})]
+    for name, job in _jobs(path).items():
+        scopes.append((f"job `{name}`", job.get("env") or {}))
+        for step in job.get("steps") or []:
+            scopes.append((f"job `{name}` step `{step.get('name', '?')}`", step.get("env") or {}))
+    bad = [f"{where}: {var}" for where, env in scopes for var in _FORCED_COLOR if var in env]
+    assert not bad, f"{path.name} forces colored output: {bad}"
+
+
 def test_ci_ok_requires_every_job_in_ci() -> None:
     jobs = _jobs(WORKFLOW_DIR / "ci.yml")
     assert "ci-ok" in jobs, "ci.yml has no `ci-ok` aggregate job for branch protection"
