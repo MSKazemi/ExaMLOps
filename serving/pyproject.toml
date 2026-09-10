@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 description = "ExaMLOps model serving — Ray Serve multi-model server + inference pipeline."
 dependencies = [
     "ray[serve]==2.55.0",
-    "mlflow==3.11.1",
+    "mlflow==3.15.2",
     # Cap fastapi below 0.137: ray 2.55.0's @serve.ingress cloudpickles the FastAPI app and
     # fastapi>=0.137 holds an unpicklable _thread.lock. See root pyproject note.
     "fastapi>=0.100.0,<0.137",
