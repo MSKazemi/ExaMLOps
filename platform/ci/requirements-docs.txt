@@ -1,0 +1,8 @@
+# The documentation toolchain, pinned. Read by `make docs-build`/`make docs-serve`, the CI
+# `docs site` job and the Pages deploy, so the site a reviewer builds locally is the site that
+# is published. Unpinned, a new mkdocs-material release could change what `--strict` rejects
+# between a green PR and the deploy of the same commit. Dependabot (pip, /platform/ci) keeps
+# these at the latest stable.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+mkdocs-minify-plugin==0.8.0

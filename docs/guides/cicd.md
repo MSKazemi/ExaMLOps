@@ -2,7 +2,9 @@
 
 ExaMLOps uses GitLab as its primary CI/CD host. The pipeline runs on every push and merge request, covers all four source areas (modelzoo, infra, examlops, integration), and deploys automatically to `lxp-cpu01` after a successful run on `main`.
 
-The implementation lives in `.gitlab-ci.yml` at the repo root. GitHub Actions workflows (`.github/workflows/`) remain in the repo as a reference but are no longer the source of truth.
+The deployment pipeline lives in `.gitlab-ci.yml` at the repo root. Pull requests on GitHub are
+gated by GitHub Actions (`.github/workflows/ci.yml`), which runs the same checks without the deploy
+stages; see [GitHub Actions — the pull-request gate](#github-actions-the-pull-request-gate).
 
 ---
 
@@ -927,13 +929,73 @@ where it serves on the host's `8003` with no mapping at all.
 
 ---
 
-## GitHub Actions retirement
+## GitHub Actions — the pull-request gate
 
-Once the GitLab pipeline is live and passing on `main`:
+`.github/workflows/ci.yml` runs on every pull request, every push to `main`, merge-queue groups
+and manual dispatch. It deploys nothing.
 
-1. Disable or delete `.github/workflows/ci.yml` (the retired `deploy.yml` was removed on 2026-08-19)
-2. Update the repo README to point to the GitLab pipeline badge
-3. Optionally keep GitHub as a read-only mirror via GitLab's **Settings → Repository → Mirroring repositories**
+| Job | What it proves |
+|---|---|
+| `lint + unit tests` | `uv lock --check`, then an install **from `uv.lock`**, ruff lint + format, mypy, the ratcheted CLI mypy, the unit suite (`-n auto`), the dashboard backend suite |
+| `package` | the `examlops` wheel builds, passes `twine check --strict`, and runs from a directory with no checkout |
+| `skipper agent tests` | the agent suite with the agent's own `requirements.txt` |
+| `dashboard frontend tests` | `npm ci`, lint, vitest, `tsc -b` + production build |
+| `helm chart` | `make helm-validate`, the chart guards, `make helm-package` |
+| `control plane tests` | the control-plane suite |
+| `docs site` | `mkdocs build --strict` with the pinned toolchain in `platform/ci/requirements-docs.txt` |
+| `workflow lint` | actionlint (with shellcheck) + zizmor over every workflow file |
+| `dependency review` | pull requests only: no new dependency with a high or critical advisory |
+| **`ci-ok`** | runs last with `if: always()` and fails unless every job above passed |
+
+**Require exactly one check in branch protection: `ci-ok`.** Listing jobs individually means a
+job added later is silently not required. `ci-ok` always runs, and fails if any job it needs failed
+or was cancelled (`dependency review` alone may be skipped, because it only runs on pull
+requests). `tests/unit/test_github_workflows_hardened.py` fails when a job in `ci.yml` is missing
+from its `needs:`.
+
+### Reproducible installs
+
+The Python job installs with `uv sync --frozen --extra dev`, which gives exactly the versions
+`uv.lock` pins. Until 2026-09-10 it ran `uv pip install -e ".[dev]"`, which ignores the lock
+and takes the newest of everything. That day `main` went red with no change in the repository: a
+new typer release was published and the CLI type check failed against it. With the lock-exact
+install, a dependency only changes through a pull request that edits `uv.lock`, so its breakage
+shows up on that PR. `uv lock --check` fails a PR that edits a `pyproject.toml` without relocking.
+The same step pattern runs every check even after an earlier one fails (`if: !cancelled()`), so
+one run reports every problem.
+
+### Supply-chain rules
+
+Every workflow file follows these rules. `make lint-workflows` (actionlint + zizmor, the same pinned
+versions CI uses) and `tests/unit/test_github_workflows_hardened.py` enforce them:
+
+- **Actions are pinned to a full commit SHA**, with the version in a comment:
+  `actions/checkout@<40-hex> # v7.0.1`. Tags can be moved: on 2026-03-19, 76 of 77
+  `aquasecurity/trivy-action` tags were force-pushed to credential-stealing code
+  ([GHSA-69fq-xp46-6x23](https://github.com/advisories/GHSA-69fq-xp46-6x23)).
+- **`persist-credentials: false` on every checkout**, so no later step can reuse the token.
+- **A read-only token by default.** Write scopes go only to the job that needs them, such as
+  `pages: write` on the Pages deploy. `pull_request_target` is not allowed.
+- **A `timeout-minutes` on every job.**
+- Tools come from pinned PyPI releases run through `uvx`, or from checksummed downloads (helm is
+  checked against the SHA-256 in its release notes). No extra third-party action is needed.
+
+### Dependabot
+
+`.github/dependabot.yml` covers the uv workspace, every pinned `requirements*.txt` (the services,
+`serving/ray_serving` and the docs toolchain), the dashboard frontend and the workflow actions.
+Minor and patch updates arrive grouped, one PR per ecosystem. A major update arrives on its own
+PR, so one breaking major cannot block the safe updates next to it. A release must be at least 7
+days old before Dependabot proposes it (14 for a major); most malicious releases are found and
+pulled within that time. Each `ignore` rule records why it exists and what would let it be
+removed, and the guard test fails an ignore without that comment.
+
+### Documentation site
+
+`.github/workflows/pages.yml` rebuilds the site with the same strict build and deploys it to
+GitHub Pages. It only runs in the public repository. Pages must be enabled once under
+**Settings → Pages → Source: GitHub Actions**. Until then the deploy job fails with
+`Failed to create deployment (status: 404)`; the build job still runs.
 
 ---
 

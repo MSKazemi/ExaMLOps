@@ -5,6 +5,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — CI/CD: reproducible, supply-chain-hardened pull-request gate
+
+- **CI installs exactly what `uv.lock` pins** (`uv sync --frozen --extra dev`) instead of
+  `uv pip install -e ".[dev]"`, which ignored the lock. On 2026-09-10 `main` went red with no
+  commit of ours when typer 0.27 was published. A dependency now changes only through a PR that
+  moves the lock. A new `uv lock --check` step fails a `pyproject.toml` edited without relocking.
+- **One required check, `ci-ok`.** An aggregate job that runs with `always()` and fails unless
+  every CI job passed, so branch protection names one check and new jobs are required
+  automatically. Every check step now runs even after an earlier one fails, so one run reports
+  every problem.
+- **Supply-chain hardening across all workflows.** Every action is pinned to a commit SHA with a
+  version comment. Checkouts use `persist-credentials: false`, jobs get a `timeout-minutes`, the
+  token is read-only by default (Pages' write scopes moved to the deploy job), and helm is a
+  checksummed download instead of a third-party action. New jobs: `workflow lint` (actionlint +
+  zizmor, 42 findings → 0) and `dependency review` (blocks PRs that add high/critical
+  advisories). Pushes to `main` are never cancelled mid-run; the Pages deploy runs only in the
+  public repository.
+- **Dependabot:** minor and patch updates are grouped, majors arrive one per PR, releases wait
+  out a 7-day cooldown (14 for majors), `serving/ray_serving` and the docs toolchain are now
+  covered, and each ignore records its reason (setuptools `<80` held by vllm; typescript 7 blocked
+  by typescript-eslint's peer range).
+- **Pinned docs toolchain**, `platform/ci/requirements-docs.txt`, shared by `make docs-build`,
+  CI and the Pages deploy. **`make lint-workflows`** runs the workflow linters locally.
+- Guard `tests/unit/test_github_workflows_hardened.py` enforces all of the above on every workflow
+  file. Guide: `docs/guides/cicd.md` § GitHub Actions — the pull-request gate.
+
+### Fixed — type errors surfaced by the locked toolchain
+
+- `dashboard/backend/routers/scaling.py` and `gateway.py` passed `Any | None` to `float()`
+  behind an `x not in (None, "")` guard that mypy 2.1 (the locked version) does not narrow.
+  Behaviour is unchanged.
+
 ### Added — hybrid dense+sparse search, ANN index configuration, and a working pgvector store (ADR 0020)
 
 - **Hybrid search.** `exa vector search --mode hybrid` runs the embedding channel and a BM25

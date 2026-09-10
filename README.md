@@ -234,8 +234,11 @@ Activate root env: `source .venv/bin/activate`
 
 ## CI/CD
 
-- `.github/workflows/ci.yml` — lint, type-check and unit tests, plus the agent, dashboard
-  frontend, Helm chart, control-plane and strict docs-site jobs, on every pull request and push to `main`
+- `.github/workflows/ci.yml` — lint, type-check and unit tests (installed exactly from
+  `uv.lock`), plus the wheel, agent, dashboard frontend, Helm chart, control-plane, strict
+  docs-site, workflow-lint and dependency-review jobs, on every pull request and push to `main`;
+  branch protection requires the single aggregate check `ci-ok`
+  ([details](docs/guides/cicd.md#github-actions-the-pull-request-gate))
 - `.github/workflows/pages.yml` — publishes the documentation site
 - `.gitlab-ci.yml` — GitLab pipeline (tests + deployment for a self-hosted install)
 

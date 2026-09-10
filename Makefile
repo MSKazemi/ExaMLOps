@@ -88,7 +88,7 @@ endif
         remote-rebuild selfheal smoke-check \
         test-postgres \
         venv install install-dev install-hooks clean \
-        lint lint-fix typecheck typecheck-cli typecheck-fast openapi-export test test-unit test-integration test-cov check \
+        lint lint-fix lint-workflows typecheck typecheck-cli typecheck-fast openapi-export test test-unit test-integration test-cov check \
         test-fast test-failed test-serial test-slowest watch gate \
         alerts-check dr-drill helm-validate \
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
@@ -578,6 +578,18 @@ lint-fix: install-dev ## Run ruff --fix (auto-fix all safe issues)
 	@$(VENV)/bin/ruff format platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 	@printf "$(GREEN)Auto-fix complete.$(RESET)\n"
 
+# The same pinned pair CI's `workflow lint` job runs (keep the versions in step with ci.yml).
+# shellcheck-py puts shellcheck on PATH, so actionlint also checks every `run:` block here, as
+# it does on the GitHub runner, which ships shellcheck.
+ACTIONLINT_VERSION ?= 1.7.12.24
+ZIZMOR_VERSION ?= 1.30.0
+
+lint-workflows: ## Lint .github/workflows with actionlint + zizmor (pinned, as CI does)
+	@printf "$(BOLD)Linting GitHub workflows...$(RESET)\n"
+	@$(UV) tool run --from actionlint-py==$(ACTIONLINT_VERSION) --with shellcheck-py actionlint
+	@$(UV) tool run zizmor==$(ZIZMOR_VERSION) .github/workflows/
+	@printf "$(GREEN)Workflows clean.$(RESET)\n"
+
 # `platform/cli/src/` — the `examlops` package, 243 source files — is not yet mypy-clean, so it
 # is **ratcheted, not skipped**: the error count may only go down. Skipping it is what let a real
 # `arg-type` error sit in `autopilot_cmd` with this gate reporting green. Lower the baseline
@@ -933,11 +945,12 @@ preflight-nopg: ## Preflight WITHOUT the Postgres mirror (only when there is no 
 
 docs-serve: install-dev ## Serve MkDocs locally at http://localhost:8080 (hot-reload)
 	@printf "$(BOLD)MkDocs$(RESET)  →  http://localhost:8080\n"
-	@$(UV) pip install -q mkdocs-material mkdocs-minify-plugin 2>/dev/null || true
+	@$(UV) pip install -q -r platform/ci/requirements-docs.txt 2>/dev/null || true
 	@$(VENV)/bin/mkdocs serve --dev-addr 0.0.0.0:8080
 
 docs-build: install-dev ## Build MkDocs static site → site/ (strict: a broken link fails)
-	@$(UV) pip install -q mkdocs-material mkdocs-minify-plugin 2>/dev/null || true
+	@# The pinned toolchain CI and the Pages deploy use, so a local build is the published one.
+	@$(UV) pip install -q -r platform/ci/requirements-docs.txt 2>/dev/null || true
 	@# --strict turns mkdocs' link warnings into failures. Twenty guides once linked to
 	@# design/adr/*.md, which is outside docs_dir and never published, so the built site
 	@# shipped twenty dead links and the build said nothing. Warnings are zero as of

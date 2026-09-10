@@ -201,7 +201,7 @@ async def set_routing(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "mode must be round_robin or cache_aware")
     slo = payload.get("sloLatencyMs")
     try:
-        slo_latency_ms = float(slo) if slo not in (None, "") else None
+        slo_latency_ms = float(slo) if slo is not None and slo != "" else None
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "sloLatencyMs must be a number") from exc
     disaggregate = bool(payload.get("disaggregate", False))

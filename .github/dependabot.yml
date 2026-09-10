@@ -1,6 +1,17 @@
 # Automates the repo's standing dependency rule — always the latest stable — instead of
-# relying on remembering it. Every bump arrives as a PR already run through CI, grouped
-# weekly so the review cost is one PR per ecosystem, not one per package.
+# relying on remembering it. Every bump arrives as a PR already run through CI.
+#
+# Shape (the first cut grouped EVERY update of an ecosystem into one PR, and that failed):
+#   • minor + patch updates are grouped per ecosystem — one routine PR, cheap to review.
+#   • MAJOR updates arrive one package per PR. One breaking major inside a group blocked every
+#     safe update beside it: PR #2 (28 frontend bumps) could not install at all because it
+#     carried typescript 7, which typescript-eslint's peer range does not admit yet.
+#   • cooldown: a release must be 7 days old before it is proposed (14 for a major). Most
+#     malicious releases are found and yanked within days — the 2026-03-19 trivy-action tag
+#     hijack was public within a week (GHSA-69fq-xp46-6x23) — so waiting a week costs little
+#     and keeps a compromised release from arriving as a green PR.
+#   • every `ignore` below carries its reason and the condition that lifts it. An
+#     unexplained ignore is how a pin outlives the reason it was added.
 version: 2
 updates:
   # Root uv workspace (pyproject.toml + uv.lock): the examlops CLI, pipelines, serving.
@@ -8,35 +19,66 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
-      python-deps:
-        patterns: ["*"]
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # vllm (the `serving-vllm` extra of examlops, required by the workspace) declares
+      # setuptools>=77.0.3,<81, so the workspace's `setuptools<80` bound is load-bearing:
+      # Dependabot's own resolver reported the workspace unsatisfiable with setuptools>=84
+      # (PR #4). Lift when the vllm release the lock resolves admits setuptools>=80.
+      - dependency-name: "setuptools"
+        versions: [">=80"]
 
-  # Services that keep their own pinned requirements.txt.
+  # Services that keep their own pinned requirements.txt, and the docs toolchain.
   - package-ecosystem: "pip"
     directories:
       - "/platform/services/agent"
       - "/platform/services/dashboard/backend"
+      - "/serving/ray_serving"
+      - "/platform/ci"
     schedule:
       interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
-      service-deps:
-        patterns: ["*"]
+      service-minor-patch:
+        update-types: ["minor", "patch"]
 
   # Dashboard frontend.
   - package-ecosystem: "npm"
     directory: "/platform/services/dashboard/frontend"
     schedule:
       interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
-      frontend-deps:
-        patterns: ["*"]
+      frontend-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # typescript-eslint 8.x declares peer typescript ">=4.8.4 <6.1.0", so typescript 7
+      # cannot even install next to it (`npm ci` → ERESOLVE, PR #2). Lift when a
+      # typescript-eslint release admits typescript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
-  # CI actions (checkout/setup-python/setup-uv/…).
+  # CI actions. Workflows pin each action to a commit SHA with the version in a comment;
+  # Dependabot updates the SHA and the comment together.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
     groups:
-      actions:
-        patterns: ["*"]
+      actions-minor-patch:
+        update-types: ["minor", "patch"]

@@ -10,20 +10,43 @@ name: CI
 #     seam. The tests that need it skip cleanly when it is absent, which is
 #     exactly the situation in this repo. Set EXAMLOPS_MODELZOO_DIR to a
 #     checkout to run them.
+#
+# Supply-chain rules, enforced by tests/unit/test_github_workflows_hardened.py and by the
+# `workflow lint` job below (actionlint + zizmor) — both read every file in this directory:
+#   • every third-party action is pinned to a full commit SHA with its version in a comment
+#     (`owner/repo@<40-hex> # vX.Y.Z`); Dependabot keeps the pair current. A tag is mutable:
+#     on 2026-03-19 76 of 77 existing aquasecurity/trivy-action tags were force-pushed to
+#     credential-stealing code (GHSA-69fq-xp46-6x23 / CVE-2026-33634).
+#   • every checkout sets `persist-credentials: false`, so no later step can reuse the token.
+#   • every job has a `timeout-minutes`; a hung job otherwise burns six hours of runner time.
+#   • the workflow token is read-only; a job that needs more asks for it by name.
+#
+# Branch protection should require exactly ONE check: `ci-ok` (bottom of this file). It fails
+# unless every job it names succeeded or was deliberately skipped, so adding a job never
+# means editing the protection rule — only its `needs:` list, which the guard test enforces.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+  workflow_dispatch:
 
-# Cancel superseded runs on the same ref to save runner minutes.
+# A newer push to the same PR supersedes the old run. Pushes to main are NEVER cancelled:
+# each commit on main gets its own verdict, or a red commit hides behind a green successor
+# (the cancelled "--help" run of 2026-09-10 is exactly that gap).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   examlops:
@@ -31,27 +54,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: |
-          uv venv --clear .venv
-          uv pip install -e ".[dev]"
+      # uv.lock is what every environment is built from. A manifest edited without relocking
+      # (Dependabot PR #4 raised a setuptools bound in four pyproject.toml files and left the
+      # lock untouched) otherwise merges green and breaks the next `uv sync`.
+      - name: Lockfile matches the manifests
+        run: uv lock --check
 
+      # Install EXACTLY what uv.lock pins. `uv pip install -e ".[dev]"` ignored the lock and
+      # resolved the newest of everything on each run, so on 2026-09-10 main went red with no
+      # commit of ours: typer 0.27 (vendoring click as `typer._click`) was published, CI picked
+      # it up, and the CLI mypy ratchet failed while the lock still said typer 0.25.1. A red
+      # build must mean a change in THIS repository; a dependency moves only through a
+      # Dependabot PR, where its breakage shows up on that PR instead of on main.
+      - name: Install dependencies (from uv.lock)
+        id: install
+        if: ${{ !cancelled() }}
+        run: uv sync --frozen --extra dev --python 3.12
+
+      # Every check below runs even when an earlier one failed (`!cancelled()`), so one push
+      # reports every problem at once. A red mypy step used to hide the unit and dashboard
+      # results entirely — a Dependabot PR could not show whether its bump broke a test.
       - name: Ruff (lint)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: .venv/bin/ruff check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
       - name: Ruff (format)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: .venv/bin/ruff format --check platform/cli/src/ tests/ pipelines/ serving/ platform/services/ platform/clients/ usecases/
 
       # Mirror the GitLab `test:examlops` job (the deploy gate): without these two steps a PR
@@ -60,18 +102,22 @@ jobs:
       # gates the production deploy — the v0.26.x "passed locally, failed in deploy CI" saga
       # relocated to a new surface.
       - name: mypy
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: .venv/bin/mypy pipelines/ serving/ platform/services/ --ignore-missing-imports
 
       - name: mypy (ratcheted CLI package)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: make typecheck-cli
 
       # `-n auto`: the suite is 2781 tests and was running in one process. Measured locally,
       # 520s serial vs 66s across cores. Safe because every test gets a private PLATFORM_DB
       # (tests/conftest.py) — the shared-state leak that made parallel runs fail is closed.
       - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: .venv/bin/pytest tests/unit/ -n auto -q --tb=short --junit-xml=reports/examlops-unit.xml
 
       - name: Dashboard backend tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           pip install -r platform/services/dashboard/backend/requirements.txt -q
           pip install -e platform/cli -q
@@ -81,7 +127,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unit-test-report
           path: reports/
@@ -155,15 +201,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
@@ -179,7 +227,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agent-test-report
           path: reports/
@@ -188,36 +236,44 @@ jobs:
   frontend:
     name: dashboard frontend tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: platform/services/dashboard/frontend/package-lock.json
 
       - name: Install dependencies
+        id: install
         working-directory: platform/services/dashboard/frontend
         run: npm ci
 
+      # Lint, tests and build each report independently (see the examlops job).
       - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: platform/services/dashboard/frontend
         run: npm run lint
 
       - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: platform/services/dashboard/frontend
         run: npx vitest run --reporter=junit --outputFile="$GITHUB_WORKSPACE/reports/frontend-unit.xml"
 
       # tsc -b is the type check. Until 2026-08-20 it ran ONLY inside the deploy image build.
       - name: Type check + build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: platform/services/dashboard/frontend
         run: npm run build
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: frontend-test-report
           path: reports/
@@ -226,18 +282,30 @@ jobs:
   helm:
     name: helm chart
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Pinned rather than relying on the runner image: the chart is a published
-      # artifact, so which helm validated it is part of the result.
+      # artifact, so which helm validated it is part of the result. Downloaded from the helm
+      # project and checked against the SHA-256 published in its v3.16.3 release notes, so a
+      # third-party setup action is not needed to install one static binary.
       - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.16.3
+        env:
+          HELM_VERSION: v3.16.3
+          HELM_SHA256: f5355c79190951eed23c5432a3b920e071f4c00a64f75e077de0dd4cb7b294ea
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP" linux-amd64/helm
+          sudo install -m 0755 "$RUNNER_TEMP/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -270,16 +338,19 @@ jobs:
   control-plane:
     name: control plane tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
@@ -300,21 +371,23 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: control-plane-test-report
           path: reports/
           if-no-files-found: ignore
 
-
   docs:
     name: docs site
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -324,15 +397,93 @@ jobs:
       # strict build is the whole point of this job: a broken link, a broken heading anchor
       # or a page missing from the nav stops the build instead of reaching a reader.
       - name: Install MkDocs
-        run: python -m pip install --quiet mkdocs-material mkdocs-minify-plugin
+        run: python -m pip install --quiet -r platform/ci/requirements-docs.txt
 
       - name: Build (strict)
         run: mkdocs build --clean --strict
 
       # If it built, it is worth keeping: this is exactly what a Pages deploy would publish.
       - name: Upload site
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-site
           path: site/
           if-no-files-found: error
+
+  workflow-lint:
+    # The workflows are code that runs with the repository's token, and nothing checked them.
+    # actionlint catches what GitHub only reports at run time (a bad expression, an unknown
+    # input, shellcheck findings in `run:` blocks); zizmor audits the security properties the
+    # header of this file promises — pinning, credential persistence, template injection,
+    # excessive permissions. Both are pinned PyPI releases run through uvx, so linting the
+    # workflows adds no third-party action to trust. `make lint-workflows` runs the same pair.
+    name: workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: actionlint
+        run: uvx --from actionlint-py==1.7.12.24 actionlint -color
+
+      # Online audits (impostor commits, known-vulnerable actions, ref confusion) need a token;
+      # the workflow's read-only one is enough.
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor==1.30.0 --format=github .github/workflows/
+
+  dependency-review:
+    # Blocks a PR that introduces a dependency with a known high/critical advisory, before it
+    # reaches main. Reads the dependency graph diff through the API, so it needs no checkout.
+    name: dependency review
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  ci-ok:
+    # The ONE check branch protection requires. It runs even when a job it needs failed
+    # (`always()`), and fails unless every job succeeded — dependency-review alone may be
+    # skipped, because it only runs on pull requests. Without an aggregate, protection has to
+    # list every job by name, and a job added later is silently not required.
+    # tests/unit/test_github_workflows_hardened.py fails if a job in this file is missing here.
+    name: ci-ok
+    if: ${{ always() }}
+    needs:
+      - examlops
+      - package
+      - agent
+      - frontend
+      - helm
+      - control-plane
+      - docs
+      - workflow-lint
+      - dependency-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every required job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[]
+            | select(.value.result != "success")
+            | select(.key != "dependency-review" or .value.result != "skipped")
+            | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::required jobs did not pass: $bad"
+            exit 1
+          fi

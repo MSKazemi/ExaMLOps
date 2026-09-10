@@ -104,7 +104,7 @@ async def issue_key(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "models must be a list of model names")
     budget = payload.get("budgetUsd")
     try:
-        budget_usd = float(budget) if budget not in (None, "") else None
+        budget_usd = float(budget) if budget is not None and budget != "" else None
     except (TypeError, ValueError):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "budgetUsd must be a number") from None
     gateway, _gov = _examlops_gateway()
