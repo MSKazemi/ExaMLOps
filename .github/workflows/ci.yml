@@ -342,7 +342,7 @@ jobs:
           # on GitLab's test:infra:helm (pipeline #3241): if a future fixture adds an import,
           # this job fails loudly rather than silently skipping the chart guards.
           python -m pip install --quiet pytest pyyaml prometheus_client httpx typer
-          python -m pytest tests/unit/test_helm_chart.py tests/unit/test_dockerfile_build_context.py -q
+          python -m pytest tests/unit/test_helm_chart.py tests/unit/test_helm_network_and_schema.py tests/unit/test_dockerfile_build_context.py -q
 
       # A chart repository nobody can build is not publishable; this is the same
       # command the release would run, minus the copy to the host.

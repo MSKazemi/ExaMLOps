@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the Helm chart validates its values and can isolate its tiers on the network (ADR 0129)
+
+- **`values.schema.json`.** helm now validates values on install, upgrade, lint and template. Every
+  object the chart owns rejects unknown keys, so `--set controlPlane.replicaCont=2` fails naming the
+  misspelt key instead of deploying the default silently; ports, pull policies, replica counts and
+  the trailing slash `global.imageRegistry` needs are checked too.
+- **Opt-in NetworkPolicies** (`networkPolicy.enabled`): each tier is default-deny in and out, and
+  only the documented flows are allowed — ingress controller → dashboard + control plane,
+  dashboard → control plane + agent, agent → control plane, the monitoring namespace → control-plane
+  `/metrics`, DNS, and per-tier egress to the services the chart does not deploy by port
+  (`networkPolicy.egressPorts`, plus `extraEgress`). Per tier rather than release-wide, so the
+  pre-upgrade Job is never caught. Opt-in because the namespace labels are site-specific.
+- **A ServiceMonitor for the control plane** (`metrics.serviceMonitor.enabled`) — the one tier that
+  serves `/metrics`. Without the Prometheus Operator CRDs the render fails with that instruction.
+- `tests/unit/test_helm_network_and_schema.py` (15 tests, run by the CI chart job) renders each of
+  these with helm 3.16 and 3.20, including that a typo is rejected and that disabling the agent
+  removes every path to it, while a values file with no `agent.enabled` still isolates the agent.
+
 ### Added — feature-store embeddings are searchable: `exa feature similar` (ADR 0020 clause 4)
 
 - A feature view can name one feature as its embedding (`exa feature apply … --embedding F`).

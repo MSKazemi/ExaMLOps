@@ -1,0 +1,105 @@
+{{- /*
+Per-tier NetworkPolicies (networkPolicy.enabled). Each selects ONE tier by its component label and
+lists both policy types, so that tier is default-deny in and out except for what is written here.
+Policies are per tier, not release-wide, on purpose: a release-wide deny would also catch pods this
+file knows nothing about (the pre-upgrade Job, a future tier) and cut them off silently.
+*/ -}}
+{{- define "examlops.componentSelector" -}}
+app.kubernetes.io/name: {{ include "examlops.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . }}
+{{- $np := .Values.networkPolicy }}
+{{- $ports := dict "control-plane" .Values.controlPlane.port "dashboard" .Values.dashboard.port "agent" .Values.agent.port }}
+{{- $egress := dict "control-plane" $np.egressPorts.controlPlane "dashboard" $np.egressPorts.dashboard "agent" $np.egressPorts.agent }}
+{{- /* agent.enabled absent (older values) means the agent tier is deployed, as it always was. */ -}}
+{{- $agentOn := or (not (hasKey .Values.agent "enabled")) .Values.agent.enabled }}
+{{- $tiers := list "control-plane" "dashboard" }}
+{{- if $agentOn }}{{- $tiers = append $tiers "agent" }}{{- end }}
+{{- range $tier := $tiers }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "examlops.fullname" $root }}-{{ $tier }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $tier }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "examlops.componentSelector" (dict "root" $root "component" $tier) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- if has $tier (list "control-plane" "dashboard") }}
+    # The ingress controller routes external traffic to this tier (templates/ingress.yaml).
+    - from:
+        - namespaceSelector:
+            {{- toYaml $np.ingressController.namespaceSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
+    {{- end }}
+    {{- if eq $tier "control-plane" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "dashboard") | nindent 14 }}
+        {{- if $agentOn }}
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "agent") | nindent 14 }}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
+    # Prometheus scrapes /metrics (only this tier serves it).
+    - from:
+        - namespaceSelector:
+            {{- toYaml $np.monitoring.namespaceSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
+    {{- end }}
+    {{- if eq $tier "agent" }}
+    # The dashboard's embedded copilot is the agent's only in-cluster client.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "dashboard") | nindent 14 }}
+      ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
+    {{- end }}
+  egress:
+    # DNS, wherever the cluster runs its resolver.
+    - ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- if eq $tier "dashboard" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "control-plane") | nindent 14 }}
+      ports: [{protocol: TCP, port: {{ $root.Values.controlPlane.port }}}]
+    {{- if $agentOn }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "agent") | nindent 14 }}
+      ports: [{protocol: TCP, port: {{ $root.Values.agent.port }}}]
+    {{- end }}
+    {{- end }}
+    {{- if eq $tier "agent" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "control-plane") | nindent 14 }}
+      ports: [{protocol: TCP, port: {{ $root.Values.controlPlane.port }}}]
+    {{- end }}
+    {{- with get $egress $tier }}
+    # Services this chart does not deploy (Postgres, Redis, Prefect, MLflow, S3, …), by port.
+    - ports:
+        {{- range . }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

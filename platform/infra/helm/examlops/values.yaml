@@ -154,3 +154,36 @@ topologySpreadConstraints:
 serviceAccount:
   create: true
   name: ""
+
+# ── network isolation (opt-in: needs a CNI that enforces NetworkPolicy, e.g. Calico/Cilium) ─────
+# When enabled, every pod of this release is default-deny in BOTH directions, and only these flows
+# are allowed: the ingress controller → dashboard + control-plane; dashboard → control-plane + agent;
+# agent → control-plane; the monitoring namespace → control-plane /metrics; DNS; and each tier's
+# egress to the services this chart does not deploy, by port (their addresses are site-specific).
+# Opt-in because a wrong namespace label below silently cuts a working install off.
+networkPolicy:
+  enabled: false
+  ingressController:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  monitoring:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: monitoring}
+  # Destination ports outside the chart: Postgres 5432, Redis 6379, Prefect 4200, MLflow 5000,
+  # MinIO/S3 9000, Ray Serve 8001, Prometheus 9090, Ollama 11434, HTTPS 443 (IdP, LLM APIs, S3).
+  egressPorts:
+    controlPlane: [5432, 6379, 4200, 5000, 9000, 443]
+    dashboard: [5432, 6379, 5000, 9000, 9090, 443]
+    agent: [5432, 5000, 8001, 9090, 11434, 443]
+  # Raw NetworkPolicyEgressRule entries appended to every tier (e.g. a CIDR-scoped database).
+  extraEgress: []
+
+# ── Prometheus Operator scrape config (needs the monitoring.coreos.com/v1 CRDs) ──────────────────
+# Only the control plane serves /metrics (approval-gate and admission metrics); a ServiceMonitor
+# for the other tiers would scrape a 404.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}        # add the label your Prometheus' serviceMonitorSelector matches, e.g. release: kube-prometheus-stack

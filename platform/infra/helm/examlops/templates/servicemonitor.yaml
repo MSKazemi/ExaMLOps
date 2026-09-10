@@ -1,0 +1,33 @@
+{{- /*
+Prometheus Operator scrape config for the control plane — the only tier that serves /metrics
+(approval gate, admission, command queue). Fails the render rather than emitting an object the
+cluster cannot accept when the ServiceMonitor CRD is not installed.
+*/ -}}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+{{- fail "metrics.serviceMonitor.enabled needs the Prometheus Operator CRDs (monitoring.coreos.com/v1 ServiceMonitor) — install kube-prometheus-stack first, or pass --api-versions monitoring.coreos.com/v1/ServiceMonitor to helm template." }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "examlops.fullname" . }}-control-plane
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: control-plane
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

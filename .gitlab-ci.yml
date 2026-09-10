@@ -360,6 +360,7 @@ test:infra:helm:
     - changes:
         - platform/infra/helm/**/*
         - tests/unit/test_helm_chart.py
+        - tests/unit/test_helm_network_and_schema.py
         - tests/unit/test_helm_agent_scaling.py
         - tests/unit/test_helm_secret_scoping.py
         - tests/unit/test_dashboard_agent_credentials.py
@@ -381,11 +382,12 @@ test:infra:helm:
     - python3 -m venv /tmp/venv
     - /tmp/venv/bin/pip install --quiet pytest pyyaml prometheus_client httpx typer
     - make helm-validate
-    # All four helm-gated files. test_helm_agent_scaling, test_helm_secret_scoping and the
+    # All five helm-gated files. test_helm_network_and_schema, test_helm_agent_scaling, test_helm_secret_scoping and the
     # helm case in test_dashboard_agent_credentials skip without a helm binary, and this is the
     # only job that has one. test_gitlab_ci_valid.py keeps this list complete.
     - /tmp/venv/bin/python -m pytest
         tests/unit/test_helm_chart.py
+        tests/unit/test_helm_network_and_schema.py
         tests/unit/test_helm_agent_scaling.py
         tests/unit/test_helm_secret_scoping.py
         tests/unit/test_dashboard_agent_credentials.py

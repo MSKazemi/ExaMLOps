@@ -1,0 +1,253 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExaMLOps Helm chart values",
+  "description": "Validated by helm on install, upgrade, lint and template. Objects the chart owns reject unknown keys, so a misspelt value fails the install instead of being silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "replicas": {"type": "integer", "minimum": 0},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {"$ref": "#/definitions/nonEmptyString"},
+        "tag": {"type": "string", "description": "Empty = the chart's appVersion (the release these images were published with)."},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {"type": "object", "additionalProperties": {"type": ["string", "number"]}},
+        "limits": {"type": "object", "additionalProperties": {"type": ["string", "number"]}}
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minAvailable": {"type": ["integer", "string"]}
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minReplicas": {"type": "integer", "minimum": 1},
+        "maxReplicas": {"type": "integer", "minimum": 1},
+        "targetCPUUtilizationPercentage": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "envVarList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"$ref": "#/definitions/nonEmptyString"}}
+      }
+    },
+    "labelSelector": {
+      "type": "object",
+      "properties": {
+        "matchLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+        "matchExpressions": {"type": "array"}
+      }
+    }
+  },
+  "properties": {
+    "nameOverride": {"type": "string"},
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "imageRegistry": {
+          "type": "string",
+          "description": "Registry prefix WITH a trailing slash, e.g. ghcr.io/mskazemi/ — required at render time.",
+          "pattern": "^$|/$"
+        },
+        "imagePullSecrets": {"type": "array"},
+        "cluster": {"type": "string"},
+        "tenant": {"type": "string"}
+      }
+    },
+    "existingSecret": {"$ref": "#/definitions/nonEmptyString"},
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "readHost": {"type": "string"},
+        "database": {"type": "string"}
+      }
+    },
+    "minio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {"type": "string"},
+        "bucket": {"type": "string"}
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"features": {"type": "string"}}
+    },
+    "upgrade": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "backoffLimit": {"type": "integer", "minimum": 0},
+            "activeDeadlineSeconds": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "host": {"type": "string"},
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "secretName": {"type": "string"}
+          }
+        }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "replicaCount": {"$ref": "#/definitions/replicas"},
+        "image": {"$ref": "#/definitions/image"},
+        "port": {"$ref": "#/definitions/port"},
+        "resources": {"$ref": "#/definitions/resources"},
+        "autoscaling": {"$ref": "#/definitions/autoscaling"},
+        "pdb": {"$ref": "#/definitions/pdb"},
+        "env": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+        "extraEnv": {"$ref": "#/definitions/envVarList"}
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "replicaCount": {"$ref": "#/definitions/replicas"},
+        "image": {"$ref": "#/definitions/image"},
+        "port": {"$ref": "#/definitions/port"},
+        "resources": {"$ref": "#/definitions/resources"},
+        "pdb": {"$ref": "#/definitions/pdb"},
+        "cliState": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"existingClaim": {"type": "string"}}
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingSecret": {"type": "string"},
+        "replicaCount": {"$ref": "#/definitions/replicas"},
+        "image": {"$ref": "#/definitions/image"},
+        "port": {"$ref": "#/definitions/port"},
+        "serviceUrls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mlflow": {"type": "string"},
+            "rayServe": {"type": "string"},
+            "prometheus": {"type": "string"}
+          }
+        },
+        "extraEnv": {"$ref": "#/definitions/envVarList"},
+        "resources": {"$ref": "#/definitions/resources"},
+        "autoscaling": {"$ref": "#/definitions/autoscaling"},
+        "pdb": {"$ref": "#/definitions/pdb"}
+      }
+    },
+    "podSecurityContext": {"type": "object"},
+    "containerSecurityContext": {"type": "object"},
+    "topologySpreadConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "maxSkew": {"type": "integer", "minimum": 1},
+        "topologyKey": {"type": "string"}
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"}
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "ingressController": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"namespaceSelector": {"$ref": "#/definitions/labelSelector"}}
+        },
+        "monitoring": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"namespaceSelector": {"$ref": "#/definitions/labelSelector"}}
+        },
+        "egressPorts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "controlPlane": {"type": "array", "items": {"$ref": "#/definitions/port"}},
+            "dashboard": {"type": "array", "items": {"$ref": "#/definitions/port"}},
+            "agent": {"type": "array", "items": {"$ref": "#/definitions/port"}}
+          }
+        },
+        "extraEgress": {"type": "array"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interval": {"type": "string", "pattern": "^[0-9]+(ms|s|m|h)$"},
+            "scrapeTimeout": {"type": "string", "pattern": "^[0-9]+(ms|s|m|h)$"},
+            "labels": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

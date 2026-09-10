@@ -229,8 +229,9 @@ partial Helm chart and a turnkey, HA, multi-tenant cluster install:
    signed container images** (a registry + a release job) and a **published Helm chart / wheels** so a
    cluster pulls immutable, versioned artifacts. *(Add an image-build+push CI job; the packages are
    already wheel-buildable via setuptools, just not distributed.)*
-2. **Complete the Helm chart.** Add the missing tiers (MLflow, Prefect, Ray Serve, MinIO, JupyterHub),
-   `NetworkPolicy`, `ServiceMonitor`/`PrometheusRule`, agent HPA/PDB, and either bundle the stateful
+2. **Complete the Helm chart.** *Done: a strict `values.schema.json`, opt-in per-tier default-deny
+   `NetworkPolicy`, and a control-plane `ServiceMonitor` (see the chart README).* Still to add: the
+   missing tiers (MLflow, Prefect, Ray Serve, MinIO, JupyterHub), a `PrometheusRule`, and either bundle the stateful
    services as subcharts (Postgres/Redis operators) or ship an **umbrella chart** so the data
    layer isn't fully bring-your-own. Bump `appVersion` to match code.
 3. **Finish multi-replica control-plane coordination.** The platform, dashboard, and control-plane

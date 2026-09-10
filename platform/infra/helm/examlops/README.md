@@ -144,3 +144,50 @@ from starting.
 
 `make helm-validate` runs the lint + render + dry-run gate, and it passes the registry — which is
 why it stayed green while the commands in this section did not work.
+
+**From a release** the chart and its images come from GHCR, signed — no checkout needed:
+
+```bash
+helm install examlops oci://ghcr.io/mskazemi/charts/examlops --version X.Y.Z \
+  -n examlops --create-namespace --set global.imageRegistry=ghcr.io/mskazemi/
+```
+
+See [Releases](https://mskazemi.com/ExaMLOps/guides/release-process/) for verifying the chart and images with
+`cosign verify` / `gh attestation verify`.
+
+## Values are validated
+
+`values.schema.json` is enforced by helm on install, upgrade, lint and template. Every object the
+chart owns rejects unknown keys, so `--set controlPlane.replicaCont=2` fails with the misspelt
+key named instead of being silently ignored; ports, pull policies, replica counts and the trailing
+slash on `global.imageRegistry` are checked too. Add a value → add it to the schema in the same
+change, or `helm lint` fails.
+
+## Network isolation (opt-in)
+
+`networkPolicy.enabled: true` puts every tier behind its own default-deny NetworkPolicy (ingress
+and egress) and allows exactly these flows:
+
+| To ↓ / from → | ingress controller | dashboard | agent | monitoring ns |
+|---|---|---|---|---|
+| **control-plane** | ✓ | ✓ | ✓ | ✓ (`/metrics`) |
+| **dashboard** | ✓ | | | |
+| **agent** | | ✓ | | |
+
+Every tier may resolve DNS, and reach the services this chart does not deploy on the ports in
+`networkPolicy.egressPorts.<tier>` (Postgres 5432, Redis 6379, Prefect 4200, MLflow 5000, S3 9000,
+Ray Serve 8001, Prometheus 9090, Ollama 11434, HTTPS 443 — trim to what your site runs), plus any
+`networkPolicy.extraEgress` rules (e.g. a CIDR-scoped database). It is opt-in because it needs a
+CNI that enforces NetworkPolicy and because `networkPolicy.ingressController.namespaceSelector` /
+`monitoring.namespaceSelector` must match your cluster's namespace labels — a wrong label cuts a
+working install off without an error. Policies are per tier, never release-wide, so the pre-upgrade
+Job is not caught by them.
+
+## Metrics (Prometheus Operator)
+
+`metrics.serviceMonitor.enabled: true` renders a ServiceMonitor for the control plane — the only
+tier that serves `/metrics`. Add the label your Prometheus selects on
+(`metrics.serviceMonitor.labels: {release: kube-prometheus-stack}`). Without the
+`monitoring.coreos.com/v1` CRDs the render fails with that instruction instead of producing an
+object the API server rejects. `tests/unit/test_helm_network_and_schema.py` renders all of the above
+with the pinned helm.
