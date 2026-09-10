@@ -170,8 +170,12 @@ jobs:
       - name: Install the wheel outside the repository and run it
         env:
           PY: ${{ matrix.python }}
+          # Plain output whatever the workflow sets: under FORCE_COLOR rich styles
+          # `exa --version`, and the comparison below is against plain text.
+          NO_COLOR: "1"
         run: |
           set -euo pipefail
+          unset FORCE_COLOR
           want="$(python3 platform/ci/release_version.py current)"
           wheel="$(ls "$PWD"/dist/examlops-*.whl)"
           smoke="$RUNNER_TEMP/smoke"
