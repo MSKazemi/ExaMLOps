@@ -135,6 +135,14 @@ REGISTRY: dict[str, Inverse] = {
     # trail itself; neither mutates platform state autonomously.
     "telemetry_anchor": _r("telemetry_anchor"),
     "audit_reviewed": _r("audit_reviewed"),
+    # ADR 0108 / W3 — identity events. Governance records about credentials, not autonomous
+    # platform mutations; a denial or a revocation is its own evidence, with nothing to undo.
+    "agent_registered": _r("agent_registered"),
+    "agent_decommissioned": _r("agent_decommissioned"),
+    "grant_issued": _r("grant_issued"),
+    "lease_issued": _r("lease_issued"),
+    "lease_revoked": _r("lease_revoked"),
+    "authz_denied": _r("authz_denied"),
     "corruption_detection_error": _r("corruption_detection_error"),
     "parity_gate_evaluated": _r("parity_gate_evaluated"),
     # ── operator switches: mutating, and their inverse is the opposite command ──

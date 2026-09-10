@@ -15,7 +15,7 @@ from skipper import config
 try:
     from examlops.resilience import db as _rdb
 except Exception:  # pragma: no cover - examlops always present in the agent image
-    _rdb = None
+    _rdb = None  # type: ignore[assignment]
 
 log = logging.getLogger("skipper.memory")
 _CHECKPOINTER_CONTEXTS = ExitStack()

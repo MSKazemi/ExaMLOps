@@ -604,7 +604,9 @@ async def bind_storage_view(
     bound = False
     if connection_ref:
         bound = _pdb.bind_project_connection(name, connection_ref, actor=actor)
-        storage = _pdb.ensure_project_storage(name)  # re-read to reflect the binding
+        # Re-read to reflect the binding; a backend failure here must not 500 a bind that
+        # already succeeded, so fall back to the pre-binding row rather than crash on None.
+        storage = _pdb.ensure_project_storage(name) or storage
     conn = _connect()
     _audit(
         conn,

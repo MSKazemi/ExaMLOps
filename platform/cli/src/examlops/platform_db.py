@@ -1286,6 +1286,42 @@ def init_db(*, force: bool = False) -> None:
                 key_id     TEXT,
                 ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- ADR 0108 / AIDC W3 — examlops.identity: agent principals, scoped grants,
+            -- JIT single-target leases. AUTONOMOUS vs DELEGATED is a different credential,
+            -- never a flag on one; expiry is evaluated at check time (no sweeps).
+            CREATE TABLE IF NOT EXISTS agent_principals (
+                agent_id          TEXT PRIMARY KEY,
+                name              TEXT NOT NULL,
+                owner             TEXT NOT NULL,
+                purpose           TEXT NOT NULL,
+                parent            TEXT,
+                state             TEXT NOT NULL DEFAULT 'ACTIVE',
+                issuer            TEXT NOT NULL DEFAULT 'local',
+                created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                decommissioned_at DATETIME
+            );
+            CREATE TABLE IF NOT EXISTS identity_grants (
+                grant_id        TEXT PRIMARY KEY,
+                principal       TEXT NOT NULL,
+                resource_scope  TEXT NOT NULL,  -- json {"kind","ids"}
+                data_scope      TEXT NOT NULL,  -- json {"sensitivity_max","collections"}
+                operation_scope TEXT NOT NULL,  -- json ["read","write","export","admin"]
+                mode            TEXT NOT NULL,  -- AUTONOMOUS | DELEGATED
+                on_behalf_of    TEXT,           -- required for DELEGATED, forbidden for AUTONOMOUS
+                issued_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at      DATETIME NOT NULL,
+                revoked_at      DATETIME
+            );
+            CREATE TABLE IF NOT EXISTS identity_leases (
+                lease_id      TEXT PRIMARY KEY,
+                grant_id      TEXT NOT NULL,
+                target        TEXT NOT NULL,
+                issued_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at    DATETIME NOT NULL,
+                revoked_at    DATETIME,
+                revoke_reason TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_identity_leases_grant ON identity_leases (grant_id);
             -- Next-Gen 40 · D4 — append-only enforcement: block UPDATE/DELETE at the DB level (R3).
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events

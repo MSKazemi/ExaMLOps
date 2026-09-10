@@ -1,0 +1,359 @@
+{
+  "paths": {
+    "/admin/reload": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/changes": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/approvals": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "query",
+            "status",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/approve/{model_id}": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "model_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "parameters": [],
+        "request_body_required": null,
+        "responses": [
+          "200"
+        ]
+      }
+    },
+    "/models": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/models/{name}/images/{filename}": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "filename",
+            true
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/models/{name}/meta": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/models/{name}/readme": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/modelzoo/config": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "put": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/modelzoo/events": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "query",
+            "limit",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/modelzoo/status": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/modelzoo/sync": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/reject/{model_id}": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "model_id",
+            true
+          ]
+        ],
+        "request_body_required": false,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/retrain": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "header",
+            "x-idempotency-key",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/retrain/{flow_run_id}": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "flow_run_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/status": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/webhooks/modelzoo/github": {
+      "post": {
+        "parameters": [],
+        "request_body_required": null,
+        "responses": [
+          "200"
+        ]
+      }
+    },
+    "/webhooks/modelzoo/gitlab": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "x-gitlab-token",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    }
+  },
+  "title": "ExaMLOps Control Plane"
+}

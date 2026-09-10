@@ -608,13 +608,14 @@ def memory_stats(
         from skipper import config as _cfg  # noqa: PLC0415
         from skipper import memory_types
 
-        data = memory_types.stats(store)
+        data: dict[str, Any] = memory_types.stats(store)
         source = _cfg.AGENT_MEMORY_DB
     else:
         response = _remote_memory_get("/api/memory/stats")
-        data = response.get("counts") if isinstance(response, dict) else None
-        if not isinstance(data, dict):
+        counts = response.get("counts") if isinstance(response, dict) else None
+        if not isinstance(counts, dict):
             _output.error("The agent returned invalid memory statistics.")
+        data = counts
         source = load_config().agent_url
     if _output.json_mode:
         _output.print_json({"mode": "local" if local else "remote", "source": source, **data})
@@ -645,10 +646,10 @@ def memory_list(
             {k: v for k, v in {"scope": scope, "limit": limit}.items() if v is not None}
         )
         response = _remote_memory_get(f"/api/memory/list/{quote(kind)}?{query}")
-        items = response.get("items") if isinstance(response, dict) else None
-        if not isinstance(items, list):
+        raw = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(raw, list):
             _output.error("The agent returned an invalid memory list.")
-        records = items
+        records = raw
     if _output.json_mode:
         _output.print_json(records)
         return
@@ -672,15 +673,16 @@ def memory_export(
         _admin, store = _local_store()
         from skipper import memory_types  # noqa: PLC0415
 
-        data = memory_types.export_all(store)
+        data: dict[str, Any] = memory_types.export_all(store)
     else:
         response = _remote_memory_get("/api/memory/export")
-        data = response.get("memories") if isinstance(response, dict) else None
-        if not isinstance(data, dict):
+        memories = response.get("memories") if isinstance(response, dict) else None
+        if not isinstance(memories, dict):
             _output.error("The agent returned an invalid memory export.")
+        data = memories
     # export_all is keyed by memory kind, so len(data) is the number of kinds, not of
     # memories — count what the operator actually asked to see leave the building.
-    total = sum(len(v) for v in data.values()) if isinstance(data, dict) else len(data)
+    total = sum(len(v) for v in data.values())
     if out:
         destination = Path(out)
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
@@ -737,7 +739,9 @@ def memory_delete(
         from skipper import config as _cfg  # noqa: PLC0415
         from skipper import memory_types
 
-        n = memory_types.erase(store, kind, scope=scope, operator=operator or _cfg.AGENT_ACTOR)
+        n: int | None = memory_types.erase(
+            store, kind, scope=scope, operator=operator or _cfg.AGENT_ACTOR
+        )
     else:
         response = _remote_memory_post(
             "/api/memory/delete",
@@ -766,7 +770,7 @@ def memory_review_list(
         _local_memory_admin()
         from skipper import memory_review  # noqa: PLC0415
 
-        reviews = memory_review.list_pending()
+        reviews: list[dict[str, Any]] | None = memory_review.list_pending()
     else:
         response = _remote_memory_get("/api/memory/reviews")
         reviews = response.get("reviews") if isinstance(response, dict) else None

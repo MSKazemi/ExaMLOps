@@ -55,6 +55,8 @@ dev = [
     "pytest-xdist>=3.8",  # `-n auto` — the unit suite is 2781 tests and runs 7.9x faster
                           # across this machine's cores (520s -> 66s). Without it every
                           # Makefile tier that passes `-n` fails on a clean install.
+    "pytest-watcher>=0.6",  # `make watch` — re-runs the scoped tests on every save,
+                            # the feedback layer below `make test-fast`.
     "httpx>=0.24",        # HTTP client for integration tests
     "ruff==0.15.6",     # pinned: ruff's formatter evolves between releases; an exact
                         # pin keeps `ruff format --check` deterministic in CI (the

@@ -13,6 +13,12 @@ import pytest
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    # Pin the sqlite backend: _seed() writes `datetime('now', '-N days')`, which is
+    # sqlite-only syntax, and test_vacuum_still_runs_on_sqlite asserts the sqlite VACUUM
+    # path.  Without this the file inherits EXAMLOPS_DB_BACKEND from the environment and
+    # fails under the test:postgres CI job, which exports postgres for the whole run.
+    # The backend-selection test below sets the variable itself, after this fixture.
+    monkeypatch.delenv("EXAMLOPS_DB_BACKEND", raising=False)
     import examlops.platform_db as pdb
 
     pdb.init_db()

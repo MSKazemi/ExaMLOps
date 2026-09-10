@@ -61,6 +61,7 @@ nav:
   - Home: index.md
   - Guides:
       - Quick Start: guides/quickstart.md
+      - Developer Onboarding: guides/developer-onboarding.md
       - Architecture: guides/architecture.md
       - Testing strategy: guides/testing.md
       - Postgres datastore backend: guides/postgres-backend.md

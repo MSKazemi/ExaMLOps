@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 import audit_write
@@ -165,6 +166,7 @@ def set_cluster_state(
     the transition semantics can never diverge between the two surfaces. Falls back to the
     local UPDATE only when the examlops package is absent in this deployment.
     """
+    _shared_set_state: Callable[..., bool] | None
     try:
         from examlops.data.hpc import set_cluster_state as _shared_set_state
     except ImportError:  # pragma: no cover - degraded deployment without examlops

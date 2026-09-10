@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — dev-velocity layer + API contract guard
+
+- **Sub-minute feedback layer** below `make test-fast`: `make watch W=<path>` (pytest-watcher,
+  new dev dep — re-runs the scoped tests failed-first on every save) and `make typecheck-fast`
+  (dmypy daemon over the same four roots as `make typecheck` — seconds per re-check once warm).
+  Documented as tier 0.5 in `docs/guides/testing.md`.
+- **Control plane API contract guard**: `platform/services/control_plane/api-contract.json`
+  (committed, regenerated via `make openapi-export`) + `api_contract.py` reduction +
+  `tests/test_openapi_contract.py`. The reduction (routes/methods/parameters/response codes)
+  is deliberately generator-portable: a raw `app.openapi()` snapshot differs between fastapi
+  0.115 and 0.141 with no interface change, verified before choosing this shape. An interface
+  change is now a reviewable diff; an accidental one is a red test in both CI mirrors.
+- **Dependabot** (`.github/dependabot.yml`): grouped weekly update PRs for the uv workspace,
+  the two service `requirements.txt`s, the dashboard frontend, and the GitHub Actions —
+  automating the standing latest-stable dependency rule.
+
+### Fixed — GitHub CI red since 2026-08-25 (runs 32896850721 / 33819296413)
+
+- **helm job (`Chart guards`)**: install `prometheus_client httpx typer` alongside pytest —
+  the autouse fixtures in `tests/conftest.py` drag them in at collection/setup. Mirrors the
+  identical fix GitLab's `test:infra:helm` already carried (pipeline #3241).
+- **control plane job**: install `-e platform/cli` — `app.py` imports
+  `examlops.admission`/`.coordination`/`.data.events` at module level since the
+  enterprise-readiness work; mirrors GitLab's `test:control-plane`. Both fixed job
+  environments reproduced locally in clean venvs (19 and 144 tests passing) before the edit.
+  (The other two failures on run 33819296413 — the `_pdb` F821 in the projects router and the
+  agent capability classification — were already fixed by the 2026-09-04 audit-wave commits.)
+
 ### Added — anchored telemetry + reviewed audit (ADRs 0110/0113 — AIDC W2 complete)
 
 - **`examlops.telemetry_anchor`** (ADR 0110 decision 2): the per-inference/per-job side tables

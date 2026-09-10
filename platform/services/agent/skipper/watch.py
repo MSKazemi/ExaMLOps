@@ -79,7 +79,7 @@ def _drift_breaches() -> list[dict[str, Any]]:
         )
 
         init_db()
-        models = {c.get("model") for c in list_drift_auto_retrain() if c.get("model")}
+        models = {m for c in list_drift_auto_retrain() if (m := c.get("model"))}
     except Exception:  # noqa: BLE001
         return []
     for model in models:

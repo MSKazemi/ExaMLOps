@@ -88,8 +88,8 @@ endif
         remote-rebuild selfheal smoke-check \
         test-postgres \
         venv install install-dev install-hooks clean \
-        lint lint-fix typecheck typecheck-cli test test-unit test-integration test-cov check \
-        test-fast test-failed test-serial test-slowest gate \
+        lint lint-fix typecheck typecheck-cli typecheck-fast openapi-export test test-unit test-integration test-cov check \
+        test-fast test-failed test-serial test-slowest watch gate \
         alerts-check dr-drill helm-validate \
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
         preflight preflight-nopg \
@@ -603,6 +603,25 @@ typecheck-cli: ## mypy over platform/cli/src/, ratcheted at CLI_MYPY_BASELINE (o
 		printf "$(DIM)platform/cli/src/ holds at $$n known errors.$(RESET)\n"; \
 	fi
 
+# The committed api-contract.json is the control plane's public API contract; its guard test
+# (platform/services/control_plane/tests/test_openapi_contract.py) fails on any drift, so an
+# interface change is always a reviewed diff, never a runtime surprise. The reduction in
+# api_contract.py is what keeps the guard portable across fastapi versions.
+openapi-export: install-dev ## Regenerate the control plane's committed API contract (api-contract.json)
+	@$(VENV_BIN)/python platform/services/control_plane/api_contract.py
+	@printf "$(GREEN)platform/services/control_plane/api-contract.json regenerated — review the diff.$(RESET)\n"
+
+# The daemon's first run builds its cache (minutes, same as cold mypy); every run after an
+# edit is seconds. Same four roots and the same flag as `typecheck`, so a clean fast run
+# means the slow gate's mypy body is clean too (the CLI ratchet is 0, i.e. clean-enforced).
+# dmypy 2.3 exits 1 when only `annotation-unchecked` *notes* are present (plain mypy exits
+# 0 on the same tree), so pass = the "Success: no issues" line, not the raw exit code; a
+# daemon crash has neither the line nor exit 0 and still fails.
+typecheck-fast: install-dev ## Incremental mypy via the dmypy daemon — seconds per re-check once warm
+	@out=$$($(VENV)/bin/dmypy run -- pipelines/ serving/ platform/services/ platform/cli/src/ --ignore-missing-imports 2>&1); st=$$?; \
+	printf '%s\n' "$$out" | grep -v 'annotation-unchecked' || true; \
+	if [ $$st -ne 0 ] && ! printf '%s\n' "$$out" | grep -q '^Success: no issues'; then exit $$st; fi
+
 # ── Test tiers ───────────────────────────────────────────────────────────────
 # The suite is 2781 unit tests. Run serially that is ~9 minutes, which is long enough that the
 # gate gets skipped — and a gate that gets skipped is not a gate. Across this machine's cores it
@@ -630,6 +649,14 @@ test-fast: install-dev ## TIER 1 (~70s) — whole unit suite in parallel; the in
 test-failed: install-dev ## Re-run only the tests that failed last time (then the rest)
 	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -q --tb=short --no-header --last-failed \
 	  --last-failed-no-failures all
+
+# The layer below `test-fast`: keep it running while editing and every save re-runs the
+# scope, failed-first, without the ~10s of collection+spinup a fresh `make test-fast` pays.
+# Scope it to the area being worked on — the whole unit tree on every save is what
+# `test-fast` is for, before a commit.
+watch: install-dev ## Re-run tests on every save (Ctrl+C stops). Scope: make watch W=tests/unit/test_x.py
+	@$(VENV)/bin/ptw --now --delay 0.5 --runner $(VENV)/bin/pytest . \
+	  -- $(or $(W),tests/unit/) -q --tb=short --ff
 
 test-unit: install-dev ## Run unit tests only (verbose, parallel)
 	@$(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -v --tb=short

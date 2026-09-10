@@ -47,7 +47,30 @@ if "seanerbus" not in sys.modules:
     sys.modules["seanerbus"] = sb_client
     sys.modules["seanerbus.client"] = sb_client.client
 
-# httpx — always overwrite so our stub is in place when bridge is reloaded
+# httpx — always overwrite so our stub is in place when bridge is reloaded.
+# The real module (when installed) is remembered here and put back in sys.modules
+# right after the bridge import below; see the restore note at step 3.  Leaving the
+# stub in place breaks every later test that imports prefect, because prefect does
+# `from httpx import HTTPStatusError, Request, Response` and this stub is a bare
+# ModuleType with no Request/Response and no __spec__ ("cannot import name 'Request'
+# from 'httpx' (unknown location)").  It also leaves `httpx.Timeout` a MagicMock for
+# examlops.resilience, which is what made test_resilience fail on '>=' comparisons.
+try:  # import rather than sys.modules.get: httpx may not have been imported yet
+    import httpx as _real_httpx
+except ImportError:  # httpx is genuinely optional for this bridge's test env
+    _real_httpx = None
+
+# Import the shared resilience helpers BEFORE the stub goes in.  http.py and retry.py
+# both do a module-level `import httpx` and keep the reference for the process, so if
+# they are first imported inside the stub window (the bridge pulls them in below) they
+# capture the stub for good: httpx.Client/Response vanish and httpx.RequestError becomes
+# bare Exception.  That is what made test_resilience fail with AttributeError and
+# is_transient_network() return True for everything.
+try:
+    import examlops.resilience.http  # noqa: F401
+    import examlops.resilience.retry  # noqa: F401
+except ImportError:  # examlops not installed in this environment
+    pass
 httpx_stub = types.ModuleType("httpx")
 httpx_stub.HTTPError = Exception
 
@@ -63,8 +86,15 @@ class _HTTPStatusError(Exception):
 httpx_stub.HTTPStatusError = _HTTPStatusError
 httpx_stub.AsyncClient = MagicMock()
 httpx_stub.Timeout = MagicMock()  # used by the shared examlops.resilience timeout helper
-httpx_stub.RequestError = Exception
-httpx_stub.ConnectError = Exception
+# RequestError/ConnectError must stay the REAL classes when httpx is installed.
+# examlops.resilience.retry captures `httpx.RequestError` into _HTTPX_REQUEST_ERROR at
+# import time, and if that capture happens while this stub is installed, aliasing it to
+# bare `Exception` makes is_transient_network() true for every exception for the rest of
+# the session — which is what broke test_resilience::test_classifiers.  HTTPError stays
+# aliased to Exception on purpose: test_call_inference_http_error raises a plain
+# Exception and expects the bridge's `except httpx.HTTPError` to catch it.
+httpx_stub.RequestError = getattr(_real_httpx, "RequestError", Exception)
+httpx_stub.ConnectError = getattr(_real_httpx, "ConnectError", Exception)
 sys.modules["httpx"] = httpx_stub
 
 # seanerbus_msgs — define concrete stub classes so isinstance checks work
@@ -152,6 +182,18 @@ bridge._schema_registry = _MockRegistry()  # type: ignore[attr-defined]
 
 # ── 3. Pop model_schema_registry so it doesn't shadow the real one for later tests
 sys.modules.pop("model_schema_registry", None)
+
+# Same reasoning for httpx: the bridge did `import httpx` above, so `bridge.httpx`
+# already holds the stub and every `patch("seanerbus_bridge.httpx.AsyncClient")` in
+# this file keeps working.  Nothing else in the suite should inherit it, so put the
+# real module back.  examlops.resilience.timeouts imports httpx lazily inside
+# httpx_timeout(), so it picks the restored module up on the next call.
+if _real_httpx is not None:
+    sys.modules["httpx"] = _real_httpx
+else:
+    sys.modules.pop("httpx", None)
+# (examlops.resilience is left alone: timeouts.py imports httpx lazily inside
+# httpx_timeout(), so restoring sys.modules above is enough.)
 
 
 @pytest.fixture

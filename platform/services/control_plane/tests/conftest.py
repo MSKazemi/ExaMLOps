@@ -20,10 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # rather than refuses. `test_status_runs_concurrently` already shows the isolated form — it patches
 # `urllib.request.urlopen` — but nothing made that the rule, so three later tests did not.
 #
-# Deliberately a copy of the guard in tests/unit/conftest.py rather than a shared import: the
-# control-plane CI job installs fastapi, uvicorn, prometheus_client, pyyaml and pytest and no
-# `examlops` at all, because this service does not depend on the platform package. A shared helper
-# would make its own test suite the one thing that does.
+# Deliberately a copy of the guard in tests/unit/conftest.py rather than a shared import, so this
+# suite never depends on the repo-root test tree's conftest chain. (The service itself *does* now
+# import `examlops` — admission/coordination/events/storage since the enterprise-readiness work —
+# and both CI jobs install `-e platform/cli` accordingly; the copy stays a copy for isolation, not
+# because the package is absent.)
 #
 # Neither fixture requests `monkeypatch`: an autouse conftest fixture that does pulls monkeypatch
 # earlier in setup order for every test in the suite, which pushes its teardown *later* than any

@@ -15,6 +15,7 @@ Running everything, quickly, is both simpler and safer.
 | Tier | When | Command | Time | What it covers |
 |---|---|---|---|---|
 | 0 | on every file edit | *(automatic)* | <1s | `ruff check --fix` + `ruff format` on the edited file |
+| 0.5 | while working an area | `make watch W=tests/unit/test_x.py` | seconds/save | the scoped tests, re-run failed-first on every save |
 | 1 | inner loop | `make test-fast` | ~70s | whole unit suite, parallel |
 | 2 | before pushing | `make gate` | ~2min | lint · format · typecheck · unit · docs |
 | 3 | before a release | `make preflight` | ~10min | full CI mirror: integration, dashboard, Postgres, compose, Helm |
@@ -36,11 +37,18 @@ Tier 2 is also installed as a git `pre-push` gate — see *Installing the hooks*
 ```bash
 make test-fast                 # the one to use — whole unit suite, parallel, quiet
 make test-fast JOBS=4          # cap the workers on a loaded laptop
+make watch W=tests/unit/test_x.py  # tier 0.5 — keep it running; every save re-runs the scope
 make test-failed               # re-run last run's failures first, then the rest
 make test-slowest              # the 30 slowest tests
 make test-serial               # single-process; use to confirm a parallel-only failure
 pytest tests/unit/test_x.py    # one file — no `-n`, so there is no worker start-up cost
 ```
+
+`make watch` is deliberately serial and scoped: the whole tree on every save is what
+`test-fast` is for, and xdist worker start-up would cost more than a scoped serial run.
+`make typecheck-fast` is the same idea for types — a `dmypy` daemon over the same four
+roots as `make typecheck`, so after a slow first run every re-check is seconds. Both are
+conveniences; `make gate` before pushing is still the guarantee.
 
 `-n auto` is deliberately **not** in `pyproject.toml`'s `addopts`. Putting it there would make a
 single-file run pay worker start-up for nothing; it belongs on the targets that run the whole
