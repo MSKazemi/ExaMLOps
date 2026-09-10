@@ -31,7 +31,7 @@ def _default_embed(text: str) -> list[float]:
     vec = [0.0] * _EMBED_DIM
     tokens = [t for t in text.lower().split() if t]
     for tok in tokens:
-        h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+        h = int(hashlib.md5(tok.encode(), usedforsecurity=False).hexdigest(), 16)
         vec[h % _EMBED_DIM] += 1.0
     return vec
 

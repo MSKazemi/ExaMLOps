@@ -48,6 +48,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - Vectors containing NaN or infinity are refused on both backends. Rankings break ties by id, so
   results are deterministic. `CollectionNotFound` messages are no longer printed in quotes.
 
+### Added — security in levels on every change, each one a named gate or a named report (ADR 0129)
+
+- **`.github/workflows/security.yml`** runs on every pull request, every push to `main` and
+  weekly. Gates: **gitleaks over the whole public history** plus `exa secrets scan` (ported
+  from GitLab's blocking secret scan); **bandit** on HIGH severity; **hadolint** at error level on
+  every Dockerfile; **kubeconform** strict on the rendered chart. **CodeQL** `security-extended`
+  (Python, JS/TS, and the workflows themselves) reports to code scanning. Reports: pip-audit over
+  `uv.lock`, npm audit over the dashboard's production dependencies, trivy misconfiguration scan.
+  `security-ok` aggregates the gates, and a release now requires it alongside `ci-ok`.
+- **Every gate that exists passes today, because each baseline was measured first** (public tree,
+  2026-09-10). gitleaks found 22 matches in 485 commits, all triaged as test fixtures,
+  setup-template placeholders or a UI storage-key name. Each is listed by fingerprint under its
+  reason in `.github/.gitleaksignore`, so a new finding fails. bandit's three HIGH findings were
+  MD5 used for bucketing, not security, and are now `usedforsecurity=False` with identical output.
+  kubeconform reports 12/12 manifests valid.
+- **What stays a report, and why:** trivy config flags 12 images that run as root (image hardening
+  is tracked separately); pip-audit finds 101 advisories across 240 locked packages (a lock refresh
+  is a separate change); npm audit finds 8 (2 high). A report becomes a gate when its baseline
+  reaches zero.
+- **`.github/workflows/scorecard.yml`** — OpenSSF Scorecard weekly, results to code scanning and
+  the public Scorecard API.
+- Scanner images are pinned by digest and actions by commit SHA; `tests/unit/test_security_workflow.py`
+  fails on a job that is neither in `security-ok` nor named a report, an unpinned scanner image, a
+  shallow secret scan, or a gitleaks exception without a stated reason.
+
 ### Added — docs site: "Explore", the platform in motion
 
 - A new **Explore** tab and home page on the documentation site draw ExaMLOps as a transit map:

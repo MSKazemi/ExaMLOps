@@ -339,7 +339,7 @@ def _mock_slurm_data(model: str, version: int) -> tuple[str, float]:
     """Return a synthetic (job_id, gpu_hours) pair deterministic on model+version."""
     import hashlib
 
-    seed = int(hashlib.md5(f"{model}{version}".encode()).hexdigest(), 16)
+    seed = int(hashlib.md5(f"{model}{version}".encode(), usedforsecurity=False).hexdigest(), 16)
     # gpu_hours in [4.0, 24.0], two decimal places
     gpu_hours = round(4.0 + (seed % 2000) / 100.0, 2)
     job_id = f"job-{(seed % 90000) + 10000}"

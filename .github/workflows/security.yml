@@ -1,0 +1,307 @@
+name: Security
+
+# Security in levels (ADR 0129 §7). Each job says whether it is a GATE or a REPORT, because a
+# scanner that fails for reasons nobody chose is deleted within a week — and a report that
+# pretends to be a gate is worse than either.
+#
+#   L1 secrets     gitleaks (full history) + `exa secrets scan`              GATE
+#   L2 SAST        CodeQL (python, js/ts, actions) · bandit                   CodeQL → code-scanning
+#                                                                             alerts; bandit GATE on
+#                                                                             HIGH severity, rest report
+#   L3 SCA         pip-audit (uv.lock) · npm audit (lockfile)                 REPORT (new deps are
+#                                                                             gated per PR by ci.yml's
+#                                                                             dependency-review)
+#   L4 IaC         hadolint (error level) · kubeconform (rendered chart)      GATE
+#                  trivy config (HIGH/CRITICAL misconfiguration)             REPORT → code scanning
+#
+# Baselines measured 2026-09-10 on the public tree: gitleaks 22 findings over 485 commits, all
+# triaged false positives (.github/.gitleaksignore); bandit 0 HIGH after the MD5 fixes;
+# hadolint 0 errors; kubeconform 12/12 valid; trivy config 12 HIGH, every one "image runs as
+# root" — tracked as image hardening, a report until then; pip-audit 101 advisories across 240
+# locked packages; npm audit 8 (2 high). A report becomes a gate only when its baseline is 0.
+#
+# `security-ok` aggregates the gates; the release workflow refuses a commit where it is not
+# green. Weekly schedule: advisories are published without any commit to this repository.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Every scanner image is pinned by digest — a scanner is code that reads the whole tree.
+  GITLEAKS_IMAGE: zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f # v8.30.1
+  HADOLINT_IMAGE: hadolint/hadolint@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e # v2.14.0
+  KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e # v0.8.0
+  BANDIT: bandit[sarif]==1.9.4
+  PIP_AUDIT: pip-audit==2.10.1
+  HELM_VERSION: v3.22.0
+  TRIVY_VERSION: v0.74.0
+  # Runtime code only; tests carry fixtures a SAST rule is right to dislike.
+  PY_SOURCES: platform/cli/src pipelines serving platform/services platform/clients
+
+jobs:
+  secrets:
+    name: secrets · gitleaks + exa secrets scan (gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # read the tree and its full history
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The whole history, not the diff: a secret committed and later deleted is still public.
+      - name: gitleaks — every commit
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS_IMAGE" git \
+            --no-banner --redact --exit-code 1 \
+            --gitleaks-ignore-path /repo/.github/.gitleaksignore /repo
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      # The platform's own scanner (examlops.secrets) — what `exa secrets scan` finds in a
+      # deployment it must find here first. Ported from GitLab's blocking sanity:secret-scan.
+      - name: exa secrets scan
+        run: |
+          set -euo pipefail
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e platform/cli
+          for target in platform pipelines usecases; do .venv/bin/exa secrets scan "$target"; done
+
+  bandit:
+    name: SAST · bandit (gate on HIGH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read the tree
+      security-events: write # upload the SARIF report to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Report every finding to code scanning
+        run: |
+          # shellcheck disable=SC2086  # PY_SOURCES is a deliberate word list
+          uvx "$BANDIT" -r $PY_SOURCES -x '*/tests/*,*/node_modules/*' -q \
+            -f sarif -o bandit.sarif --exit-zero
+
+      - name: Upload SARIF
+        if: always() && hashFiles('bandit.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+      # The gate: HIGH severity. The MEDIUM/LOW backlog (mostly B110 try/except/pass and B608
+      # string-built SQL over internal identifiers) is triaged in code scanning, not here.
+      - name: Gate — no HIGH-severity finding
+        run: |
+          # shellcheck disable=SC2086
+          uvx "$BANDIT" -r $PY_SOURCES -x '*/tests/*,*/node_modules/*' -q -lll
+
+  codeql:
+    name: SAST · CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read # read the tree
+      security-events: write # upload the analysis to code scanning
+      actions: read # the `actions` language reads workflow runs
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          category: /language:${{ matrix.language }}
+
+  deps-python:
+    name: SCA · pip-audit (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # read uv.lock
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      # Every package the lock resolves, every extra included: what a full install runs.
+      - name: Audit the locked environment
+        run: |
+          set -uo pipefail
+          uv export --frozen --no-hashes --no-emit-workspace --all-extras -o locked-requirements.txt
+          if uvx "$PIP_AUDIT" -r locked-requirements.txt --no-deps --disable-pip \
+               -f markdown -o pip-audit.md; then
+            echo "No known vulnerability in the locked environment." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=pip-audit::known vulnerabilities in uv.lock — see the job summary (REPORT, not a gate)"
+            { echo "## pip-audit — locked environment (report)"; echo; cat pip-audit.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: pip-audit
+          path: pip-audit.md
+          if-no-files-found: ignore
+
+  deps-node:
+    name: SCA · npm audit (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read package-lock.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      # Production dependencies only — what ships in the dashboard image — read from the
+      # lockfile without installing anything.
+      - name: Audit production dependencies
+        working-directory: platform/services/dashboard/frontend
+        run: |
+          set -uo pipefail
+          if npm audit --package-lock-only --omit=dev --audit-level=high > npm-audit.txt; then
+            echo "No high or critical advisory in production dependencies." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=npm audit::high/critical advisories in production dependencies (REPORT, not a gate)"
+            { echo "## npm audit — production dependencies (report)"; echo '```'; cat npm-audit.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  dockerfiles:
+    name: IaC · hadolint (gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # read the Dockerfiles
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: hadolint — every Dockerfile, fail on error
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS= read -r f; do
+            echo "::group::$f"
+            docker run --rm -i "$HADOLINT_IMAGE" hadolint --failure-threshold error - < "$f" || status=1
+            echo "::endgroup::"
+          done < <(git ls-files | grep -E '(^|/)Dockerfile[^/]*$')
+          exit "$status"
+
+  iac-report:
+    name: IaC · trivy config (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # read the tree
+      security-events: write # upload the SARIF report to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Misconfiguration in Dockerfiles, compose and the chart. A report until the baseline is
+      # 0 — today every HIGH is "image runs as root", which image hardening removes.
+      - name: trivy config — misconfiguration report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: "0"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy-config.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+  chart:
+    name: IaC · kubeconform (gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read the chart
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Helm (checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tarball="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${tarball}"
+          curl -fsSLO "https://get.helm.sh/${tarball}.sha256sum"
+          sha256sum -c "${tarball}.sha256sum"
+          tar -xzf "$tarball" linux-amd64/helm
+          install -m 0755 linux-amd64/helm /usr/local/bin/helm
+
+      # The rendered manifests against the Kubernetes OpenAPI schemas, offline from any cluster:
+      # an invalid field fails here instead of at `helm install` on a customer's cluster.
+      - name: Render the chart and validate every manifest
+        run: |
+          set -euo pipefail
+          helm template rel platform/infra/helm/examlops --set global.imageRegistry=ghcr.io/mskazemi/ \
+            | docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -
+
+  security-ok:
+    # The one security check the release workflow and branch protection require. Reports
+    # (pip-audit, npm audit, trivy config) are deliberately not in `needs`: they never fail.
+    name: security-ok
+    if: ${{ always() }}
+    needs: [secrets, bandit, codeql, dockerfiles, chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every security gate passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          [ -z "$bad" ] || { echo "::error::security gates not green: $bad"; exit 1; }
