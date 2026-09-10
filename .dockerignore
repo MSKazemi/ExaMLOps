@@ -1,24 +1,64 @@
-# Git
+# Build context for every image built from the repository root (release.yml, compose, `make images`).
+# Nothing below is COPY'd by any Dockerfile; excluding it keeps it out of the context that is sent
+# to the builder — and out of any image a future `COPY .` would produce.
+
+# Git — BOTH gits: .git-private is the private superset (dual-git), never build input.
 .git
+.git-private
+.dualgit
 .gitignore
 .gitattributes
 
+# Private / non-product trees (design records, the paper, reviews, assistant state, built docs site)
+.claude
+design
+paper
+reviews
+site
+
+# Local state: live SQLite datastores (audit chain, secrets store, approvals) and their journals
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+platform/state
+flux_jobs
+slurm_jobs
+backups
+
+# The upstream model library is not part of the platform (ADR 0094); the control-plane image
+# receives it only as the optional named build context `modelzoo`, which this file does not govern.
+modelzoo
+
 # Python
-__pycache__
-*.py[cod]
-*$py.class
-*.so
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/*.egg-info
 .venv
 venv
 env
-.pytest_cache
-.mypy_cache
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+htmlcov
+.coverage
+reports
+dist
+build
+
+# Node — host node_modules would overwrite the image's own `npm ci` (host-built native
+# binaries for glibc inside a musl build stage).
+**/node_modules
+**/.vite
+platform/services/dashboard/frontend/dist
 
 # IDE / OS
 .idea
 .vscode
 .cursor
-.DS_Store
+**/.DS_Store
 
 # Docs served via /api/docs — keep docs/ and component READMEs
 docs/superpowers/
@@ -26,7 +66,7 @@ docs/superpowers/
 # Temp / logs
 temp
 tmp
-*.log
+**/*.log
 mlruns
 
 # Docker
@@ -34,6 +74,6 @@ Dockerfile*
 .dockerignore
 docker-compose*.yml
 
-# Exclude env files but allow markdown (needed for docs serving)
-.env
-.env.*
+# Env files at any depth — platform/infra/docker-compose/.env holds real deployment secrets.
+**/.env
+**/.env.*

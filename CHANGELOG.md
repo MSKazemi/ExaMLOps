@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — core ⟂ deployment: the build context and the runtime code stop reaching into the checkout (ADR 0129 §8)
+
+- **The build context no longer carries the private git, live datastores or host `node_modules`.**
+  Every image built from the repository root was sent the whole working tree: `.git-private` (the
+  private history), `platform.db` and the other SQLite files (audit chain, secrets store),
+  `platform/infra/docker-compose/.env` (real deployment secrets — the old `.env` rule matched only
+  at the root), `design/`, `paper/` and 372 MB of host `node_modules`. None was COPY'd into an
+  image, but all of it reached the builder, and the dashboard's `COPY frontend/ ./` overwrote the
+  image's own `npm ci` with host-built binaries. `.dockerignore` now excludes them at any depth;
+  measured contexts: control-plane 348 kB, agent 578 kB, ray-serving 245 kB, backup 77 kB,
+  dashboard 7.6 MB (all five images rebuilt and verified). `tests/unit/test_dockerignore.py` fails
+  if private state could enter the context again, or if an exclusion would starve a COPY.
+- **A ratchet on runtime code that reaches into the repository.** `tests/unit/test_core_deploy_boundary.py`
+  counts, per runtime file, `sys.path` manipulation (21), `.parents[N≥2]` reaches for the repository
+  root (19) and hard-coded deployment topology (`/repo`, `platform/infra/`, compose files — 52, 45 of
+  them one repeated `PLATFORM_DB` default in dashboard routers). No file may gain one and no new file
+  may introduce one; a count that falls must be lowered in the same change, so a removed coupling
+  cannot return.
+
 ### Fixed — the documentation's architecture diagrams render
 
 - The docs site showed every Mermaid diagram (11, across the architecture, project-workspace,
