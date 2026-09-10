@@ -55,7 +55,8 @@ _RESOURCE_FLAGS: dict[str, str] = {
     "ntasks": "--ntasks",
     "cpus_per_task": "--cpus-per-task",
     "mem": "--mem",
-    "gpus": "--gpus",
+    "gpus": "--gpus",  # total for the job
+    "gpus_per_node": "--gpus-per-node",
     "constraint": "--constraint",
     "output": "--output",
     "error": "--error",
@@ -167,6 +168,16 @@ class RealSlurmAdapter(BasePollingAdapter):
 
         raise JobNotFoundError(f"Job {job_id} not found in squeue or sacct")
 
+    def cancel_job(self, job_id: str) -> None:
+        """Cancel a job with ``scancel``. Raises on a non-zero exit.
+
+        A training job ends on its own; a serving job (`exa serve llm stop`) does not, so
+        without this its allocation runs until its walltime.
+        """
+        result = self.executor.run(["scancel", job_id], timeout=_CMD_TIMEOUT)
+        if result.returncode != 0:
+            raise SchedulerAdapterError(f"scancel {job_id} failed: {result.stderr.strip()}")
+
     def get_job_logs(self, job_id: str) -> str:
         """Return stdout log content for the job."""
         default_log = self.working_dir / f"{job_id}.out"
@@ -217,10 +228,17 @@ def _resolve_scheduler() -> str:
     return "slurm" if legacy == "slurm" else "mock"
 
 
-def get_scheduler_adapter(executor: RemoteExecutor | None = None):
-    """Return the adapter for EXAMLOPS_HPC_SCHEDULER (mock|slurm|flux)."""
+def get_scheduler_adapter(executor: RemoteExecutor | None = None, scheduler: str | None = None):
+    """Return the adapter for ``scheduler``, else EXAMLOPS_HPC_SCHEDULER (mock|slurm|flux).
+
+    An explicit ``scheduler`` is for a caller that already knows which one it means — the
+    `exa serve llm start --launcher flux` path. Resolving from the environment there would
+    hand a Flux request to whatever the process-wide default is, which is ``mock`` unless
+    configured, and the mock adapter accepts any script and returns a job id for a job that
+    never runs.
+    """
     _ensure_on_path()
-    sched = _resolve_scheduler()
+    sched = (scheduler or "").lower().strip() or _resolve_scheduler()
 
     if sched == "mock":
         from mock_slurm_adapter import MockSlurmAdapter  # noqa: PLC0415

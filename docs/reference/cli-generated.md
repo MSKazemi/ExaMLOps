@@ -1422,7 +1422,7 @@ Show semantic-cache hit-rate and token/cost savings (B3).
 
 ### `exa gateway chat`
 
-Send one chat message through the gateway (uses the default echo route).
+Send one chat message through the gateway, to a registered endpoint or the echo route.
 
 - `--message` — User message
 - `--key` — Virtual key to authenticate with

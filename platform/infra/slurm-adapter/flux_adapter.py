@@ -30,6 +30,7 @@ from scheduler import (
     JobNotFoundError,
     JobStatus,
     JobSubmissionError,
+    SchedulerAdapterError,
 )
 
 # Flux job state / result → normalized state (mapped onto scheduler._TERMINAL_STATES).
@@ -231,6 +232,16 @@ class FluxAdapter(BasePollingAdapter):
         if "finish" in text and '"status":0' not in text and "status=0" not in text:
             state = "FAILED"
         return {"state": state, "exit_code": None, "start_time": None, "end_time": None}
+
+    def cancel_job(self, job_id: str) -> None:
+        """Cancel a job with ``flux cancel``. Raises on a non-zero exit.
+
+        A serving job (`exa serve llm stop`) never ends on its own, so without this its
+        allocation runs until its time limit.
+        """
+        result = self.executor.run(["flux", "cancel", job_id], timeout=_CMD_TIMEOUT)
+        if result.returncode != 0:
+            raise SchedulerAdapterError(f"flux cancel {job_id} failed: {result.stderr.strip()}")
 
     def get_job_logs(self, job_id: str) -> str:
         remote_dir = self._jobdir.get(job_id, self._remote_workdir)

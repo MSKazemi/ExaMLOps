@@ -110,12 +110,22 @@ def _resolve_stored(model: str) -> dict[str, Any]:
 def _engine_for(rec: dict[str, Any]) -> Any:
     """Build the engine that talks to a stored endpoint."""
     from examlops.engines import EngineConfig, VLLMServerEngine
+    from examlops.llm_endpoints import resolve_address
 
     cfg = EngineConfig.from_dict(rec.get("engine_config") or {})
-    base_url = rec.get("base_url") or cfg.base_url
+    base_url = resolve_address(rec)
     if not base_url:
-        _output.error(f"Endpoint '{rec['model']}' has no base_url yet (state={rec.get('state')}).")
-        raise typer.Exit(1)
+        hpc = str(rec.get("launcher") or "") in ("slurm", "flux")
+        _output.error(
+            f"Endpoint '{rec['model']}' has no base_url yet (state={rec.get('state')}).",
+            hint=(
+                "The job publishes its address once it starts; check it with: exa hpc jobs. "
+                "EXAMLOPS_VLLM_WORK_DIR must be on a filesystem the compute nodes share."
+            )
+            if hpc
+            else None,
+        )
+    rec["base_url"] = base_url
     return VLLMServerEngine(base_url, rec.get("hf_model_id") or rec["model"], cfg)
 
 
@@ -324,9 +334,10 @@ def list_endpoints(
 @app.command("status", epilog=_EXAMPLES_STATUS)
 def status(model: str = typer.Argument(..., help="Endpoint name")) -> None:
     """Show one endpoint: registry record, substrate status, and live vLLM metrics."""
-    from examlops.llm_endpoints import select_launcher
+    from examlops.llm_endpoints import resolve_address, select_launcher
 
     rec = _resolve_stored(model)
+    rec["base_url"] = resolve_address(rec)
     payload: dict[str, Any] = {
         "model": rec["model"],
         "state": rec.get("state"),
@@ -394,6 +405,7 @@ def health(model: str = typer.Argument(..., help="Endpoint name")) -> None:
         _output.ok(
             f"{model} is ready at {rec.get('base_url')} (serving: {', '.join(served) or '?'})"
         )
+        _output.hint(f"Route it through the gateway with: exa gateway chat {model} --message …")
     else:
         _output.error(f"{model} is not reachable at {rec.get('base_url')}")
     if not ready:

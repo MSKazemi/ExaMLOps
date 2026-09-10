@@ -14,13 +14,18 @@ exa serve llm start ──> EndpointLauncher { external | compose | slurm/flux |
                               │  renders argv via engines.to_vllm_args()  ← one source of truth
                               └─> llm_endpoints registry (base_url · state · launcher · job_id)
 
-exa serve llm chat  ──> gateway (keys · budgets · cost) ──> media guard ──> VLLMServerEngine
-                              └── HTTP ──> /v1/chat/completions on `vllm serve`
+exa gateway chat <model> ──> gateway (key · budget · guardrails · cache · cost) ──┐
+exa serve llm chat <model> ─────────────────────── (direct smoke test) ───────────┤
+                                                                                  v
+                         media guard ──> VLLMServerEngine ── HTTP ──> /v1/chat/completions
 ```
 
 Only *how a process starts* and *where its address comes from* differ between substrates.
-The request path — gateway → media validation → engine → telemetry/FinOps/audit — is one
-code path, so what you verify on a laptop is what runs on the cluster.
+Every registered endpoint is also a **gateway route** under its own name, so production
+traffic goes gateway → media validation → engine → telemetry/FinOps — one code path, and
+what you verify on a laptop is what runs on the cluster. `exa serve llm chat` is the
+operator's direct line to the server: no key, no budget, no guardrail — use it to check
+that a model answers, and the gateway for anything else.
 
 ## Quick start (no GPU needed)
 
@@ -47,6 +52,30 @@ exa serve llm chat qwen-vl -m "What does this chart show?" --image ./gpu-util.pn
 A local `--image` is inlined as a `data:` URL rather than a `file://` path, because the
 server usually runs on another host where your path would not resolve.
 
+## Through the gateway
+
+Registering an endpoint makes it a route in the [model gateway](model-gateway.md) under
+the endpoint's name. Everything the gateway does then applies to a real model: virtual-key
+allow-lists and budgets, the guardrail scan in both directions, the semantic cache,
+structured output, and a per-call cost record with its GenAI span.
+
+```bash
+KEY=$(exa --json gateway key issue --tenant acme --project chat --model qwen-vl --budget 20 \
+      | jq -r .virtual_key)
+exa gateway chat qwen-vl --message "Summarise this alert" --key "$KEY"
+exa gateway key list                       # the key's spend moved
+```
+
+Endpoints that are stopped, disabled, or have no address yet are not routed. There is no
+echo fallback behind an endpoint: if the server is down, the gateway says so
+(`AllBackendsFailed`, naming `endpoint:<model>`) instead of answering with a stand-in.
+Other platform callers pick endpoints up the same way. `exa rag query` generates through
+the `default` route, so an endpoint named `default` replaces the echo placeholder there;
+it reports a failed gateway call as "(no answer)" rather than the error.
+`exa serve challenger judge` sends its judge prompt to the `--judge-model` route (default
+`judge`), so a registered endpoint of that name becomes the judge — which still has to be calibrated
+before its scores may gate.
+
 ## Substrates
 
 ### HPC (Slurm / Flux) — the European-HPC pattern
@@ -66,13 +95,33 @@ that can fail to start.
 
 The job writes its own endpoint URL to `<work_dir>/<model>.endpoint` as soon as the head
 node is known, so the address is learned from the job rather than scraped out of `squeue`.
+The endpoint is registered at submission with no address. `exa serve llm health`, `status`
+and `chat` read that file, record the URL, and from then on every reader uses it. On the SSH
+transport the script is staged to the login node and the endpoint file is fetched back the
+same way; the same `EXAMLOPS_VLLM_WORK_DIR` path is used on both sides. The gateway reads
+the file only when it is visible on its own host — it never opens an SSH connection per
+request — so behind SSH run `exa serve llm health` once to record the address.
+
+`exa serve llm stop` cancels the job (`scancel`, or `flux cancel`) and marks the endpoint
+STOPPED. Starting and stopping an endpoint both remove any endpoint file a previous job left,
+so a restarted endpoint never inherits the old job's address. On Slurm, `--gpus` is requested
+per node (`--gpus-per-node`), so `--nodes 2 --gpus 4` allocates eight GPUs.
+
+```bash
+exa serve llm health qwen-vl    # exit 1 until the job has published its address and loaded
+```
+
+The launcher name picks the scheduler: `--launcher flux` submits with `flux batch` and
+`--launcher slurm` with `sbatch`, whatever `EXAMLOPS_HPC_SCHEDULER` says. That variable
+governs *training* jobs and defaults to `mock`, and routing a serving request through the
+mock adapter would return a job id for a job that never runs.
 
 | Env | Purpose |
 |---|---|
 | `EXAMLOPS_VLLM_IMAGE` | Container image (default `docker://vllm/vllm-openai:latest`) |
-| `EXAMLOPS_VLLM_WORK_DIR` | Scripts, SIF cache and endpoint files (default `/tmp/examlops-vllm`) |
+| `EXAMLOPS_VLLM_WORK_DIR` | Scripts, SIF cache and endpoint files (default `/tmp/examlops-vllm`). On a real cluster point it at a filesystem the compute nodes share with the login node — a node-local `/tmp` is invisible from anywhere else, so the address would never be found |
 | `EXAMLOPS_VLLM_MODULES` | Comma-separated `module load` names, e.g. `Apptainer/1.3.1-GCCcore-12.3.0` |
-| `EXAMLOPS_HPC_SCHEDULER` | `mock` · `slurm` · `flux` |
+| `EXAMLOPS_HPC_TRANSPORT` / `EXAMLOPS_HPC_SSH_HOST` | Local or SSH transport to the login node, shared with training jobs |
 
 The allocation is recorded in `hpc_jobs` with `kind='serve'`. That discriminator matters:
 the training poller waits for a terminal state, which a healthy server never reaches, so a
@@ -104,14 +153,15 @@ short one would restart the container forever before it ever finished loading.
 ### KServe (Kubernetes)
 
 ```bash
-EXAMLOPS_SERVING_BACKEND=kserve-k8s exa serve manifest qwen-vl --alias Production
+EXAMLOPS_SERVING_BACKEND=kserve-k8s exa serve manifest qwen-vl --alias Production  # needs qwen-vl.yaml in the pack
 exa serve llm start qwen-vl --launcher kserve
 ```
 
-Emits an `LLMInferenceService` whose `args` come from the same `to_vllm_args` renderer.
-Live apply stays behind `EXAMLOPS_KSERVE_LIVE_APPLY=1`; without it the manifest is
-generated and server-dry-run validated — still useful, since that is the CI check that the
-YAML→manifest mapping is right with no cluster in sight.
+Emits an `LLMInferenceService` whose `args` come from the same `to_vllm_args` renderer and
+validates it with `kubectl apply --dry-run=server` — the CI check that the YAML→manifest
+mapping is right. It never applies the manifest: apply it (and later delete it) with
+`kubectl`. `EXAMLOPS_KSERVE_LIVE_APPLY=1` only changes the recorded state from PENDING to
+STARTING.
 
 ## Multimodal safety — read this before serving a VLM
 
@@ -173,9 +223,10 @@ OOM kill, so it buys time to shed load), `VLLMQueueBacklog`, `VLLMHighTTFT`.
 | `exa serve llm status <model>` | Registry record + substrate status + live vLLM metrics |
 | `exa serve llm health <model>` | Probe and reconcile state; **exit 1** when not ready |
 | `exa serve llm args <model>` | The exact `vllm serve` argv the engine block renders |
-| `exa serve llm chat <model>` | Chat, with `--image` (repeatable) and `--stream` |
+| `exa serve llm chat <model>` | Chat directly with the server, with `--image` (repeatable) and `--stream` |
+| `exa gateway chat <model>` | The same model through the gateway: key, budget, guardrails, cache, cost |
 | `exa serve llm bench <model>` | TTFT p50 + output tokens/s |
-| `exa serve llm stop <model>` | Stop and deregister. `--dry-run`, confirm, audited |
+| `exa serve llm stop <model>` | Cancel the HPC job or stop the Compose service, and mark the endpoint STOPPED. `--dry-run`, confirm, audited |
 
 ## Governance
 
@@ -192,5 +243,12 @@ environment, never on a command line where `ps` could read them.
   against a stub HTTP server (real sockets, real SSE framing), but real VLM grounding,
   multi-node TP/PP launch, and throughput/TTFT targets remain **unverified** until a GPU
   allocation exists.
-- KServe live apply is untested without a cluster and stays dry-run by default.
+- KServe endpoints are validated, never applied; there is no live-apply path yet.
+- The HPC job script calls Slurm's `srun` and `scontrol`. `--launcher flux` submits it with
+  `flux batch`, but the server does not start there until the script gains a Flux launch path.
+- The address an HPC job publishes is its head node's IP. The machine running `exa` (and the
+  gateway) must be able to reach it on the serving port; from outside a cluster that
+  usually needs a tunnel or a reachable login-node proxy.
+- `exa gateway chat` sends text only. Use `exa serve llm chat --image` for the image
+  smoke test.
 - vLLM on CPU works but is slow; `external` is the right launcher on a CPU host.

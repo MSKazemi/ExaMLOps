@@ -1104,7 +1104,7 @@
     {
      "cmd": "exa gateway chat",
      "group": "gateway",
-     "help": "Send one chat message through the gateway (uses the default echo route).",
+     "help": "Send one chat message through the gateway, to a registered endpoint or the echo route.",
      "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
      "guide": "guides/model-gateway.md"
     },

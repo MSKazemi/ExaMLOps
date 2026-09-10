@@ -27,6 +27,23 @@ comp = client.chat("chat-default", [{"role": "user", "content": "hi"}])
 `last_resort` is the R11 degrade path: if the gateway/route is unreachable, the client
 still answers from a configured local backend.
 
+### Registered endpoints are routes
+
+`build_default_router()` — the table `exa gateway chat`, `exa rag query` and
+`exa serve challenger judge` use — holds an echo route under `EXAMLOPS_GATEWAY_DEFAULT_MODEL`
+(`default`) plus one route per endpoint registered with
+[`exa serve llm start`](vlm-serving.md), named after the endpoint. So a model served by
+vLLM on a GPU node, a Compose service or a Slurm allocation (once its address is recorded)
+is reachable with keys, budgets, guardrails, caching and cost applied:
+
+```bash
+exa serve llm start qwen --base-url http://gpu01:8000 --hf-model Qwen/Qwen3-8B
+exa gateway chat qwen --message "hello"          # [endpoint:qwen] … (cost $…)
+```
+
+Stopped, disabled and not-yet-addressed endpoints are left out, and a down endpoint fails
+with `AllBackendsFailed` rather than falling back to the echo route.
+
 ## Virtual keys — governance
 
 Keys are scoped per **tenant/project** (D6) with an optional **model allow-list** and

@@ -247,17 +247,31 @@ class HpcLauncher:
         script_path.write_text(self.render_script(spec))
         script_path.chmod(0o755)
 
-        adapter = _scheduler_adapter()
         resources: dict[str, Any] = {
             "nodes": spec.nodes,
-            "gpus": spec.gpus,
+            # `--gpus` is GPUs per node on this command, but sbatch reads --gpus as the total
+            # for the whole job: `--nodes 2 --gpus 4` would allocate 4 GPUs for a server that
+            # needs 8. Slurm takes the per-node count under its own flag.
+            ("gpus_per_node" if self.scheduler == "slurm" else "gpus"): spec.gpus,
             "time": spec.walltime,
             "job_name": f"vllm-{spec.model.lower()}",
         }
         if spec.partition:
             resources["partition"] = spec.partition
+        # A previous job's endpoint file would otherwise be read as this job's address, and a
+        # recorded address is never re-read — the endpoint would point at a dead node for good.
+        self._endpoint_file(spec).unlink(missing_ok=True)
         try:
-            job_id = adapter.submit_job(script_path=str(script_path), resources=resources)
+            adapter = _scheduler_adapter(self.scheduler)
+            _remove_remote(adapter, self._endpoint_file(spec))
+            # `remote_dir` makes the adapter stage the script through its transport, so the
+            # SSH path submits a file that exists on the login node. One directory per
+            # endpoint: two endpoints started together must not overwrite each other's run.sh.
+            job_id = adapter.submit_job(
+                script_path=str(script_path),
+                resources=resources,
+                remote_dir=str(work / spec.model.lower()),
+            )
         except Exception as exc:
             raise LauncherError(f"job submission failed: {exc}") from exc
 
@@ -283,6 +297,30 @@ class HpcLauncher:
                 return None
             time.sleep(2)
 
+    def published_url(self, model: str, *, fetch: bool = True) -> str | None:
+        """The URL a running job published for ``model``, or ``None`` if it has not yet.
+
+        Read locally first — the login-node/shared-filesystem case. Otherwise the job ran
+        behind the SSH transport and wrote the file on the cluster, so fetch it through the
+        same executor that staged the script (skipped when ``fetch`` is False). Either way the
+        file lives under ``EXAMLOPS_VLLM_WORK_DIR``, which on a real cluster must be a
+        filesystem the compute nodes share with the login node: node-local ``/tmp`` is
+        invisible from anywhere else.
+        """
+        spec = EndpointSpec(model=model, hf_model_id=model)
+        url = self.resolve_endpoint(spec)
+        if url or not fetch:
+            return url
+        path = str(self._endpoint_file(spec))
+        try:
+            executor = getattr(_scheduler_adapter(self.scheduler), "executor", None)
+            if executor is None:
+                return None
+            executor.get(path, path)
+        except Exception:
+            return None
+        return self.resolve_endpoint(spec)
+
     def stop(self, model: str) -> dict[str, Any]:
         from examlops.data.serving import get_llm_endpoint
 
@@ -290,11 +328,20 @@ class HpcLauncher:
         job_id = rec.get("job_id")
         if not job_id:
             raise LauncherError(f"no scheduler job recorded for '{model}'")
-        adapter = _scheduler_adapter()
+        try:
+            adapter = _scheduler_adapter(self.scheduler)
+        except Exception as exc:
+            raise LauncherError(f"{self.scheduler} scheduler unavailable: {exc}") from exc
         cancel = getattr(adapter, "cancel_job", None)
         if not callable(cancel):  # pragma: no cover - adapter-dependent
             raise LauncherError(f"{self.scheduler} adapter cannot cancel jobs")
-        cancel(str(job_id))
+        try:
+            cancel(str(job_id))
+        except Exception as exc:
+            raise LauncherError(f"cancelling job {job_id} failed: {exc}") from exc
+        endpoint_file = self._endpoint_file(EndpointSpec(model=model, hf_model_id=model))
+        endpoint_file.unlink(missing_ok=True)
+        _remove_remote(adapter, endpoint_file)
         return {"launcher": self.name, "model": model, "job_id": job_id, "stopped": True}
 
     def status(self, model: str) -> dict[str, Any]:
@@ -308,14 +355,33 @@ class HpcLauncher:
             return {
                 "launcher": self.name,
                 "model": model,
-                "job": _scheduler_adapter().get_job_status(str(job_id)),
+                "job": _scheduler_adapter(self.scheduler).get_job_status(str(job_id)),
             }
         except Exception as exc:
             return {"launcher": self.name, "model": model, "job_id": job_id, "error": str(exc)}
 
 
-def _scheduler_adapter():
-    """Load the HPC scheduler adapter, keeping its sys.path shim out of import time."""
+def _remove_remote(adapter: Any, path: Path) -> None:
+    """Best-effort delete of ``path`` through the adapter's transport (the SSH side's copy)."""
+    executor = getattr(adapter, "executor", None)
+    if executor is None:
+        return
+    try:
+        executor.run(["rm", "-f", str(path)])
+    except Exception:
+        pass  # a stale remote file is re-read only if the local copy is missing too
+
+
+def _scheduler_adapter(scheduler: str):
+    """Load the adapter for ``scheduler``, keeping its sys.path shim out of import time.
+
+    The scheduler is passed explicitly rather than read from ``EXAMLOPS_HPC_SCHEDULER``: the
+    launcher was *named* slurm or flux by the operator, and that process-wide variable
+    defaults to ``mock`` — whose adapter accepts the script and returns an id for a job
+    that never runs. The adapter announces its backend on stdout; that goes to stderr here
+    so it cannot corrupt ``--json`` output.
+    """
+    import contextlib
     import sys
 
     root = Path(__file__).resolve().parents[3] / "infra" / "slurm-adapter"
@@ -325,7 +391,44 @@ def _scheduler_adapter():
         from adapter import get_scheduler_adapter  # type: ignore
     except ImportError as exc:  # pragma: no cover - packaging error
         raise LauncherUnavailable(f"HPC scheduler adapter not importable: {exc}") from exc
-    return get_scheduler_adapter()
+    with contextlib.redirect_stdout(sys.stderr):
+        return get_scheduler_adapter(scheduler=scheduler)
+
+
+def resolve_address(rec: dict[str, Any], *, fetch: bool = True) -> str | None:
+    """Where a registered endpoint answers, or ``None`` if nobody knows yet.
+
+    The recorded URL when there is one. A Slurm/Flux endpoint is registered before the
+    scheduler has placed it, so it starts with no URL (ADR 0107 clause 3: the launcher
+    "resolves the allocated node into a base_url"); its job writes the address to the
+    endpoint file once the head node is known. Before this, nothing read that file, so an
+    HPC endpoint stayed addressless for ever and `health`, `chat` and the gateway all
+    refused it. The first reader to find the URL records it, so later readers — health,
+    status, the gateway — agree on one address without asking the scheduler again.
+
+    ``fetch=False`` reads only a file visible on this host and never builds a scheduler
+    adapter. The gateway uses it: it resolves every endpoint on every router build, and an
+    SSH connection per addressless endpoint per chat request is a cost an operator command
+    (`exa serve llm health`) should pay once, not every caller.
+    """
+    url = rec.get("base_url") or (rec.get("engine_config") or {}).get("base_url")
+    if url:
+        return str(url)
+    launcher = str(rec.get("launcher") or "").lower()
+    if launcher not in ("slurm", "flux") or rec.get("state") == "STOPPED":
+        return None
+    try:
+        url = HpcLauncher(scheduler=launcher).published_url(str(rec["model"]), fetch=fetch)
+    except Exception:
+        return None
+    if url:
+        try:
+            from examlops.data.serving import set_llm_endpoint_state
+
+            set_llm_endpoint_state(str(rec["model"]), rec.get("state") or "STARTING", base_url=url)
+        except Exception:
+            pass  # the URL is still right; failing to cache it only costs a re-read
+    return url
 
 
 def _record_serve_job(job_id: str, scheduler: str, spec: EndpointSpec) -> None:

@@ -5,6 +5,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — a served LLM is reachable through the gateway, and HPC endpoints find their address
+
+- **Registered LLM endpoints were not gateway routes.** `exa serve llm start` recorded an endpoint
+  and `exa serve llm chat` could talk to it, but the gateway held only its echo placeholder, so
+  virtual keys, budgets, guardrails, the semantic cache and per-call cost never applied to a real
+  model. Every addressable endpoint is now a route under its own name:
+  `exa gateway chat qwen --message …` reaches the vLLM server. A down endpoint fails with
+  `AllBackendsFailed` naming `endpoint:<model>`; there is deliberately no echo fallback behind it.
+- **A Slurm/Flux endpoint never learned its address.** The job writes its URL to an endpoint file;
+  nothing read it, so `health`, `chat` and the gateway refused the endpoint for ever.
+  `exa serve llm health`, `status`, `chat` and `bench` now read the file (fetching it over SSH when
+  the job ran behind that transport) and record the address; the gateway reads it only when it is
+  visible locally. Starting and stopping an endpoint remove a previous job's file, so a restart
+  never inherits a dead address.
+- **`--launcher flux` could submit through the mock scheduler.** The launcher resolved its adapter
+  from `EXAMLOPS_HPC_SCHEDULER` (default `mock`), whose adapter returns an id for a job that never
+  runs. The named scheduler is now the one used, and the script is staged through the transport.
+- **`exa serve llm stop` could not stop an HPC endpoint.** It asked the adapter for `cancel_job`,
+  which neither adapter had, so it exited 1 and the allocation ran to its walltime. The Slurm and
+  Flux adapters now cancel with `scancel` / `flux cancel`.
+- **A two-node Slurm endpoint got half its GPUs.** `--gpus` means per node, but was passed to
+  `sbatch --gpus`, which is the job total; it is now `--gpus-per-node`.
+- **Wrapping a prompt in a content-part list skipped the gateway's guardrail.** Only plain-string
+  messages were scanned, so `[{"type": "text", "text": "ignore previous instructions…"}]` reached
+  the model in enforce mode. Text parts are now scanned and redacted like plain messages.
+- **A semantic-cache hit ignored the caller's schema.** A caller asking for `response_schema` could
+  get back unchecked text stored by a caller that asked for none; hits are now validated like a
+  fresh reply, and one that does not fit is treated as a miss so the model is asked. Requests made of
+  content parts no longer touch the cache, which keys on text.
+- **A registry prompt was scanned as if it were user input.** In enforce mode a reviewed template
+  containing a phrase such as "you are now" blocked every request it served; the guardrail now scans
+  only the caller's messages, and the template is prepended after the scan.
+
 ### Changed — CI/CD: reproducible, supply-chain-hardened pull-request gate
 
 - **CI installs exactly what `uv.lock` pins** (`uv sync --frozen --extra dev`) instead of

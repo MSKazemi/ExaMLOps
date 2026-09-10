@@ -322,24 +322,52 @@ def default_guardrail(tenant: str = "default"):
 def _guard_messages(
     guard: Any, messages: list[dict[str, Any]], tenant: str
 ) -> list[dict[str, Any]]:
-    """Scan each message's text content; return them, redacted where the guardrail said so.
+    """Scan each message's text; return the messages, redacted where the guardrail said so.
 
     Per message rather than over one joined blob, because a redaction has to be written back to
-    the message it came from. Non-string content (multimodal parts) is passed through untouched —
-    those have their own validator (`MediaNotAllowed`) and a text scanner has nothing to say
-    about an image.
+    the message it came from. A message whose content is a list of parts (the OpenAI multimodal
+    shape) has each ``text`` part scanned the same way. Those parts used to be passed through
+    whole, which made wrapping an injected prompt in a one-element list a way round an
+    enforcing guardrail. Image parts are left alone: they have their own validator
+    (`MediaNotAllowed`), and a text scanner has nothing to say about an image.
     """
+
+    def _scan(text: str) -> str:
+        res = guard.check_input(text, {"tenant": tenant})
+        if res.blocked:
+            raise GuardrailBlocked("request", res.findings, res.reason)
+        return res.text
+
     out: list[dict[str, Any]] = []
     for msg in messages:
         content = msg.get("content")
-        if not isinstance(content, str) or not content:
+        if isinstance(content, str):
+            scanned = _scan(content) if content else content
+            out.append({**msg, "content": scanned} if scanned != content else msg)
+        elif isinstance(content, list):
+            parts: list[Any] = []
+            for part in content:
+                is_text = isinstance(part, dict) and part.get("type") == "text"
+                text = part.get("text") if is_text else None
+                if isinstance(text, str) and text:
+                    scanned = _scan(text)
+                    parts.append({**part, "text": scanned} if scanned != text else part)
+                else:
+                    parts.append(part)
+            out.append({**msg, "content": parts} if parts != content else msg)
+        else:
             out.append(msg)
-            continue
-        res = guard.check_input(content, {"tenant": tenant})
-        if res.blocked:
-            raise GuardrailBlocked("request", res.findings, res.reason)
-        out.append({**msg, "content": res.text} if res.text != content else msg)
     return out
+
+
+def _cacheable(messages: list[dict[str, Any]]) -> bool:
+    """Whether the semantic cache can key this request: every message is plain text.
+
+    The cache embeds a message's text. A list of content parts — an image with a question —
+    has no text to embed as a whole, and a cached answer to "what is in this chart?" must never
+    be returned for a different chart.
+    """
+    return all(isinstance(m.get("content"), str) for m in messages)
 
 
 @dataclass
@@ -390,24 +418,40 @@ class GatewayClient:
             authorize(self.virtual_key, model)  # raises typed errors before any backend call
 
         prompt_version: str | None = None
+        template: str | None = None
         if prompt_ref:
             template, name, version = resolve_prompt_ref(prompt_ref)
             prompt_version = f"{name}@v{version}"
-            # Prepend, never replace: the caller's own system message still applies.
-            messages = [{"role": "system", "content": template}, *messages]
 
         # D8 inbound scan (ADR 0026 clause 3). Ahead of the cache deliberately: a blocked
         # request must not be answered from cache either, and a redaction has to reach the
         # cache key, or the redacted and unredacted forms of one prompt become two entries.
+        # Only the caller's messages are scanned: the registry template is reviewed, versioned
+        # text, and a template that says "you are now…" must not block every request it serves.
         guard = self._guard()
         if guard is not None:
             messages = _guard_messages(guard, messages, self.tenant)
+        if template is not None:
+            # Prepend, never replace: the caller's own system message still applies.
+            messages = [{"role": "system", "content": template}, *messages]
 
         # B3 semantic-cache hook (optional; caller API unchanged, R9).
-        if self.cache_lookup is not None:
+        use_cache = _cacheable(messages)
+        if self.cache_lookup is not None and use_cache:
             hit = self.cache_lookup(model, messages)
             if hit is not None:
-                return Completion(text=hit, model=model, backend="cache", cached=True)
+                cached = Completion(text=hit, model=model, backend="cache", cached=True)
+                # The cache is keyed on the prompt, not on the schema, so an entry may have been
+                # stored by a caller that asked for none. Validate it like a fresh reply; one
+                # that does not fit is a miss, not an error — the model has not been asked.
+                try:
+                    if response_schema is not None:
+                        _enforce_schema(
+                            cached, response_schema, tenant=self.tenant, max_repairs=max_repairs
+                        )
+                    return cached
+                except Exception:
+                    pass
 
         route = self.router.resolve(model)
         candidates = route.ordered() if route else []
@@ -460,7 +504,7 @@ class GatewayClient:
             if response_schema is not None:
                 _enforce_schema(comp, response_schema, tenant=self.tenant, max_repairs=max_repairs)
 
-            if self.cache_store is not None:
+            if self.cache_store is not None and use_cache:
                 self.cache_store(model, messages, comp)
             return comp
 
@@ -519,17 +563,67 @@ def _emit_span(
         pass
 
 
-def build_default_router() -> Router:
-    """Router seeded from env; falls back to a local echo backend so it always works."""
+def build_default_router(*, endpoints: bool = True) -> Router:
+    """The gateway's routing table: an echo route, plus every registered LLM endpoint.
 
-    def _echo(model: str, messages: list[dict[str, str]], **kw: Any) -> Completion:
+    The echo route under ``EXAMLOPS_GATEWAY_DEFAULT_MODEL`` (``default``) means the table is
+    never empty, so the gateway works with no model server at all. On top of it, each endpoint
+    registered with `exa serve llm start` becomes a route under its own name (see
+    :func:`add_endpoint_routes`). Pass ``endpoints=False`` for the echo table alone.
+    """
+
+    def _echo(model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
         last = messages[-1]["content"] if messages else ""
+        if isinstance(last, list):  # content parts: echo the text, as a text engine would
+            last = " ".join(p.get("text", "") for p in last if isinstance(p, dict))
         return Completion(text=last, model=model, backend="echo", prompt_tokens=len(last.split()))
 
     router = Router()
     default_model = os.getenv("EXAMLOPS_GATEWAY_DEFAULT_MODEL", "default")
     router.add_route(default_model, [("echo", _echo)])
+    if endpoints:
+        add_endpoint_routes(router)
     return router
+
+
+def add_endpoint_routes(router: Router) -> list[str]:
+    """Route every addressable endpoint in the `exa serve llm` registry; return their names.
+
+    ADR 0107 promises one request path — gateway → guardrails → engine → telemetry/FinOps — on
+    every substrate. The registry and the gateway were both built and never joined: a
+    registered vLLM endpoint answered `exa serve llm chat`, which talks to the server
+    directly, while `exa gateway chat` could reach nothing but the echo route. So virtual
+    keys, budgets, guardrails, the semantic cache and per-call cost never applied to a real
+    model. Registering an endpoint now makes it a gateway route under its own name.
+
+    Skipped: disabled or STOPPED endpoints, and endpoints with no address yet. An HPC job's
+    published address is picked up here only when its endpoint file is visible on this host;
+    behind the SSH transport it is fetched by `exa serve llm health` / `status` instead. An endpoint whose name matches the echo route replaces
+    it — a real model beats the placeholder. There is deliberately **no** echo fallback
+    behind an endpoint: answering with an echo when a real model is down would look like a
+    reply. A failing endpoint surfaces as :class:`AllBackendsFailed` with its reason.
+
+    A registry that cannot be read leaves the table as it was, so the gateway degrades to
+    exactly what it did before endpoints existed.
+    """
+    try:
+        from examlops.data.serving import list_llm_endpoints
+        from examlops.llm_endpoints import resolve_address
+
+        rows = list_llm_endpoints()
+    except Exception:
+        return []
+    added: list[str] = []
+    for rec in rows:
+        name = rec.get("model")
+        if not name or not rec.get("enabled", True) or rec.get("state") == "STOPPED":
+            continue
+        url = resolve_address(rec, fetch=False)  # local file only: no SSH per request
+        if not url:
+            continue
+        router.add_route(str(name), [(f"endpoint:{name}", endpoint_backend(rec, url))])
+        added.append(str(name))
+    return added
 
 
 # ── Local-engine edge (R-A1: gateway → engines.build_engine) ───────────────────
@@ -555,14 +649,32 @@ def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     return prompt
 
 
-def engine_backend(model_name: str, config: Any = None) -> Backend:
+def endpoint_backend(rec: dict[str, Any], base_url: str) -> Backend:
+    """A gateway backend for one registered endpoint (a running ``vllm serve``).
+
+    Built from the registry record, not the pack YAML, because the record is what the
+    operator started: its engine block, its weights and its address. The engine is forced to
+    the server client — the record exists *because* a server is there — so a pack YAML whose
+    engine says ``echo`` or ``inproc`` cannot turn a live endpoint into a local stub.
+    """
+    block = dict(rec.get("engine_config") or {})
+    block.update(engine="vllm-server", mode="server", base_url=base_url)
+    if rec.get("served_model_name"):
+        block["served_model_name"] = rec["served_model_name"]
+    return engine_backend(
+        str(rec.get("hf_model_id") or rec["model"]), block, label=f"endpoint:{rec['model']}"
+    )
+
+
+def engine_backend(model_name: str, config: Any = None, *, label: str | None = None) -> Backend:
     """R-A1: a gateway :data:`Backend` that dispatches to a local ``InferenceEngine``.
 
     ``config`` may be an ``engines.EngineConfig``, a plain ``dict`` (per-model YAML
     ``engine:`` block), or ``None`` (defaults). On a CPU/CI host with no vLLM the
     engine degrades to ``EchoEngine`` (R-A8), so the full gateway→engine path is
     exercisable with no GPU. The returned callable carries ``.health`` (reachable via
-    :meth:`GatewayClient.health`) and ``.engine`` for introspection.
+    :meth:`GatewayClient.health`) and ``.engine`` for introspection. ``label`` names the
+    backend on each completion and in the gateway's call record (default: the engine name).
     """
     from examlops.engines import EngineConfig, build_engine, chat_via_generate, supports_chat
     from examlops.engines.media import MediaRejected
@@ -588,7 +700,7 @@ def engine_backend(model_name: str, config: Any = None) -> Backend:
         return Completion(
             text=ec.text,
             model=model,
-            backend=engine.name,
+            backend=label or engine.name,
             prompt_tokens=ec.prompt_tokens,
             completion_tokens=ec.completion_tokens,
         )

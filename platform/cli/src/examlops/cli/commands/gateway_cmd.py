@@ -19,7 +19,9 @@ _EXAMPLES = (
     "  exa gateway key issue --tenant acme --project chat --budget 50 --model gpt-judge\n\n"
     "  exa gateway key list\n\n"
     "  exa gateway key revoke <key-hash>\n\n"
-    "  exa gateway chat default --message 'hello there'"
+    "  exa gateway chat default --message 'hello there'\n\n"
+    "  # A model registered with `exa serve llm start` is a route under its own name\n"
+    "  exa gateway chat qwen-vl --message 'Summarise this alert' --key $EXA_KEY"
 )
 
 
@@ -139,12 +141,14 @@ def cache_stats_cmd(
 
 @app.command("chat", epilog=_EXAMPLES)
 def chat(
-    model: str = typer.Argument("default", help="Logical model name to route"),
+    model: str = typer.Argument(
+        "default", help="Route name: a registered LLM endpoint, or 'default' (echo)"
+    ),
     message: str = typer.Option(..., "--message", help="User message"),
     key: str | None = typer.Option(None, "--key", help="Virtual key to authenticate with"),
     cache: bool = typer.Option(False, "--cache", help="Route through the B3 semantic cache"),
 ) -> None:
-    """Send one chat message through the gateway (uses the default echo route)."""
+    """Send one chat message through the gateway, to a registered endpoint or the echo route."""
     from examlops.gateway import GatewayClient, GatewayError, build_default_router
 
     cache_lookup = cache_store = None
