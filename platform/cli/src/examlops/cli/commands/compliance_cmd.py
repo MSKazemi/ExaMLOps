@@ -77,7 +77,15 @@ def technical_file(
             fh.write(md)
         _output.ok(f"Wrote technical file v{version} ({doc.gaps} gap(s)) to {out}")
         if doc.gaps:
-            _output.warning(f"{doc.gaps} section(s) flagged as missing evidence.")
+            _output.warning(
+                f"{doc.gaps} gap(s): {doc.missing} section(s) with missing evidence, "
+                f"{doc.insufficient} whose evidence failed its integrity check."
+            )
+        if doc.unverified:
+            _output.info(
+                f"{doc.unverified} section(s) rest on records outside the audit chain and its "
+                "anchors — named under 'Insufficient evidence' in the file."
+            )
         return
     if _output.json_mode:
         _output.print_json(
@@ -85,8 +93,19 @@ def technical_file(
                 "model": model,
                 "version": version,
                 "gaps": doc.gaps,
+                "missing": doc.missing,
+                "insufficient": doc.insufficient,
+                "unverified": doc.unverified,
+                "audit_chain": doc.chain_summary,
+                "telemetry_anchors": doc.anchors_summary,
                 "sections": [
-                    {"title": s.title, "annex_iv": s.annex_iv, "present": s.present}
+                    {
+                        "title": s.title,
+                        "annex_iv": s.annex_iv,
+                        "present": s.present,
+                        "status": s.status,
+                        "reasons": s.reasons,
+                    }
                     for s in doc.sections
                 ],
             }

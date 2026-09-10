@@ -44,6 +44,11 @@ class ControlCoverage:
     status: str  # satisfied | partial | gap
     present_evidence: list[str] = field(default_factory=list)
     missing_evidence: list[str] = field(default_factory=list)
+    # ADR 0110 decision 6: evidence that exists but whose integrity check failed or could not
+    # run. It does NOT count toward `satisfied` — a control satisfied by records from a broken
+    # audit chain is the confident partial report the decision forbids.
+    insufficient_evidence: list[str] = field(default_factory=list)
+    evidence_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +81,8 @@ class CoverageReport:
                     "iso_42001": c.control.iso_42001,
                     "present_evidence": c.present_evidence,
                     "missing_evidence": c.missing_evidence,
+                    "insufficient_evidence": c.insufficient_evidence,
+                    "evidence_notes": c.evidence_notes,
                 }
                 for c in self.controls
             ],
@@ -155,7 +162,9 @@ def governance_report(
     if *any* in-scope model provides its evidence (fleet-level posture).
     """
     from examlops.compliance import _COLLECTORS
+    from examlops.compliance.sufficiency import INSUFFICIENT, assess_section, integrity_state
 
+    state = integrity_state()  # verified once for the whole report, not once per control
     controls = load_catalogue()
     models = (
         [model]
@@ -167,6 +176,8 @@ def governance_report(
     for control in controls:
         present: list[str] = []
         missing: list[str] = []
+        insufficient: list[str] = []
+        notes: list[str] = []
         for ev in control.evidence:
             collector = _COLLECTORS.get(ev)
             ok = False
@@ -178,15 +189,30 @@ def governance_report(
                             break
                     except Exception:
                         continue
-            (present if ok else missing).append(ev)
+            if not ok:
+                missing.append(ev)
+                continue
+            verdict = assess_section(ev, True, state)
+            if verdict.status == INSUFFICIENT:
+                insufficient.append(ev)
+            else:
+                present.append(ev)
+            notes.extend(r for r in verdict.reasons if r not in notes)
         if not present:
             status = "gap"
-        elif missing:
+        elif missing or insufficient:
             status = "partial"
         else:
             status = "satisfied"
         report.controls.append(
-            ControlCoverage(control, status, present_evidence=present, missing_evidence=missing)
+            ControlCoverage(
+                control,
+                status,
+                present_evidence=present,
+                missing_evidence=missing,
+                insufficient_evidence=insufficient,
+                evidence_notes=notes,
+            )
         )
 
     if persist_by is not None:

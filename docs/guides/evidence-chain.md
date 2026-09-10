@@ -184,10 +184,42 @@ exa audit review --sample 25 --notes "weekly pass"
 exa audit reviews          # who reviewed, when, covering what
 ```
 
-## Not yet implemented
+## What a compliance pack will not vouch for
 
-- **`render()` "insufficient evidence" sections** (ADR 0110 decision 6) — the compliance-pack
-  renderer naming its own gaps instead of omitting them.
+The chain and the anchors decide more than whether tampering is detectable. They also decide what
+a compliance pack may claim (ADR 0110 decision 6). The Annex-IV technical file
+(`exa compliance technical-file`) and the NIST AI RMF coverage report (`exa governance report`)
+judge every section against the records its evidence comes from. They don't just ask whether
+evidence exists:
+
+| status | meaning | counts as a gap |
+|---|---|---|
+| **verified** | evidence exists, and every record it rests on was checked and passed | no |
+| **not tamper-evident** | evidence exists, but some of it lives in a table outside the chain and its anchors, so an edit would go unnoticed | no, but it is named |
+| **insufficient** | evidence exists, but its check **failed** (a broken chain link or a broken anchor), **could not run**, or the record shows an autonomous action with no `rollback_ref` | **yes** |
+| **missing** | no evidence found | **yes** |
+
+A check that raised an error is *insufficient*, never *verified*: an unrun check is the absence of
+one. Because insufficient sections count as gaps, a Declaration of Conformity whose technical
+file rests on a broken chain stays a **draft**.
+
+The technical file opens with an **Insufficient evidence** section listing every section it
+cannot vouch for, with the reason, followed by an **Evidence integrity** summary: the chain's
+state and head hash, and the anchors checked, broken or pending. A partial pack that names its
+own gaps is useful; a confident partial pack is not.
+
+```text
+## Insufficient evidence
+- **Changes** (Annex IV §6) — INSUFFICIENT
+    - audit chain is broken at event 412 (hash mismatch (event altered)) — events after it cannot be relied on
+- **Data Governance** (Annex IV §2(d)) — not tamper-evident
+    - dataset_revisions: 3 row(s) newer than the last anchor (run: exa audit anchor)
+    - data_quality_checks is outside the hash chain and the telemetry anchors
+```
+
+Which tables each section draws on is declared once, in
+`examlops.compliance.sufficiency.EVIDENCE_SOURCES`. A test fails if a collector has no entry,
+so a new section can never be treated as verified by default.
 
 ## Design
 

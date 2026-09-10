@@ -54,6 +54,17 @@ class Section:
     annex_iv: str  # Annex-IV clause reference
     content: str
     present: bool  # False => evidence gap (flagged, R4)
+    # ADR 0110 decision 6 — whether the evidence can be relied on, not only whether it exists:
+    # verified | unverified | insufficient | missing (see examlops.compliance.sufficiency).
+    status: str = ""
+    reasons: list[str] = field(default_factory=list)
+
+
+_FLAGS = {
+    "missing": "  ⚠️ **MISSING EVIDENCE**",
+    "insufficient": "  ⚠️ **INSUFFICIENT EVIDENCE**",
+    "unverified": "  ℹ️ *not tamper-evident*",
+}
 
 
 @dataclass
@@ -61,7 +72,14 @@ class Document:
     model: str
     tenant: str
     sections: list[Section] = field(default_factory=list)
+    #: Sections the pack cannot rely on: missing **plus** insufficient. A declaration whose
+    #: technical file has gaps stays a draft, so evidence behind a broken chain blocks it too.
     gaps: int = 0
+    missing: int = 0
+    insufficient: int = 0
+    unverified: int = 0
+    chain_summary: str | None = None
+    anchors_summary: str | None = None
 
     def to_markdown(self) -> str:
         lines = [
@@ -71,11 +89,45 @@ class Document:
             "",
             f"- **System:** {self.model}",
             f"- **Tenant:** {self.tenant}",
-            f"- **Evidence gaps:** {self.gaps}",
+            f"- **Evidence gaps:** {self.gaps} "
+            f"({self.missing} missing, {self.insufficient} insufficient)",
+            f"- **Not tamper-evident:** {self.unverified} section(s)",
             "",
         ]
+        # ADR 0110 decision 6: the pack names its own gaps up front, in a section of their own,
+        # instead of leaving a reader to find a flag on page nine. A partial pack that says what
+        # it cannot vouch for is useful; a confident partial pack is not.
+        weak = [s for s in self.sections if s.status in ("missing", "insufficient", "unverified")]
+        if weak:
+            lines += ["## Insufficient evidence", ""]
+            lines.append(
+                "What this file cannot vouch for. *Missing*: no evidence was found. "
+                "*Insufficient*: evidence exists but its integrity check failed or could not run. "
+                "*Not tamper-evident*: evidence exists in records outside the hash-chained audit "
+                "log and its anchors, so an edit to them would not be detected."
+            )
+            lines.append("")
+            order = {"insufficient": 0, "missing": 1, "unverified": 2}
+            for s in sorted(weak, key=lambda x: (order[x.status], x.key)):
+                label = {
+                    "insufficient": "INSUFFICIENT",
+                    "missing": "MISSING",
+                    "unverified": "not tamper-evident",
+                }[s.status]
+                lines.append(f"- **{s.title}** ({s.annex_iv}) — {label}")
+                for r in s.reasons:
+                    lines.append(f"    - {r}")
+            lines.append("")
+        if self.chain_summary is not None or self.anchors_summary is not None:
+            lines += [
+                "## Evidence integrity",
+                "",
+                f"- **Audit hash chain:** {self.chain_summary}",
+                f"- **Telemetry anchors:** {self.anchors_summary}",
+                "",
+            ]
         for s in self.sections:
-            flag = "" if s.present else "  ⚠️ **MISSING EVIDENCE**"
+            flag = _FLAGS.get(s.status, "" if s.present else _FLAGS["missing"])
             lines.append(f"## {s.title} ({s.annex_iv}){flag}")
             lines.append("")
             lines.append(s.content)
@@ -320,7 +372,15 @@ _COLLECTORS = {
 
 
 def generate_technical_file(model: str, *, tenant: str = "default") -> Document:
-    """Assemble the Annex-IV technical file from live evidence, flagging gaps (R3/R4)."""
+    """Assemble the Annex-IV technical file from live evidence, flagging gaps (R3/R4).
+
+    Each section is also judged for *sufficiency* (ADR 0110 decision 6): evidence from a broken
+    audit chain or a broken anchor is flagged insufficient and counted as a gap, and evidence from
+    records outside the chain and its anchors is named as not tamper-evident.
+    """
+    from examlops.compliance.sufficiency import assess_section, integrity_state
+
+    state = integrity_state()
     doc = Document(model=model, tenant=tenant)
     for entry in FRAMEWORK:
         control = entry["control"]
@@ -329,6 +389,7 @@ def generate_technical_file(model: str, *, tenant: str = "default") -> Document:
             present, content = False, f"Section '{control}' not yet automated — evidence pending."
         else:
             present, content = collector(model, tenant)
+        verdict = assess_section(control, present, state)
         doc.sections.append(
             Section(
                 key=control,
@@ -336,9 +397,16 @@ def generate_technical_file(model: str, *, tenant: str = "default") -> Document:
                 annex_iv=entry["article"],
                 content=content,
                 present=present,
+                status=verdict.status,
+                reasons=verdict.reasons,
             )
         )
-    doc.gaps = sum(1 for s in doc.sections if not s.present)
+    doc.missing = sum(1 for s in doc.sections if s.status == "missing")
+    doc.insufficient = sum(1 for s in doc.sections if s.status == "insufficient")
+    doc.unverified = sum(1 for s in doc.sections if s.status == "unverified")
+    doc.gaps = doc.missing + doc.insufficient
+    doc.chain_summary = state.chain_summary()
+    doc.anchors_summary = state.anchors_summary()
     return doc
 
 

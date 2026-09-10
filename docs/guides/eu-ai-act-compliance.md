@@ -55,6 +55,15 @@ from the other Next-Gen tracks:
 Missing evidence is **flagged** in the document (`⚠️ MISSING EVIDENCE`), never silently
 omitted (R4). Each generation is stored as a new **version** in `technical_files`.
 
+Existing evidence is also checked for **integrity** (ADR 0110 decision 6). A section whose
+records come from a broken audit chain or a broken telemetry anchor is flagged
+`⚠️ INSUFFICIENT EVIDENCE` and counted as a gap, alongside missing sections. A section resting on
+records outside the chain and its anchors is marked *not tamper-evident*, which names it without
+counting it as a gap. The file opens with an **Insufficient evidence** section listing both, with
+reasons, and an **Evidence integrity** summary. `--json` reports `missing`, `insufficient`,
+`unverified`, and a `status` and `reasons` per section. The statuses are explained in
+[Evidence chain](evidence-chain.md#what-a-compliance-pack-will-not-vouch-for).
+
 ## Art. 12 record-keeping
 
 ```bash

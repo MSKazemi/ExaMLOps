@@ -47,6 +47,12 @@ Each control is marked:
 | **partial** | some evidence present |
 | **gap** | no evidence — a missing source is **always** a gap, never a false pass (R4) |
 
+Evidence that exists but fails its integrity check (a broken audit chain or anchor, or a check
+that could not run) is **not** counted toward *satisfied*. It is listed under
+`insufficient_evidence`, and `evidence_notes` explains why, including sources that are not
+tamper-evident. The statuses are explained in
+[Evidence chain](evidence-chain.md#what-a-compliance-pack-will-not-vouch-for).
+
 The report shows the NIST function, the EU AI Act crosswalk, the ISO/IEC 42001 clause, and
 which evidence is missing. Reports are versioned, **audited** (D4), and **tenant-scoped**
 (D6).

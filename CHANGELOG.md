@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — compliance packs name what they cannot vouch for (ADR 0110 decision 6 — ADR 0110 now Accepted)
+
+- **Evidence is judged for integrity, not only presence.** Every section of the Annex-IV
+  technical file (`exa compliance technical-file`) and every control of the NIST AI RMF report
+  (`exa governance report`) is now *verified*, *not tamper-evident*, *insufficient* or *missing*,
+  according to the records its evidence comes from. Evidence from a broken audit-chain link, a
+  broken telemetry anchor, or a check that could not run is **insufficient**. So is a record
+  showing an autonomous action with no `rollback_ref`. It counts as a gap, so a Declaration of
+  Conformity resting on it stays a draft. Before this, an edited audit event still produced
+  "Change log: N audited changes" as passing evidence.
+- The technical file opens with an **Insufficient evidence** section (every section it cannot
+  vouch for, with reasons) and an **Evidence integrity** summary (chain state and head, anchors
+  checked, broken and pending). `--json` adds `missing`, `insufficient`, `unverified`, and
+  `status`/`reasons` per section. The NIST report adds `insufficient_evidence` and
+  `evidence_notes`, and no longer counts insufficient evidence toward *satisfied*.
+- New module `examlops.compliance.sufficiency` (one source-table map per section, guarded so a
+  new collector can never read as verified by default). Tests tamper for real: they edit a chained
+  event and an anchored row.
+
 ### Fixed — a served LLM is reachable through the gateway, and HPC endpoints find their address
 
 - **Registered LLM endpoints were not gateway routes.** `exa serve llm start` recorded an endpoint
