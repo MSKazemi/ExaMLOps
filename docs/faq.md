@@ -10,7 +10,7 @@ description: Frequently asked questions about ExaMLOps — what it is, who it is
 ExaMLOps is an open-source MLOps platform for HPC (high-performance computing) systems and
 supercomputers. It runs the whole life of a machine-learning model on a cluster: training runs
 are submitted as scheduler jobs, every trained version is stored with its metrics in an MLflow
-registry, promotion to production passes through metric and approval gates, approved versions
+registry, promotion to production passes through metric and approval gates, promoted versions
 are served by Ray Serve, and drift, cost, carbon and quality are watched afterwards. It is
 driven by the `exa` command-line tool, a web dashboard, or an AI agent.
 
@@ -51,7 +51,8 @@ server tracks experiments and stores models; ExaMLOps **uses** MLflow as its reg
 what surrounds it — auto-discovery training pipelines (Prefect), scheduler job submission,
 promotion gates, multi-model serving, drift detection with optional automatic retraining,
 FinOps and carbon accounting, a hash-chained audit trail, a dashboard and an agent — as one
-platform.
+platform. The [comparison page](compare.md) covers Ray on Slurm, ClearML and Metaflow too, with
+sources, and says when to choose something else.
 
 ## How does a model reach production?
 

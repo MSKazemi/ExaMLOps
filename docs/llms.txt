@@ -18,6 +18,7 @@ Key facts:
 - [Home](https://mskazemi.com/ExaMLOps/): overview and the platform in motion
 - [Quick Start](https://mskazemi.com/ExaMLOps/guides/quickstart/): run the stack, train, promote and serve a model locally
 - [FAQ](https://mskazemi.com/ExaMLOps/faq/): what it is, who it is for, schedulers, comparison with Kubeflow and MLflow, licensing
+- [Compared with alternatives](https://mskazemi.com/ExaMLOps/compare/): ExaMLOps vs Kubeflow, MLflow alone, Ray on Slurm, ClearML and Metaflow for HPC — with sources and when to choose something else
 - [System map](https://mskazemi.com/ExaMLOps/explore/): every service and how data, control and decisions flow between them
 - [Architecture](https://mskazemi.com/ExaMLOps/guides/architecture/): components and design
 

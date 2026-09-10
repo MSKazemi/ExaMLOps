@@ -25,6 +25,10 @@ In production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project
 | **Operate** | The `exa` platform CLI, a React 19 + FastAPI dashboard, and **Skipper** — a LangGraph management agent with a native `exa chat` client |
 | **Integrate** | SeanerBUS HPC message bridge |
 
+**Is it for you?** Yes if your models train on a Slurm or Flux cluster and you want versions,
+promotion and serving governed rather than scripted. If you are Kubernetes-native, Kubeflow or
+KServe will likely fit better — see [ExaMLOps compared](https://mskazemi.com/ExaMLOps/compare/).
+
 ## Quick Start
 
 ```bash
