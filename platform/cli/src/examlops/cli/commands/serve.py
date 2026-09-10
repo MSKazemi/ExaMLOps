@@ -62,11 +62,12 @@ def reload(
     target = model or "all models"
     with _output.spinner(f"Reloading {target} from MLflow into Ray Serve…"):
         try:
-            result = _client.post(url, {})
+            result = _client.post(url, {}, token=cfg.ray_serve_admin_token)
         except _client.ClientError as e:
             _output.error(
                 f"Failed to reload {target}: {e}",
-                hint="Is Ray Serve running? Try: exa stack status",
+                hint="Is Ray Serve running (exa stack status)? A 503/401 means RAY_SERVE_ADMIN_TOKEN "
+                "is unset on Ray Serve or here; alias moves still reload within 60 s on their own.",
             )
             return
     count = result.get("count", "?")
@@ -88,6 +89,9 @@ def check() -> None:
                 hint="Start it with: exa stack up --service ray-serving",
             )
             return
+    if _output.json_mode:
+        _output.print_json({"ok": True, "message": "Ray Serve is healthy", "health": health})
+        return
     _output.ok("Ray Serve is healthy")
     _output.print_record(health)
 
@@ -113,6 +117,9 @@ def infer_check() -> None:
                 hint="Check: exa serve check  then  exa serve reload",
             )
             return
+    if _output.json_mode:
+        _output.print_json({"ok": True, "message": "Inference smoke test passed", "result": result})
+        return
     _output.ok("Inference smoke test passed")
     _output.print_record(result)
 
@@ -200,7 +207,13 @@ def traffic(
 
     cfg = load_config()
     try:
-        _client.post(f"{cfg.ray_serve_url}/traffic-rules/{model}", rules)
+        # The ingress mounts this route under /infer-pipeline; the bare path 404'd and the error
+        # was swallowed, so no replica ever got the live update (plan P0.4 / finding B4).
+        _client.post(
+            f"{cfg.ray_serve_url}/infer-pipeline/traffic-rules/{model}",
+            rules,
+            token=cfg.ray_serve_admin_token,
+        )
     except _client.ClientError:
         pass  # non-fatal: rules persisted in DB
 

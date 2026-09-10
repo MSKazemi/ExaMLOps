@@ -165,10 +165,13 @@ def reject(
 
 @app.command("delete", epilog=_EXAMPLES_DELETE)
 def delete(
-    approval_id: str = typer.Argument(..., help="Approval UUID to delete"),
+    approval_id: str = typer.Argument(..., help="Approval UUID to retract"),
 ) -> None:
-    """Delete a pending approval by its UUID (retract a stale or duplicate entry)."""
-    if not _output.confirm(f"Delete approval [bold]{approval_id[:8]}…[/bold]?"):
+    """Retract a pending approval by its UUID (a stale or duplicate entry).
+
+    The approval is kept in the history, marked `retracted` with who and when; nothing is erased.
+    """
+    if not _output.confirm(f"Retract approval [bold]{approval_id[:8]}…[/bold]?"):
         _output.info("Cancelled.")
         return
     cfg = load_config()
@@ -178,8 +181,8 @@ def delete(
             token=cfg.control_plane_token,
         )
     except _client.ClientError as e:
-        _output.error(f"Failed to delete approval: {e}")
+        _output.error(f"Failed to retract approval: {e}")
         return
-    _output.ok(f"Deleted approval {approval_id[:8]}…")
+    _output.ok(f"Retracted approval {approval_id[:8]}… (kept in the history as `retracted`)")
     if _output.json_mode:
         _output.print_json(result)

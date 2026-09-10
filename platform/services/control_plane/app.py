@@ -31,7 +31,7 @@ Env vars (all existing + new):
     CONTROL_PLANE_CREDENTIALS_JSON    optional token-keyed principal/tenant/scopes credential map
     PREFECT_API_URL                   default: http://localhost:14200/api  (the host port;
                                       compose sets http://orchestrator:4200/api itself)
-    PREFECT_DEPLOYMENT_NAME           default: examlops_scheduled_training/nightly
+    PREFECT_DEPLOYMENT_NAME           default: training_flow/examlops-dispatch
     CONTROL_PLANE_DB                  default: /data/approvals.db
     EXAMLOPS_COORDINATOR              default: db  (redis for cross-host coordination)
     EXAMLOPS_EVENT_PUBLISHER          default: log
@@ -289,9 +289,10 @@ def _auth_is_usable() -> bool:
 # outside compose reported a healthy Prefect as down on `/status`, and `PrefectGateway`
 # posted its retrain flow runs into nothing.
 PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:14200/api").rstrip("/")
-PREFECT_DEPLOYMENT_NAME = os.getenv(
-    "PREFECT_DEPLOYMENT_NAME", "examlops_scheduled_training/nightly"
-)
+# `training_flow/examlops-dispatch` is registered and served by `exa pipeline deploy`
+# (pipelines/deploy.py DISPATCH_DEPLOYMENT_NAME); tests/unit/test_dispatch_contract.py keeps this
+# default, the compose default and that constant identical.
+PREFECT_DEPLOYMENT_NAME = os.getenv("PREFECT_DEPLOYMENT_NAME", "training_flow/examlops-dispatch")
 CONTROL_PLANE_STATE_BACKEND = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
 CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB") or os.getenv("PLATFORM_DB") or "/data/approvals.db"
 # Shared DB-backed coordination and the stock outbox relay resolve SQLite through PLATFORM_DB.
@@ -743,6 +744,16 @@ def _run_startup_checks() -> None:
     _startup_checks = checks
     ok = all(v == "ok" for v in checks.values())
     (logger.info if ok else logger.warning)("Startup checks: %s", checks)
+    # Reported beside the checks, not among them: see health() on why the dispatch target decides
+    # `status` but never readiness.
+    dispatch = _dispatch_status(refresh=True)
+    if dispatch["state"] != "ok":
+        logger.warning(
+            "Dispatch target %s is %s: %s",
+            dispatch["deployment"],
+            dispatch["state"],
+            dispatch["detail"],
+        )
 
 
 # ─── Improvement 7 + 8: Poller state ─────────────────────────────────────────
@@ -1360,7 +1371,13 @@ class PrefectGateway:
     def __init__(self, api_url: str = PREFECT_API_URL) -> None:
         self.api_url = api_url.rstrip("/")
 
-    def find_deployment_id(self, deployment_name: str) -> str:
+    def get_deployment(self, deployment_name: str) -> dict[str, Any]:
+        """The Prefect deployment document, or a 503 that says how to create it.
+
+        A missing dispatch target is a platform misconfiguration, not a missing *API route*: it
+        used to surface as Prefect's bare 404, which every caller read as "this endpoint does not
+        exist" (finding B2).
+        """
         import urllib.parse  # noqa: PLC0415
 
         if "/" not in deployment_name:
@@ -1370,11 +1387,22 @@ class PrefectGateway:
             f"{self.api_url}/deployments/name/"
             f"{urllib.parse.quote(flow_name)}/{urllib.parse.quote(dep_name)}"
         )
-        payload = _prefect_breaker.call(lambda: self._get(url))
-        dep_id = payload.get("id")
-        if not dep_id:
+        try:
+            payload = _prefect_breaker.call(lambda: self._get(url))
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    f"Prefect deployment {deployment_name!r} does not exist. Register and serve "
+                    "it with `exa pipeline deploy` (or set PREFECT_DEPLOYMENT_NAME).",
+                ) from exc
+            raise
+        if not payload.get("id"):
             raise HTTPException(502, f"Prefect returned no id for {deployment_name!r}")
-        return dep_id
+        return payload
+
+    def find_deployment_id(self, deployment_name: str) -> str:
+        return str(self.get_deployment(deployment_name)["id"])
 
     def create_flow_run(
         self,
@@ -1505,9 +1533,48 @@ def _release_retrain_guards(local_key: str, coordinator: Any, lock_key: str, hol
 
 @dataclass(frozen=True)
 class _CommandClaim:
-    outcome: str  # claimed | busy | succeeded
+    outcome: str  # claimed | busy | succeeded | capacity
     response: dict[str, Any] | None = None
     attempt: int | None = None
+
+
+ADMISSION_RETRY_AFTER_SECONDS = max(1, int(os.getenv("CONTROL_PLANE_ADMISSION_RETRY_AFTER", "30")))
+
+
+def _release_abandoned_admissions(conn: Any, stale_before: str) -> None:
+    """Free admission slots that no live worker holds. Runs inside the claim transaction.
+
+    Two kinds of row outlive the request that created them:
+
+    * ``running`` rows whose command is still ``dispatching`` past its lease — the worker
+      crashed between claim and completion. They held a slot forever.
+    * ``queued`` rows left by releases before the B1 fix, which refused a request but kept its
+      row queued. Nothing ever ran them.
+
+    Both are restricted to rows a control-plane command owns: on Postgres ``admission_queue`` is
+    shared with the platform-wide ``exa admission`` queue, whose queued items are real work that
+    this service must never touch.
+    """
+    conn.execute(
+        "UPDATE admission_queue SET state='failed', finished_at=CURRENT_TIMESTAMP, "
+        "reason='dispatch lease expired' WHERE state='running' AND id IN ("
+        "SELECT admission_id FROM control_plane_commands "
+        "WHERE state='dispatching' AND updated_at <= ? AND admission_id IS NOT NULL)",
+        (stale_before,),
+    )
+    conn.execute(
+        "UPDATE admission_queue SET state='deferred', reason='abandoned by a refused caller' "
+        "WHERE state='queued' AND id IN ("
+        "SELECT admission_id FROM control_plane_commands WHERE admission_id IS NOT NULL)"
+    )
+
+
+def _admission_refused() -> HTTPException:
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "Admission capacity exhausted for this tenant; retry with the same Idempotency-Key",
+        headers={"Retry-After": str(ADMISSION_RETRY_AFTER_SECONDS)},
+    )
 
 
 def _command_payload(kind: str, parameters: dict[str, Any]) -> tuple[str, str]:
@@ -1586,9 +1653,13 @@ def _claim_command(
                 conn.commit()
                 return _CommandClaim("busy")
 
-            # Re-enter failed/stale work through the existing admission-queue contract. The HTTP
-            # caller acts as the worker for this synchronous API, but it may claim only when global
-            # and per-tenant capacity permit and when this is the next queued item.
+            _release_abandoned_admissions(conn, stale_before)
+
+            # The HTTP caller is the worker for this synchronous API: it is admitted now, while it
+            # waits, or it is refused and leaves. Only the global and per-tenant caps decide. There
+            # is deliberately no "must be the oldest queued row" rule — with synchronous callers
+            # the oldest row belongs to a request that was already answered, and FIFO-by-head
+            # turned one refusal into a permanent wedge (finding B1).
             conn.execute(
                 "UPDATE admission_queue SET state='queued', started_at=NULL, finished_at=NULL, "
                 "reason=NULL WHERE id=?",
@@ -1601,19 +1672,19 @@ def _claim_command(
                 "SELECT COUNT(*) FROM admission_queue WHERE state='running' AND tenant=?",
                 (tenant,),
             ).fetchone()[0]
-            next_row = conn.execute(
-                "SELECT id FROM admission_queue WHERE state='queued' AND tenant=? "
-                "ORDER BY priority DESC, id ASC LIMIT 1",
-                (tenant,),
-            ).fetchone()
             if (
                 int(running_total) >= admission_max_running()
                 or int(running_tenant) >= admission_per_tenant_cap()
-                or next_row is None
-                or next_row[0] != admission_id
             ):
+                # Refused: the caller goes away with a retryable answer, so its row must not stay
+                # ``queued`` — nothing would ever run it. A retry with the same idempotency key
+                # re-queues this same row.
+                conn.execute(
+                    "UPDATE admission_queue SET state='deferred', reason='capacity' WHERE id=?",
+                    (admission_id,),
+                )
                 conn.commit()
-                return _CommandClaim("busy")
+                return _CommandClaim("capacity")
 
             claimed = conn.execute(
                 "UPDATE control_plane_commands "
@@ -1788,6 +1859,103 @@ def _pending_approvals_count() -> int | None:
             conn.close()
 
 
+# ─── Dispatch target contract (plan P0.2 / finding B2) ───────────────────────
+#
+# Every retrain this service dispatches goes to one Prefect deployment. Whether that deployment
+# exists, and whether it accepts what this service sends, is a fact about the platform that no
+# test double can see — so it is probed (cheaply, outside the breaker, at most once a minute) and
+# reported in /health instead of being discovered by the first operator whose retrain 404s.
+
+# What `trigger_retrain`, the approval gate and ModelZoo auto-retrain always send. The target flow
+# must accept every one of these, and must not *require* anything else.
+_DISPATCH_SENDS = frozenset({"model_name", "dataset_cls_name", "is_dummy", "backend_name"})
+_DISPATCH_TTL_SECONDS = 60.0
+_DISPATCH_PROBE_TIMEOUT = 3.0
+_dispatch_cache: tuple[float, dict[str, Any]] | None = None
+_DISPATCH_LOCK = threading.Lock()
+
+
+def _probe_dispatch_target() -> dict[str, Any]:
+    import urllib.error  # noqa: PLC0415
+    import urllib.parse  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    result: dict[str, Any] = {
+        "deployment": PREFECT_DEPLOYMENT_NAME,
+        "state": "unreachable",
+        "detail": None,
+        "parameters": None,
+    }
+    if "/" not in PREFECT_DEPLOYMENT_NAME:
+        result.update(state="incompatible", detail="PREFECT_DEPLOYMENT_NAME must be 'flow/name'")
+        return result
+    flow_name, dep_name = PREFECT_DEPLOYMENT_NAME.split("/", 1)
+    url = (
+        f"{PREFECT_API_URL}/deployments/name/"
+        f"{urllib.parse.quote(flow_name)}/{urllib.parse.quote(dep_name)}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=_DISPATCH_PROBE_TIMEOUT) as resp:  # noqa: S310
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            result.update(
+                state="missing", detail="not registered — run `exa pipeline deploy` to create it"
+            )
+        else:
+            result["detail"] = f"Prefect answered HTTP {exc.code}"
+        return result
+    except Exception as exc:  # noqa: BLE001 - any transport failure is "unreachable", not a crash
+        result["detail"] = f"Prefect unreachable: {type(exc).__name__}"
+        return result
+
+    schema = payload.get("parameter_openapi_schema") or {}
+    accepted = set((schema.get("properties") or {}).keys())
+    required = set(schema.get("required") or [])
+    not_accepted = sorted(_DISPATCH_SENDS - accepted)
+    unsatisfiable = sorted(required - _DISPATCH_SENDS)
+    result["parameters"] = sorted(accepted)
+    if not_accepted or unsatisfiable:
+        problems = []
+        if not_accepted:
+            problems.append(f"flow does not accept {not_accepted}")
+        if unsatisfiable:
+            problems.append(f"flow requires {unsatisfiable}, which the control plane never sends")
+        result.update(state="incompatible", detail="; ".join(problems))
+    else:
+        result["state"] = "ok"
+    return result
+
+
+def _dispatch_status(*, refresh: bool = False) -> dict[str, Any]:
+    """The cached dispatch-target verdict: ok | missing | incompatible | unreachable."""
+    global _dispatch_cache
+    with _DISPATCH_LOCK:
+        now = time.monotonic()
+        if refresh or _dispatch_cache is None or now >= _dispatch_cache[0]:
+            _dispatch_cache = (now + _DISPATCH_TTL_SECONDS, _probe_dispatch_target())
+        return dict(_dispatch_cache[1])
+
+
+def _check_dispatch_parameters(parameters: dict[str, Any]) -> None:
+    """Reject keys the dispatch target cannot accept, before any durable state is written.
+
+    Only when the target's schema is actually known: an unreachable Prefect is not evidence that a
+    parameter is wrong, so the request proceeds and Prefect's own validation has the last word.
+    """
+    accepted = _dispatch_status().get("parameters")
+    if accepted is None:
+        return
+    unknown = sorted(set(parameters) - set(accepted))
+    if unknown:
+        raise HTTPException(
+            400,
+            f"Parameters {unknown} are not accepted by {PREFECT_DEPLOYMENT_NAME!r}; "
+            f"accepted: {accepted}",
+        )
+
+
 def _runtime_capabilities() -> dict[str, Any]:
     """Describe the controls this process actually uses, not only configured target backends."""
     coordinator_name = os.getenv("EXAMLOPS_COORDINATOR", "db").strip().lower()
@@ -1867,8 +2035,18 @@ def health() -> dict[str, Any]:
         status = "degraded"
     if poller_enabled and _poller_coordination_error:
         status = "degraded"
+    # Readiness is decided before the dispatch verdict is folded in. A retrain target that is not
+    # deployed yet makes every retrain fail, so `status` must not say "ok" — but it is not a reason
+    # to pull the API out of rotation: approvals, reads and the durable command record still work,
+    # and on a fresh stack the control plane legitimately starts before `exa pipeline deploy` runs.
+    ready = status == "ok" and not (poller_enabled and _is_poller_stale())
+    dispatch = _dispatch_status()
+    if dispatch["state"] in ("missing", "incompatible"):
+        status = "degraded"
     return {
         "status": status,
+        "ready": ready,
+        "dispatch": dispatch,
         "prefect_api_url": PREFECT_API_URL,
         "deployment": PREFECT_DEPLOYMENT_NAME,
         "auth_configured": _auth_is_usable(),
@@ -1899,8 +2077,9 @@ def readyz() -> JSONResponse:
             content={"status": "not_ready", "reason": "health evaluation failed"},
         )
 
-    poller = payload.get("poller") or {}
-    ready_now = payload.get("status") == "ok" and not poller.get("stale", False)
+    # `ready` is the traffic verdict computed by health() before the dispatch target is considered;
+    # see the comment there. It already folds in a stale poller.
+    ready_now = payload.get("ready") is True
     if ready_now:
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
     payload["status"] = "not_ready"
@@ -1998,6 +2177,17 @@ def trigger_retrain(
             f"Supported: {registry[req.model_name]}",
         )
 
+    parameters: dict[str, Any] = {
+        "model_name": req.model_name,
+        "dataset_cls_name": req.dataset_name,
+        "is_dummy": req.is_dummy,
+        "backend_name": req.backend_name,
+        **req.parameters,
+    }
+
+    # Fail on a key the dispatch target cannot accept before any lock or durable row exists.
+    _check_dispatch_parameters(parameters)
+
     # Improvement 5: process-local fast-path deduplication. The durable command claim below is the
     # cross-process authority; this set only avoids needless database traffic within one worker.
     key = f"{context.tenant}:{_retrain_key(req.model_name, req.dataset_name)}"
@@ -2022,14 +2212,6 @@ def trigger_retrain(
             _inflight_retrains.discard(key)
         _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
         raise HTTPException(409, f"Retrain already in-flight for {key}")
-
-    parameters: dict[str, Any] = {
-        "model_name": req.model_name,
-        "dataset_cls_name": req.dataset_name,
-        "is_dummy": req.is_dummy,
-        "backend_name": req.backend_name,
-        **req.parameters,
-    }
 
     # Every outbound POST gets a stable key. A caller-supplied key survives process restarts and
     # replica changes; an omitted key preserves the historical "new request" semantics while still
@@ -2061,6 +2243,10 @@ def trigger_retrain(
         _release_retrain_guards(key, coordinator, lock_key, holder)
         _metrics.record_retrain(req.model_name, req.dataset_name, "dedup")
         raise HTTPException(409, "An identical retrain command is already being dispatched")
+    if claim.outcome == "capacity":
+        _release_retrain_guards(key, coordinator, lock_key, holder)
+        _metrics.record_retrain(req.model_name, req.dataset_name, "throttled")
+        raise _admission_refused()
 
     # Improvement 13: retrain metrics
     start_ts = time.monotonic()
@@ -2444,6 +2630,8 @@ def approve_model(
         return claim.response
     if claim.outcome == "busy":
         raise HTTPException(409, f"Approval for model {model_id!r} is already in progress")
+    if claim.outcome == "capacity":
+        raise _admission_refused()
 
     gateway = _get_gateway()
     try:
@@ -2517,6 +2705,62 @@ def reject_model(
     _metrics.record_rejected(model_id, pending_count)
     logger.info("Rejected model=%s approval_id=%s reason=%s", model_id, row_id, body.reason)
     return {"model_id": model_id, "status": "rejected"}
+
+
+@app.delete(
+    "/approvals/{approval_id}",
+    dependencies=[Depends(_check_rate_limit)],
+)
+def retract_approval(
+    approval_id: str,
+    context: RequestContext = Depends(_require_write_context),
+) -> dict[str, Any]:
+    """Retract a pending approval (a stale or duplicate entry) without erasing it.
+
+    `exa approvals delete` called this route for a long time before it existed (plan P0.3 /
+    finding B3). It is a *retraction*, not a delete: an approval is a governance record, so the
+    row stays, marked ``retracted`` with who and when, and an ``approval.retracted`` event goes to
+    the outbox in the same transaction. Only a ``pending`` approval in the caller's tenant can be
+    retracted; one being dispatched (``approving``) or already resolved answers 409.
+    """
+    now = datetime.utcnow().isoformat()
+    with _DB_LOCK:
+        conn = _get_db()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT model_id, status FROM pending_approvals WHERE id=? AND tenant=?",
+                (approval_id, context.tenant),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(404, f"No approval {approval_id!r}")
+            model_id, current = row[0], row[1]
+            if current != "pending":
+                raise HTTPException(409, f"Approval {approval_id!r} is {current}, not pending")
+            conn.execute(
+                "UPDATE pending_approvals SET status='retracted', resolved_by=?, resolved_at=? "
+                "WHERE id=? AND tenant=? AND status='pending'",
+                (context.principal, now, approval_id, context.tenant),
+            )
+            event_id = enqueue_event(
+                "approval.retracted",
+                {
+                    "approval_id": approval_id,
+                    "model_id": model_id,
+                    "actor": context.principal,
+                    "tenant": context.tenant,
+                },
+                conn=conn,
+            )
+            conn.execute(
+                "UPDATE event_outbox SET actor=?, tenant=? WHERE id=?",
+                (context.principal, context.tenant, event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    logger.info("Retracted approval id=%s model=%s by=%s", approval_id, model_id, context.principal)
+    return {"id": approval_id, "model_id": model_id, "status": "retracted"}
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -2680,6 +2924,7 @@ def admin_reload() -> dict[str, Any]:
         "registry_reloaded": True,
         "models": sorted(new_registry.keys()),
         "startup_checks": _startup_checks,
+        "dispatch": _dispatch_status(),
     }
 
 

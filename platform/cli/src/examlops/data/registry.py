@@ -58,8 +58,13 @@ def get_model_card(model: str) -> dict[str, Any] | None:
 def get_model_signature(model: str, version: str) -> dict[str, Any] | None:
     init_db()
     with get_db() as conn:
+        # Case-insensitive on the model: operators sign the registry name (`exa models sign JPCP`)
+        # and serving verifies the MLflow name (`jpcp`); an exact match reported every signed
+        # model as unsigned the moment serving asked (plan P0.6).
         row = conn.execute(
-            "SELECT * FROM model_signatures WHERE model=? AND version=?", (model, version)
+            "SELECT * FROM model_signatures WHERE lower(model)=lower(?) AND version=? "
+            "ORDER BY signed_at DESC LIMIT 1",
+            (model, version),
         ).fetchone()
     return dict(row) if row else None
 

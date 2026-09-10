@@ -62,6 +62,8 @@ const PlatformOps = lazy(() =>
 )
 const Events = lazy(() => import('@/pages/Events').then((m) => ({ default: m.Events })))
 const Traffic = lazy(() => import('@/pages/Traffic').then((m) => ({ default: m.Traffic })))
+const CliConsole = lazy(() => import('@/pages/CliConsole').then((m) => ({ default: m.CliConsole })))
+const Resources = lazy(() => import('@/pages/Resources').then((m) => ({ default: m.Resources })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -171,6 +173,8 @@ export default function App() {
                       <Route path="/govern/secrets" element={<Secrets />} />
                       <Route path="/govern/fairness" element={<Fairness />} />
                       {/* Platform */}
+                      <Route path="/platform/cli" element={<CliConsole />} />
+                      <Route path="/platform/resources" element={<Resources />} />
                       <Route path="/platform/events" element={<Events />} />
                       <Route path="/platform/services" element={<Services />} />
                       <Route path="/platform/ops" element={<PlatformOps />} />

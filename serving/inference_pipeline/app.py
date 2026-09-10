@@ -8,12 +8,13 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from opentelemetry import trace as _otel_trace
 from ray import serve
 
 from examlops.observability import setup_tracing
+from serving.admin_auth import require_serving_admin
 
 try:
     from examlops.platform_db import get_traffic_rules as _db_get_traffic
@@ -98,6 +99,14 @@ class ModelRouter:
         # pass "JPCP" (the canonical YAML name) or "jpcp" interchangeably.
         model_name = (payload.get("model_name") or _DEFAULT_MODEL).lower()
         requested_alias = payload.get("alias") or _DEFAULT_ALIAS
+        # A traffic split redistributes the traffic addressed to the model's *default* alias —
+        # the endpoint a canary is meant to shadow. A request pinned to any other alias (an
+        # operator testing Staging, an explicit rollback probe) gets exactly what it asked for.
+        # Before P0.4 a configured split overrode every alias, so `--alias Staging` could be
+        # answered by Production. The bus bridge always sends the default alias, so bus traffic
+        # still follows the split.
+        if requested_alias.lower() != _DEFAULT_ALIAS.lower():
+            return model_name, requested_alias
         split = _get_split(model_name)
         if split and len(split) > 1:
             aliases = list(split.keys())
@@ -250,7 +259,10 @@ class InferencePipelineIngress:
         """Liveness for the inference-pipeline ingress (process + loop responsive)."""
         return {"status": "alive", "ray_serve_url": _RAY_SERVE_URL}
 
-    @_ingress_app.post("/traffic-rules/{model}", response_model=None)
+    # Rerouting production traffic is an admin action (plan P0.6 / finding S1).
+    @_ingress_app.post(
+        "/traffic-rules/{model}", response_model=None, dependencies=[Depends(require_serving_admin)]
+    )
     async def set_traffic(self, model: str, body: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         try:
             rules = {k: int(v) for k, v in body.items()}

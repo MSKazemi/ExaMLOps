@@ -1873,7 +1873,7 @@ def _audit_hash(prev_hash: str, canonical: str) -> str:
 
 # Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
 # relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
-from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, set_challenger_judge_scores, get_device_pools, get_llm_endpoint, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, set_challenger_judge_scores, get_device_pools, get_llm_endpoint, get_promotion_rule, get_shadow_config, get_traffic_rules, serving_model_key, set_shadow_config, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
 
 
 

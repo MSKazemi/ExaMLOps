@@ -140,7 +140,9 @@ Approve a pending model change — fires Prefect training immediately.
 
 ### `exa approvals delete`
 
-Delete a pending approval by its UUID (retract a stale or duplicate entry).
+Retract a pending approval by its UUID (a stale or duplicate entry).
+
+The approval is kept in the history, marked `retracted` with who and when; nothing is erased.
 
 ### `exa approvals list`
 
@@ -539,6 +541,10 @@ CLI configuration
 
 List configured contexts (environments) and show the active one.
 
+### `exa config delete-context`
+
+Delete a named context and all its values (clears it if it was active).
+
 ### `exa config export`
 
 One-file YAML snapshot of ALL ExaMLOps configuration (generated, secrets redacted).
@@ -564,9 +570,17 @@ Set a single config key in ~/.config/examlops/config.toml.
 
 Print the current resolved config (env vars + TOML file).
 
+### `exa config unset`
+
+Remove a config value so the next source applies (context → base → default).
+
+- `--context, -c` — Remove it from a named context instead of the base config
+
 ### `exa config use`
 
-Switch the active context (environment).
+Switch the active context (environment), or return to the base config with --clear.
+
+- `--clear` — Leave any context and use the base configuration
 
 ## `exa connection`
 
@@ -2206,6 +2220,10 @@ Plan/execute production deploys, or inspect deploy history/status.
 - `--model` — Filter deploy history by model ID.
 - `--operation` — Filter deploy history by operation.
 
+### `exa production reload`
+
+Hot-reload the control plane's model registry and re-run its startup checks (no restart).
+
 ### `exa production verify`
 
 Verify production service health without changing state.
@@ -2497,6 +2515,10 @@ Trigger a Prefect training run via the Control Plane.
 - `--backend` — Storage backend
 - `--dry-run` — Show what would be scheduled without triggering it
 - `--reason` — Why you are making this change (recorded in the audit trail)
+
+## `exa retrain-status`
+
+Show the state of one retrain run (scheduled, running, completed, failed).
 
 ## `exa scaffold`
 

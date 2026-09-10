@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from settings import settings
 from sqlalchemy.ext.asyncio import AsyncSession
+from upstream import dashboard_status
 
 from routers.config import get_decrypted_secret
 
@@ -133,8 +134,11 @@ async def proxy(
             raise HTTPException(status_code=502, detail=f"Upstream unavailable: {exc}") from exc
 
     resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
+    # The upstream's real status stays visible for debugging; the response status must not say
+    # "your session is invalid" when it was the dashboard's credential that was refused.
+    resp_headers["X-Upstream-Status"] = str(upstream.status_code)
     return Response(
         content=upstream.content,
-        status_code=upstream.status_code,
+        status_code=dashboard_status(upstream.status_code),
         headers=resp_headers,
     )

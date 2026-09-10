@@ -19,3 +19,12 @@ opentelemetry-distro==0.63b1
 opentelemetry-exporter-otlp-proto-grpc==1.42.1
 opentelemetry-instrumentation-fastapi==0.63b1
 opentelemetry-instrumentation-httpx==0.63b1
+# CLI Console (ADR 0119): the dashboard runs the real `exa` from the bind-mounted source
+# (PYTHONPATH=/repo/platform/cli/src). These are the examlops CLI's own runtime dependencies —
+# without them `python -m examlops.cli` dies on import and every console run fails. Pinned to
+# the versions the root workspace venv runs the CLI with.
+typer==0.25.1
+click==8.4.0
+rich==15.0.0
+tomli-w==1.2.0
+prometheus-client==0.25.0

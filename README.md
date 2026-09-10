@@ -237,6 +237,14 @@ Run all CI checks locally: `make ci`
 
 ## Documentation
 
+The documentation site is published at **https://mskazemi.github.io/ExaMLOps/**. Its
+[Explore](docs/explore/index.md) section shows the platform in motion — an interactive
+[system map](docs/explore/index.md), animated tours that
+[follow a prediction](docs/explore/prediction.md), [a retrain](docs/explore/retrain.md),
+[a cluster job](docs/explore/hpc.md) and [the signals](docs/explore/signals.md),
+[who decides](docs/explore/decisions.md) at every gate, [every capability](docs/explore/capabilities.md)
+(all `exa` commands, searchable) and the [roadmap](docs/explore/roadmap.md).
+
 - [Quickstart](docs/guides/quickstart.md)
 - [System Architecture](docs/guides/architecture.md)
 - [Command Reference (full command tree)](docs/reference/cli-generated.md)

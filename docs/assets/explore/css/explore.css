@@ -1,0 +1,641 @@
+/* ExaMLOps "Platform in motion" — transit-map visual language for the docs site.
+ *
+ * Every flow in the platform is a coloured line; services are stations; requests and jobs
+ * are trains. One palette, used identically by the system map, every tour, the capability
+ * atlas and the roadmap, so a colour means the same thing on every page.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap");
+
+:root {
+  --xm-data: #0f8b8d;        /* predictions travelling through serving */
+  --xm-control: #c77d00;     /* retraining and promotion */
+  --xm-human: #b8337a;       /* a person decides */
+  --xm-hpc: #3957d6;         /* compute on a cluster */
+  --xm-observe: #3f8a43;     /* metrics, logs, traces, audit */
+  --xm-planned: #8a94a6;     /* not built yet */
+  --xm-ink: #1e2a3b;
+  --xm-muted: #5d6b7f;
+  --xm-ground: #ffffff;
+  --xm-node: #ffffff;
+  --xm-node-stroke: #c9d1dc;
+  --xm-panel: #f4f6f9;
+  --xm-rule: #dde3ea;
+  --xm-dim: 0.18;
+  --xm-station-font: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
+}
+
+[data-md-color-scheme="slate"] {
+  --xm-data: #2ec4c6;
+  --xm-control: #f0a830;
+  --xm-human: #e8669f;
+  --xm-hpc: #7d95ff;
+  --xm-observe: #72c476;
+  --xm-planned: #7d8799;
+  --xm-ink: #e3e8ef;
+  --xm-muted: #a0acbd;
+  --xm-node: #232838;
+  --xm-node-stroke: #3b4358;
+  --xm-panel: #1b2030;
+  --xm-rule: #333b50;
+  --xm-dim: 0.16;
+}
+
+/* Brand: deep slate header instead of the stock indigo. */
+:root, [data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1e2a3b;
+  --md-primary-fg-color--light: #33455e;
+  --md-primary-fg-color--dark: #121a26;
+  --md-accent-fg-color: #0f8b8d;
+  --md-typeset-a-color: #0b6f71;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1a2233;
+  --md-primary-fg-color--light: #2a3550;
+  --md-primary-fg-color--dark: #10151f;
+  --md-accent-fg-color: #2ec4c6;
+  --md-typeset-a-color: #5fd4d6;
+}
+
+/* ------------------------------------------------------------------ player shell */
+
+.xm-player {
+  margin: 1.2rem 0 2rem;
+  color: var(--xm-ink);
+}
+
+.xm-stage-wrap {
+  position: relative;
+  border: 1px solid var(--xm-rule);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--xm-muted) 22%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--xm-ground);
+  overflow: hidden;
+}
+
+.xm-stage {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.xm-stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 680px;
+}
+
+.xm-hero .xm-stage svg { min-width: 760px; }
+
+/* ------------------------------------------------------------------ svg: lines */
+
+.xm-edge-casing {
+  fill: none;
+  stroke: var(--xm-ground);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.xm-edge-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 0.35s ease, stroke-width 0.35s ease;
+}
+
+.xm-edge.is-planned .xm-edge-line { stroke-dasharray: 2 9; }
+.xm-edge.is-dashed .xm-edge-line { stroke-dasharray: 7 7; }
+
+.xm-edge.is-active .xm-edge-line {
+  stroke-dasharray: 10 8;
+  animation: xm-march 0.9s linear infinite;
+}
+
+@keyframes xm-march { to { stroke-dashoffset: -18; } }
+
+.xm-edge-label {
+  font: 600 12px/1 var(--xm-station-font);
+  fill: var(--xm-muted);
+  paint-order: stroke;
+  stroke: var(--xm-ground);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+  transition: opacity 0.35s ease;
+}
+
+/* ------------------------------------------------------------------ svg: stations */
+
+.xm-node { cursor: pointer; outline: none; transition: opacity 0.35s ease; }
+
+.xm-node-body {
+  fill: var(--xm-node);
+  stroke: var(--xm-node-stroke);
+  stroke-width: 1.5;
+  transition: stroke 0.3s ease, stroke-width 0.3s ease;
+}
+
+.xm-node-bar { transition: opacity 0.3s ease; }
+
+.xm-node-label {
+  font: 700 15px/1.1 var(--xm-station-font);
+  fill: var(--xm-ink);
+  letter-spacing: 0.01em;
+}
+
+.xm-node-sub {
+  font: 500 11.5px/1.2 var(--xm-station-font);
+  fill: var(--xm-muted);
+}
+
+.xm-node.kind-external .xm-node-body { stroke-dasharray: 5 4; fill: transparent; }
+.xm-node.kind-planned .xm-node-body { stroke-dasharray: 3 5; stroke: var(--xm-planned); fill: transparent; }
+.xm-node.kind-planned .xm-node-label { fill: var(--xm-muted); }
+
+.xm-node.kind-person .xm-node-body { stroke-width: 2.5; }
+.xm-node.kind-gate .xm-node-body { stroke-width: 2.5; }
+
+.xm-node:hover .xm-node-body,
+.xm-node:focus-visible .xm-node-body { stroke-width: 3; }
+
+.xm-node:focus-visible .xm-focus-ring { opacity: 1; }
+.xm-focus-ring {
+  fill: none;
+  stroke: var(--md-accent-fg-color);
+  stroke-width: 3;
+  stroke-dasharray: 4 3;
+  opacity: 0;
+}
+
+.xm-node.is-active .xm-node-body { stroke-width: 3.5; }
+.xm-node.is-active .xm-pulse { animation: xm-pulse 1.6s ease-out infinite; }
+
+.xm-pulse { fill: none; stroke-width: 2; opacity: 0; }
+
+@keyframes xm-pulse {
+  0% { opacity: 0.55; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.18); }
+}
+
+/* Dim everything that is not part of the current step. */
+.xm-player.is-focusing .xm-node:not(.is-active),
+.xm-player.is-focusing .xm-edge:not(.is-active) { opacity: var(--xm-dim); }
+.xm-player.is-focusing .xm-edge:not(.is-active) .xm-edge-label { opacity: 0; }
+
+/* Line isolation from the legend. */
+.xm-player [data-line].is-hidden-line { opacity: 0.07 !important; }
+
+/* ------------------------------------------------------------------ trains */
+
+.xm-token circle { stroke: var(--xm-ground); stroke-width: 2.5; }
+.xm-token text {
+  font: 700 11px/1 var(--xm-station-font);
+  fill: var(--xm-ink);
+  paint-order: stroke;
+  stroke: var(--xm-ground);
+  stroke-width: 4px;
+}
+
+/* ------------------------------------------------------------------ legend */
+
+.xm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid var(--xm-rule);
+  background: var(--xm-panel);
+}
+
+.xm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.28rem 0.7rem 0.28rem 0.5rem;
+  border: 1px solid var(--xm-rule);
+  border-radius: 999px;
+  background: var(--xm-ground);
+  color: var(--xm-ink);
+  font: 600 0.72rem/1.2 var(--md-text-font-family, sans-serif);
+  cursor: pointer;
+}
+.xm-chip::before {
+  content: "";
+  width: 18px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--chip);
+}
+.xm-chip[aria-pressed="true"] { border-color: var(--chip); box-shadow: inset 0 0 0 1px var(--chip); }
+.xm-chip.is-planned::before { background: repeating-linear-gradient(90deg, var(--chip) 0 3px, transparent 3px 7px); }
+.xm-chip:focus-visible { outline: 2px solid var(--md-accent-fg-color); outline-offset: 2px; }
+
+/* ------------------------------------------------------------------ controls + narration */
+
+.xm-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-top: 1px solid var(--xm-rule);
+  background: var(--xm-panel);
+}
+
+.xm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  height: 2.2rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--xm-rule);
+  border-radius: 8px;
+  background: var(--xm-ground);
+  color: var(--xm-ink);
+  font: 600 0.72rem/1 var(--md-text-font-family, sans-serif);
+  cursor: pointer;
+}
+.xm-btn:hover { border-color: var(--md-accent-fg-color); }
+.xm-btn:focus-visible { outline: 2px solid var(--md-accent-fg-color); outline-offset: 2px; }
+.xm-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.xm-btn.is-primary { background: var(--md-primary-fg-color); border-color: var(--md-primary-fg-color); color: #fff; }
+
+.xm-progress {
+  flex: 1 1 140px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--xm-rule);
+  overflow: hidden;
+}
+.xm-progress > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--md-accent-fg-color);
+  transition: width 0.3s ease;
+}
+
+.xm-counter { font: 600 0.72rem/1 var(--md-text-font-family, sans-serif); color: var(--xm-muted); min-width: 4.5em; text-align: right; }
+
+.xm-speed {
+  height: 2.2rem;
+  border: 1px solid var(--xm-rule);
+  border-radius: 8px;
+  background: var(--xm-ground);
+  color: var(--xm-ink);
+  font: 600 0.72rem/1 var(--md-text-font-family, sans-serif);
+  padding: 0 0.4rem;
+}
+
+.xm-caption {
+  padding: 0.9rem 1.1rem 1rem;
+  border-top: 1px solid var(--xm-rule);
+  min-height: 5.2rem;
+}
+.xm-caption h4 { margin: 0 0 0.3rem !important; font-size: 0.95rem; }
+.xm-caption p { margin: 0 !important; font-size: 0.78rem; color: var(--xm-muted); max-width: 78ch; }
+.xm-caption .xm-actor {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--actor, var(--xm-muted));
+  vertical-align: 0.1em;
+}
+
+/* The narration list: the readable, searchable, no-JS version of the animation. */
+.xm-steps {
+  counter-reset: xm;
+  list-style: none;
+  margin: 1rem 0 0 !important;
+  padding: 0 !important;
+}
+.xm-steps > li {
+  position: relative;
+  margin: 0 !important;
+  padding: 0.6rem 0.8rem 0.6rem 3rem;
+  border-left: 3px solid transparent;
+  border-radius: 0 8px 8px 0;
+  cursor: pointer;
+  transition: background 0.25s ease, border-color 0.25s ease;
+}
+.xm-steps > li::before {
+  counter-increment: xm;
+  content: counter(xm);
+  position: absolute;
+  left: 0.75rem;
+  top: 0.62rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 50%;
+  border: 2px solid var(--step-color, var(--xm-muted));
+  background: var(--xm-ground);
+  color: var(--xm-ink);
+  font: 700 0.66rem/1.35rem var(--xm-station-font);
+  text-align: center;
+}
+.xm-steps > li:hover { background: var(--xm-panel); }
+.xm-steps > li.is-current {
+  background: var(--xm-panel);
+  border-left-color: var(--step-color, var(--md-accent-fg-color));
+}
+.xm-steps > li.is-current::before { background: var(--step-color, var(--md-accent-fg-color)); color: #fff; }
+.xm-steps > li:focus-visible { outline: 2px solid var(--md-accent-fg-color); outline-offset: -2px; }
+
+/* ------------------------------------------------------------------ station panel */
+
+.xm-panel-card {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: min(340px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--xm-rule);
+  border-top: 5px solid var(--panel-color, var(--md-accent-fg-color));
+  border-radius: 10px;
+  background: var(--xm-ground);
+  box-shadow: 0 12px 32px rgba(20, 30, 50, 0.18);
+  color: var(--xm-ink);
+  font-size: 0.74rem;
+  z-index: 3;
+}
+.xm-panel-card[hidden] { display: none; }
+.xm-panel-card h4 { margin: 0 1.6rem 0.15rem 0 !important; font-size: 0.92rem; }
+.xm-panel-card .xm-panel-sub { margin: 0 0 0.6rem !important; color: var(--xm-muted); }
+.xm-panel-card ul { margin: 0.2rem 0 0.6rem 1rem !important; padding: 0 !important; }
+.xm-panel-card li { margin: 0.15rem 0 !important; }
+.xm-panel-card .xm-panel-close {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--xm-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.xm-panel-card .xm-panel-close:focus-visible { outline: 2px solid var(--md-accent-fg-color); }
+.xm-panel-card .xm-panel-meta { color: var(--xm-muted); font-size: 0.68rem; margin-top: 0.4rem; }
+
+@media (max-width: 720px) {
+  .xm-panel-card { position: static; width: auto; max-height: none; margin: 0.6rem; box-shadow: none; }
+}
+
+/* ------------------------------------------------------------------ home hero */
+
+.md-typeset .xm-hero { margin-top: 0.4rem; }
+.md-typeset .xm-hero h1 {
+  font-weight: 700;
+  font-size: clamp(1.9rem, 1.2rem + 2.2vw, 3rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  max-width: 20ch;
+  margin: 0.2rem 0 0.8rem;
+  color: var(--xm-ink);
+}
+.md-typeset .xm-lede {
+  font-size: 0.95rem;
+  line-height: 1.55;
+  max-width: 62ch;
+  color: var(--xm-muted);
+  margin: 0 0 1.1rem;
+}
+.xm-cta { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0 0 1.4rem; }
+.md-typeset .xm-cta .md-button { margin: 0; }
+
+/* Five lines, described once. */
+.xm-lines {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0;
+  margin: 1.6rem 0 2rem;
+  border-top: 1px solid var(--xm-rule);
+}
+.xm-line-item {
+  padding: 0.9rem 1rem 1rem 0;
+  border-bottom: 1px solid var(--xm-rule);
+}
+.xm-line-item .xm-line-swatch {
+  display: block;
+  width: 44px;
+  height: 7px;
+  border-radius: 4px;
+  margin-bottom: 0.6rem;
+  background: var(--sw);
+}
+.xm-line-item.is-planned .xm-line-swatch { background: repeating-linear-gradient(90deg, var(--sw) 0 5px, transparent 5px 10px); }
+.md-typeset .xm-line-item h3 { margin: 0 0 0.25rem; font-size: 0.86rem; }
+.md-typeset .xm-line-item p { margin: 0 0 0.35rem; font-size: 0.74rem; color: var(--xm-muted); }
+
+/* ------------------------------------------------------------------ atlas */
+
+.xm-atlas-bar {
+  display: flex;
+  height: 54px;
+  margin: 0.8rem 0 0.4rem;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--xm-rule);
+}
+.xm-atlas-bar button {
+  position: relative;
+  flex-grow: var(--n);
+  flex-basis: 0;
+  min-width: 18px;
+  border: 0;
+  border-right: 2px solid var(--xm-ground);
+  background: var(--seg);
+  color: #fff;
+  font: 700 0.72rem/1 var(--xm-station-font);
+  cursor: pointer;
+  transform-origin: left;
+  animation: xm-grow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i) * 60ms);
+}
+.xm-atlas-bar button[aria-pressed="true"] { box-shadow: inset 0 -5px 0 rgba(255, 255, 255, 0.85); }
+.xm-atlas-bar button:focus-visible { outline: 3px solid var(--md-accent-fg-color); outline-offset: -3px; }
+@keyframes xm-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.xm-atlas-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 0.9rem 0;
+}
+.xm-atlas-tools input[type="search"] {
+  flex: 1 1 260px;
+  height: 2.4rem;
+  padding: 0 0.8rem;
+  border: 1px solid var(--xm-rule);
+  border-radius: 8px;
+  background: var(--xm-ground);
+  color: var(--xm-ink);
+  font: 500 0.8rem/1 var(--md-text-font-family, sans-serif);
+}
+.xm-atlas-tools input[type="search"]:focus { outline: 2px solid var(--md-accent-fg-color); outline-offset: 1px; }
+.xm-atlas-count { font-size: 0.74rem; color: var(--xm-muted); }
+
+.xm-atlas-panel { margin: 1.4rem 0 0.4rem; }
+.md-typeset .xm-atlas-panel h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 0.2rem;
+  padding-left: 0.7rem;
+  border-left: 5px solid var(--seg);
+  font-size: 0.95rem;
+}
+.xm-atlas-panel h3 small { font-weight: 500; color: var(--xm-muted); }
+.md-typeset .xm-atlas-panel > p { margin: 0 0 0.6rem 1.05rem; font-size: 0.74rem; color: var(--xm-muted); }
+
+.xm-cmd-list { list-style: none !important; margin: 0 !important; padding: 0 !important; }
+.xm-cmd-list li {
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) 1fr auto;
+  gap: 0.8rem;
+  align-items: baseline;
+  margin: 0 !important;
+  padding: 0.42rem 0.2rem 0.42rem 1.05rem;
+  border-bottom: 1px solid var(--xm-rule);
+  font-size: 0.72rem;
+}
+.xm-cmd-list code { font-size: 0.7rem !important; white-space: nowrap; }
+.xm-cmd-list .xm-cmd-help { color: var(--xm-muted); }
+.xm-cmd-list .xm-cmd-links { white-space: nowrap; }
+.xm-cmd-list .xm-cmd-links a + a { margin-left: 0.6rem; }
+@media (max-width: 760px) {
+  .xm-cmd-list li { grid-template-columns: 1fr; gap: 0.2rem; }
+}
+.xm-atlas-empty { padding: 1.2rem; border: 1px dashed var(--xm-rule); border-radius: 8px; color: var(--xm-muted); }
+
+/* ------------------------------------------------------------------ roadmap */
+
+.xm-road-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0 1rem; }
+
+.xm-road {
+  position: relative;
+  margin: 0.4rem 0 2rem;
+  padding-left: 2.2rem;
+}
+.xm-road::before {
+  content: "";
+  position: absolute;
+  left: 0.8rem;
+  top: 0.4rem;
+  bottom: 0.4rem;
+  width: 6px;
+  border-radius: 3px;
+  background: linear-gradient(var(--xm-control), var(--xm-control)) top / 100% var(--done, 0%) no-repeat,
+              repeating-linear-gradient(var(--xm-planned) 0 6px, transparent 6px 12px);
+  transition: background-size 1.4s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.xm-era { margin: 0 0 1.4rem; }
+.md-typeset .xm-era h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+.xm-stop {
+  position: relative;
+  margin: 0 0 0.55rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--xm-rule);
+  border-radius: 8px;
+  background: var(--xm-ground);
+  font-size: 0.74rem;
+}
+.xm-stop::before {
+  content: "";
+  position: absolute;
+  left: -1.72rem;
+  top: 0.72rem;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 3px solid var(--area, var(--xm-control));
+  background: var(--xm-ground);
+}
+.xm-stop.is-planned { border-style: dashed; }
+.xm-stop.is-planned::before { border-style: dashed; border-color: var(--xm-planned); }
+.xm-stop.is-partial::before { background: linear-gradient(90deg, var(--area) 50%, var(--xm-ground) 50%); }
+.xm-stop strong { font-size: 0.78rem; }
+.xm-stop .xm-stop-meta { color: var(--xm-muted); font-size: 0.66rem; margin-left: 0.4rem; }
+.xm-stop p { margin: 0.15rem 0 0 !important; color: var(--xm-muted); }
+.xm-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.02rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--area, var(--xm-muted));
+  vertical-align: 0.1em;
+}
+.xm-tag.is-status { background: transparent; color: var(--xm-muted); border: 1px solid var(--xm-rule); }
+
+/* ------------------------------------------------------------------ reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .xm-edge.is-active .xm-edge-line,
+  .xm-node.is-active .xm-pulse,
+  .xm-atlas-bar button { animation: none !important; }
+  .xm-road::before { transition: none; }
+}
+
+@media print {
+  .xm-controls, .xm-legend, .xm-panel-card { display: none !important; }
+  .xm-player.is-focusing .xm-node, .xm-player.is-focusing .xm-edge { opacity: 1 !important; }
+}
+
+/* "Today" on the roadmap route: where the solid line ends and the dotted track begins. */
+.xm-today { position: relative; margin-top: 0.2rem; }
+.xm-today::before {
+  content: "";
+  position: absolute;
+  left: -2.02rem;
+  top: 0.18rem;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--md-accent-fg-color);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--md-accent-fg-color) 25%, transparent);
+}
+.md-typeset .xm-today h3 { color: var(--md-accent-fg-color); }
+
+/* Home: the hero map sits right under the call to action, with no extra frame margin. */
+.md-typeset .xm-hero-map { margin: 0.4rem 0 1.4rem; }
+.md-typeset .xm-hero > h1 { margin-top: 0.4rem; }
+
+/* Screen-reader-only text. */
+.xm-sr { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.xm-atlas-legend { border: 0; background: transparent; padding: 0.5rem 0 0; }
+
+/* Headings across the whole site: the same ink and weight as the home page, balanced wraps. */
+.md-typeset h1 { font-weight: 700; color: var(--xm-ink); letter-spacing: -0.015em; text-wrap: balance; }
+.md-typeset h2 { font-weight: 700; letter-spacing: -0.01em; }
+.md-typeset .xm-hero h1 { text-wrap: balance; max-width: 22ch; }
+
+/* Material sets --md-default-bg-color on the element carrying data-md-color-scheme (body), not
+   on :root, so a :root reference would resolve to the fallback and stay white in dark mode. */
+[data-md-color-scheme] { --xm-ground: var(--md-default-bg-color); }
+
+/* Buttons keep their contrast in dark mode (the stock ones take the dark primary colour). */
+[data-md-color-scheme="slate"] .md-typeset .md-button { color: var(--md-accent-fg-color); border-color: currentColor; }
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary { background: var(--md-accent-fg-color); border-color: var(--md-accent-fg-color); color: #08262a; }
+
+/* Narrow screens: maps scroll sideways, so say so; the area bar drops its labels (the chips
+   below it carry the names). */
+.xm-swipe { display: none; }
+@media (max-width: 760px) {
+  .xm-swipe { display: block; padding: 0.35rem 0.75rem; font-size: 0.66rem; color: var(--xm-muted); border-top: 1px solid var(--xm-rule); }
+  .xm-atlas-bar button { font-size: 0 !important; }
+}

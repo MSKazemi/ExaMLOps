@@ -63,11 +63,25 @@ services:
         mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
         mc mb --ignore-existing local/mlflow-artifacts &&
         mc mb --ignore-existing local/$${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects} &&
-        echo '[minio-init] buckets mlflow-artifacts + project storage ready.'
+        echo '[minio-init] buckets mlflow-artifacts + project storage ready.' &&
+        if [ -n "$${MINIO_SERVING_ACCESS_KEY}" ] && [ -n "$${MINIO_SERVING_SECRET_KEY}" ]; then
+          printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::mlflow-artifacts","arn:aws:s3:::mlflow-artifacts/*"]}]}' > /tmp/serving-readonly.json &&
+          mc admin policy create local serving-readonly /tmp/serving-readonly.json &&
+          mc admin user add local "$${MINIO_SERVING_ACCESS_KEY}" "$${MINIO_SERVING_SECRET_KEY}" &&
+          { mc admin policy attach local serving-readonly --user "$${MINIO_SERVING_ACCESS_KEY}" 2>/dev/null || true; } &&
+          echo '[minio-init] read-only serving credential ready.';
+        else
+          echo '[minio-init] MINIO_SERVING_ACCESS_KEY unset: ray-serving falls back to the root credential.';
+        fi
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
+      # Optional least-privilege credential for Ray Serve (plan P0.6 / finding S4): read-only on
+      # mlflow-artifacts. Serving only ever downloads models; with the root credential, anyone able
+      # to make it load a file could also rewrite every artifact in the store.
+      MINIO_SERVING_ACCESS_KEY: ${MINIO_SERVING_ACCESS_KEY:-}
+      MINIO_SERVING_SECRET_KEY: ${MINIO_SERVING_SECRET_KEY:-}
     restart: "no"
 
   mlflow:
@@ -85,8 +99,8 @@ services:
       --artifacts-destination s3://mlflow-artifacts/
       --host 0.0.0.0
       --port 5000
-      --allowed-hosts "*"
-      --cors-allowed-origins "*"
+      --allowed-hosts "${MLFLOW_ALLOWED_HOSTS:-mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*,${PUBLIC_HOST:-localhost},${PUBLIC_HOST:-localhost}:*}"
+      --cors-allowed-origins "${MLFLOW_CORS_ALLOWED_ORIGINS:-http://localhost:18099,http://127.0.0.1:18099,http://${PUBLIC_HOST:-localhost}:18099}"
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
@@ -147,8 +161,10 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # The read-only serving credential minio-init provisions (plan P0.6); the root credential
+      # only when it is not configured.
+      AWS_ACCESS_KEY_ID: ${MINIO_SERVING_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SERVING_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       MODEL_STAGE: Production
       RAY_NUM_REPLICAS: "1"
       RAY_SERVE_PORT: "8001"
@@ -159,6 +175,22 @@ services:
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: ray-serving
+      # The same shared platform state as the CLI, dashboard, bridge and control plane (plan P0.4 /
+      # finding B4). Without these the router and the shadow reader opened a container-local
+      # /app/platform.db that no writer ever touched, so `exa serve traffic` / `exa serve shadow`
+      # and the dashboard's traffic page configured nothing the replicas could see.
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+      # Bearer for /reload and /infer-pipeline/traffic-rules (plan P0.6). Unset closes those
+      # admin routes; inference is unaffected and alias moves still reload on the 60 s poll.
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}
+      # Verify-before-load: off | warn | enforce. `enforce` needs every served version signed
+      # (`exa models sign`) and the same EXAMLOPS_SIGNING_KEY the signer used.
+      EXAMLOPS_SERVING_VERIFY: ${EXAMLOPS_SERVING_VERIFY:-off}
+      EXAMLOPS_SIGNING_KEY: ${EXAMLOPS_SIGNING_KEY:-}
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
     env_file:
       - path: .env
         required: true
@@ -166,7 +198,10 @@ services:
         required: false
     ports:
       - "18001:8001"   # Ray Serve HTTP
-      - "18265:8265"   # Ray dashboard
+      # Loopback only (plan P0.6 / finding S2): the Ray dashboard's Jobs API runs arbitrary code
+      # and has no authentication. Reach it through an SSH tunnel; the dashboard's proxy uses the
+      # in-network address and is unaffected.
+      - "127.0.0.1:18265:8265"   # Ray dashboard
       - "18080:8080"   # Prometheus metrics (Ray)
     shm_size: '2gb'
     mem_limit: ${RAY_MEM_LIMIT:-6g}
@@ -205,7 +240,7 @@ services:
       # Allowed-hosts scoping (item 0.8): "*"=dev; set a comma-separated allow-list in prod.
       CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-*}
       PREFECT_API_URL: http://orchestrator:4200/api
-      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-examlops_scheduled_training/nightly}
+      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-training_flow/examlops-dispatch}
       MODELZOO_WEBHOOK_SECRET: ${MODELZOO_WEBHOOK_SECRET:-}
       MODELZOO_AUTO_RETRAIN: ${MODELZOO_AUTO_RETRAIN:-false}
       MODELZOO_POLL_SECONDS: ${MODELZOO_POLL_SECONDS:-300}
@@ -278,6 +313,7 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       CONTROL_PLANE_URL: http://control-plane:8002
       CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}  # reload / traffic push (plan P0.6)
       DASHBOARD_URL: http://dashboard:8099
       DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-}
       # ONE shared platform DB across the stack (X1): /data/platform.db was a private volume
@@ -498,6 +534,9 @@ services:
       DASHBOARD_SECRET_KEY:      ${DASHBOARD_SECRET_KEY:?must be set in .env}
       DASHBOARD_PORT: "8099"
       CONTROL_PLANE_URL: http://control-plane:8002
+      # Bearer for the control plane's read routes (/models*, bundled images) when the Config
+      # page's encrypted `control_plane_token` secret is unset (plan P0.3). Never sent to browsers.
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
       AGENT_URL: http://agent:18004
       DASHBOARD_AGENT_API_KEY: ${DASHBOARD_AGENT_API_KEY:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
@@ -553,6 +592,11 @@ services:
       # dir on PYTHONPATH makes it importable. Without this, those write paths degrade to 503
       # ("… requires the examlops package (not available in this deployment)").
       PYTHONPATH: /repo/platform/cli/src
+      # CLI Console / Resources / Config (ADR 0119): the `config.toml` the dashboard's own `exa`
+      # runs use, and the workspace path arguments are contained in. On a named volume so config
+      # edits and uploaded/produced files survive a rebuild — and never land in the repo.
+      EXAMLOPS_CONFIG: /var/lib/examlops-dashboard/config.toml
+      EXAMLOPS_DASHBOARD_CLI_WORKSPACE: /var/lib/examlops-dashboard/cli-workspace
     ports:
       - "18099:8099"
     depends_on:
@@ -571,6 +615,7 @@ services:
       # container share one platform.db; K8s (Phase 1.1) replaces it with a least-priv PVC.
       - ${EXAMLOPS_HOST_REPO:-../../..}:/repo:rw
       - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+      - dashboard_cli_data:/var/lib/examlops-dashboard
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]
       interval: 10s
@@ -701,7 +746,12 @@ services:
       EXAMLOPS_BACKUP_S3_URI: ${EXAMLOPS_BACKUP_S3_URI:-}
       EXAMLOPS_ACTOR: backup-sidecar
       PLATFORM_DB: /state/platform.db
-      CONTROL_PLANE_DB: /data/approvals.db
+      # Follow the control plane: its state lives in the shared store (CONTROL_PLANE_DB, else
+      # PLATFORM_DB), or in Postgres when that engine is selected (plan P0.9 / finding B6). The
+      # old hard-coded /data/approvals.db is a file the control plane stopped writing.
+      CONTROL_PLANE_DB: ${CONTROL_PLANE_DB:-/state/platform.db}
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       # Postgres tier (mlflow + prefect metadata) — reaches the postgres service over the network.
       PGHOST: postgres
       POSTGRES_USER: ${POSTGRES_USER:-mlops}
@@ -793,6 +843,7 @@ volumes:
   control_plane_data:
   agent_data:
   backups_data:
+  dashboard_cli_data:
 
 networks:
   seanerbus-net:

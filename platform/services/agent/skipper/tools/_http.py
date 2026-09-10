@@ -17,13 +17,41 @@ def _format_error(service: str, url: str, exc: Exception) -> str:
     return f"Error: cannot reach {service} at {url} — {exc}"
 
 
+def _with_control_plane_auth(service: str, url: str, kwargs: dict) -> dict:
+    """Attach the control-plane bearer credential to a call that targets the control plane.
+
+    Every control-plane route except the probes requires a ``read`` (or ``write``) scoped bearer.
+    The registry, approvals and ModelZoo tools called it with none and got 401 once ``/models*``
+    was hardened (plan P0.3 / finding B3). The credential is attached only when the URL really is
+    the configured control plane, so a mislabelled call can never carry it to another host, and a
+    caller that set its own ``Authorization`` keeps it.
+    """
+    if service != "control_plane" or not config.CONTROL_PLANE_TOKEN:
+        return kwargs
+    base = config.CONTROL_PLANE_URL.rstrip("/")
+    if not (url == base or url.startswith(base + "/")):
+        return kwargs
+    headers = dict(kwargs.get("headers") or {})
+    if not any(k.lower() == "authorization" for k in headers):
+        headers["Authorization"] = f"Bearer {config.CONTROL_PLANE_TOKEN}"
+    return {**kwargs, "headers": headers}
+
+
+def serving_admin_headers() -> dict[str, str]:
+    """Headers for Ray Serve's admin routes (reload, traffic-rule push); empty when unset."""
+    token = config.RAY_SERVE_ADMIN_TOKEN
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def request_json(service: str, method: str, url: str, *, retries: int = 2, **kwargs):
     """Return (data, None) on success or (None, error_string) on failure.
 
     Retries up to `retries` times on transient network errors (RequestError)
     with exponential back-off. HTTP errors (4xx/5xx) are returned immediately
     without retrying since they represent a definitive server response.
+    Calls to the control plane carry its bearer credential (``_with_control_plane_auth``).
     """
+    kwargs = _with_control_plane_auth(service, url, kwargs)
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:

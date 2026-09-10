@@ -80,3 +80,67 @@ def test_caller_thread_text_cannot_escape_owner_namespace(monkeypatch):
     assert stored.startswith(auth.owner_prefix(identity))
     assert auth.unscoped_thread_id(identity, stored) == forged
     assert auth.unscoped_thread_id(auth.AgentIdentity("bob", "tenant-a"), stored) is None
+
+
+# ─── a network-exposed agent with no credential fails closed (plan P0.7 / finding S5) ────────
+
+from skipper import auth, config  # noqa: E402
+#
+# Compose binds the agent to 0.0.0.0 inside the stack network, where every container — user
+# notebooks included — can reach it, and the agent holds a write-capable control-plane token.
+# With AGENT_API_KEY unset it answered all of them as the anonymous `local` principal.
+
+
+def _no_credentials(monkeypatch, host: str | None, opt_out: str | None = None) -> None:
+    monkeypatch.setattr(config, "AGENT_API_KEY", "")
+    monkeypatch.setattr(config, "AGENT_API_KEYS_JSON", "")
+    if host is None:
+        monkeypatch.delenv("AGENT_SERVER_HOST", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_SERVER_HOST", host)
+    if opt_out is None:
+        monkeypatch.delenv("AGENT_ALLOW_UNAUTHENTICATED", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_ALLOW_UNAUTHENTICATED", opt_out)
+
+
+def test_exposed_agent_without_credentials_refuses_everyone(monkeypatch):
+    _no_credentials(monkeypatch, "0.0.0.0")
+
+    assert auth.auth_misconfigured()
+    assert auth.auth_required()
+    assert auth.authenticate_bearer(None) is None
+    assert auth.authenticate_bearer("Bearer anything") is None
+
+
+def test_loopback_agent_keeps_the_local_development_identity(monkeypatch):
+    for host in (None, "127.0.0.1", "localhost", "::1"):
+        _no_credentials(monkeypatch, host)
+        assert not auth.auth_misconfigured()
+        assert auth.authenticate_bearer(None) == auth.local_identity()
+
+
+def test_explicit_opt_out_is_the_only_way_to_expose_an_unkeyed_agent(monkeypatch):
+    _no_credentials(monkeypatch, "0.0.0.0", opt_out="true")
+    assert not auth.auth_misconfigured()
+    assert auth.authenticate_bearer(None) == auth.local_identity()
+
+
+def test_a_configured_key_behaves_as_before_on_any_bind(monkeypatch):
+    monkeypatch.setattr(config, "AGENT_API_KEY", "agent-key")
+    monkeypatch.setattr(config, "AGENT_API_KEYS_JSON", "")
+    monkeypatch.setenv("AGENT_SERVER_HOST", "0.0.0.0")
+    assert not auth.auth_misconfigured()
+    assert auth.authenticate_bearer("Bearer agent-key") is not None
+    assert auth.authenticate_bearer(None) is None
+
+
+def test_exposed_unkeyed_agent_answers_503_with_the_fix(monkeypatch):
+    from fastapi.testclient import TestClient
+    from skipper import server
+
+    _no_credentials(monkeypatch, "0.0.0.0")
+    response = TestClient(server.app).get("/api/threads")
+
+    assert response.status_code == 503
+    assert "AGENT_API_KEY" in response.json()["detail"]

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -44,9 +45,42 @@ def _credentials() -> dict[str, str]:
     return credentials
 
 
-def auth_required() -> bool:
-    # A malformed explicit credential map must fail closed, not turn authentication off.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def credentials_configured() -> bool:
     return bool(config.AGENT_API_KEY or config.AGENT_API_KEYS_JSON)
+
+
+def unauthenticated_permitted() -> bool:
+    """Whether the anonymous ``local`` identity may be used at all.
+
+    Only for an agent bound to loopback, or with an explicit development opt-out. The compose
+    service binds 0.0.0.0 inside the stack network, where every container — JupyterHub notebooks
+    included — can reach it, and the agent holds a write-capable control-plane credential. An unset
+    ``AGENT_API_KEY`` there used to mean "everyone is `local`" (plan P0.7 / finding S5).
+    """
+    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1").strip().lower()
+    opted_out = os.getenv("AGENT_ALLOW_UNAUTHENTICATED", "").strip().lower() in _TRUTHY
+    return host in _LOOPBACK or opted_out
+
+
+def auth_required() -> bool:
+    # A malformed explicit credential map must fail closed, not turn authentication off; so must a
+    # network-exposed agent with no credential at all.
+    return credentials_configured() or not unauthenticated_permitted()
+
+
+def auth_misconfigured() -> bool:
+    """Exposed beyond loopback with no credential: every request is refused until one is set."""
+    return not credentials_configured() and not unauthenticated_permitted()
+
+
+MISCONFIGURED_DETAIL = (
+    "Agent authentication is not configured: set AGENT_API_KEY or AGENT_API_KEYS_JSON "
+    "(or bind AGENT_SERVER_HOST=127.0.0.1)"
+)
 
 
 def local_identity() -> AgentIdentity:

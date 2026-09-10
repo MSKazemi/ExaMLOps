@@ -654,7 +654,7 @@ def test_idempotency_header_returns_cached_response(cp, monkeypatch):
     }
     cached_payload = {
         "flow_run_id": "cached-run-id",
-        "deployment": "examlops_scheduled_training/nightly",
+        "deployment": "training_flow/examlops-dispatch",
         "status_url": "/retrain/cached-run-id",
         "parameters": parameters,
     }

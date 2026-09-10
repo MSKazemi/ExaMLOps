@@ -40,6 +40,9 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
     ("agent_token", "agent_token", "AGENT_API_KEY", "", True),
+    # Bearer for Ray Serve's admin routes (`exa serve reload`, the traffic-rule push). Unset on the
+    # server closes those routes; see serving/admin_auth.py (plan P0.6).
+    ("ray_serve_admin_token", "ray_serve_admin_token", "RAY_SERVE_ADMIN_TOKEN", "", True),
 ]
 
 _URL_KEYS = {
@@ -55,6 +58,85 @@ _URL_KEYS = {
 # Kept for backward compatibility with callers importing _DEFAULTS.
 _DEFAULTS = {toml_key: default for _, toml_key, _, default, _ in _FIELDS}
 
+# Every key the resolver actually reads, and the field names `exa config show`/`exa env` print
+# (`mlflow_url` → `mlflow`). Writing any other key used to succeed and change nothing.
+_TOML_KEYS = frozenset(toml_key for _, toml_key, _, _, _ in _FIELDS)
+_ALIASES = {field: toml_key for field, toml_key, _, _, _ in _FIELDS}
+
+
+class UnknownConfigKey(ValueError):
+    """A config key nothing reads — refused rather than silently written."""
+
+
+class InvalidConfigValue(ValueError):
+    """A value the key cannot use (a URL key given something that is not an http(s) URL)."""
+
+
+def check_value(toml_key: str, value: object) -> None:
+    """Refuse a value the resolver's consumers cannot use — at write time, not at first request."""
+    if toml_key in _URL_KEYS:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(str(value))
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise InvalidConfigValue(
+                f"{toml_key} must be an http(s) URL with a host, e.g. http://host:port — got {value!r}"
+            )
+
+
+def file_findings() -> list[tuple[str, str]]:
+    """``(where, message)`` for anything in the config file that nothing will read.
+
+    Keys written before keys were validated (or by hand) stay in the file doing nothing, and an
+    ``active_context`` naming a context that no longer exists silently means "base config".
+    """
+    raw = _read_raw()
+    found: list[tuple[str, str]] = []
+
+    def scan(section: dict, where: str) -> None:
+        for table in ("urls", "auth"):
+            for key in section.get(table, {}) or {}:
+                try:
+                    canonical_key(key)
+                except UnknownConfigKey as exc:
+                    hint = str(exc).split(" Valid keys:")[0]
+                    found.append((f"{where}.{table}.{key}", f"{hint} (in {where} [{table}])"))
+
+    scan(raw, "base")
+    for name, section in (raw.get("contexts") or {}).items():
+        scan(section or {}, f"context {name}")
+    active = raw.get("active_context")
+    if active and active not in (raw.get("contexts") or {}):
+        found.append(
+            (
+                "active_context",
+                f"active context {active!r} does not exist — commands use the base config; "
+                "run `exa config use --clear` or create it",
+            )
+        )
+    return found
+
+
+def canonical_key(key: str) -> str:
+    """The TOML key for ``key`` (a TOML key or a field name); raise :class:`UnknownConfigKey`."""
+    k = key.strip().lower().replace("-", "_")
+    if k in _TOML_KEYS:
+        return k
+    if k in _ALIASES:
+        return _ALIASES[k]
+    import difflib
+
+    # A fragment of a real key ("token", "control") means every key it is part of; a typo
+    # ("mlfow") means the nearest spellings. Fragments first — they are the likelier intent.
+    fragment = sorted(t for t in _TOML_KEYS if t.endswith(f"_{k}") or t.startswith(f"{k}_"))
+    fuzzy = difflib.get_close_matches(k, sorted(_TOML_KEYS | set(_ALIASES)), n=3, cutoff=0.5)
+    close = list(dict.fromkeys([*fragment, *fuzzy]))[:4]
+    hint = f" Did you mean: {', '.join(close)}?" if close else ""
+    raise UnknownConfigKey(
+        f"unknown config key {key!r} — nothing reads it.{hint} "
+        f"Valid keys: {', '.join(sorted(_TOML_KEYS))}."
+    )
+
 
 @dataclass
 class Config:
@@ -68,6 +150,7 @@ class Config:
     control_plane_token: str = ""
     dashboard_token: str = ""
     agent_token: str = ""
+    ray_serve_admin_token: str = ""
 
 
 def _read_raw() -> dict:
@@ -182,6 +265,10 @@ def write_config(updates: dict, context: str | None = None) -> None:
     When ``context`` is given, updates are written into ``[contexts.<name>.urls|auth]``;
     otherwise into the legacy top-level ``[urls]``/``[auth]`` sections.
     """
+    # Validate every key and value before touching the file, so a bad one writes nothing at all.
+    updates = {canonical_key(k): v for k, v in updates.items()}
+    for k, v in updates.items():
+        check_value(k, v)
     existing = _read_raw()
 
     if context:
@@ -200,6 +287,42 @@ def write_config(updates: dict, context: str | None = None) -> None:
     target["urls"] = urls
     target["auth"] = auth
     _write_raw(existing)
+
+
+def unset_config(key: str, context: str | None = None) -> bool:
+    """Remove ``key`` from the base config or from ``context``; the value falls back to the next
+    source (the base config, then the default). Returns whether anything was removed."""
+    k = canonical_key(key)
+    existing = _read_raw()
+    target = existing.get("contexts", {}).get(context, {}) if context else existing
+    section = target.get("urls" if k in _URL_KEYS else "auth", {})
+    if k not in section:
+        return False
+    del section[k]
+    _write_raw(existing)
+    return True
+
+
+def delete_context(name: str) -> bool:
+    """Remove a context (and the active pointer, when it pointed there). False if absent."""
+    existing = _read_raw()
+    contexts = existing.get("contexts", {})
+    if name not in contexts:
+        return False
+    del contexts[name]
+    if not contexts:
+        existing.pop("contexts", None)
+    if existing.get("active_context") == name:
+        existing.pop("active_context", None)
+    _write_raw(existing)
+    return True
+
+
+def clear_active_context() -> None:
+    """Return to the base configuration (no context overlay)."""
+    existing = _read_raw()
+    if existing.pop("active_context", None) is not None:
+        _write_raw(existing)
 
 
 def _write_raw(data: dict) -> None:

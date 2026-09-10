@@ -5,6 +5,159 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — docs site: "Explore", the platform in motion
+
+- A new **Explore** tab and home page on the documentation site draw ExaMLOps as a transit map:
+  five coloured lines (data, control, decision, compute, signal) run through shared stations,
+  and animated tours follow a prediction, a retrain, a cluster job and the telemetry/evidence
+  path hop by hop, plus a "Who decides" tour of every human gate and a roadmap drawn as track
+  under construction. Every step is plain HTML narration in the page (searchable, printable,
+  readable without JavaScript); the dependency-free engine (`docs/assets/explore/js/xm-flow.js`)
+  animates it, respects reduced motion, pauses off-screen and survives instant navigation.
+- The facts in every tour were traced to the code, not to earlier docs — for example, promotion
+  in the training flow is autonomous by lifecycle rules, the approval queue gates CI model
+  changes rather than drift-triggered retrains, and direct HTTP inference writes no drift
+  snapshots.
+- **Every capability** lists all `exa` commands by the twelve lifecycle panels of `exa --help`,
+  searchable, each linked to its command-guide section. It is generated from the live CLI tree by
+  `platform/ci/gen_capability_atlas.py`; the roadmap list is rendered from
+  `docs/assets/explore/data/roadmap.json` by `platform/ci/gen_roadmap_page.py`. Both are guarded by
+  `tests/unit/test_docs_capability_atlas.py`, and `make docs-explore` regenerates them.
+
+### Fixed — audit hash chain forked under concurrent dashboard writes
+
+- `examlops.data.audit._lock_chain_head` now takes an IMMEDIATE lock on an **idle** SQLite
+  connection. Twenty-four dashboard mutation routes (events, prompts, scaling, SLOs, workbenches,
+  projects, connections, providers, …) committed their change through an `examlops.*` helper and
+  then audited on a *fresh* connection; head-read and append ran unlocked, and two concurrent
+  requests chained off the same parent — a fork `exa audit verify` reports as tampering. The
+  `conn=` contract ("caller must already hold the write lock") is now enforced by the chain itself;
+  a caller mid-transaction keeps its atomicity. Regression: `test_audit_chain_concurrency.py`
+  (8×6 barrier-synced writers on idle connections; red without the fix).
+
+### Fixed — `make typecheck` was red at HEAD
+
+- `dashboard/backend/facility.py` declared `_shared_set_state` and then re-bound it with
+  `import … as` (mypy `no-redef`). `make gate` did not catch it: its typecheck step runs only the
+  ratcheted `typecheck-cli`, while `make typecheck` (what CI runs) also covers `platform/services/`.
+
+### Fixed — a refused dashboard service credential signed the user out
+
+- An upstream 401/403/407 (control plane, MLflow/Grafana via the proxy, Ray Serve predict) is now
+  a **502** naming the refused credential instead of being forwarded. Forwarded, it told the SPA the
+  *browser session* was invalid, so `apiFetch` cleared the login and reloaded — with a mis-set
+  `CONTROL_PLANE_TOKEN` an admin was signed out on every page (the approvals badge polls
+  everywhere). The proxy keeps the real status in `X-Upstream-Status`. New `backend/upstream.py`.
+
+### Fixed — `exa --json` now always prints exactly one JSON value
+
+- A hermetic sweep of all 103 read commands (dead service URLs, no Docker) found 13 breaking the
+  contract every script, the MCP server and the dashboard rely on: 5 printed **nothing** when
+  empty (their only line was a suppressed `info()`), 3 printed **two** documents (`ok()` then the
+  record: `governance validate`, `serve check`, `serve infer-check`), and 5 let an external tool
+  write raw text to stdout (`pipeline list/validate`, `stack status/logs/monitoring-status`).
+- Fixed centrally, so every command — reads *and* writes, current and future — inherits it: in a
+  structured mode `print_json` buffers and the command emits exactly one document on close
+  (`_output.merge_documents` folds `ok()` + record + result into one object; an error drops the
+  earlier `ok: true`), and a command that printed nothing emits `{"ok": true, "message": <its
+  info line>}` (`_output.install_structured_guard`). `exa --json retrain` used to print three;
+  `warning()` goes to stderr (as it already did in table mode); external tools run through
+  `_output.run_external`, which captures them into one document (`docker compose ps` is parsed
+  from `--format json`). Guard: `tests/unit/test_cli_json_contract.py`.
+- `exa --json finops budget status` emitted the table's display strings under misleading keys
+  (`gpu_used` was a percentage, `cost` read `"0 / —"`). It now emits numbers with honest names:
+  `gpu_hours_used/budget`, `gpu_pct`, `cost_used_usd`, `cost_budget_usd`, `cost_pct`, `status`.
+
+### Added — control-plane capabilities an operator could not reach
+
+- `exa retrain-status <flow-run-id>` — the state of one retrain run (`GET /retrain/{id}`); only an
+  MCP tool called it, and `exa retrain` told operators to watch `exa status`. It now points here.
+- `exa production reload` — hot-reload the control plane's model registry and startup checks
+  (`POST /admin/reload`), which nothing called.
+- Guard `tests/unit/test_control_plane_reachability.py`: every route in the committed control-plane
+  API contract is built by an `exa` command or a dashboard route (so the CLI Console reaches it),
+  or is exempted with a reason (inbound webhooks, the CI change notification).
+
+### Added — 7 more resources in the Resource Manager (45 total, 192 commands as table actions)
+
+- Traffic splits, shadow deployments, A/B tests, auto-retrain policies, project budgets, the EU AI
+  Act system register and audit reviews — from commands that enumerate items without a literal
+  `list` verb. Stop/disable actions live in the row menu; the bin icon is reserved for removal
+  (guarded). Row pre-fill now only fills a parameter with a value of the right type.
+
+### Added — configuration as full CRUD, in the CLI and the dashboard
+
+- **`exa config` validates what it writes.** `exa config set token X` used to write `[auth] token`,
+  which nothing reads — success printed, nothing changed; `exa config set mlflow_url …` (the name
+  `config show` prints) was the same silent no-op. Unknown keys are now refused with suggestions
+  (`token` → `agent_token, control_plane_token, dashboard_token`), the shown `*_url` names are
+  accepted as aliases, and URL keys must be http(s) URLs — checked in `write_config`, so the
+  governed `platform_admin.set_config` path is covered too.
+- **Delete/revert, not just create/update:** new `exa config unset KEY [--context C]` (the next
+  source applies again), `exa config delete-context NAME` (destructive; clears the active pointer
+  when it pointed there) and `exa config use --clear` (back to the base configuration without
+  editing the TOML). `exa config show` now reports every field (it omitted `dashboard_token` and
+  `seanerbus_bridge_url`).
+- **`exa env --validate` audits the file:** keys nothing reads (left by older versions or hand
+  edits) and an `active_context` that no longer exists are reported as warnings.
+- **Dashboard → Config → "exa CLI configuration":** the `config.toml` every dashboard-run `exa`
+  command uses — effective settings with their source (env var / context / base / default), edit
+  and reset per key into the base config or a selected context (env-set values locked, with the
+  reason), contexts (create from a first override, use, back to base, delete with typed name),
+  Validate and Export. Every change is an `exa config …` run, audited.
+- Docs: the usage guide claimed `exa config set gitlab …` and `exa config set` as CLI equivalents
+  of *dashboard* settings; those are a different store (the first key never existed). Corrected.
+
+### Added — Resource Manager: everything `exa` manages, as tables with create/edit/delete
+
+- **Platform → Resources** (`/platform/resources`): 38 resources (projects, connections,
+  workbenches, namespaces, models, prompts, SLOs, gateway keys, LLM endpoints, challengers,
+  adapters, knowledge bases, dataset revisions, feature views, HPC clusters, device pools, secrets,
+  policies, providers, backups, config contexts, …) rendered as enterprise tables — the list
+  command's options as filters, **New**, row **View** (auto-loads) / **Edit** / **Delete** (typed
+  confirmation) and a **⋯** menu of every other action, each pre-filled from the row with its
+  identity locked, and the table refreshed after a successful write. 168 of the 393 runnable
+  commands are table actions; reports/checks stay in the CLI Console.
+- **`examlops.cli.resources`** — the one declaration of how the CLI's verbs compose into
+  resources (list · key · create · show · edit · delete · actions · bindings), published in the CLI
+  catalog with bindings resolved. `tests/unit/test_cli_resources.py` validates every command and
+  binding against the live tree, requires every `list` command to be a resource or say why not,
+  and runs create → list → act → delete round-trips on the real CLI.
+- Accessible `Dialog` primitive (`components/ui/dialog.tsx`: labelled, focus-trapped, Esc/backdrop
+  close). ⌘K lists "Manage <resource>". Guide `docs/guides/dashboard-resources.md`.
+
+### Added — CLI Console: every `exa` command in the dashboard (ADR 0119)
+
+- **Dashboard ⟷ CLI parity by construction.** New **Platform → CLI Console** (`/platform/cli`)
+  lists all 401 `exa` leaf commands (grouped by the 12 `exa --help` panels), generates a form per
+  command from its declared Click parameters, shows the equivalent terminal line, and runs the real
+  CLI server-side (`python -m examlops.cli --output json --yes …`, isolated subprocess). JSON output
+  renders as a table/record; files a command writes are downloadable. 393 commands are runnable
+  from the browser; the 8 that need a terminal (`exa chat`, `exa mcp serve`, `exa config init`,
+  `exa stack up|down|restart|monitoring-up|monitoring-down`) are listed with the reason and the
+  alternative. New commands appear automatically.
+- **`examlops.cli.surface`** — one per-command tier table (`read` · `admin` · `destructive` ·
+  `cli_only`), the catalog builder and a validating argv builder: values glued to their option,
+  positionals after `--`, choice/bounds/required checks, endless or secret-revealing flags refused
+  (`--watch`, `--follow`, `--reveal`), filesystem paths contained in a CLI workspace, and a read
+  escalated to admin when a persisting flag (at its effective value), a path or a network target is
+  supplied. A run never reaches a prompt: a command's own `--yes` is implied by the console's
+  confirmation, and values a command would prompt for are required fields.
+  `tests/unit/test_cli_surface.py` fails when a CLI command has no tier, a file-ish parameter has
+  no containment decision, or a runnable command can prompt — so the dashboard cannot fall behind
+  the CLI.
+- **Dashboard backend** `routers/cli.py` + `cli_runner.py`: catalog (gzip), runs (202 + poll),
+  cancel, admin CLI workspace (upload/download/delete). Viewers run read-tier commands
+  (`cli.run`); admins run the rest (`cli.write`), destructive ones only with the command typed back.
+  Child env drops the dashboard's credentials and sets `EXAMLOPS_ACTOR=dashboard:<session>`;
+  timeout, output cap and concurrency caps (`EXAMLOPS_DASHBOARD_CLI_*`); every run audited as
+  `cli_run` + `cli_run_finished` in the hash chain.
+- **Cross-links**: ⌘K lists matching `exa` commands; each console shows an `exa …` pill that opens
+  its commands in the CLI Console; each command names the console that also covers it.
+- `python -m examlops.cli` entry point (the dashboard container has the source, not the script).
+- The dashboard image installs the CLI's runtime deps (typer, click, rich, tomli-w,
+  prometheus-client). Guide: `docs/guides/dashboard-cli-console.md`.
+
 ## [0.51.0] - 2026-09-10
 
 ### Added — dev-velocity layer + API contract guard

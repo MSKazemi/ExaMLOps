@@ -22,9 +22,9 @@ COPY usecases /app/usecases
 COPY platform/cli /app/platform/cli
 RUN uv pip install --no-cache-dir -e /app/platform/cli --system
 
-COPY serving/ray_serving/app.py ./serving/ray_serving/app.py
-COPY serving/inference_pipeline /app/serving/inference_pipeline
-COPY serving/__init__.py /app/serving/__init__.py
+# The whole serving package: copying it file by file silently left new modules (admin_auth.py)
+# out of the image, so the container failed at import while every test passed.
+COPY serving /app/serving
 
 EXPOSE 8001 8265
 

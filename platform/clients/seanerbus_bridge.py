@@ -212,6 +212,20 @@ _RETRAINS = Counter(
     "seanerbus_retrain_triggers_total",
     "Total drift-triggered retrains posted to the Control Plane",
 )
+# Per-inference telemetry is written off the reply path (plan P0.5 / finding B5). These make the
+# cost of that decision visible instead of silent: what was dropped, what failed, what is waiting.
+_TELEMETRY_DROPPED = Counter(
+    "seanerbus_telemetry_dropped_total",
+    "Inference telemetry records dropped because the persistence spool was full",
+)
+_TELEMETRY_FAILURES = Counter(
+    "seanerbus_telemetry_persist_failures_total",
+    "Inference telemetry records whose database write failed (the inference itself succeeded)",
+)
+_TELEMETRY_DEPTH = Gauge(
+    "seanerbus_telemetry_queue_depth",
+    "Inference telemetry records waiting to be written",
+)
 
 # Input-embedding drift (phase 21). The bridge already computes norm/mean/std on every
 # inference to write `input_snapshots`; it just never exported them, so the three Grafana
@@ -546,12 +560,68 @@ async def _call_pipeline(
         latency_ms,
     )
     embedding = features.get("embedding") or features.get("features", {}).get("embedding")
-    # The three per-inference SQLite writes are offloaded to a worker thread so they never block
-    # the asyncio event loop (they take the platform.db write lock / wait out busy_timeout). QW10.
-    await asyncio.to_thread(
-        _persist_inference_telemetry, model_name, alias, prediction, embedding, str(job.job_id)
-    )
+    # Reply first (plan P0.5 / finding B5). The drift and input-embedding writes used to be awaited
+    # here, so a locked or unreachable database turned a successful prediction into an error on the
+    # bus and added up to busy_timeout x retries of latency to every job. They are now handed to a
+    # bounded spool that a background worker drains; this call never waits on the database.
+    _telemetry_spool.offer((model_name, alias, prediction, embedding, str(job.job_id)))
     return prediction, run_id, version
+
+
+class _TelemetrySpool:
+    """A bounded, drop-on-full queue of per-inference telemetry, drained by one worker task.
+
+    Bounded because an unbounded buffer converts a slow database into a memory leak. Dropping is
+    the right overflow policy for this data: drift and input-embedding statistics are windowed
+    aggregates, so a lost sample shifts nothing an operator acts on, while a blocked reply stalls a
+    scheduler waiting on the bus. Every drop and every failed write is counted.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = max(1, maxsize)
+        self._queue: asyncio.Queue[tuple] | None = None
+        self._worker: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def offer(self, record: tuple) -> bool:
+        loop = asyncio.get_running_loop()
+        # A queue and its worker belong to the loop that created them. If the running loop has
+        # changed (a reconnect under a fresh `asyncio.run`, a test harness), start over on this
+        # one: records queued on a dead loop would never be drained.
+        if self._queue is None or self._loop is not loop:
+            self._queue = asyncio.Queue(maxsize=self._maxsize)
+            self._loop = loop
+            self._worker = None
+        if self._worker is None or self._worker.done():
+            self._worker = loop.create_task(self._drain())
+        try:
+            self._queue.put_nowait(record)
+        except asyncio.QueueFull:
+            _TELEMETRY_DROPPED.inc()
+            return False
+        _TELEMETRY_DEPTH.set(self._queue.qsize())
+        return True
+
+    async def _drain(self) -> None:
+        assert self._queue is not None
+        while True:
+            record = await self._queue.get()
+            try:
+                await asyncio.to_thread(_persist_inference_telemetry, *record)
+            except Exception as exc:  # noqa: BLE001 - telemetry must never take the bridge down
+                _TELEMETRY_FAILURES.inc()
+                log.warning("Inference telemetry write failed (inference unaffected): %s", exc)
+            finally:
+                self._queue.task_done()
+                _TELEMETRY_DEPTH.set(self._queue.qsize())
+
+    async def join(self) -> None:
+        """Wait until every offered record has been written or failed (tests, shutdown)."""
+        if self._queue is not None:
+            await self._queue.join()
+
+
+_telemetry_spool = _TelemetrySpool(int(os.getenv("SEANERBUS_TELEMETRY_QUEUE_MAX", "1000")))
 
 
 def _persist_inference_telemetry(
@@ -561,9 +631,13 @@ def _persist_inference_telemetry(
     embedding: object,
     job_id: str,
 ) -> None:
-    """The per-inference drift / input-embedding / audit SQLite writes, bundled so they run in a
-    single worker-thread hop off the asyncio loop (QW10). Kept as one function so the hot inference
-    path makes exactly one ``to_thread`` transition."""
+    """The per-inference drift / input-embedding writes, run by the telemetry spool's worker.
+
+    There is deliberately no per-inference audit event. It used to append an ``inference_served``
+    row to the hash-chained audit log for every prediction: nothing read those rows, retention
+    excludes the audit chain so they were never pruned, and each append took the platform-wide
+    audit lock on the hot path. The audit log records decisions; request volume is
+    ``seanerbus_inferences_total``."""
     if prediction is not None:
         write_drift_snapshot(model_name, alias, float(prediction), job_id)
     if embedding:
@@ -579,9 +653,6 @@ def _persist_inference_telemetry(
         _EMB_MEAN.labels(model=model_name).set(emb_mean)
         _EMB_STD.labels(model=model_name).set(emb_std)
         _publish_input_baseline(model_name)
-    write_audit_event(
-        "bridge", None, "inference_served", model_name, {"alias": alias, "job_id": job_id}
-    )
 
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────

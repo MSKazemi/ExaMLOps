@@ -51,6 +51,11 @@ spec:
                   name: {{ include "examlops.dashboardSecret" . | quote }}
                   key: DASHBOARD_AGENT_API_KEY
                   optional: true
+            # CLI Console state (ADR 0119) — on the cli-state volume, never the read-only root.
+            - name: EXAMLOPS_CONFIG
+              value: /var/lib/examlops-dashboard/config.toml
+            - name: EXAMLOPS_DASHBOARD_CLI_WORKSPACE
+              value: /var/lib/examlops-dashboard/cli-workspace
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:
@@ -65,8 +70,16 @@ spec:
             periodSeconds: 20
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            - {name: cli-state, mountPath: /var/lib/examlops-dashboard}
       volumes:
         - {name: tmp, emptyDir: {}}
+        {{- if .Values.dashboard.cliState.existingClaim }}
+        - name: cli-state
+          persistentVolumeClaim:
+            claimName: {{ .Values.dashboard.cliState.existingClaim | quote }}
+        {{- else }}
+        - {name: cli-state, emptyDir: {}}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

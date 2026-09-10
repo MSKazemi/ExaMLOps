@@ -53,6 +53,27 @@
         ]
       }
     },
+    "/approvals/{approval_id}": {
+      "delete": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "approval_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/approve/{model_id}": {
       "post": {
         "parameters": [

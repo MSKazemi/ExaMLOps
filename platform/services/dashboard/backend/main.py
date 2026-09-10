@@ -22,6 +22,7 @@ from routers import (
     bff,
     cards,
     challenger,
+    cli,
     collab,
     compliance,
     config,
@@ -251,6 +252,8 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(connections.router, prefix="/api")
 app.include_router(workbenches.router, prefix="/api")
+# CLI Console (ADR 0119): every `exa` command, run through the platform's own surface table.
+app.include_router(cli.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
 _dist = Path(__file__).parent.parent / "frontend" / "dist"

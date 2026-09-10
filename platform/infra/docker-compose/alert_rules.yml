@@ -162,6 +162,29 @@ groups:
           summary: "SeanerBUS p99 latency > 500 ms"
           description: "SeanerBUS p99 inference latency is {{ $value | humanizeDuration }}."
 
+      # The bridge replies on the bus before it writes drift/input telemetry (plan P0.5). That
+      # keeps a slow or broken database off the inference path — and would hide it completely,
+      # because inferences keep succeeding while drift detection silently loses its input.
+      - alert: SeanerBUSTelemetryWritesFailing
+        expr: sum(increase(seanerbus_telemetry_persist_failures_total[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: seanerbus
+        annotations:
+          summary: "SeanerBUS bridge cannot write inference telemetry"
+          description: "{{ $value | humanize }} drift/input-embedding writes failed in 10 min. Inference is unaffected, but drift detection is losing samples; check the platform datastore."
+
+      - alert: SeanerBUSTelemetryDropping
+        expr: sum(increase(seanerbus_telemetry_dropped_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: seanerbus
+        annotations:
+          summary: "SeanerBUS bridge is dropping inference telemetry"
+          description: "The telemetry spool is full ({{ $value | humanize }} records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise SEANERBUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
+
   # ── Control Plane ─────────────────────────────────────────────────────────────
   - name: examlops-control-plane
     rules:

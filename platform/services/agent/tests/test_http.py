@@ -105,3 +105,54 @@ def test_request_json_exhausts_retries():
     assert data is None
     assert "cannot reach svc" in err
     assert route.call_count == 3  # 1 initial + 2 retries
+
+
+# ─── control-plane calls carry the bearer (plan P0.3 / finding B3) ───────────
+
+
+@respx.mock
+def test_control_plane_calls_carry_the_bearer(monkeypatch):
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_URL", "http://cp:8002")
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_TOKEN", "cp-secret")
+    route = respx.get("http://cp:8002/approvals").mock(return_value=httpx.Response(200, json=[]))
+
+    data, err = _http.request_json("control_plane", "GET", "http://cp:8002/approvals")
+
+    assert (data, err) == ([], None)
+    assert route.calls.last.request.headers["authorization"] == "Bearer cp-secret"
+
+
+@respx.mock
+def test_token_never_leaves_for_another_host(monkeypatch):
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_URL", "http://cp:8002")
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_TOKEN", "cp-secret")
+    # A prefix look-alike host must not match the configured control plane.
+    route = respx.get("http://cp:80020/x").mock(return_value=httpx.Response(200, json={}))
+
+    _http.request_json("control_plane", "GET", "http://cp:80020/x")
+
+    assert "authorization" not in route.calls.last.request.headers
+
+
+@respx.mock
+def test_other_services_get_no_control_plane_token(monkeypatch):
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_URL", "http://cp:8002")
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_TOKEN", "cp-secret")
+    route = respx.get("http://cp:8002/health").mock(return_value=httpx.Response(200, json={}))
+
+    _http.request_json("mlflow", "GET", "http://cp:8002/health")
+
+    assert "authorization" not in route.calls.last.request.headers
+
+
+@respx.mock
+def test_caller_supplied_authorization_is_kept(monkeypatch):
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_URL", "http://cp:8002")
+    monkeypatch.setattr(_http.config, "CONTROL_PLANE_TOKEN", "cp-secret")
+    route = respx.post("http://cp:8002/retrain").mock(return_value=httpx.Response(200, json={}))
+
+    _http.request_json(
+        "control_plane", "POST", "http://cp:8002/retrain", headers={"Authorization": "Bearer mine"}
+    )
+
+    assert route.calls.last.request.headers["authorization"] == "Bearer mine"

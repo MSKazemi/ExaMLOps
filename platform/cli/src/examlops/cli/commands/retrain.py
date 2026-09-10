@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 
 import typer
 
@@ -22,6 +23,29 @@ _EXAMPLES = (
     "  # Non-interactive (CI): skip the confirmation prompt\n"
     "  exa --yes retrain JPCP --dummy"
 )
+
+_EXAMPLES_STATUS = (
+    "Examples:\n\n"
+    "  # Is the retrain I scheduled done? (the id `exa retrain` printed)\n"
+    "  exa retrain-status 4f0c1e2a-…\n\n"
+    "  exa --json retrain-status 4f0c1e2a-…"
+)
+
+
+def retrain_status(
+    flow_run_id: str = typer.Argument(..., help="Flow run id printed by `exa retrain`"),
+) -> None:
+    """Show the state of one retrain run (scheduled, running, completed, failed)."""
+    cfg = load_config()
+    url = f"{cfg.control_plane_url}/retrain/{urllib.parse.quote(flow_run_id, safe='')}"
+    try:
+        status = _client.get(url, token=cfg.control_plane_token)
+    except _client.ClientError as exc:
+        _output.error(
+            f"Could not read retrain run {flow_run_id}: {exc}",
+            hint="Check the id `exa retrain` printed, and that the control plane is up: exa status",
+        )
+    _output.print_record(status if isinstance(status, dict) else {"status": status})
 
 
 def retrain(
@@ -117,7 +141,10 @@ def retrain(
         }
     )
     _emit_retrain_lineage(model, dataset_name, result)
-    _output.hint("Monitor: exa status  |  Watch logs: exa stack logs --service prefect")
+    _output.hint(
+        f"Follow it: exa retrain-status {result.get('flow_run_id', '<flow-run-id>')}"
+        "  |  Logs: exa stack logs --service orchestrator"
+    )
     if _output.json_mode:
         _output.print_json(result)
 

@@ -226,6 +226,7 @@ Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config c
 | `EXAMLOPS_MCP_ALLOW_WRITES` | unset (read-only) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` registers mutating tools (e.g. `trigger_retrain`). Equivalent to `exa mcp serve --allow-writes`. |
 | `AGENT_URL` | `http://localhost:18004` | Skipper agent OpenAI-compatible bridge that `exa ask` calls. Also settable via `exa config set agent <url>`. |
 | `AGENT_API_KEY` | unset | Bearer token sent by `exa ask` when the agent bridge is token-gated. |
+| `AGENT_ALLOW_UNAUTHENTICATED` | unset | Development opt-out only. An agent bound beyond loopback (`AGENT_SERVER_HOST` other than `127.0.0.1`/`localhost`/`::1`, as in compose) with no `AGENT_API_KEY`/`AGENT_API_KEYS_JSON` refuses every request with 503; set this truthy to serve it as the anonymous `local` principal anyway. |
 | `EXAMLOPS_CONTEXT` | unset | Selects a named config context for the invocation (same effect as `exa -c <name>` / `exa config use <name>`, without persisting). Resolution order: env var → active context → config file → default. |
 
 The `exa` CLI also honours the standard endpoint/token vars (`CONTROL_PLANE_URL`, `MLFLOW_TRACKING_URI`, `RAY_SERVE_URL`, `PREFECT_API_URL`, `DASHBOARD_URL`, `CONTROL_PLANE_TOKEN`), which a config context or `~/.config/examlops/config.toml` can override. Inspect the effective values and their source with `exa env`.
@@ -325,7 +326,7 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |
 | `AWS_SECRET_ACCESS_KEY` | `minioadmin` | MinIO secret key |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server API endpoint |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Prefect deployment slug used by `POST /retrain` |
+| `PREFECT_DEPLOYMENT_NAME` | `training_flow/examlops-dispatch` | Prefect deployment every control-plane retrain is dispatched to (`POST /retrain`, the approval gate, ModelZoo auto-retrain). `exa pipeline deploy` registers it and serves its runs; its parameters are exactly `model_name`, `dataset_cls_name`, `is_dummy`, `backend_name`. `GET /health` reports whether it exists (`dispatch`). |
 
 ---
 
@@ -351,6 +352,11 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `RAY_PRELOAD_ALIASES` | `Production,Canary,Staging` | Comma-separated MLflow aliases pre-loaded into the hot set at startup and on reload |
 | `RAY_VERSION_CACHE_SIZE` | `8` | LRU cache size for raw-version (`/predict` with `version=`) lookups |
 | `RAY_RELOAD_POLL_SECONDS` | `60` | Background MLflow alias-poll interval in seconds; `0` disables polling |
+| `RAY_SERVE_ADMIN_TOKEN` | unset (admin routes closed) | Bearer required by Ray Serve's admin routes: `POST /reload`, `/reload/{model}` and `/infer-pipeline/traffic-rules/{model}`. Unset or a placeholder makes them answer 503; inference is unaffected, and alias moves still reload within `RAY_RELOAD_POLL_SECONDS`. Callers send it from the same variable: `exa serve reload` / `exa serve traffic` (config key `ray_serve_admin_token`), the agent, and the pipeline's promotion webhook. |
+| `EXAMLOPS_SERVING_VERIFY` | `off` | Verify-before-load for Ray Serve: `off`, `warn` (load and audit a failure) or `enforce` (refuse an unsigned, tampered or unverifiable artifact and keep serving the last-known-good version). Serving loads exactly the bytes it verified. `enforce` needs every served version signed with `exa models sign` and the same `EXAMLOPS_SIGNING_KEY` on Ray Serve. Default stays `off` until registration signs models automatically. |
+| `MINIO_SERVING_ACCESS_KEY` / `MINIO_SERVING_SECRET_KEY` | unset | Read-only MinIO credential for Ray Serve on `mlflow-artifacts`, created by `minio-init` when both are set. Serving only downloads models; unset falls back to the root credential. |
+| `MLFLOW_ALLOWED_HOSTS` | `mlflow`, `localhost`, `127.0.0.1`, `$PUBLIC_HOST` (each with any port) | `Host` headers the MLflow server accepts (was `*`). Add every name clients use to reach MLflow. |
+| `MLFLOW_CORS_ALLOWED_ORIGINS` | the dashboard's origins on `localhost`, `127.0.0.1` and `$PUBLIC_HOST` | Browser origins allowed to call MLflow cross-origin (was `*`). |
 | `TRAFFIC_RULES_TTL_SECONDS` | `30` | TTL of the inference-pipeline router's per-replica traffic-split cache. Split changes written by the ingress or `exa serve traffic` (other processes) apply within this window; negative results are cached too. |
 | `RAY_SERVE_RELOAD_URL` | unset | Ray Serve URL for the Prefect promotion webhook (`POST /reload/{model_id}`); unset disables the webhook |
 | `RAY_METRICS_EXPORT_PORT` | `8080` | Prometheus metrics export port used by Ray |
@@ -371,6 +377,7 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `CONTROL_PLANE_POLLER_LEASE_SECONDS` | `30` (minimum `3`) | Coordinator lease used to elect the singleton ModelZoo poller. |
 | `CONTROL_PLANE_EVENT_RELAY_SECONDS` | `1` | In-process outbox relay interval; `0` disables it. |
 | `CONTROL_PLANE_EVENT_RELAY_BATCH_SIZE` | `100` | Maximum outbox rows claimed per relay pass. |
+| `CONTROL_PLANE_ADMISSION_RETRY_AFTER` | `30` (minimum `1`) | `Retry-After` seconds on the HTTP 429 returned when a retrain or approval dispatch is refused because the tenant's admission capacity (`EXAMLOPS_ADMISSION_PER_TENANT` / `_MAX_RUNNING`) is full. Retry with the same `Idempotency-Key`. |
 | `RETRAIN_RATE_LIMIT_PER_MIN` | `20` | Per-tenant write limit enforced by the selected `EXAMLOPS_COORDINATOR`. |
 
 ### ModelZoo Integration (Phase 12)
@@ -394,7 +401,8 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 |---|---|---|
 | `DASHBOARD_VIEWER_PASSWORD` | **required** | Viewer-role login password |
 | `DASHBOARD_ADMIN_PASSWORD` | **required** | Admin-role login password |
-| `DASHBOARD_JWT_SECRET` | **required** | HS256 signing secret for JWT tokens (minimum 32 characters) |
+| `DASHBOARD_JWT_SECRET` | **required** | HS256 signing secret for JWT tokens (minimum 32 characters). A key derived from it also signs the short-lived (1 h) URLs the dashboard issues for bundled model README images. |
+| `CONTROL_PLANE_TOKEN` (dashboard) | unset | Fallback bearer the dashboard sends on control-plane reads (`/models*`, bundled images) when the Config page's encrypted `control_plane_token` secret is unset. The stored secret wins when both exist; it is never sent to the browser. |
 | `DASHBOARD_SECRET_KEY` | **required** | Fernet key (base64-encoded, 44 characters) for secrets-at-rest encryption |
 | `DASHBOARD_JWT_TTL_HOURS` | `12` | JWT token expiry in hours |
 | `DASHBOARD_TRUSTED_PROXY` | unset | When truthy, the login/BFF rate limiter keys on the leftmost `X-Forwarded-For` address instead of the socket peer. Set ONLY behind a trusted reverse proxy — the header is spoofable when clients connect directly. |
@@ -411,6 +419,17 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `EXAMLOPS_PROVIDERS_DIR` | `~/.config/examlops/providers` | Root of notebook/CLI/dashboard-authored calculation providers (ADR 0074); files live at `<root>/<project>/<domain>/<name>.py`. Point every process (CLI, dashboard, notebooks) at one shared path so authored plugins resolve everywhere. Compose sets the dashboard to `/repo/.providers`. |
 | `EXAMLOPS_HOST_REPO` | repo path on the deploy host | Host path of the platform repo, bind-mounted into each spawned JupyterHub notebook (read-only) so a notebook can `import examlops`; the `.providers` subdir is mounted read-write for shared plugin authoring. |
 | `SEANERBUS_BRIDGE_STATUS_URL` | dashboard `http://localhost:8003` · `exa` `http://localhost:18003` | Where the bridge's `/health` and `/stats` are. The two defaults differ because the two readers do: the dashboard is also run bare-metal beside a bare-metal bridge, which serves on `8003` with no port mapping, while `exa` runs on the host, where the container publishes `18003`. In Docker the dashboard is set to `http://seanerbus-bridge:8003` (the docker-compose default). Set this variable to point both at one bridge — `exa seanerbus status` and `exa production verify` honour it (config key `seanerbus_bridge` under `[urls]`), as does the dashboard (whose DB config key `seanerbus_bridge_status_url` overrides it). |
+| `XDG_STATE_HOME` | `~/.local/state` | Standard XDG base directory; the dashboard's default CLI workspace is `$XDG_STATE_HOME/examlops/cli-workspace` when `EXAMLOPS_DASHBOARD_CLI_WORKSPACE` is unset. |
+| `EXAMLOPS_DASHBOARD_CLI_WORKSPACE` | `$XDG_STATE_HOME/examlops/cli-workspace` (`~/.local/state/…`) | CLI Console (ADR 0119): the one directory `exa` path arguments may name from the dashboard. Uploads land here; files a command writes appear here to download. Compose sets it to `/var/lib/examlops-dashboard/cli-workspace` on the `dashboard_cli_data` named volume, so it survives rebuilds and stays out of the repo. |
+| `EXAMLOPS_DASHBOARD_CLI_CWD` | `REPO_ROOT`, else the repo `examlops` is loaded from | CLI Console: directory commands run from — the repo root, as an operator runs `exa`, so commands that read the use-case pack or compose files by relative path work. Path *arguments* still resolve inside the workspace (they are passed as absolute paths). |
+| `EXAMLOPS_DASHBOARD_CLI_TIMEOUT` | `300` | CLI Console: seconds a run may take before its whole process group is stopped (SIGTERM, then SIGKILL). |
+| `EXAMLOPS_DASHBOARD_CLI_MAX_CONCURRENT` | `4` | CLI Console: runs in flight across all users; beyond it a new run is refused with 429 rather than queued. |
+| `EXAMLOPS_DASHBOARD_CLI_PER_USER` | `2` | CLI Console: runs in flight per signed-in session. |
+| `EXAMLOPS_DASHBOARD_CLI_MAX_OUTPUT` | `2000000` | CLI Console: bytes of stdout kept per run (stderr keeps a quarter of it); the rest is drained and dropped, and the run is marked truncated. |
+| `EXAMLOPS_DASHBOARD_CLI_MAX_UPLOAD` | `26214400` | CLI Console: largest file (bytes) an admin may upload into the workspace. |
+| `EXAMLOPS_DASHBOARD_CLI_HISTORY` | `500` | CLI Console: runs kept in the shared `dashboard_cli_runs` table (newest first); older rows are pruned. The table is what lets every dashboard replica serve every run, and history survive a restart. |
+| `EXAMLOPS_DASHBOARD_CLI_STORE_OUTPUT` | `256000` | CLI Console: characters of stdout/stderr stored per run in the shared table (the live run keeps up to `EXAMLOPS_DASHBOARD_CLI_MAX_OUTPUT`); a longer output is stored truncated and flagged. |
+| `EXAMLOPS_DASHBOARD_CLI_CATALOG_TTL` | `300` | CLI Console: seconds the command catalog (built from the live CLI tree) is cached before it is rebuilt, so a `git pull` on the bind-mounted repo shows up without a restart. |
 
 Generate the required secrets:
 ```bash
@@ -436,6 +455,7 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 | `SEANERBUS_VECTOR_UUID` | unset | Optional: req/res UUID for `VectorReqV1 → VectorResV1` |
 | `SEANERBUS_DEFAULT_MODEL` | `JPCP` | Fallback model name when `HpcJobV1.modelName` is empty |
 | `SEANERBUS_DEFAULT_ALIAS` | `Production` | Fallback MLflow alias when `HpcJobV1.alias` is empty |
+| `SEANERBUS_TELEMETRY_QUEUE_MAX` | `1000` | Bound on per-inference drift / input-embedding records waiting to be written. The bridge replies on the bus first and writes these in the background; a full spool drops the record (`seanerbus_telemetry_dropped_total`), and a failed write is counted (`seanerbus_telemetry_persist_failures_total`) without failing the inference. |
 | `SEANERBUS_PUBLISH_RESULTS` | `true` | Publish inference results back onto the bus. `false` makes the bridge consume-only. |
 | `SEANERBUS_INFERENCE_UUID` | unset | **Legacy** global req/res UUID, used only when no per-model `seanerbus_uuid` is present in any model YAML. Prefer `exa seanerbus init-uuids`. |
 | `SEANERBUS_JOB_TOPIC_UUID` / `SEANERBUS_RESULT_TOPIC_UUID` | unset | Pub/sub topic UUIDs for the job and result streams. |

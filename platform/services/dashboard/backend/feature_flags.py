@@ -39,6 +39,13 @@ FLAG_DEFS: dict[str, FlagDef] = {
     "projectsConsole": FlagDef(
         "projectsConsole", "Projects workspace console (ADR 0086)", default=True
     ),
+    # A kill switch the backend enforces, not just a hidden page: off ⇒ /api/v1/cli/* answers 403.
+    "cliConsole": FlagDef(
+        "cliConsole",
+        "CLI Console + Resources — the dashboard runs exa commands (ADR 0119)",
+        default=True,
+        tags=("kill-switch",),
+    ),
     # Example staged rollout: admins always, everyone else at 50%.
     "incidentTimeline": FlagDef(
         "incidentTimeline",
@@ -87,6 +94,17 @@ def evaluate_all(db_path: str, *, role: str, tenant: str, subject: str) -> dict[
         )
         for name, defn in FLAG_DEFS.items()
     }
+
+
+def is_enabled(db_path: str, name: str, *, role: str, tenant: str, subject: str) -> bool:
+    """One flag's decision for a context — for a router that enforces a flag server-side."""
+    return evaluate(
+        FLAG_DEFS[name],
+        role=role,
+        tenant=tenant,
+        subject=subject,
+        override=_load_overrides(db_path).get(name),
+    )
 
 
 # ── admin: defs + overrides + set (F25 R4) ────────────────────────────────────

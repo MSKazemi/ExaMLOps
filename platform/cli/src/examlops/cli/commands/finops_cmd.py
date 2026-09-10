@@ -121,25 +121,42 @@ def budget_set(
     _output.ok(f"Budget set for {project} (period: {period}).")
 
 
-def _status_row(project: str) -> list:
+def _status(project: str) -> dict:
+    """Budget vs consumption for one project, as numbers (the JSON shape; the table formats it)."""
     budget = get_project_budget(project) or {}
     consumed = get_project_consumption(project)
-    gpu_ratio = budget_usage_ratio(consumed["gpu_hours"], budget.get("gpu_hours_budget"))
-    cost_ratio = budget_usage_ratio(consumed["cost_usd"], budget.get("cost_budget"))
+    gpu_budget = budget.get("gpu_hours_budget")
+    cost_budget = budget.get("cost_budget")
+    gpu_ratio = budget_usage_ratio(consumed["gpu_hours"], gpu_budget)
+    cost_ratio = budget_usage_ratio(consumed["cost_usd"], cost_budget)
     over = (gpu_ratio is not None and gpu_ratio > 1.0) or (
         cost_ratio is not None and cost_ratio > 1.0
     )
+    return {
+        "project": project,
+        "status": "OVER" if over else "ok",
+        "gpu_hours_used": round(float(consumed["gpu_hours"]), 3),
+        "gpu_hours_budget": gpu_budget,
+        "gpu_pct": None if gpu_ratio is None else round(gpu_ratio * 100, 1),
+        "cost_used_usd": round(float(consumed["cost_usd"]), 2),
+        "cost_budget_usd": cost_budget,
+        "cost_pct": None if cost_ratio is None else round(cost_ratio * 100, 1),
+    }
 
-    def _fmt(ratio: float | None) -> str:
-        return "—" if ratio is None else f"{ratio * 100:.0f}%"
+
+def _status_row(project: str) -> list:
+    st = _status(project)
+
+    def _pct(value: float | None) -> str:
+        return "—" if value is None else f"{value:.0f}%"
 
     return [
         project,
-        f"{consumed['gpu_hours']:.1f} / {budget.get('gpu_hours_budget') or '—'}",
-        _fmt(gpu_ratio),
-        f"{consumed['cost_usd']:.0f} / {budget.get('cost_budget') or '—'}",
-        _fmt(cost_ratio),
-        "OVER" if over else "ok",
+        f"{st['gpu_hours_used']:.1f} / {st['gpu_hours_budget'] or '—'}",
+        _pct(st["gpu_pct"]),
+        f"{st['cost_used_usd']:.0f} / {st['cost_budget_usd'] or '—'}",
+        _pct(st["cost_pct"]),
+        st["status"],
     ]
 
 
@@ -153,26 +170,15 @@ def budget_status(
     if not projects:
         _output.info("No project budgets configured. Set one with: exa finops budget set <project>")
         return
-    rows = [_status_row(p) for p in projects]
     if _output.json_mode:
-        _output.print_json(
-            [
-                {
-                    "project": r[0],
-                    "gpu_hours": r[1],
-                    "gpu_used": r[2],
-                    "cost": r[3],
-                    "cost_used": r[4],
-                    "status": r[5],
-                }
-                for r in rows
-            ]
-        )
+        # Numbers with honest names. This used to emit the table's display strings under
+        # misleading keys — `gpu_used` was a percentage, `cost` read "0 / —".
+        _output.print_json([_status(p) for p in projects])
         return
     _output.print_table(
         "Project Budgets",
         ["Project", "GPU-h used/budget", "GPU%", "Cost used/budget", "Cost%", "Status"],
-        rows,
+        [_status_row(p) for p in projects],
     )
 
 

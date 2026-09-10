@@ -39,8 +39,7 @@ curl -X POST http://localhost:18002/retrain \
     "model_name": "JPCP",
     "dataset_name": "PM100Dataset",
     "is_dummy": true,
-    "backend_name": "minio",
-    "parameters": {"reason": "manual smoke"}
+    "backend_name": "minio"
   }'
 ```
 
@@ -48,14 +47,13 @@ Response:
 ```json
 {
   "flow_run_id": "abc123…",
-  "deployment": "examlops_scheduled_training/nightly",
+  "deployment": "training_flow/examlops-dispatch",
   "status_url": "/retrain/abc123…",
   "parameters": {
     "model_name": "JPCP",
     "dataset_cls_name": "PM100Dataset",
     "is_dummy": true,
-    "backend_name": "minio",
-    "reason": "manual smoke"
+    "backend_name": "minio"
   }
 }
 ```
@@ -309,7 +307,7 @@ Postgres state backend:
 | `CONTROL_PLANE_TOKEN` | unset | Legacy `legacy/default` bearer credential with `read` + `write`; optional when the structured map is configured |
 | `CONTROL_PLANE_CREDENTIALS_JSON` | unset | Token-keyed JSON map of `principal`, `tenant`, and `scopes`; malformed input fails all bearer authentication closed |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`) |
+| `PREFECT_DEPLOYMENT_NAME` | `training_flow/examlops-dispatch` | Deployment every dispatched retrain goes to (must be `flow_name/deployment_name`). `exa pipeline deploy` registers and serves it; `GET /health` → `dispatch` says whether it exists and accepts the control plane's parameters. |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
 | `EXAMLOPS_DB_BACKEND` | `sqlite` | Control-plane state engine: `sqlite` for local development or `postgres` for shared production state |
 | `EXAMLOPS_POSTGRES_DSN` | unset | Required when the state backend is `postgres` |

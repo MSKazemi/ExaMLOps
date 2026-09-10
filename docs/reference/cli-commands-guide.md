@@ -76,7 +76,7 @@ Prints the resolved configuration and where each value came from (env var, conte
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa env` | Shows the effective config plus the source of every value (secrets redacted); `--validate` cross-checks coherence and exits 1 on errors. | To confirm which endpoints/tokens the CLI will actually use, or to gate CI on a coherent, non-placeholder environment. | `exa env`<br>`exa env --validate` |
+| `exa env` | Shows the effective config plus the source of every value (secrets redacted); `--validate` cross-checks coherence and exits 1 on errors, and warns about config-file keys nothing reads and an active context that does not exist. | To confirm which endpoints/tokens the CLI will actually use, or to gate CI on a coherent, non-placeholder environment. | `exa env`<br>`exa env --validate` |
 
 ### `exa docs` — generate the command reference from live code
 
@@ -94,9 +94,11 @@ Manages the CLI's own settings and named environment contexts in `~/.config/exam
 |---|---|---|---|
 | `exa config show` | Prints the current resolved config (env vars merged with the TOML file). | Quick read of what's configured, without the provenance detail `exa env` adds. | `exa config show` |
 | `exa config init` | Interactive wizard that writes `~/.config/examlops/config.toml`. **Mutation** (writes config, prompts interactively). | First-time setup on a new machine when you'd rather answer prompts than set keys one by one. | `exa config init` |
-| `exa config set <key> [value]` | Sets a config key; `--context` targets a named context. Omit secret values to use the hidden prompt. **Mutation** (writes config). | Point the CLI at a service or store a token without shell-history exposure. | `exa config set control_plane http://<REMOTE_HOST>:18002`<br>`exa config set agent_token --context production` |
+| `exa config set <key> [value]` | Sets a config key; `--context` targets a named context. Omit secret values to use the hidden prompt. Unknown keys are refused with a suggestion (the `*_url` names `config show` prints are accepted); URL keys must be http(s) URLs. **Mutation** (writes config). | Point the CLI at a service or store a token without shell-history exposure. | `exa config set control_plane http://<REMOTE_HOST>:18002`<br>`exa config set agent_token --context production` |
 | `exa config contexts` | Lists configured contexts (environments) and marks the active one. | To see which environments are defined and which one commands will hit right now. | `exa config contexts` |
-| `exa config use <name>` | Switches the active context (environment). **Mutation** (writes `active_context`). | Flip between, e.g., a local dev context and the `lxp` remote server without re-typing endpoints. | `exa config use lxp` |
+| `exa config use <name>` | Switches the active context (environment); `--clear` returns to the base configuration. **Mutation** (writes `active_context`). | Flip between, e.g., a local dev context and the `lxp` remote server without re-typing endpoints. | `exa config use lxp`<br>`exa config use --clear` |
+| `exa config unset <key>` | Removes a config value so the next source applies (context → base → default); `--context` removes it from a named context only. **Mutation** (writes config). | Undo an override, or stop a context shadowing the base value. | `exa config unset mlflow`<br>`exa config unset control_plane_token --context production` |
+| `exa config delete-context <name>` | Deletes a named context and all its values; clears it if it was active. **Destructive**. | Retire an environment that no longer exists. | `exa config delete-context staging` |
 | `exa config export` | One-file YAML snapshot of **all** platform configuration, generated live: CLI settings with provenance, contexts, HPC cluster registry, artifact-vs-dataset object-store split, per-model YAMLs, env overlays, FinOps providers, and every platform env var (secrets redacted). Read-only view — edit the underlying sources, not the snapshot. | Inspect a whole deployment at a glance, attach config to a bug report, or `diff` two environments (run it on the laptop and on lxp, then diff the files). | `exa config export`<br>`exa config export -o examlops-config.yaml`<br>`exa --json config export` |
 
 ### `exa plugins` — installed plugin inventory
@@ -165,6 +167,7 @@ Fires a Prefect training run through the Control Plane API (requires `CONTROL_PL
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa retrain` | Triggers a Prefect retrain for a model via the Control Plane (**mutation** — schedules a run; audited). | Operator/client-driven retraining without local Prefect. | `exa retrain JPCP --dry-run`<br>`exa retrain JPCP --dataset PM100Dataset --backend minio --reason "drift detected"` |
+| `exa retrain-status <flow-run-id>` | Shows the state of one retrain run (scheduled, running, completed, failed) from the control plane. | Follow a retrain you scheduled, from a terminal or a CI job. | `exa retrain-status 4f0c1e2a-…` |
 
 ### `exa scaffold` — scaffold a new model
 
@@ -472,6 +475,7 @@ Plan, execute, and verify production deploys of models.
 |---|---|---|---|
 | `exa production deploy [ACTION] [DEPLOY_ID]` | Plans/executes deploys or inspects history/status; `--execute` (default is a side-effect-free dry run), `--models` (stale/all/IDs), `--dataset`, `-e/--env`, `--registry`, `--no-schedule`, plus history filters (`--limit`, `--status`, `--model`, `--operation`). | Roll out stale models, or review deploy history. Default is a safe plan. **mutation with `--execute`** | `exa production deploy --models stale` &nbsp;·&nbsp; `exa production deploy --models JPCP,MACK --dataset PM100Dataset --execute` |
 | `exa production verify` | Verifies production service health without changing state. The SeanerBUS check follows `SEANERBUS_BRIDGE_STATUS_URL` / the `seanerbus_bridge` config key. | Confirm production is healthy after a deploy. | `exa production verify` |
+| `exa production reload` | Hot-reloads the control plane's model registry and re-runs its startup checks, without a restart. **Mutation**. | Pick up new or edited model YAML, or a fixed DB/token config, on a running control plane. | `exa production reload` |
 
 ### `exa gateway` — model gateway (virtual keys, routing, cost)
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { CliConfigSection } from '@/components/cli/CliConfigSection'
 import {
   Link2, SlidersHorizontal, Server, Save, ChevronDown, ChevronRight,
   KeyRound, Eye, EyeOff, X, Copy, Check, ExternalLink, RefreshCw, Zap, Clock, Lock, GitBranch,
@@ -1206,6 +1207,9 @@ export function Config() {
         />
 
         <ApiTokenSection />
+
+        {/* The `exa` configuration the dashboard's own CLI runs use (ADR 0119). */}
+        <CliConfigSection />
 
         <QuickActionsSection />
 

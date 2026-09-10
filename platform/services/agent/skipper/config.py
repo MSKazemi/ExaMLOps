@@ -45,6 +45,8 @@ RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:19090")
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:18002")
 CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
+# Bearer for Ray Serve's admin routes (reload, live traffic-rule push) — plan P0.6.
+RAY_SERVE_ADMIN_TOKEN = os.getenv("RAY_SERVE_ADMIN_TOKEN", "")
 
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
 DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")

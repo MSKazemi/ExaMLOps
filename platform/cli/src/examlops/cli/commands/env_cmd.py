@@ -29,10 +29,14 @@ def env(
     if validate:
         import os
 
-        from examlops.config_validate import has_errors
+        from examlops.cli._config import file_findings
+        from examlops.config_validate import Finding, has_errors
         from examlops.config_validate import validate as _validate
 
         findings = _validate(os.environ)
+        # The config file too: keys nothing reads and a dangling active context are warnings —
+        # nothing breaks, but a value the operator believes is in force is not.
+        findings[:0] = [Finding("warn", where, message) for where, message in file_findings()]
         if _output.json_mode:
             _output.print_json([f.as_dict() for f in findings])
         else:

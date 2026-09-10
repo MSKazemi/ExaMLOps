@@ -301,3 +301,69 @@ def test_existing_sqlite_tables_gain_identity_columns(tmp_path, monkeypatch):
         }
     finally:
         migrated.close()
+
+
+# ─── retraction: `exa approvals delete` finally has a route (plan P0.3 / finding B3) ──────────
+
+
+def _pending(cp, client, token: str) -> str:
+    created = client.post(
+        "/api/changes", json={"model_ids": ["JPCP"]}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert created.status_code == 200, created.text
+    return created.json()["created"][0]
+
+
+def test_retraction_keeps_the_record_and_emits_an_event(cp):
+    client = TestClient(cp.app)
+    approval_id = _pending(cp, client, "alpha-writer-token")
+
+    response = client.delete(
+        f"/approvals/{approval_id}", headers={"Authorization": "Bearer alpha-writer-token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "retracted"
+    conn = cp._get_db()
+    try:
+        row = conn.execute(
+            "SELECT status, resolved_by FROM pending_approvals WHERE id=?", (approval_id,)
+        ).fetchone()
+        topics = [r[0] for r in conn.execute("SELECT topic FROM event_outbox")]
+    finally:
+        conn.close()
+    assert row is not None, "a retraction must never erase the governance record"
+    assert row[0] == "retracted"
+    assert row[1]
+    assert "approval.retracted" in topics
+
+
+def test_retraction_is_tenant_scoped(cp):
+    client = TestClient(cp.app)
+    approval_id = _pending(cp, client, "alpha-writer-token")
+
+    response = client.delete(
+        f"/approvals/{approval_id}", headers={"Authorization": "Bearer beta-writer-token"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_only_pending_approvals_can_be_retracted(cp):
+    client = TestClient(cp.app)
+    approval_id = _pending(cp, client, "alpha-writer-token")
+    headers = {"Authorization": "Bearer alpha-writer-token"}
+    assert client.delete(f"/approvals/{approval_id}", headers=headers).status_code == 200
+
+    assert client.delete(f"/approvals/{approval_id}", headers=headers).status_code == 409
+
+
+def test_retraction_needs_the_write_scope(cp):
+    client = TestClient(cp.app)
+    approval_id = _pending(cp, client, "alpha-writer-token")
+
+    response = client.delete(
+        f"/approvals/{approval_id}", headers={"Authorization": "Bearer alpha-reader-token"}
+    )
+
+    assert response.status_code == 403

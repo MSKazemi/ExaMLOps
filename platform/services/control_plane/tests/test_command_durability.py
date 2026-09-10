@@ -228,3 +228,83 @@ def test_modelzoo_retry_does_not_create_a_second_flow(cp, monkeypatch):
         conn.close()
     assert tuple(freshness) == (0, "commit-1")
     assert event_count == 1
+
+
+# ─── Admission must never wedge a tenant (plan P0.1 / finding B1) ─────────────────────────────
+#
+# The HTTP caller is the worker for this synchronous API, so a request refused at capacity has
+# already gone away with its answer. Its admission row used to stay ``queued`` at the head of the
+# tenant's FIFO, and admission then refused every *other* key because it was not the head. Every
+# internal caller uses a fresh key per request, so nothing ever retried the head: one refusal
+# stopped every retrain in the tenant, permanently. Reproduced 2026-09-10 before this fix.
+
+
+def _params(n: int) -> dict[str, object]:
+    return {"model_name": "JPCP", "dataset_cls_name": "PM100Dataset", "n": n}
+
+
+def _admission_states(cp) -> list[str]:
+    conn = cp._get_db()
+    try:
+        return [r[0] for r in conn.execute("SELECT state FROM admission_queue ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def test_refused_admission_does_not_wedge_the_tenant(cp, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_ADMISSION_PER_TENANT", "2")
+    first = cp._claim_command("k1", "retrain", _params(1))
+    second = cp._claim_command("k2", "retrain", _params(2))
+    refused = cp._claim_command("k3", "retrain", _params(3))
+    assert (first.outcome, second.outcome, refused.outcome) == ("claimed", "claimed", "capacity")
+
+    for key, claim in (("k1", first), ("k2", second)):
+        cp._complete_command(
+            key, {"flow_run_id": key}, event_topic="t", event_payload={}, attempt=claim.attempt
+        )
+
+    # Capacity is free again: a brand-new request is admitted, not blocked behind k3's ghost row.
+    assert cp._claim_command("k4", "retrain", _params(4)).outcome == "claimed"
+    assert "queued" not in _admission_states(cp)
+
+
+def test_refused_key_can_be_retried_after_capacity_frees(cp, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_ADMISSION_PER_TENANT", "1")
+    first = cp._claim_command("k1", "retrain", _params(1))
+    assert cp._claim_command("k2", "retrain", _params(2)).outcome == "capacity"
+    cp._complete_command(
+        "k1", {"flow_run_id": "r1"}, event_topic="t", event_payload={}, attempt=first.attempt
+    )
+    # The caller that was told to retry does so with the same idempotency key.
+    assert cp._claim_command("k2", "retrain", _params(2)).outcome == "claimed"
+
+
+def test_crashed_dispatch_releases_its_admission_slot(cp, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_ADMISSION_PER_TENANT", "1")
+    assert cp._claim_command("k1", "retrain", _params(1)).outcome == "claimed"
+    # The worker dies mid-dispatch: the command lease goes stale and nobody completes it.
+    conn = cp._get_db()
+    try:
+        conn.execute(
+            "UPDATE control_plane_commands SET updated_at='2020-01-01T00:00:00' "
+            "WHERE command_key='k1'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert cp._claim_command("k2", "retrain", _params(2)).outcome == "claimed"
+
+
+def test_retrain_at_capacity_is_429_with_retry_after(cp, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_ADMISSION_PER_TENANT", "1")
+    assert cp._claim_command("held", "retrain", _params(0)).outcome == "claimed"
+    monkeypatch.setattr(cp, "_get_gateway", lambda: _Gateway())
+
+    response = TestClient(cp.app).post(
+        "/retrain", json={"model_name": "JPCP", "dataset_name": "PM100Dataset"}, headers=_headers()
+    )
+
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After")
+    assert "capacity" in response.json()["detail"]

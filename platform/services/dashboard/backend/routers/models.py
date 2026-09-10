@@ -10,6 +10,7 @@ import audit_write
 import httpx
 from auth import require_role
 from capabilities import MODEL_PROMOTE, principal_from_claims, require_capability
+from control_plane_auth import control_plane_token, signed_image_path, verify_image_signature
 from control_plane_client import ControlPlaneClient
 from database import get_db
 from dbconn import connect
@@ -22,13 +23,16 @@ from settings import settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage import ImageStorage
+from upstream import dashboard_status
 
 router = APIRouter(prefix="/models")
 
 
 def _control_plane() -> ControlPlaneClient:
     """Module-level factory so tests can monkeypatch this with a fake."""
-    return ControlPlaneClient(base_url=settings.control_plane_url)
+    return ControlPlaneClient(
+        base_url=settings.control_plane_url, token_provider=control_plane_token
+    )
 
 
 # Short-lived cache so a hard browser refresh (which clears the client cache and
@@ -433,7 +437,7 @@ async def get_model_detail(
         images.append(
             {
                 "id": None,
-                "url": cp.bundled_image_url(name, filename),
+                "url": signed_image_path(name, filename),
                 "placeholder": f"images/{filename}",
                 "source": "filesystem",
             }
@@ -528,6 +532,37 @@ def _ray_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.ray_serve_url, timeout=15.0)
 
 
+@router.get("/{name}/bundled-images/{filename}", include_in_schema=False)
+async def bundled_image(name: str, filename: str, exp: int, sig: str) -> Response:
+    """A README image bundled with the model, behind a short-lived signed URL.
+
+    Authenticated by the HMAC signature the model detail endpoint issued, not by a session: an
+    ``<img>`` tag cannot send the dashboard's bearer token. The image is fetched from the control
+    plane server-side with the dashboard's own credential, which never reaches the browser.
+    """
+    if not verify_image_signature(name, filename, exp, sig):
+        raise HTTPException(status_code=403, detail="Image link is invalid or has expired")
+    try:
+        data, content_type = await _control_plane().get_bundled_image(name, filename)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Image not found") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=dashboard_status(exc.response.status_code), detail="Image unavailable"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Control plane unavailable") from exc
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=502, detail="Control plane returned a non-image")
+    # The signature, not the session, authorises this response, so it may be cached privately
+    # until the link expires — never by a shared cache.
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.post("/{name}/predict")
 async def predict(
     name: str,
@@ -547,7 +582,7 @@ async def predict(
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Ray Serve unavailable: {exc}") from exc
     if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+        raise HTTPException(status_code=dashboard_status(r.status_code), detail=r.text)
     return r.json()
 
 

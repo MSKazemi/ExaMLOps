@@ -5,12 +5,20 @@ import { getRole } from '@/lib/auth'
 import { rankCommands } from '@/lib/search'
 import { useSearch, type SearchResult } from '@/lib/search'
 import type { Command } from '@/lib/commands'
+import { cliCommandHref, searchCommands, useCliCatalog } from '@/lib/cli'
+import { fuzzyScore } from '@/lib/search'
+import { resourceHref } from '@/lib/resources'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 
 // A flat, selectable palette row — either a registered command or a federated search hit.
 type Row =
   | { type: 'command'; key: string; label: string; group: string; cmd: Command }
   | { type: 'result'; key: string; label: string; group: string; result: SearchResult }
+  | { type: 'cli'; key: string; label: string; group: string; path: string }
+  | { type: 'resource'; key: string; label: string; group: string; id: string }
+
+// How many `exa` commands the palette offers per query — enough to find one, not a wall.
+const MAX_CLI_ROWS = 8
 
 /**
  * CommandPalette — ⌘K / Ctrl-K global palette (F2 / ADR 0056).
@@ -30,6 +38,8 @@ export function CommandPalette() {
   useFocusTrap(dialogRef, open)
   const role = getRole()
   const { results } = useSearch(query)
+  // Every `exa` command is reachable from ⌘K (ADR 0119): fetched once, only after the user types.
+  const { data: catalog } = useCliCatalog(open && query.trim().length > 0)
 
   // ⌘K / Ctrl-K toggles the palette from anywhere. Resetting query/selection here (an event
   // handler, not an effect) keeps state updates out of the render/effect path.
@@ -66,8 +76,24 @@ export function CommandPalette() {
       group: r.source,
       result: r,
     }))
-    return [...cmdRows, ...resultRows]
-  }, [query, role, results])
+    const cliRows: Row[] =
+      catalog && query.trim()
+        ? searchCommands(catalog.commands, query)
+            .slice(0, MAX_CLI_ROWS)
+            .map((c) => ({ type: 'cli', key: `cli:${c.path}`, label: `exa ${c.path}`, group: 'CLI', path: c.path }))
+        : []
+    // "Manage Projects", "Manage Gateway keys"… — every resource table, by name.
+    const resourceRows: Row[] =
+      catalog?.resources && query.trim()
+        ? catalog.resources
+            .map((r) => ({ r, s: Math.max(fuzzyScore(query, r.title), fuzzyScore(query, r.id)) }))
+            .filter((x) => x.s > 0)
+            .sort((a, b) => b.s - a.s)
+            .slice(0, 5)
+            .map(({ r }) => ({ type: 'resource', key: `res:${r.id}`, label: `Manage ${r.title}`, group: 'Resources', id: r.id }))
+        : []
+    return [...cmdRows, ...resourceRows, ...cliRows, ...resultRows]
+  }, [query, role, results, catalog])
 
   // Derive the effective selection (clamped to the current list) instead of syncing it in an
   // effect — the raw `active` may exceed `rows.length` after the list shrinks.
@@ -77,6 +103,16 @@ export function CommandPalette() {
     if (!row) return
     if (row.type === 'result') {
       navigate(row.result.url)
+      setOpen(false)
+      return
+    }
+    if (row.type === 'resource') {
+      navigate(resourceHref(row.id))
+      setOpen(false)
+      return
+    }
+    if (row.type === 'cli') {
+      navigate(cliCommandHref(row.path))
       setOpen(false)
       return
     }

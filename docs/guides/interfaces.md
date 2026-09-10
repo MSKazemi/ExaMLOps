@@ -80,7 +80,7 @@ Pipeline orchestration dashboard.
 - **Deployments** — the `nightly` schedule and the manual trigger.
 - **Work Pools** — the default process pool that executes flows.
 
-Trigger an ad-hoc run: Deployments → `examlops_scheduled_training/nightly` → **Run** (or use `exa pipeline run --dummy-one`).
+Trigger an ad-hoc run: Deployments → `examlops_scheduled_training/examlops-nightly` → **Run** (or use `exa pipeline run --dummy-one`). Control-plane retrains (`exa retrain`, the approval gate) go to `training_flow/examlops-dispatch` instead, one model × dataset per run.
 
 ---
 
