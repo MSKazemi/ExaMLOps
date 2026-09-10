@@ -106,7 +106,13 @@ markdown_extensions:
   - md_in_html
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  # ```mermaid fences render as diagrams (Material loads Mermaid itself). Without this they showed
+  # as raw source, so every architecture diagram in the docs read as a code block.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

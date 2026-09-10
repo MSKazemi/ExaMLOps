@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the documentation's architecture diagrams render
+
+- The docs site showed every Mermaid diagram (11, across the architecture, project-workspace,
+  control/serving-plane, three-layer and identity-federation pages) as raw source: `superfences`
+  had no Mermaid fence. They now render as diagrams. Two had never been valid Mermaid, hidden
+  while nothing parsed them — a `;` inside a sequence-diagram message (a statement separator) and
+  HTML entities plus a dotted label in a flowchart — and are fixed. All 11 were checked rendering
+  in a headless browser.
+
 ### Changed — carbon is reported as operational, never as a total (ADR 0112 R-ee — ADR 0112 now Accepted)
 
 - Every carbon figure the platform records is operational (energy × grid intensity), and embodied

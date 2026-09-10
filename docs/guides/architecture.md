@@ -132,7 +132,7 @@ sequenceDiagram
     Bridge->>Ingress: POST /infer-pipeline/infer {raw HpcJobV1 fields}
     Note over FT: @serve.batch — up to 32 items / 50ms window
     Ingress->>FT: handle_batch.remote(body)
-    FT->>FT: extract embedding[384]; num_nodes/user_id stay as metadata
+    FT->>FT: extract embedding[384], num_nodes/user_id stay as metadata
     FT->>MR: route.remote(payload)
     MR->>Ray: POST /predict/{model} {features: {embedding}, alias}
     Ray->>ML: resolve alias → version

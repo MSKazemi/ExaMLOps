@@ -48,7 +48,7 @@ flowchart TB
     end
     subgraph platform["ExaMLOps platform"]
       db[(platform.db<br/>projects · resources · storage · pipelines · connections · authz · costs)]
-      minio[(MinIO<br/>s3://examlops-projects/&lt;p&gt;/)]
+      minio[("MinIO<br/>s3://examlops-projects/‹project›/")]
       mlflow[MLflow registry]
       prefect[Prefect<br/>training deployments]
       ray[Ray Serve<br/>MultiModelServer]
@@ -62,7 +62,7 @@ flowchart TB
     ray -->|pull model| mlflow
     db -.connection_ref.-> d7
     prefect -.project tag.-> db
-    ray -.ModelInfo.project.-> db
+    ray -. "ModelInfo.project" .-> db
 ```
 
 A Project ties together five running subsystems — **MinIO** (storage), **D7 secrets** (connection
