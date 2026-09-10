@@ -33,6 +33,8 @@ _SQLITE_DBS: list[dict[str, str]] = [
     {"name": "approvals", "env": "CONTROL_PLANE_DB", "default": "/data/approvals.db"},
     {"name": "skipper_memory", "env": "AGENT_MEMORY_DB", "default": "./skipper_memory.db"},
     {"name": "agent_memory", "env": "AGENT_DB", "default": "./agent_memory.db"},
+    # The Skipper memory-review queue (HITL-gated procedure writes) — instance data like the rest.
+    {"name": "skipper_review", "env": "AGENT_MEMORY_REVIEW_DB", "default": "./skipper_review.db"},
     {"name": "mlflow", "env": "MLFLOW_SQLITE_DB", "default": "./mlflow.db"},
 ]
 
@@ -50,6 +52,11 @@ def _platform_is_postgres() -> bool:
 def _resolve_db_path(spec: dict[str, str]) -> str:
     if spec["name"] == "platform":
         return os.getenv("PLATFORM_DB") or _default_db_path()
+    if spec["env"].startswith("AGENT_") and not os.getenv(spec["env"]):
+        # The agent's files follow the instance-data root like the agent itself does (ADR 0128).
+        from examlops.lifecycle.datadir import agent_db_default
+
+        return agent_db_default(Path(spec["default"]).name)
     return os.getenv(spec["env"], spec["default"])
 
 

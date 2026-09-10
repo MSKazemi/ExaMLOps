@@ -29,7 +29,6 @@ Example ``policy.yaml``::
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,9 +66,11 @@ def _normalized_effect(rule: Mapping[str, Any], *, origin: str) -> str:
 
 
 def _config_dir() -> Path:
-    """``EXAMLOPS_CONFIG_DIR`` (shared mount) or ``~/.config/examlops`` — matches providers.loader."""
-    env = os.getenv("EXAMLOPS_CONFIG_DIR")
-    return Path(env).expanduser() if env else Path.home() / ".config" / "examlops"
+    """``EXAMLOPS_CONFIG_DIR`` → ``<EXAMLOPS_DATA_DIR>/config`` → ``~/.config/examlops`` — one rule
+    shared with providers.loader and the HPC registry (ADR 0128)."""
+    from examlops.lifecycle.datadir import config_dir
+
+    return config_dir()
 
 
 POLICY_YAML = _config_dir() / "policy.yaml"

@@ -1094,6 +1094,41 @@ Snapshots and restores the platform. A bare `create` writes a single `platform.d
 | `exa backup prune` | Prunes old bundles by `--keep` count and/or `--days` age (never removes the newest / last-good bundle). **(mutation)** | Enforce retention without risking the good copy | `exa backup prune --keep 7 --days 30` |
 | `exa backup pull` | Downloads + extracts an off-site (S3) bundle into `--dest` (verify before restoring). **(mutation)** | Fetch a bundle back from off-site storage | `exa backup pull bundle-20260730 --dest ./restore` |
 
+### `exa instance` — this install's layers: core · deployment · instance data (ADR 0128)
+
+ExaMLOps is three layers: the **core** (the code a release replaces), the **deployment** (Compose, Helm, a bare host) and the **instance data** users create after install. `exa instance` shows all three, pre-flights them, and creates an instance-data root (`EXAMLOPS_DATA_DIR`). Guide: [Core · deployment · instance data](../guides/three-layer-architecture.md).
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa instance info` | Shows the core (release, data format, how it is installed), the deployment (Kubernetes / container / host, image tag, datastore engine), every place instance data lives (datastores, MLflow, object store, site configuration, site profile, use-case pack, providers, feature store, backups — each with who set it, whether it exists, its size and which backup tier captures it), the data-format stamp and compatibility verdict, and the site's modules. | Know exactly what an upgrade replaces and what it must keep | `exa instance info` |
+| `exa instance check` | Pre-flight: the data is compatible with this release, the data root exists and is writable, the site profile has no warnings, the use-case pack resolves (and its optional `requires_examlops` specifier admits this release). Exits **1** on any failed check. | Gate before and after installing a new release (CI or by hand) | `exa instance check` |
+| `exa instance init` | Creates an instance-data root: the layout (`usecase/`, `config/`, `.providers/`, `backups/`, `agent/`), `site.toml` (from `--preset`, `--site-name`), optionally a copy of a use-case pack (`--pack`, never overwritten without `--overwrite-pack`), and a stamped datastore. Idempotent. **(mutation, CLI only)** | Set up the data space of a new install so it lives outside the code | `exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy --preset standard` |
+
+### `exa upgrade` — bring an instance's data forward to the installed release (ADR 0128)
+
+Installing a release replaces the core only. The datastore carries a data-format stamp; `exa upgrade` compares it with the release, takes a backup, and runs the pending migrations. Online migrations also apply by themselves when any process first opens the datastore; data a newer release made unreadable is refused. Guide: [Upgrades & compatibility](../guides/upgrade-and-compatibility.md).
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa upgrade plan` | The installed release's verdict on the data (`current`, `upgrade_available`, `upgrade_required`, `newer_compatible`, `too_new`), the stamp, and the migrations it would run. Exits **1** only when the release must not open the data. | First command after installing a new release | `exa upgrade plan` |
+| `exa upgrade apply` | Takes a pre-upgrade backup bundle (`--tier`, `--backup-dir`; `--no-backup` to skip), then runs every pending migration — online and offline — advancing the stamp and recording each step (backup id included). `--dry-run` previews. **(mutation, CLI only)** | Run the offline migrations of a release, with the undo taken first | `exa upgrade apply --dry-run` |
+| `exa upgrade history` | Every create, adopt, migration and restore recorded on this datastore, newest first (`--limit`). | Audit how the data got to its current format | `exa upgrade history` |
+
+### `exa modules` — site feature profile: which modules this centre runs (ADR 0128)
+
+A *module* is a coarse slice of the platform (training, serving, quality, governance, genai, llm-serving, agent, autopilot, hpc, finops, workbenches, observability, integrations; `core` is always on). A site profile (`site.toml`, overlaid by `EXAMLOPS_FEATURES`) chooses them; a disabled module's commands disappear from `exa --help` and exit **3**, its dashboard routes answer 404 `module_disabled`, and `render` turns the profile into Compose / Helm input. Guide: [Site feature profiles](../guides/site-feature-profiles.md).
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa modules list` | Every module, on/off at this site and why (preset, site profile, env, dependency), with the commands and services it owns. | See what runs at this centre | `exa modules list` |
+| `exa modules show` | Everything one module owns: commands, dashboard flags and API routes, Compose services/profiles, Helm switches, related env gates, prerequisites. | Before switching a module off, see what goes with it | `exa modules show agent` |
+| `exa modules presets` | The named starting points: `full`, `standard`, `minimal`, `hpc-center`, `genai`. | Pick a base profile for a new centre | `exa modules presets` |
+| `exa modules enable` | Switches a module on in the site profile; its dependencies come with it. Audited. **(mutation)** | This centre has GPU clusters | `exa modules enable hpc` |
+| `exa modules disable` | Switches a module off; modules that require it go off too (`core` cannot be disabled). Audited. **(mutation)** | No LLM endpoint at this centre | `exa modules disable agent` |
+| `exa modules preset` | Bases the profile on a preset (`--reset-overrides` drops earlier enable/disable entries, `--site-name` labels the centre). Audited. **(mutation)** | Start a new centre from a known shape | `exa modules preset hpc-center --site-name jsc-booster` |
+| `exa modules reset` | Deletes the site profile — every module on again (`full`). **(mutation, destructive)** | Undo all site customisation | `exa modules reset` |
+| `exa modules render` | Turns the profile into deployment input: `--target env` (an `EXAMLOPS_FEATURES` line), `compose` (`COMPOSE_PROFILES` + an override that parks disabled always-on services and relaxes their dependents), `helm` (values: `site.features`, `agent.enabled`); `--out` writes the file. | Make Compose or Kubernetes run exactly the site's modules | `exa modules render --target compose --out docker-compose.site.yml` |
+
 ### `exa events` — NovaFabric event backbone (transactional outbox)
 
 A durable transactional outbox: events are enqueued locally, then relayed through `log` or the

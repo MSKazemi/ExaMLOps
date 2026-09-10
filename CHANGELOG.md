@@ -5,6 +5,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — three layers: core · deployment · instance data (ADR 0128)
+
+- **One instance-data root, `EXAMLOPS_DATA_DIR`.** When set, the platform datastore
+  (`<root>/platform.db`), the site profile (`site.toml`), site configuration (`config/` — shared by
+  the policy, provider and HPC-registry loaders), the upgrade backup directory (`backups/`) and the
+  site's own use-case pack (`usecase/`, resolved by both pack loaders) live there, outside the code
+  a release replaces. Explicit per-store variables still win; unset ⇒ nothing changes. Compose sets
+  it to `/state` on every service that mounts the state directory. An installed wheel with no data
+  root now keeps `platform.db` in `$XDG_DATA_HOME/examlops` instead of inside its own venv; `exa
+  doctor` uses the same resolution.
+- **`exa instance info | check | init`.** The three layers of an install and every place user data
+  lives (with the backup tier that captures it); a pre-flight that exits 1 on a problem (data
+  compatibility, data root, site profile, use-case pack incl. an optional
+  `[pack] requires_examlops` specifier); creation of a data root, idempotent, seeding a pack.
+- **A data-format stamp in every datastore.** `platform_meta` records `instance_id`, `data_format`,
+  `min_reader_format` and the releases that created / last opened the data; `platform_upgrades`
+  records every create, adopt and migration. Existing data is adopted at format 1 on first open.
+  A release refuses data a newer release made unreadable to it (`IncompatibleDataError`, override
+  `EXAMLOPS_ALLOW_INCOMPATIBLE_DATA`) and opens newer-but-compatible data as a rollback.
+- **Ordered data migrations + `exa upgrade plan | apply | history`.** Online migrations apply on
+  first open; breaking ones only through `exa upgrade apply`, which backs up first.
+- **Site feature profiles — `exa modules list | show | presets | enable | disable | preset | reset
+  | render`.** 14 modules (core always on), presets `full` (default), `standard`, `minimal`,
+  `hpc-center`, `genai`, a `site.toml` overlaid by `EXAMLOPS_FEATURES`. A disabled module's
+  commands leave `exa --help` and exit 3; its dashboard API routes answer `404 module_disabled`;
+  its dashboard flags evaluate false; `GET /api/v1/modules` exposes the profile. `render` emits
+  Compose input (profiles + an override parking disabled services) and Helm values.
+- **Helm:** `site.features` → `EXAMLOPS_FEATURES` in every pod, `agent.enabled`,
+  `EXAMLOPS_DEPLOYMENT=kubernetes`, and an optional `pre-install,pre-upgrade` Job
+  (`upgrade.hook.enabled`) running `exa upgrade apply`.
+- Guides: `docs/guides/three-layer-architecture.md`, `upgrade-and-compatibility.md`,
+  `site-feature-profiles.md`.
+
+### Changed — backups carry and respect the data format (ADR 0128)
+
+- Bundle manifests record the data's `instance_id`, `data_format` and `min_reader_format`;
+  `exa backup restore-bundle` refuses a bundle the running release cannot read, and forgets the
+  schema-ready cache after a restore so the next open re-stamps and migrates.
+- The config tier also captures the data root's content (`site.toml`, `usecase/`, `config/`,
+  `.providers/`) and the site configuration directory / site profile when they live elsewhere,
+  and restores data-root content in place. The sqlite tier gains the agent memory-review queue
+  (`AGENT_MEMORY_REVIEW_DB`), which was not backed up.
+
 ### Changed — core ⟂ deployment: the build context and the runtime code stop reaching into the checkout (ADR 0129 §8)
 
 - **The build context no longer carries the private git, live datastores or host `node_modules`.**

@@ -714,6 +714,29 @@ The control plane and dashboard are auto-instrumented via the `opentelemetry-ins
 
 ---
 
+## Instance data, upgrades & site modules (ADR 0128)
+
+The platform is three layers — the **core** (the code a release replaces), the **deployment**
+(Compose, Helm, a bare host) and the **instance data** users create. These variables are the
+seams between them. All are optional: with none set, an install behaves exactly as before.
+Guides: [Core · deployment · instance data](../guides/three-layer-architecture.md),
+[Upgrades & compatibility](../guides/upgrade-and-compatibility.md),
+[Site feature profiles](../guides/site-feature-profiles.md).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_DATA_DIR` | unset (legacy per-store locations) | The **instance-data root**. When set, the defaults of `PLATFORM_DB` (`<root>/platform.db`), the site profile (`<root>/site.toml`), the site configuration directory (`<root>/config`), the HPC cluster registry (`<root>/config/clusters.yaml`), the upgrade backup directory (`<root>/backups`), the agent's SQLite files (`<root>/agent/`, when `AGENT_DB`/`AGENT_MEMORY_DB`/`AGENT_MEMORY_REVIEW_DB` are unset) and the site's use-case pack (`<root>/usecase`, used when it has a `pack.toml`) derive from it. An explicitly set per-store variable still wins. Compose sets it to `/state` on every service that mounts the state directory. Create one with `exa instance init`. |
+| `EXAMLOPS_FEATURES` | unset (every module) | Site feature-profile overlay, read by the CLI, the dashboard and the services: `preset:<name>`, `+module` (or a bare `module`), `-module`, comma- or space-separated — e.g. `preset:standard,+hpc,-finops`. Layers **over** the site profile file. The Helm chart sets it from `site.features`. `exa modules render` prints the value for a profile. |
+| `EXAMLOPS_SITE_PROFILE` | `<EXAMLOPS_DATA_DIR>/site.toml`, else `<config dir>/site.toml` | Path of the site profile file that `exa modules enable|disable|preset` edits. |
+| `EXAMLOPS_DEPLOYMENT` | detected | How this process is run, as reported by `exa instance info`: `kubernetes` (set by the Helm chart), `compose`, `container`, `host`. Unset ⇒ detected from `KUBERNETES_SERVICE_HOST` and the container marker files. |
+| `EXAMLOPS_ALLOW_INCOMPATIBLE_DATA` | off | Open a datastore whose data format this release must not read (written by a newer release after a breaking migration). Off ⇒ the platform refuses it with `IncompatibleDataError`. Only for a deliberate, understood downgrade — restoring the pre-upgrade backup is the safe way back. |
+| `EXAMLOPS_IMAGE_TAG` | `latest` | Image tag Compose runs; `exa instance info` reports it as part of the deployment layer. |
+| `KUBERNETES_SERVICE_HOST` | set by Kubernetes | **Set by the kubelet** in every pod; read only to detect that the process runs on Kubernetes. Not an operator knob. |
+| `POD_NAMESPACE` / `COMPOSE_PROJECT_NAME` | unset | Reported by `exa instance info` when the deployment provides them. |
+| `XDG_DATA_HOME` | `~/.local/share` | Where an **installed wheel** keeps `examlops/platform.db` when neither `PLATFORM_DB` nor `EXAMLOPS_DATA_DIR` is set (a source checkout keeps `<repo>/platform.db`). |
+
+---
+
 ## Feature gates
 
 Every gate here is **off unless set**, and a gate that is off gates nothing — none of them will
@@ -747,7 +770,7 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_CONFIG_DIR` | `~/.config/examlops` | Directory holding `config.toml`, `providers.yaml`, `finops.yaml`, `policy.yaml`. `EXAMLOPS_CONFIG` overrides the config *file* specifically. |
+| `EXAMLOPS_CONFIG_DIR` | `<EXAMLOPS_DATA_DIR>/config`, else `~/.config/examlops` | Site configuration directory: `providers.yaml`, `finops.yaml`, `policy.yaml`. The operator's own `config.toml` is located by `EXAMLOPS_CONFIG` instead. |
 | `EXAMLOPS_REPO_ROOT` | auto-detected | Repository root, when the platform runs from somewhere the walk-up cannot find it. |
 | `EXAMLOPS_TENANT` | `default` | Tenant recorded on writes when multi-tenancy is on. |
 | `EXAMLOPS_VAULT_TOKEN` | unset | Token for the OpenBao/Vault secrets backend. Unset ⇒ the backend degrades to Fernet, then to env. |

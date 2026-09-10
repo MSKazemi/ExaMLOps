@@ -49,6 +49,29 @@ def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "exa-backup"
 
 
+def _data_stamp() -> dict[str, Any]:
+    """The live datastore's data-format stamp (ADR 0128), for the manifest.
+
+    Read on a raw connection, never through ``init_db``: a backup must still be takeable from
+    data this release cannot open. Empty when the datastore is unreachable or never stamped.
+    """
+    from examlops.data import get_db
+    from examlops.lifecycle import dataformat
+
+    try:
+        with get_db() as conn:
+            stamp = dataformat.read_stamp(conn)
+    except Exception:  # noqa: BLE001 — an unreachable datastore still gets its other tiers saved
+        stamp = None
+    if stamp is None:
+        return {}
+    return {
+        "instance_id": stamp.instance_id,
+        "data_format": stamp.data_format,
+        "min_reader_format": stamp.min_reader_format,
+    }
+
+
 def _overall_status(tier_results: list[TierResult]) -> str:
     statuses = [t.status for t in tier_results]
     if any(s == FAILED for s in statuses):
@@ -109,6 +132,8 @@ def create_bundle(
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "created_by": f"exa-backup/{_actor()}",
         "examlops_version": _examlops_version(),
+        # ADR 0128: what the data is, so a restore can refuse a bundle this release cannot read.
+        **_data_stamp(),
         "profile": profile or ("all" if requested >= set(_ALL_TIERS) else "custom"),
         "requested_tiers": sorted(requested),
         "strict": strict,
@@ -192,12 +217,24 @@ def restore_bundle(
         raise ValueError(f"refusing to restore an unverified bundle: {result['reason']}")
 
     manifest = json.loads((d / _MANIFEST_NAME).read_text())
+    # ADR 0128: never put data back that this release would then refuse (or worse, misread).
+    # A bundle from before the stamp existed is the baseline format and always restorable.
+    from examlops.lifecycle import dataformat
+
+    compat = dataformat.evaluate_manifest(manifest)
+    if not compat.ok:
+        raise ValueError(f"refusing to restore an incompatible bundle: {compat.message}")
     available = list(manifest.get("tiers", {}).keys())
     selected = set(tiers) if tiers else {t for t in available if t in ("sqlite", "config")}
 
     restored: dict[str, Any] = {}
     if "sqlite" in selected:
         restored["sqlite"] = sqlite_tier.restore_sqlite_tier(d, force=force)
+        # The restored file may be older than this process's cached "schema is ready" verdict:
+        # forget it so the next helper re-runs the additive DDL, the stamp and online migrations.
+        from examlops.platform_db import _INITIALIZED_PATHS
+
+        _INITIALIZED_PATHS.clear()
     if "config" in selected:
         restored["config"] = config_tier.restore_config_tier(d)
     if "postgres" in selected:
@@ -220,6 +257,7 @@ def restore_bundle(
         "detail": restored,
         "failed": failed,
         "ok": not failed,
+        "compatibility": compat.to_dict(),
     }
 
 

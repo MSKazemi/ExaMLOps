@@ -53,10 +53,19 @@ _LEGACY_DATASETS = {
 
 
 def usecase_dir() -> Path:
-    """Resolve the active pack directory: ``EXAMLOPS_USECASE_DIR`` → default pack → legacy tree."""
+    """Resolve the active pack directory.
+
+    ``EXAMLOPS_USECASE_DIR`` → the site's pack in the instance-data root
+    (``$EXAMLOPS_DATA_DIR/usecase``, ADR 0128) → the bundled default pack → the legacy tree.
+    """
     env = os.getenv("EXAMLOPS_USECASE_DIR")
     if env:
         return Path(env).expanduser().resolve()
+    data_root = os.getenv("EXAMLOPS_DATA_DIR", "").strip()
+    if data_root:
+        site_pack = Path(data_root).expanduser() / "usecase"
+        if (site_pack / "pack.toml").is_file():
+            return site_pack.resolve()
     if (_DEFAULT_PACK / "pack.toml").exists():
         return _DEFAULT_PACK
     return _REPO_ROOT / "pipelines"  # pre-migration fallback

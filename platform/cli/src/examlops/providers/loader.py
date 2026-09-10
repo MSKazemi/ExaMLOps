@@ -25,9 +25,11 @@ from .registry import get_provider
 
 def _config_dir() -> Path:
     """The examlops config dir. ``EXAMLOPS_CONFIG_DIR`` relocates it (e.g. a shared mount the
-    Platform Ops workbench and the platform services both see), else ``~/.config/examlops``."""
-    env = os.getenv("EXAMLOPS_CONFIG_DIR")
-    return Path(env).expanduser() if env else Path.home() / ".config" / "examlops"
+    Platform Ops workbench and the platform services both see), then ``<EXAMLOPS_DATA_DIR>/config``
+    (ADR 0128), else ``~/.config/examlops``."""
+    from examlops.lifecycle.datadir import config_dir
+
+    return config_dir()
 
 
 CONFIG_DIR = _config_dir()

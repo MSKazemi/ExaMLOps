@@ -63,6 +63,19 @@ Persistent state is provided by managed services referenced via `values.yaml`:
   the chart's dependency-free `db`/`log` defaults. Keep the HPA disabled until the remaining
   process-local controls and failover behavior are resolved and tested. NATS/Kafka are placeholders.
 
+## Site modules and data upgrades (ADR 0128)
+
+- **`site.features`** — the centre's [site feature profile](../../../../docs/guides/site-feature-profiles.md),
+  injected into every pod as `EXAMLOPS_FEATURES` (`""` = every module). Generate it, together with
+  **`agent.enabled`** (set `false` to not deploy the agent tier), from the site profile:
+  `exa modules render --target helm --out site-values.yaml`, then `-f site-values.yaml`.
+- **`upgrade.hook.enabled`** — a `pre-install,pre-upgrade` Job running `exa upgrade apply` with the
+  control-plane image, so the datastore is at the new release's data format before any new pod
+  starts (a failed migration fails the `helm upgrade`). Online migrations also apply on first open;
+  the hook matters for releases with offline ones. It does not back up Postgres — take a
+  CloudNativePG backup first. See [Upgrades & compatibility](../../../../docs/guides/upgrade-and-compatibility.md).
+- Every tier gets `EXAMLOPS_DEPLOYMENT=kubernetes`, which `exa instance info` reports.
+
 ## Secrets — never templated
 
 The chart references existing Kubernetes Secrets and never embeds their values. Existing releases

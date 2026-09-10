@@ -160,7 +160,10 @@ nav:
       - Management Agent: guides/agent.md
       - CI/CD — GitLab Pipeline: guides/cicd.md
       - JupyterHub Notebooks: guides/jupyter.md
+      - Core · Deployment · Instance Data (three layers): guides/three-layer-architecture.md
       - Enterprise Installation & Configuration: guides/enterprise-installation.md
+      - Upgrades & Compatibility (keep user data across releases): guides/upgrade-and-compatibility.md
+      - Site Feature Profiles (modules per centre): guides/site-feature-profiles.md
       - Releases — what is published & how to verify it: guides/release-process.md
       - Production Hardening Checklist: guides/production-hardening.md
       - Backup, Restore & Disaster Recovery: guides/backup-restore.md

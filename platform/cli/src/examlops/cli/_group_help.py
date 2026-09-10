@@ -232,6 +232,19 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "backup": [
         ("Backups & bundles", "exa backup list"),
     ],
+    "instance": [
+        ("Core, deployment and every user-data location", "exa instance info"),
+        ("Pre-flight before/after an upgrade", "exa instance check"),
+    ],
+    "upgrade": [
+        ("What the installed release makes of the data", "exa upgrade plan"),
+        ("Back up, then migrate", "exa upgrade apply --dry-run"),
+    ],
+    "modules": [
+        ("What runs at this site, and why", "exa modules list"),
+        ("Switch a module off here", "exa modules disable agent"),
+        ("Deployment input from the profile", "exa modules render --target compose"),
+    ],
     "events": [
         ("Event-outbox backlog", "exa events stats"),
     ],

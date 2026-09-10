@@ -33,6 +33,11 @@ def registry_path() -> Path:
     env = os.getenv("EXAMLOPS_HPC_REGISTRY")
     if env:
         return Path(env).expanduser()
+    # A data root (ADR 0128) keeps the site's cluster definitions with the rest of its data.
+    from examlops.lifecycle.datadir import data_path
+
+    if (site := data_path("config", "clusters.yaml")) is not None:
+        return site
     return Path.home() / ".config" / "examlops" / "clusters.yaml"
 
 

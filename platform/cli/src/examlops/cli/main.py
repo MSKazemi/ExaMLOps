@@ -9,7 +9,8 @@ from rich.console import Console
 
 from examlops.cli import _output, _plugins
 from examlops.cli._group_help import attach_group_epilogs
-from examlops.cli._help import SuggestGroup, assign_panels, make_ordered_group
+from examlops.cli._help import assign_panels, make_ordered_group
+from examlops.cli._modules_gate import ModuleGatedGroup
 from examlops.cli.commands import (
     ab_cmd,
     admission_cmd,
@@ -57,10 +58,12 @@ from examlops.cli.commands import (
     hardware_cmd,
     hpc_cmd,
     hpo_cmd,
+    instance_cmd,
     llm_serve_cmd,
     mcp_cmd,
     models,
     modelzoo,
+    modules_cmd,
     namespace_cmd,
     pipeline,
     plugins_cmd,
@@ -87,6 +90,7 @@ from examlops.cli.commands import (
     status,
     supplychain_cmd,
     synth_cmd,
+    upgrade_cmd,
     vector_cmd,
     workbench_cmd,
 )
@@ -150,15 +154,26 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("Projects & Workspaces", ["project", "namespace", "connection", "workbench"]),
     (
         "Platform & Integrations",
-        ["stack", "backup", "events", "admission", "exchange", "seanerbus"],
+        [
+            "stack",
+            "backup",
+            "instance",
+            "upgrade",
+            "modules",
+            "events",
+            "admission",
+            "exchange",
+            "seanerbus",
+        ],
     ),
 ]
 
 app = typer.Typer(
     name="exa",
-    # Ordered group keeps fuzzy 'did you mean' (SuggestGroup base) AND renders panels in
-    # the _ROOT_PANELS order rather than registration/first-seen order.
-    cls=make_ordered_group(_ROOT_PANELS, base=SuggestGroup),
+    # Ordered group keeps fuzzy 'did you mean' (SuggestGroup, via ModuleGatedGroup) AND renders
+    # panels in the _ROOT_PANELS order; the gate hides/refuses commands of modules the site
+    # profile switches off (ADR 0128).
+    cls=make_ordered_group(_ROOT_PANELS, base=ModuleGatedGroup),
     help="ExaMLOps platform CLI — manage models, training, inference, and services.",
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -270,6 +285,11 @@ pipeline.app.add_typer(
 app.add_typer(stack.app, name="stack", help="Docker Compose stack")
 app.add_typer(config_cmd.app, name="config", help="CLI configuration")
 app.add_typer(backup_cmd.app, name="backup", help="Backup / restore the platform datastore")
+app.add_typer(
+    instance_cmd.app, name="instance", help="This install's layers — core, deployment, data"
+)
+app.add_typer(upgrade_cmd.app, name="upgrade", help="Upgrade this instance's data to the release")
+app.add_typer(modules_cmd.app, name="modules", help="Site feature profile — modules on/off")
 app.add_typer(
     events_cmd.app, name="events", help="NovaFabric event backbone (transactional outbox)"
 )

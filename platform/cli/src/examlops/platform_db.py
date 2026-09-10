@@ -15,7 +15,28 @@ from examlops.resilience import db as _rdb
 
 
 def _db_path() -> str:
-    return os.getenv("PLATFORM_DB", str(Path(__file__).parents[4] / "platform.db"))
+    if explicit := os.getenv("PLATFORM_DB"):
+        return explicit
+    # ADR 0128: with a data root the datastore lives there, not beside the code.
+    if root := os.getenv("EXAMLOPS_DATA_DIR", "").strip():
+        return str(Path(root).expanduser() / "platform.db")
+    return _legacy_db_default()
+
+
+@functools.cache
+def _legacy_db_default() -> str:
+    """The datastore location when neither ``PLATFORM_DB`` nor a data root is set.
+
+    A source checkout keeps its historical ``<repo>/platform.db``. An installed wheel has no repo:
+    ``parents[4]`` is then the venv prefix, so the datastore would land inside the software it is
+    meant to outlive — it goes to the user data dir (``$XDG_DATA_HOME/examlops``) instead.
+    """
+    repo = Path(__file__).parents[4]
+    if (repo / "platform" / "cli" / "pyproject.toml").is_file():
+        return str(repo / "platform.db")
+    xdg = os.getenv("XDG_DATA_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return str(base / "examlops" / "platform.db")
 
 
 @contextmanager
@@ -1664,6 +1685,12 @@ def init_db(*, force: bool = False) -> None:
                 ON repro_bundles (model, version, bundle_version);
         """)
         _migrate_columns(conn)
+        # ADR 0128: stamp the data format, refuse data a newer release made unreadable to this
+        # one (IncompatibleDataError propagates — and the path stays uncached, so every later
+        # call refuses too), and apply pending online migrations.
+        from examlops.lifecycle.dataformat import on_schema_ready
+
+        on_schema_ready(conn)
     if cacheable:
         _INITIALIZED_PATHS.add(path)
 

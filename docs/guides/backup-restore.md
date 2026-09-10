@@ -92,6 +92,15 @@ exa backup restore-bundle ./backups/examlops-backup-<ts> \
 exa backup restore ./backups/platform-<ts>.db --force
 ```
 
+**Compatibility (ADR 0128).** Every bundle records the data-format stamp of the data it captured
+(`instance_id`, `data_format`, `min_reader_format`). `restore-bundle` refuses a bundle the running
+release could not read — install that release first, or pick an older bundle — and a bundle from
+before the stamp existed restores as the baseline format and is brought forward on the next open.
+When `EXAMLOPS_DATA_DIR` is set, the config tier also carries the data root's own content —
+`site.toml`, the site's `usecase/` pack, `config/`, `.providers/` — and restores it in place, so a
+fresh install gets back the centre's models, pipelines and module selection, not just its
+databases. See [Upgrades & compatibility](upgrade-and-compatibility.md).
+
 `restore-bundle` verifies the bundle first and refuses an unverified one. Restores auto-create a
 **rollback bundle** first (a fast control-plane backup, best-effort). The SQLite tier re-verifies
 integrity + the audit chain after restoring, so a bad restore fails loudly.

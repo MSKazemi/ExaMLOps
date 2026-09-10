@@ -6,6 +6,8 @@ environment, so a deployment points the platform at its own pack without any cod
 
     RAY_MODELS_DIR / MODELS_YAML_DIR   explicit per-model YAML dir (highest precedence)
     EXAMLOPS_USECASE_DIR               pack root; YAML dir is ``<root>/models``
+    $EXAMLOPS_DATA_DIR/usecase         the site's own pack, kept in the instance-data root so it
+                                       survives upgrades (ADR 0128) — used when it has a pack.toml
     installed pack (entry point)       a pip-installed pack registered under
                                        ``examlops.usecase_packs`` (Stage 5, ADR 0094)
     (default)                          the bundled reference pack, ``usecases/seanergy/models``
@@ -60,6 +62,9 @@ def models_dir(default: str = DEFAULT_MODELS_DIR) -> Path:
     pack_root = os.getenv("EXAMLOPS_USECASE_DIR")
     if pack_root:
         return Path(pack_root) / "models"
+    data_root = os.getenv("EXAMLOPS_DATA_DIR", "").strip()
+    if data_root and (Path(data_root).expanduser() / "usecase" / "pack.toml").is_file():
+        return Path(data_root).expanduser() / "usecase" / "models"
     ep_pack = _entry_point_pack_root()
     if ep_pack is not None:
         return ep_pack / "models"

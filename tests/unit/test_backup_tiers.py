@@ -180,6 +180,9 @@ def test_config_tier_skips_when_dir_absent(tmp_path, monkeypatch):
     from examlops.backup import config_tier
 
     monkeypatch.setenv("EXAMLOPS_CONFIG", str(tmp_path / "does-not-exist" / "config.toml"))
+    # The site configuration directory (policy/providers/HPC registry) is captured too when it
+    # lives elsewhere (ADR 0128) — point it at nothing, or the host's ~/.config/examlops counts.
+    monkeypatch.setenv("EXAMLOPS_CONFIG_DIR", str(tmp_path / "no-site-config"))
     monkeypatch.delenv("EXAMLOPS_SECRETS_KEYS", raising=False)
     res = config_tier.backup_config_tier(tmp_path)
     assert res.status == "skipped"

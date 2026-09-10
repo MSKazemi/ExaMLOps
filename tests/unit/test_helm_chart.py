@@ -330,3 +330,68 @@ def test_the_images_make_builds_are_the_images_the_chart_asks_for():
         f"`make images` builds {sorted(built)} but the chart deploys {sorted(rendered)} — "
         "a cluster would pull an image that was never built"
     )
+
+
+# ── Site modules and data upgrades (ADR 0128) ─────────────────────────────────────────────────
+
+
+def _site_render(tmp_path: Path, values: dict | None = None, *extra: str) -> list[dict]:
+    args = ["--set", "global.imageRegistry=reg.example.org/"]
+    if values is not None:
+        vf = tmp_path / "site-values.yaml"
+        vf.write_text(yaml.safe_dump(values))
+        args += ["-f", str(vf)]
+    done = _render(*args, *extra)
+    assert done.returncode == 0, done.stderr
+    return [d for d in yaml.safe_load_all(done.stdout) if d]
+
+
+def _component_kinds(docs: list[dict], component: str) -> set[str]:
+    return {
+        d["kind"]
+        for d in docs
+        if d.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") == component
+    }
+
+
+def _configmap(docs: list[dict]) -> dict:
+    return next(d for d in docs if d["kind"] == "ConfigMap")["data"]
+
+
+@needs_helm
+def test_default_chart_runs_every_module_and_no_upgrade_hook(tmp_path):
+    docs = _site_render(tmp_path)
+    data = _configmap(docs)
+    assert data["EXAMLOPS_DEPLOYMENT"] == "kubernetes"
+    assert "EXAMLOPS_FEATURES" not in data  # "" = every module, the pre-0128 behaviour
+    assert "Deployment" in _component_kinds(docs, "agent")
+    assert not [d for d in docs if d["kind"] == "Job"]
+
+
+@needs_helm
+def test_rendered_site_values_reach_every_pod_and_drop_the_agent_tier(tmp_path):
+    from examlops.lifecycle import modules as mods
+
+    profile = mods.resolve(
+        site=mods.SiteFile("x", False), env={mods.FEATURES_ENV: "preset:standard,+hpc"}
+    )
+    docs = _site_render(tmp_path, mods.render_helm(profile))
+    assert _configmap(docs)["EXAMLOPS_FEATURES"] == "preset:standard,+hpc"
+    assert _component_kinds(docs, "agent") == set()  # `standard` has no agent module
+    for d in docs:  # every remaining tier reads the shared ConfigMap, so every pod sees it
+        if d["kind"] == "Deployment":
+            refs = d["spec"]["template"]["spec"]["containers"][0].get("envFrom", [])
+            assert any("configMapRef" in r for r in refs), d["metadata"]["name"]
+
+
+@needs_helm
+def test_upgrade_hook_runs_exa_upgrade_apply_before_new_pods(tmp_path):
+    docs = _site_render(tmp_path, None, "--set", "upgrade.hook.enabled=true")
+    job = next(d for d in docs if d["kind"] == "Job")
+    assert job["metadata"]["annotations"]["helm.sh/hook"] == "pre-install,pre-upgrade"
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"][:4] == ["exa", "--yes", "upgrade", "apply"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["EXAMLOPS_DB_BACKEND"] == "postgres"
+    # a hook runs before the chart's own resources exist on a first install: no ConfigMap ref
+    assert all("configMapRef" not in r for r in container.get("envFrom", []))

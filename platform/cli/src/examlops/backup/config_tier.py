@@ -66,6 +66,65 @@ def _repo_root() -> Path | None:
     return None
 
 
+# Instance-data content kept under the data root (ADR 0128) — user-owned, so always captured.
+# The datastores themselves are the sqlite tier's; backups/ is where bundles land.
+_DATA_ROOT_CONTENT = ("site.toml", "usecase", "config", ".providers")
+
+
+def _data_root_items(config_out: Path) -> list[dict[str, Any]]:
+    """Tar the site's own content under ``EXAMLOPS_DATA_DIR`` (profile, pack, site config).
+
+    Also captures the site configuration directory and the site profile when they live outside
+    the data root (``EXAMLOPS_CONFIG_DIR`` / ``EXAMLOPS_SITE_PROFILE``) and outside the CLI config
+    tree this tier already captures — the files the policy, provider and HPC loaders read.
+    """
+    from examlops.lifecycle.datadir import config_dir, data_root
+    from examlops.lifecycle.modules import site_profile_path
+
+    items: list[dict[str, Any]] = []
+    captured: set[Path] = {_config_dir().resolve()}
+    root = data_root()
+    if root is not None and root.is_dir():
+        for rel in _DATA_ROOT_CONTENT:
+            src = root / rel
+            if not src.exists():
+                continue
+            arc = "data-root_" + rel.lstrip(".").replace("/", "_")
+            dest = config_out / f"{arc}.tar.gz"
+            size = _tar_dir(src, dest, arcname=rel)
+            captured.add(src.resolve())
+            items.append(
+                {
+                    "name": f"data-root:{rel}",
+                    "file": f"config/{arc}.tar.gz",
+                    "source": str(src),
+                    "restore_to": "data-root",
+                    "sha256": sha256_file(dest),
+                    "size_bytes": size,
+                    "status": OK,
+                }
+            )
+    for label, src in (("site-config", config_dir()), ("site-profile", site_profile_path()[0])):
+        if not src.exists() or any(
+            src.resolve() == c or c in src.resolve().parents for c in captured
+        ):
+            continue
+        dest = config_out / f"{label}.tar.gz"
+        size = _tar_dir(src, dest, arcname=src.name)
+        captured.add(src.resolve())
+        items.append(
+            {
+                "name": label,
+                "file": f"config/{label}.tar.gz",
+                "source": str(src),
+                "sha256": sha256_file(dest),
+                "size_bytes": size,
+                "status": OK,
+            }
+        )
+    return items
+
+
 def backup_config_tier(dest_dir: Path, *, with_content: bool = False) -> TierResult:
     """Tar the config tree (+ optional use-case content) into ``dest_dir/config/``."""
     config_out = dest_dir / "config"
@@ -106,6 +165,8 @@ def backup_config_tier(dest_dir: Path, *, with_content: bool = False) -> TierRes
                 "warnings": warnings,
             }
         )
+
+    items.extend(_data_root_items(config_out))
 
     if with_content:
         root = _repo_root()
@@ -178,5 +239,20 @@ def restore_config_tier(bundle_dir: Path, *, dest_dir: str | None = None) -> lis
                     target.parent.mkdir(parents=True, exist_ok=True)
                     tar.extractall(target.parent, filter="data")  # noqa: S202 — our own bundle
                     out.append({"file": item["file"], "restored_to": str(target.parent)})
+                elif item.get("restore_to") == "data-root":
+                    from examlops.lifecycle.datadir import data_root
+
+                    root = data_root()
+                    if root is None:
+                        out.append(
+                            {
+                                "file": item["file"],
+                                "skipped": "EXAMLOPS_DATA_DIR is not set on this install",
+                            }
+                        )
+                        continue
+                    root.mkdir(parents=True, exist_ok=True)
+                    tar.extractall(root, filter="data")  # noqa: S202 — our own bundle
+                    out.append({"file": item["file"], "restored_to": str(root)})
         # Non-config content tarballs are left for the operator to place deliberately.
     return out

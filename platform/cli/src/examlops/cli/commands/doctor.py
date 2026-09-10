@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -101,7 +99,9 @@ def doctor() -> None:
         _row(label, ok_val, f"{url}  [{detail}]", f"{label} unreachable → {fix}")
 
     # ── Platform DB ────────────────────────────────────────────────────────
-    db_path = os.getenv("PLATFORM_DB", str(Path(__file__).parents[6] / "platform.db"))
+    from examlops.platform_db import _db_path
+
+    db_path = _db_path()  # the one resolution rule (PLATFORM_DB → data root → default)
     db_ok, db_detail = _db_check(db_path)
     _row(
         "Platform DB",

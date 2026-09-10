@@ -46,6 +46,7 @@ from routers import (
     mlops,
     models,
     modelzoo,
+    modules,
     namespace,
     nextgen,
     pipelines,
@@ -187,6 +188,12 @@ from selfobs import MetricsMiddleware  # noqa: E402
 
 app.add_middleware(MetricsMiddleware)
 
+# Site feature profile (ADR 0128): API routes of modules this site switched off answer 404
+# `module_disabled` — enforced here, not just hidden in the UI.
+from module_gate import ModuleGateMiddleware  # noqa: E402
+
+app.add_middleware(ModuleGateMiddleware)
+
 # Health is unauthenticated (load balancer / k8s probes)
 app.include_router(health.router, prefix="/api")
 
@@ -251,6 +258,8 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(connections.router, prefix="/api")
 app.include_router(workbenches.router, prefix="/api")
+# Site feature profile (ADR 0128): which modules this centre runs.
+app.include_router(modules.router, prefix="/api")
 
 # Serve built React SPA — only when dist/ exists (skipped in test environment)
 _dist = Path(__file__).parent.parent / "frontend" / "dist"

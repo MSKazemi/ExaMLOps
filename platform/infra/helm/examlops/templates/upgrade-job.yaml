@@ -1,0 +1,52 @@
+{{- if .Values.upgrade.hook.enabled }}
+# ADR 0128: bring the instance data to this release's format before the new pods start.
+# Runs as a Helm hook so a failed migration fails the install/upgrade instead of leaving new
+# pods on data they cannot read. Env is inlined (not the chart ConfigMap): on a first install
+# hooks run before the chart's own resources exist.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "examlops.fullname" . }}-upgrade-data
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: upgrade-data
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.upgrade.hook.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.upgrade.hook.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "examlops.labels" . | nindent 8 }}
+        app.kubernetes.io/component: upgrade-data
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "examlops.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: upgrade-data
+          image: {{ include "examlops.image" (dict "root" . "svc" .Values.controlPlane) }}
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
+          command: ["exa", "--yes", "upgrade", "apply", "--no-backup"]
+          envFrom:
+            - secretRef:
+                name: {{ include "examlops.controlPlaneSecret" . | quote }}
+          env:
+            - {name: EXAMLOPS_DB_BACKEND, value: "postgres"}
+            - {name: EXAMLOPS_DEPLOYMENT, value: "kubernetes"}
+            - {name: EXAMLOPS_ACTOR, value: "helm-upgrade-hook"}
+            - {name: HOME, value: /tmp}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+{{- end }}

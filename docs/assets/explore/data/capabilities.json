@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 406,
- "total_groups": 62,
+ "total_commands": 420,
+ "total_groups": 65,
  "panels": [
   {
    "title": "Getting Started",
@@ -2790,6 +2790,9 @@
    "groups": [
     "stack",
     "backup",
+    "instance",
+    "upgrade",
+    "modules",
     "events",
     "admission",
     "exchange",
@@ -2921,6 +2924,104 @@
      "help": "Verify a whole bundle: manifest + every tier item's checksum + platform.db audit chain.",
      "anchor": "exa-backup-backup-restore-the-platform-datastore",
      "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa instance check",
+     "group": "instance",
+     "help": "Pre-flight the install: data compatibility, data root, site profile, use-case pack.",
+     "anchor": "exa-instance-this-installs-layers-core-deployment-instance-data-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa instance info",
+     "group": "instance",
+     "help": "Show the three layers of this install: core, deployment, and where all user data lives.",
+     "anchor": "exa-instance-this-installs-layers-core-deployment-instance-data-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa instance init",
+     "group": "instance",
+     "help": "Create an instance-data root: layout, site profile, use-case pack, stamped datastore.",
+     "anchor": "exa-instance-this-installs-layers-core-deployment-instance-data-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa upgrade apply",
+     "group": "upgrade",
+     "help": "Back up the data, then run every pending migration and restamp it.",
+     "anchor": "exa-upgrade-bring-an-instances-data-forward-to-the-installed-release-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa upgrade history",
+     "group": "upgrade",
+     "help": "Every create, adopt, migration and restore this datastore has recorded.",
+     "anchor": "exa-upgrade-bring-an-instances-data-forward-to-the-installed-release-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa upgrade plan",
+     "group": "upgrade",
+     "help": "What the installed release makes of this instance's data. Exit 1 if it must not open it.",
+     "anchor": "exa-upgrade-bring-an-instances-data-forward-to-the-installed-release-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules disable",
+     "group": "modules",
+     "help": "Switch a module off in the site profile (modules that need it go off too).",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules enable",
+     "group": "modules",
+     "help": "Switch a module on in the site profile (its dependencies come with it).",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules list",
+     "group": "modules",
+     "help": "Every module, whether it is on at this site, and why.",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules preset",
+     "group": "modules",
+     "help": "Base the site profile on a preset.",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules presets",
+     "group": "modules",
+     "help": "The named starting points a site profile can use.",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules render",
+     "group": "modules",
+     "help": "Turn the site profile into deployment input: an env line, a Compose override, Helm values.",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules reset",
+     "group": "modules",
+     "help": "Delete the site profile — every module on again (preset 'full').",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
+    },
+    {
+     "cmd": "exa modules show",
+     "group": "modules",
+     "help": "Everything a module owns, across the CLI, dashboard, Compose and Helm.",
+     "anchor": "exa-modules-site-feature-profile-which-modules-this-centre-runs-adr-0128",
+     "guide": null
     },
     {
      "cmd": "exa events publish",

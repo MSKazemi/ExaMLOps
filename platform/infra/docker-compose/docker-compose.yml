@@ -228,6 +228,8 @@ services:
       OTEL_SERVICE_NAME: control-plane
       # ONE shared platform DB across the stack (X1) + datastore engine pass-through (X2).
       PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
       EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
     env_file:
@@ -287,6 +289,8 @@ services:
       # ONE shared platform DB across the stack (X1): /data/platform.db was a private volume
       # copy — the agent answered drift/audit questions from a database nothing else wrote to.
       PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
       EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       AGENT_DB: /data/agent_memory.db
@@ -531,6 +535,8 @@ services:
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099
       SLURM_MODE: ${EXAMLOPS_SLURM_MODE:-mock}
       PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
       # Datastore engine pass-through (X2): docs/guides/postgres-backend.md says these must
       # reach EVERY state-touching process, or that process silently stays on SQLite.
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
@@ -656,6 +662,8 @@ services:
       # drift/audit/input telemetry into an ephemeral container-local ./platform.db that
       # nothing else could see and a recreate erased.
       PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
       EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
     volumes:
@@ -705,6 +713,8 @@ services:
       EXAMLOPS_BACKUP_S3_URI: ${EXAMLOPS_BACKUP_S3_URI:-}
       EXAMLOPS_ACTOR: backup-sidecar
       PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
       CONTROL_PLANE_DB: /data/approvals.db
       # Postgres tier (mlflow + prefect metadata) — reaches the postgres service over the network.
       PGHOST: postgres

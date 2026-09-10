@@ -1,3 +1,4 @@
+{{- if .Values.agent.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -154,4 +155,5 @@ spec:
       app.kubernetes.io/name: {{ include "examlops.name" . }}
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: agent
+{{- end }}
 {{- end }}

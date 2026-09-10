@@ -17,6 +17,27 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 Path A. For a *brand-new multi-node enterprise cluster* the pieces exist as seams and a partial Helm
 chart, but there is real gap-closing work (below) before it is a turnkey, HA, multi-tenant install.
 
+## Three layers — what an install is made of
+
+Whatever the path, an install is three layers ([Core · deployment · instance data](three-layer-architecture.md)):
+the **core** (what a release replaces), the **deployment** (the Compose file or the Helm chart that
+runs it) and the **instance data** your users create. Decide where the instance data lives *before*
+the first user touches the platform — it is what every later upgrade must keep:
+
+```bash
+exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy --preset standard
+export EXAMLOPS_DATA_DIR=/srv/examlops-data      # set it for every process / service
+exa instance info                                 # where every piece of user data lives
+exa modules list                                  # which modules this centre runs
+```
+
+Then, per path: Compose mounts the state directory at `/state` and already sets
+`EXAMLOPS_DATA_DIR=/state` (point `EXAMLOPS_STATE_DIR` at `/srv/examlops-data`); Helm keeps state in
+the external Postgres + object store and takes the centre's modules from
+`exa modules render --target helm`. Upgrading later is `exa upgrade plan` → `exa upgrade apply` →
+`exa instance check` ([Upgrades & compatibility](upgrade-and-compatibility.md)); which modules run is
+[a site profile](site-feature-profiles.md).
+
 ---
 
 ## Path A — Single node / small team (works end-to-end today)

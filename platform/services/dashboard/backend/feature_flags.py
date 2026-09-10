@@ -78,13 +78,27 @@ def evaluate(defn: FlagDef, *, role: str, tenant: str, subject: str, override: b
     return True
 
 
+def _module_allows(name: str) -> bool:
+    """False when the flag's module is switched off by the site profile (ADR 0128).
+
+    The module gate sits *above* the flag: an admin override cannot turn on a console whose
+    module this site does not run, because its API routes answer 404 regardless.
+    """
+    try:
+        from module_gate import module_enabled
+
+        from examlops.lifecycle.modules import module_for_flag
+    except Exception:  # noqa: BLE001 — without the lifecycle package, flags behave as before
+        return True
+    return module_enabled(module_for_flag(name))
+
+
 def evaluate_all(db_path: str, *, role: str, tenant: str, subject: str) -> dict[str, bool]:
     """Evaluate every flag for a context → the decisions the client consumes (R2)."""
     overrides = _load_overrides(db_path)
     return {
-        name: evaluate(
-            defn, role=role, tenant=tenant, subject=subject, override=overrides.get(name)
-        )
+        name: _module_allows(name)
+        and evaluate(defn, role=role, tenant=tenant, subject=subject, override=overrides.get(name))
         for name, defn in FLAG_DEFS.items()
     }
 
@@ -130,7 +144,8 @@ def admin_view(db_path: str) -> dict[str, Any]:
                 "description": d.description,
                 "default": d.default,
                 "override": override,
-                "effective": d.default if override is None else override,
+                "effective": (d.default if override is None else override) and _module_allows(name),
+                "module_enabled": _module_allows(name),
                 "targeting": {
                     "tenants": list(d.tenants),
                     "roles": list(d.roles),

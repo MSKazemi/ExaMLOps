@@ -62,7 +62,15 @@ AGENT_ACTION_SIGNING_KEY = os.getenv("AGENT_ACTION_SIGNING_KEY", "")
 AGENT_ACTION_TTL_SECONDS = int(os.getenv("AGENT_ACTION_TTL_SECONDS", "600"))
 AGENT_BROWSER_SESSION_TTL_SECONDS = int(os.getenv("AGENT_BROWSER_SESSION_TTL_SECONDS", "28800"))
 
-AGENT_DB = os.getenv("AGENT_DB", "./agent_memory.db")
+
+def _agent_state(filename: str) -> str:
+    """Default home of an agent SQLite file: ``$EXAMLOPS_DATA_DIR/agent/`` when the install has an
+    instance-data root (ADR 0128 — the agent's memory is user data), else the historical CWD path."""
+    root = os.getenv("EXAMLOPS_DATA_DIR", "").strip()
+    return os.path.join(os.path.expanduser(root), "agent", filename) if root else f"./{filename}"
+
+
+AGENT_DB = os.getenv("AGENT_DB", _agent_state("agent_memory.db"))
 AGENT_DOCS_ROOT = os.getenv("AGENT_DOCS_ROOT", str(_REPO_ROOT / "docs"))
 
 # Knowledge / Docs-RAG memory tier (T2, Phase 3, ADR 0101). Chunk+embed the docs so the agent
@@ -106,7 +114,7 @@ def _env_bool(name: str, default: bool) -> bool:
 # sqlite file, separate from both platform.db and the checkpointer DB. Uses the
 # sync SqliteStore (sqlite-vec) to match the sync-graph-in-threadpool server.
 AGENT_MEMORY_ENABLED = _env_bool("AGENT_MEMORY_ENABLED", True)
-AGENT_MEMORY_DB = os.getenv("AGENT_MEMORY_DB", "./skipper_memory.db")
+AGENT_MEMORY_DB = os.getenv("AGENT_MEMORY_DB", _agent_state("skipper_memory.db"))
 # Local embeddings only (no cloud). "ollama" uses AGENT_OLLAMA_URL;
 # "sentence-transformers" runs fully in-process/offline. AGENT_EMBED_DIMS MUST
 # match the model: nomic-embed-text=768, bge-m3=1024, all-MiniLM-L6-v2=384.
@@ -130,7 +138,7 @@ AGENT_MEMORY_AUDIT = _env_bool("AGENT_MEMORY_AUDIT", True)
 # operator review (list → approve/reject via `python -m skipper.memory_admin review …`)
 # instead of the inline HITL interrupt. Off by default — inline HITL stays the default path.
 AGENT_MEMORY_REVIEW_QUEUE = _env_bool("AGENT_MEMORY_REVIEW_QUEUE", False)
-AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", "./skipper_review.db")
+AGENT_MEMORY_REVIEW_DB = os.getenv("AGENT_MEMORY_REVIEW_DB", _agent_state("skipper_review.db"))
 # BL-007: source the agent's platform-capability tools from the shared examlops.mcp registry
 # (single source of truth) instead of the in-repo duplicates. Off by default. Mutating MCP tools
 # remain gated by EXAMLOPS_MCP_ALLOW_WRITES.

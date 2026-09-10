@@ -34,6 +34,22 @@ minio:
   endpoint: http://minio:9000
   bucket: examlops
 
+# ── site feature profile + data upgrades (ADR 0128) ────────────────────────────────────────────
+site:
+  # EXAMLOPS_FEATURES for every tier — which modules this centre runs. "" = every module (preset
+  # full, the behaviour before site profiles). Generate from a site profile with
+  # `exa modules render --target helm`, e.g. "preset:standard,+hpc".
+  features: ""
+upgrade:
+  hook:
+    # A pre-install/pre-upgrade Job that runs `exa upgrade apply` with the control-plane image, so
+    # the datastore is at the new release's data format before any new pod starts. Online
+    # migrations also apply on first open, so this matters for releases with offline ones.
+    # Back up Postgres first (CloudNativePG scheduled backup / pg_dump) — the Job does not.
+    enabled: false
+    backoffLimit: 1
+    activeDeadlineSeconds: 900
+
 ingress:
   enabled: true
   className: nginx
@@ -89,6 +105,8 @@ dashboard:
     minAvailable: 1
 
 agent:
+  # false = do not deploy the agent tier (the site runs without the `agent` module, ADR 0128).
+  enabled: true
   # Optional least-privilege Secret. Empty preserves the global existingSecret for upgrades.
   existingSecret: ""
   replicaCount: 2

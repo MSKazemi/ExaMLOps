@@ -51,6 +51,23 @@ def _isolate_platform_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_site_profile(tmp_path, monkeypatch):
+    """No developer's site profile, data root or feature overlay reaches a test (ADR 0128).
+
+    The CLI hides and refuses commands of modules a site profile switches off. A
+    ``~/.config/examlops/site.toml`` on the machine running the suite would therefore change which
+    commands exist — every guard that walks the command tree would see a different tree. Pinning
+    the profile path to a file that does not exist puts every test on the default (``full``).
+    """
+    monkeypatch.setenv("EXAMLOPS_SITE_PROFILE", str(tmp_path / "no-site-profile.toml"))
+    # setenv(""), not delenv: monkeypatch only restores a variable it recorded, and `exa instance
+    # init` sets EXAMLOPS_DATA_DIR for the rest of its process. Empty means unset to every reader.
+    monkeypatch.setenv("EXAMLOPS_FEATURES", "")
+    monkeypatch.setenv("EXAMLOPS_DATA_DIR", "")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_cli_output_modes():
     """Return the CLI's output globals to their defaults before every test.
 

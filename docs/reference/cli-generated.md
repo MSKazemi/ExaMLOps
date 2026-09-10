@@ -1768,6 +1768,28 @@ Sysadmin: reject a cluster (blocks scheduling; auditable).
 
 - `--reason, -r` — Why the cluster is rejected
 
+## `exa instance`
+
+This install's layers — core, deployment, data
+
+### `exa instance check`
+
+Pre-flight the install: data compatibility, data root, site profile, use-case pack.
+
+### `exa instance info`
+
+Show the three layers of this install: core, deployment, and where all user data lives.
+
+### `exa instance init`
+
+Create an instance-data root: layout, site profile, use-case pack, stamped datastore.
+
+- `--data-dir` — Data root to create (default: $EXAMLOPS_DATA_DIR)
+- `--pack` — Use-case pack to copy into <data root>/usecase
+- `--preset` — Site preset to record in site.toml
+- `--site-name` — A label for this centre
+- `--overwrite-pack` — Replace an existing <data root>/usecase
+
 ## `exa mcp`
 
 MCP server + Agent-to-Agent (A2A) surface
@@ -1969,6 +1991,48 @@ Show ModelZoo freshness for every registered model.
 ### `exa modelzoo sync`
 
 Manually trigger one ModelZoo poll cycle.
+
+## `exa modules`
+
+Site feature profile — modules on/off
+
+### `exa modules disable`
+
+Switch a module off in the site profile (modules that need it go off too).
+
+### `exa modules enable`
+
+Switch a module on in the site profile (its dependencies come with it).
+
+### `exa modules list`
+
+Every module, whether it is on at this site, and why.
+
+### `exa modules preset`
+
+Base the site profile on a preset.
+
+- `--reset-overrides` — Drop earlier enable/disable entries
+- `--site-name` — A label for this centre
+
+### `exa modules presets`
+
+The named starting points a site profile can use.
+
+### `exa modules render`
+
+Turn the site profile into deployment input: an env line, a Compose override, Helm values.
+
+- `--target, -t` — env | compose | helm
+- `--out` — Write the Compose override / Helm values here
+
+### `exa modules reset`
+
+Delete the site profile — every module on again (preset 'full').
+
+### `exa modules show`
+
+Everything a module owns, across the CLI, dashboard, Compose and Helm.
 
 ## `exa namespace`
 
@@ -3128,6 +3192,29 @@ Platform snapshot: service health, pending approvals, production models.
 
 - `--watch, -w` — Live auto-refreshing view (Ctrl-C to exit)
 - `--interval` — Refresh interval in seconds for --watch
+
+## `exa upgrade`
+
+Upgrade this instance's data to the release
+
+### `exa upgrade apply`
+
+Back up the data, then run every pending migration and restamp it.
+
+- `--dry-run` — Show what would run; change nothing
+- `--no-backup` — Skip the pre-upgrade backup bundle (not recommended)
+- `--backup-dir` — Where to write the pre-upgrade bundle (default: backup dir)
+- `--tier` — Backup tier(s) for the pre-upgrade bundle (default: sqlite, config)
+
+### `exa upgrade history`
+
+Every create, adopt, migration and restore this datastore has recorded.
+
+- `--limit, -n` — Rows to show
+
+### `exa upgrade plan`
+
+What the installed release makes of this instance's data. Exit 1 if it must not open it.
 
 ## `exa vector`
 
