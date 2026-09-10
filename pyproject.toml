@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=65"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -17,7 +17,7 @@ dependencies = [
     # workspace members — installs exa CLI entry point
     "examlops",
     # shared across all components
-    "setuptools>=65,<80",
+    "setuptools>=84.0.0,<85",
     "mlflow==3.11.1",
     "scikit-learn>=1.3.0",
     "pandas>=2.0.0",
