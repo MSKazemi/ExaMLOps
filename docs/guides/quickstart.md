@@ -45,6 +45,7 @@ install rather than failing with a traceback:
 | `examlops[serving-sglang]` | In-process SGLang engine (GPU host) |
 | `examlops[serving-vllm]` | In-process vLLM engine for offline batch scoring (GPU host) |
 | `examlops[synth]` | Synthetic data generation and its release gate — `exa data synth` |
+| `examlops[vector]` | pgvector vector store (`EXAMLOPS_VECTOR_BACKEND=pgvector`), independent of where platform state lives |
 
 Combine them as usual — `uv pip install 'examlops[mcp,analysis]'`. `[dev]` on the repository
 root pulls the whole development environment including the test dependencies.
