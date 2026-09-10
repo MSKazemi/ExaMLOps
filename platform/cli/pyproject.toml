@@ -140,8 +140,8 @@ synth = [
 exa = "examlops.cli.main:app"
 
 [project.urls]
-Homepage = "https://mskazemi.github.io/ExaMLOps/"
-Documentation = "https://mskazemi.github.io/ExaMLOps/"
+Homepage = "https://mskazemi.com/ExaMLOps/"
+Documentation = "https://mskazemi.com/ExaMLOps/"
 Repository = "https://github.com/MSKazemi/ExaMLOps"
 Issues = "https://github.com/MSKazemi/ExaMLOps/issues"
 Changelog = "https://github.com/MSKazemi/ExaMLOps/blob/main/CHANGELOG.md"

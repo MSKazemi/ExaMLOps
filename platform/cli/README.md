@@ -9,7 +9,7 @@ serving, drift detection with closed-loop retraining, and FinOps / carbon accoun
 
 This package installs the **`exa` command** and the **`examlops` Python SDK**. The platform
 services themselves (control plane, dashboard, serving, agent) ship as signed container images
-and a Helm chart — see [Installation](https://mskazemi.github.io/ExaMLOps/guides/enterprise-installation/).
+and a Helm chart — see [Installation](https://mskazemi.com/ExaMLOps/guides/enterprise-installation/).
 
 ## Install
 
@@ -51,11 +51,11 @@ works from the installed package alone.
 
 Releases are published from GitHub Actions with PyPI Trusted Publishing, and every file carries a
 Sigstore attestation (PEP 740) that ties it to the exact workflow run and commit that built it.
-See [Verifying a release](https://mskazemi.github.io/ExaMLOps/guides/release-process/).
+See [Verifying a release](https://mskazemi.com/ExaMLOps/guides/release-process/).
 
 ## Links
 
-- Documentation: <https://mskazemi.github.io/ExaMLOps/>
+- Documentation: <https://mskazemi.com/ExaMLOps/>
 - Source and issues: <https://github.com/MSKazemi/ExaMLOps>
 - Changelog: <https://github.com/MSKazemi/ExaMLOps/blob/main/CHANGELOG.md>
 - Security policy: <https://github.com/MSKazemi/ExaMLOps/security/policy>

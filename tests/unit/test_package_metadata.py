@@ -17,7 +17,8 @@ PKG = ROOT / "platform" / "cli"
 PYPROJECT = tomllib.loads((PKG / "pyproject.toml").read_text())
 PROJECT = PYPROJECT["project"]
 README = (PKG / PROJECT["readme"]).read_text()
-DOCS_SITE = "https://mskazemi.github.io/ExaMLOps/"
+# The documentation site's canonical URL — one source, so the PyPI page cannot drift from it.
+DOCS_SITE = re.search(r"^site_url:\s*(\S+)", (ROOT / "mkdocs.yml").read_text(), re.M).group(1)
 
 
 def test_licence_copy_is_the_repository_licence():
@@ -65,6 +66,7 @@ def test_python_classifiers_match_requires_python():
 
 def test_project_urls_point_at_the_canonical_namespace():
     urls = PROJECT["urls"]
+    assert urls["Homepage"] == urls["Documentation"] == DOCS_SITE, "docs URL differs from site_url"
     for key in ("Homepage", "Repository", "Issues", "Changelog"):
         assert key in urls, f"missing project URL {key}"
     for url in urls.values():

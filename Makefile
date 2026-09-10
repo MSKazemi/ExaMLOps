@@ -772,7 +772,7 @@ HELM_VALIDATE_REGISTRY ?= ghcr.io/example/
 
 # Where the built chart repo will be served from. Baked into index.yaml, so it must match the
 # final host; override per publish target. No decision is implied by the default.
-HELM_REPO_URL ?= https://mskazemi.github.io/ExaMLOps
+HELM_REPO_URL ?= https://mskazemi.com/ExaMLOps
 
 # The three tiers the Helm chart deploys. Tag = the chart's appVersion, which the chart
 # defaults every image tag to, so these must agree; tests/unit/test_helm_chart.py holds
