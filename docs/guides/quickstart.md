@@ -1,3 +1,7 @@
+---
+description: "Install ExaMLOps and go from zero to serving predictions in five minutes: start the local stack, train a model on dummy data, promote it and query it through Ray Serve — no HPC cluster needed."
+---
+
 # Quick Start
 
 Get from zero to serving predictions in five minutes.

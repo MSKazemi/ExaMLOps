@@ -1,3 +1,7 @@
+---
+description: "Developer onboarding for ExaMLOps: the journey of a model, what every directory is for, the platform ⟂ use-case rule, and how to start changing code without breaking anything."
+---
+
 # Developer Onboarding — How ExaMLOps Works and How to Work On It
 
 **Who this is for:** a colleague who has never opened this repository and wants to

@@ -1,0 +1,52 @@
+# ExaMLOps
+
+> ExaMLOps is an open-source (Apache-2.0) MLOps platform for HPC systems and supercomputers. It trains machine-learning models as Slurm or Flux jobs, versions them in an MLflow registry, gates promotion to production behind metric checks and human approval, serves them with Ray Serve, and monitors drift, cost, carbon and quality — driven by the `exa` CLI, a React + FastAPI dashboard, or an AI agent over MCP.
+
+Key facts:
+
+- Built for ML engineers, platform engineers and HPC operators who run models on batch-scheduled clusters, originally for the EuroHPC SEANERGYS project.
+- Schedulers: Slurm, Flux, and a `mock` scheduler so everything runs on a laptop without a cluster (`EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux`).
+- Lifecycle: auto-discovery training pipelines (Prefect) → MLflow registry with Staging/Canary/Production aliases → gated promotion (`exa pipeline promote --if-rmse-lt …`) → Ray Serve multi-model serving with traffic splitting → drift detection and optional closed-loop retraining.
+- Governance: an approval queue for CI model changes, policy-as-code, a hash-chained audit trail, RBAC and multi-tenancy, supply-chain signing, EU AI Act risk classification.
+- LLMOps: versioned prompt registry, OpenAI-compatible gateway, RAG with citations, vector store, guardrails, calibrated LLM-judge evaluation.
+- Agent access: `exa mcp serve` exposes the platform over the Model Context Protocol (read-only unless `--allow-writes`); the built-in Skipper agent confirms every write.
+- Extensible without forking: use-case packs (`EXAMLOPS_USECASE_DIR`), provider plugins (`exa.providers.<domain>` entry points), `exa` CLI plugins (`examlops.cli_plugins`).
+- Differs from Kubeflow (Kubernetes-first) by targeting HPC batch schedulers first; differs from a plain MLflow server by using MLflow as its registry and adding orchestration, gated serving, monitoring and governance around it.
+
+## Start here
+
+- [Home](https://mskazemi.github.io/ExaMLOps/): overview and the platform in motion
+- [Quick Start](https://mskazemi.github.io/ExaMLOps/guides/quickstart/): run the stack, train, promote and serve a model locally
+- [FAQ](https://mskazemi.github.io/ExaMLOps/faq/): what it is, who it is for, schedulers, comparison with Kubeflow and MLflow, licensing
+- [System map](https://mskazemi.github.io/ExaMLOps/explore/): every service and how data, control and decisions flow between them
+- [Architecture](https://mskazemi.github.io/ExaMLOps/guides/architecture/): components and design
+
+## How it works
+
+- [Follow a prediction](https://mskazemi.github.io/ExaMLOps/explore/prediction/): an inference request end to end
+- [Follow a retrain](https://mskazemi.github.io/ExaMLOps/explore/retrain/): drift to retraining to promotion
+- [Who decides](https://mskazemi.github.io/ExaMLOps/explore/decisions/): every human approval gate and the audit trail
+- [Follow a cluster job](https://mskazemi.github.io/ExaMLOps/explore/hpc/): how training lands on Slurm or Flux
+- [HPC fleet](https://mskazemi.github.io/ExaMLOps/guides/hpc-fleet/): discover, admit and place work on clusters
+
+## Reference
+
+- [exa command guide](https://mskazemi.github.io/ExaMLOps/reference/cli-commands-guide/): every command with a use case and an example
+- [Every capability](https://mskazemi.github.io/ExaMLOps/explore/capabilities/): all `exa` commands by lifecycle panel, searchable
+- [Environment variables](https://mskazemi.github.io/ExaMLOps/reference/env-vars/)
+- [API reference](https://mskazemi.github.io/ExaMLOps/reference/api/)
+- [All interfaces](https://mskazemi.github.io/ExaMLOps/guides/interfaces/): CLI, dashboard, agent, MCP
+
+## Extending and contributing
+
+- [Get involved](https://mskazemi.github.io/ExaMLOps/community/): ways to contribute, extension points, contributor ladder
+- [Programmable MLOps](https://mskazemi.github.io/ExaMLOps/guides/programmable-mlops/): providers, policy-as-code, SDK
+- [Add a new model](https://mskazemi.github.io/ExaMLOps/guides/add-a-new-model/)
+- [Contributing guide](https://github.com/MSKazemi/ExaMLOps/blob/main/.github/CONTRIBUTING.md)
+
+## Optional
+
+- [Source code](https://github.com/MSKazemi/ExaMLOps)
+- [Citation metadata](https://github.com/MSKazemi/ExaMLOps/blob/main/CITATION.cff)
+- [Changelog](https://github.com/MSKazemi/ExaMLOps/blob/main/CHANGELOG.md)
+- [Maintainer](https://mskazemi.com/about/): Mohsen Seyedkazemi Ardebili

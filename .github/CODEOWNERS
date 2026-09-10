@@ -1,0 +1,10 @@
+# Reviewers are requested automatically for matching paths.
+# As reviewers join (see .github/GOVERNANCE.md), add them next to the areas they own.
+
+*                                   @MSKazemi
+
+# Security-sensitive areas — changes here always get a maintainer review.
+/platform/cli/src/examlops/secrets/ @MSKazemi
+/platform/cli/src/examlops/authz/   @MSKazemi
+/platform/services/control_plane/   @MSKazemi
+/.github/                           @MSKazemi

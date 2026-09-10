@@ -1,3 +1,7 @@
+---
+description: "Extend ExaMLOps without forking: swap how cost, carbon, placement, drift and promotion are calculated with provider plugins, declarative formulas and policy-as-code."
+---
+
 # Programmable MLOps — extending ExaMLOps without forking
 
 ExaMLOps is **programmable**: you can change how the platform calculates and decides things — cost,

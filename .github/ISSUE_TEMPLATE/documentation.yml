@@ -1,0 +1,38 @@
+name: Documentation
+description: Something in the docs is wrong, missing, or hard to follow.
+title: "docs: "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: URL of the docs page (or the file under docs/).
+      placeholder: https://mskazemi.github.io/ExaMLOps/guides/quickstart/
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - A command or example does not work
+        - Information is wrong or out of date
+        - Something is missing
+        - It is hard to understand
+        - Broken link or rendering problem
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What did you expect to find, and what did you find? If a command failed, paste it and its output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: fix
+    attributes:
+      label: Fix it yourself?
+      options:
+        - label: I'd like to open a pull request for this (every docs page has an edit button).

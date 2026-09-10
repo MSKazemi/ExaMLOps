@@ -2,12 +2,16 @@
 
 **Register a model, and the platform trains, versions, governs and serves it on a supercomputer.**
 
-End-to-end MLOps for HPC workload management, built for large European research projects.
-Training jobs are submitted to Slurm, every model is versioned in MLflow, and nothing reaches
-production until a sysadmin approves it.
+End-to-end, open-source MLOps for HPC workload management, built for large European research
+projects. Training runs as Slurm or Flux jobs, every version is tracked in MLflow, and promotion
+to production is gated — by metric checks, evaluation gates, and an approval queue for model
+changes.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+[![Docs](https://img.shields.io/badge/docs-mskazemi.github.io%2FExaMLOps-indigo.svg)](https://mskazemi.github.io/ExaMLOps/)
+[![Good first issues](https://img.shields.io/github/issues/MSKazemi/ExaMLOps/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](.github/CODE_OF_CONDUCT.md)
 
 In production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project.
 
@@ -230,8 +234,10 @@ Activate root env: `source .venv/bin/activate`
 
 ## CI/CD
 
-- `.github/workflows/ci.yml` — three parallel jobs (`modelzoo`, `infra`, `examlops`) on PRs and main
-- `.gitlab-ci.yml` — GitLab mirror of the GitHub workflow
+- `.github/workflows/ci.yml` — lint, type-check and unit tests, plus the agent, dashboard
+  frontend, Helm chart, control-plane and strict docs-site jobs, on every pull request and push to `main`
+- `.github/workflows/pages.yml` — publishes the documentation site
+- `.gitlab-ci.yml` — GitLab pipeline (tests + deployment for a self-hosted install)
 
 Run all CI checks locally: `make ci`
 
@@ -253,3 +259,21 @@ The documentation site is published at **https://mskazemi.github.io/ExaMLOps/**.
 - [Add a New Model](docs/guides/add-a-new-model.md)
 - [exa CLI Command Guide (use cases + examples)](docs/reference/cli-commands-guide.md)
 - [Approval Gate](docs/guides/control-plane.md#approval-gate-phase-11)
+
+## Get involved
+
+ExaMLOps is open source under Apache-2.0 and built to be extended — contributions of every size
+are welcome, and **you do not need a supercomputer**: the unit suite and the local stack run on
+a laptop with the scheduler in `mock` mode.
+
+- **Start:** the [contributing guide](.github/CONTRIBUTING.md) (setup, tests, conventions) and the
+  [`good first issue`](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) list.
+- **Extend without forking:** use-case packs, provider plugins (`exa.providers.<domain>`) and
+  `exa` CLI plugins (`examlops.cli_plugins`) live in their own packages — see
+  [Get involved](https://mskazemi.github.io/ExaMLOps/community/).
+- **Ask or report:** [support](.github/SUPPORT.md) · [open an issue](https://github.com/MSKazemi/ExaMLOps/issues/new/choose) ·
+  vulnerabilities privately via the [security policy](.github/SECURITY.md).
+- **Community standards:** [Code of Conduct](.github/CODE_OF_CONDUCT.md) · [governance](.github/GOVERNANCE.md).
+
+If ExaMLOps is useful in your research, please cite it — see [`CITATION.cff`](CITATION.cff) or
+GitHub's **Cite this repository** button.

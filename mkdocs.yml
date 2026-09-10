@@ -1,8 +1,23 @@
 site_name: ExaMLOps Documentation
-site_description: End-to-end MLOps platform for HPC workload management in EU research projects
+# Doubles as the <meta name="description"> and the social/JSON-LD description of every page that
+# sets no `description:` of its own — it is what a search result or an AI answer quotes first.
+site_description: >-
+  ExaMLOps is an open-source MLOps platform for HPC and supercomputers: train models as Slurm
+  or Flux jobs, version them in MLflow, promote them through metric and approval gates, and
+  serve them with Ray Serve.
+site_author: Mohsen Seyedkazemi Ardebili
 # Set so the theme emits correct canonical URLs and a valid sitemap once the site is served.
 site_url: https://mskazemi.github.io/ExaMLOps/
+# The repo link in the header and the "edit this page" button on every page — the shortest path
+# from reading a mistake to fixing it.
+repo_url: https://github.com/MSKazemi/ExaMLOps
+repo_name: MSKazemi/ExaMLOps
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Mohsen Seyedkazemi Ardebili · Apache License 2.0
 docs_dir: docs
+# docs/overrides/ is the theme's custom_dir (SEO + JSON-LD head), not a page source.
+exclude_docs: |
+  overrides/
 
 # A link to a heading that does not exist is as broken as a link to a file that does not exist,
 # but mkdocs logs the first at INFO and the second at WARNING, so only the second fails --strict.
@@ -15,6 +30,7 @@ validation:
 
 theme:
   name: material
+  custom_dir: docs/overrides
   font:
     text: IBM Plex Sans
     code: IBM Plex Mono
@@ -42,10 +58,23 @@ theme:
     - search.share
     - content.code.copy
     - content.code.annotate
+    - content.action.edit
     - navigation.footer
 
 plugins:
   - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MSKazemi/ExaMLOps
+      name: ExaMLOps on GitHub
+    - icon: fontawesome/solid/user
+      link: https://mskazemi.com/about/
+      name: Mohsen Seyedkazemi Ardebili — maintainer
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/in/mskazemi/
+      name: Maintainer on LinkedIn
 
 # "Platform in motion": the transit-map animations (Explore tab + home page). The engine is
 # dependency-free; each scene file registers one map. See docs/explore/ and docs/assets/explore/.
@@ -222,3 +251,6 @@ nav:
       - Environment Variables: reference/env-vars.md
   - Release Notes:
       - v0.37.0 (project-centric control plane): releases/v0.37.0.md
+  - Community:
+      - Get involved: community/index.md
+      - FAQ: faq.md

@@ -1,0 +1,106 @@
+{#-
+  Discoverability layer for the docs site: a descriptive home-page title, OpenGraph/Twitter
+  cards for link previews, and schema.org JSON-LD so search and AI answer engines can tell
+  what ExaMLOps is and who maintains it.
+
+  The Person @id deliberately matches the one https://mskazemi.com publishes, so every engine
+  resolves the docs author and the homepage to one entity. Descriptions come from a page's
+  `description:` front matter, falling back to site_description in mkdocs.yml.
+
+  This directory is the theme's custom_dir and is excluded from the page build (exclude_docs).
+-#}
+{% extends "base.html" %}
+
+{% block htmltitle %}
+  {%- if page and page.is_homepage -%}
+    <title>ExaMLOps — open-source MLOps platform for HPC and supercomputers</title>
+  {%- else -%}
+    {{ super() }}
+  {%- endif -%}
+{% endblock %}
+
+{% block extrahead %}
+  {{ super() }}
+  {%- set xm_desc = page.meta.description if page and page.meta and page.meta.description else config.site_description -%}
+  {%- set xm_url = page.canonical_url if page and page.canonical_url else config.site_url -%}
+  {%- if page and page.is_homepage -%}
+    {%- set xm_title = "ExaMLOps — open-source MLOps platform for HPC and supercomputers" -%}
+  {%- elif page and page.title -%}
+    {%- set xm_title = (page.title | striptags) ~ " — ExaMLOps" -%}
+  {%- else -%}
+    {%- set xm_title = config.site_name -%}
+  {%- endif -%}
+  {%- set xm_site = config.site_url -%}
+  {%- set xm_person = {
+    "@type": "Person",
+    "@id": "https://mskazemi.com/#person",
+    "name": "Mohsen Seyedkazemi Ardebili",
+    "url": "https://mskazemi.com/about/",
+    "sameAs": [
+      "https://github.com/MSKazemi",
+      "https://www.linkedin.com/in/mskazemi/",
+      "https://orcid.org/0000-0002-1166-6559",
+      "https://scholar.google.com/citations?user=xP64pZsAAAAJ",
+      "https://www.wikidata.org/wiki/Q140935575"
+    ]
+  } -%}
+  {#- <meta name="author"> comes from site_author via the theme. #}
+  <meta property="og:site_name" content="ExaMLOps">
+  <meta property="og:type" content="{{ 'website' if page and page.is_homepage else 'article' }}">
+  <meta property="og:title" content="{{ xm_title }}">
+  <meta property="og:description" content="{{ xm_desc }}">
+  <meta property="og:url" content="{{ xm_url }}">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ xm_title }}">
+  <meta name="twitter:description" content="{{ xm_desc }}">
+  {%- if page and page.is_homepage %}
+  {%- set xm_ld = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": xm_site ~ "#website",
+        "url": xm_site,
+        "name": "ExaMLOps Documentation",
+        "description": config.site_description,
+        "inLanguage": "en",
+        "publisher": {"@id": "https://mskazemi.com/#person"}
+      },
+      {
+        "@type": ["SoftwareSourceCode", "SoftwareApplication"],
+        "@id": xm_site ~ "#software",
+        "name": "ExaMLOps",
+        "description": config.site_description,
+        "url": xm_site,
+        "codeRepository": "https://github.com/MSKazemi/ExaMLOps",
+        "programmingLanguage": ["Python", "TypeScript"],
+        "runtimePlatform": "Python 3.12+",
+        "operatingSystem": "Linux",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "MLOps platform",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "isAccessibleForFree": true,
+        "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"},
+        "keywords": "MLOps, HPC, supercomputer, Slurm, Flux, MLflow, Prefect, Ray Serve, model registry, model serving, drift detection, LLMOps, EuroHPC",
+        "author": xm_person,
+        "maintainer": {"@id": "https://mskazemi.com/#person"}
+      }
+    ]
+  } -%}
+  <script type="application/ld+json">{{ xm_ld | tojson }}</script>
+  {%- elif page and page.title %}
+  {%- set xm_ld = {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": page.title | striptags,
+    "description": xm_desc,
+    "url": xm_url,
+    "inLanguage": "en",
+    "isPartOf": {"@type": "WebSite", "@id": xm_site ~ "#website", "url": xm_site, "name": "ExaMLOps Documentation"},
+    "about": {"@type": "SoftwareSourceCode", "@id": xm_site ~ "#software", "name": "ExaMLOps"},
+    "author": xm_person
+  } -%}
+  <script type="application/ld+json">{{ xm_ld | tojson }}</script>
+  {%- endif %}
+{% endblock %}

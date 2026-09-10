@@ -1,3 +1,7 @@
+---
+description: "Discover, connect and schedule ML training across Slurm and Flux clusters with ExaMLOps: read-only discovery, sysadmin-approved admission, placement, queueing, preflight checks and GPU capacity."
+---
+
 # HPC Fleet — discover, connect, and schedule across SLURM & FLUX
 
 exaMLOps runs training jobs on HPC clusters through a scheduler abstraction that supports

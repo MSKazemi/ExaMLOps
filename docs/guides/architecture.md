@@ -1,3 +1,7 @@
+---
+description: "ExaMLOps system architecture: how Prefect, MLflow, MinIO, Ray Serve, the control plane, the dashboard and Prometheus/Grafana/Loki fit together, with the repository layout, data sources and model lifecycle."
+---
+
 # System Architecture
 
 ExaMLOps is a self-contained MLOps platform wiring together open-source tools (Prefect, MLflow, MinIO, Ray Serve, Prometheus, Grafana, Loki) and a custom model library. It supports three pluggable data sources, multi-stage MLflow lifecycles, version-selectable inference, client-driven retraining, three ML frameworks (sklearn, PyTorch, HuggingFace), and a ModelZoo freshness tracking loop that marks models stale on every repository push and surfaces freshness state in the dashboard and `exa` CLI.

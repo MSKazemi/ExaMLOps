@@ -1,3 +1,7 @@
+---
+description: "Add a new model to ExaMLOps in five minutes with exa scaffold: one YAML file per model, a transforms-only config, and automatic discovery by the training pipeline."
+---
+
 # Add a new model in 5 minutes
 
 ExaMLOps discovers models by scanning `pipelines/models/*.yaml` — one YAML file per model is the single source of truth. Phase 2 added a one-command scaffold; Phase 14 extended it to also generate the per-model YAML.

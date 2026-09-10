@@ -1,0 +1,88 @@
+name: Bug report
+description: Something in ExaMLOps does not work as documented.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A clear, reproducible report gets fixed fastest.
+        **Security problem?** Do not file it here — see [SECURITY.md](https://github.com/MSKazemi/ExaMLOps/blob/main/.github/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I ran `exa serve reload` after promoting JPCP to Production.
+        I expected the new version to be served; instead the old version kept answering.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence of commands or clicks that shows the problem.
+      placeholder: |
+        1. make stack-up
+        2. exa pipeline run --model JPCP --dataset PM100Dataset --dummy
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output or logs
+      description: Paste error output, `exa ... --json` output, or service logs. Remove any secrets first.
+      render: shell
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - exa CLI
+        - Training pipelines (Prefect)
+        - HPC scheduler (Slurm / Flux adapter)
+        - Model registry (MLflow)
+        - Serving (Ray Serve / inference pipeline)
+        - Control plane / approval gate
+        - Dashboard
+        - Skipper agent
+        - Monitoring (Prometheus / Grafana / Loki / Tempo)
+        - Deployment (Docker Compose / Helm)
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ExaMLOps version
+      description: Output of `exa --version`, or the commit SHA.
+      placeholder: exa version 0.51.0
+    validations:
+      required: true
+  - type: dropdown
+    id: scheduler
+    attributes:
+      label: Scheduler mode
+      options:
+        - mock (default, no cluster)
+        - Slurm
+        - Flux
+        - not relevant
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Docker / Kubernetes version, datastore (SQLite / Postgres), anything unusual.
+      placeholder: Ubuntu 24.04, Python 3.12.7, Docker 27, SQLite
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed secrets, tokens and internal hostnames from everything above.
+          required: true
