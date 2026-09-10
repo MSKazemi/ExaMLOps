@@ -15,6 +15,9 @@ validation:
 
 theme:
   name: material
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
   palette:
     - scheme: default
       primary: indigo
@@ -39,11 +42,30 @@ theme:
     - search.share
     - content.code.copy
     - content.code.annotate
+    - navigation.footer
 
 plugins:
   - search
 
+# "Platform in motion": the transit-map animations (Explore tab + home page). The engine is
+# dependency-free; each scene file registers one map. See docs/explore/ and docs/assets/explore/.
+extra_css:
+  - assets/explore/css/explore.css
+
+extra_javascript:
+  - assets/explore/js/xm-flow.js
+  - assets/explore/js/scenes/system.js
+  - assets/explore/js/scenes/prediction.js
+  - assets/explore/js/scenes/retrain.js
+  - assets/explore/js/scenes/decisions.js
+  - assets/explore/js/scenes/hpc.js
+  - assets/explore/js/scenes/signals.js
+  - assets/explore/js/scenes/roadmap.js
+  - assets/explore/js/xm-atlas.js
+  - assets/explore/js/xm-roadmap.js
+
 markdown_extensions:
+  - md_in_html
   - admonition
   - pymdownx.details
   - pymdownx.superfences
@@ -59,6 +81,16 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Explore:
+      - System map: explore/index.md
+      - Follow a prediction: explore/prediction.md
+      - Follow a retrain: explore/retrain.md
+      - Who decides: explore/decisions.md
+      - Follow a cluster job: explore/hpc.md
+      - Follow the signals: explore/signals.md
+      - Services and their jobs: explore/services.md
+      - Every capability: explore/capabilities.md
+      - Roadmap: explore/roadmap.md
   - Guides:
       - Quick Start: guides/quickstart.md
       - Developer Onboarding: guides/developer-onboarding.md

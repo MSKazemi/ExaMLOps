@@ -94,7 +94,7 @@ endif
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
         preflight preflight-nopg \
         modelzoo-test agent-test \
-        docs-serve docs-build docs-cli \
+        docs-serve docs-build docs-cli docs-explore \
         bootstrap \
         _guard-uv _guard-python _guard-service
 
@@ -948,6 +948,14 @@ docs-build: install-dev ## Build MkDocs static site → site/ (strict: a broken 
 docs-cli: install-dev ## Regenerate the full CLI reference from the live command tree
 	@$(VENV)/bin/exa docs --out docs/reference/cli-generated.md
 	@printf "$(GREEN)CLI reference regenerated: docs/reference/cli-generated.md$(RESET)\n"
+
+docs-explore: install-dev ## Regenerate the Explore section's capability atlas + roadmap list from their sources
+	@# The atlas lists every exa command by lifecycle area (from the live CLI tree); the roadmap
+	@# list is rendered from docs/assets/explore/data/roadmap.json. Both are checked by
+	@# tests/unit/test_docs_capability_atlas.py, so a new command that is not regenerated fails CI.
+	@$(VENV)/bin/python platform/ci/gen_capability_atlas.py
+	@$(VENV)/bin/python platform/ci/gen_roadmap_page.py
+	@printf "$(GREEN)Explore atlas + roadmap regenerated$(RESET)\n"
 
 # =============================================================================
 ##@ ModelZoo Tests

@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — docs site: "Explore", the platform in motion
+
+- A new **Explore** tab and home page on the documentation site draw ExaMLOps as a transit map:
+  five coloured lines (data, control, decision, compute, signal) run through shared stations,
+  and animated tours follow a prediction, a retrain, a cluster job and the telemetry/evidence
+  path hop by hop, plus a "Who decides" tour of every human gate and a roadmap drawn as track
+  under construction. Every step is plain HTML narration in the page (searchable, printable,
+  readable without JavaScript); the dependency-free engine (`docs/assets/explore/js/xm-flow.js`)
+  animates it, respects reduced motion, pauses off-screen and survives instant navigation.
+- The facts in every tour were traced to the code, not to earlier docs — for example, promotion
+  in the training flow is autonomous by lifecycle rules, the approval queue gates CI model
+  changes rather than drift-triggered retrains, and direct HTTP inference writes no drift
+  snapshots.
+- **Every capability** lists all `exa` commands by the twelve lifecycle panels of `exa --help`,
+  searchable, each linked to its command-guide section. It is generated from the live CLI tree by
+  `platform/ci/gen_capability_atlas.py`; the roadmap list is rendered from
+  `docs/assets/explore/data/roadmap.json` by `platform/ci/gen_roadmap_page.py`. Both are guarded by
+  `tests/unit/test_docs_capability_atlas.py`, and `make docs-explore` regenerates them.
+
 ## [0.51.0] - 2026-09-10
 
 ### Added — dev-velocity layer + API contract guard

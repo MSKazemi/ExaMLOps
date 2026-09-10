@@ -1,0 +1,936 @@
+{
+ "note": "Public roadmap: shipped milestones from the changelog and release history, planned items from the design record. Compiled 2026-09-10.",
+ "counts": {
+  "shipped": 71,
+  "planned": 52,
+  "adrs": 115,
+  "accepted": 61,
+  "proposed": 33,
+  "partial": 21
+ },
+ "shipped": [
+  {
+   "name": "Foundations",
+   "span": "Phases 0–18, before v0.20",
+   "items": [
+    {
+     "id": "P0",
+     "title": "CI/CD and centralized logs",
+     "when": "pre-v0.20",
+     "area": "platform",
+     "text": "Every change is tested and deployed by CI, and all service logs land in one searchable log store."
+    },
+    {
+     "id": "P1",
+     "title": "Pluggable dataset backends",
+     "when": "pre-v0.20",
+     "area": "data",
+     "text": "Pull training data from Zenodo, S3-compatible object storage or a data-plane service through one interface."
+    },
+    {
+     "id": "P2",
+     "title": "Model scaffolding and registry guard",
+     "when": "pre-v0.20",
+     "area": "cli",
+     "text": "Generate a new model skeleton with one command; CI rejects a broken model registry."
+    },
+    {
+     "id": "P3",
+     "title": "Multi-stage model lifecycle",
+     "when": "pre-v0.20",
+     "area": "serving",
+     "text": "Move models through Staging, Canary and Production aliases; serving follows the alias and reloads automatically."
+    },
+    {
+     "id": "P4",
+     "title": "Control plane and drift detection",
+     "when": "pre-v0.20",
+     "area": "monitoring",
+     "text": "Request a retrain over an API and have prediction drift detected automatically."
+    },
+    {
+     "id": "P5",
+     "title": "Framework adapters",
+     "when": "pre-v0.20",
+     "area": "training",
+     "text": "Train scikit-learn, PyTorch and Hugging Face models through the same pipeline."
+    },
+    {
+     "id": "P6",
+     "title": "Dashboard foundations",
+     "when": "pre-v0.20",
+     "area": "dashboard",
+     "text": "Browse models with per-model READMEs, an artifact gallery and authenticated access in a web dashboard."
+    },
+    {
+     "id": "P7",
+     "title": "HPC message-bus bridge",
+     "when": "pre-v0.20",
+     "area": "hpc",
+     "text": "Serve predictions to HPC clients over the facility message bus and retrain automatically when model code is merged."
+    },
+    {
+     "id": "P8",
+     "title": "Dashboard service controls",
+     "when": "pre-v0.20",
+     "area": "dashboard",
+     "text": "Start, stop and restart platform services and tail their logs from the dashboard."
+    },
+    {
+     "id": "P9",
+     "title": "YAML-driven model registry",
+     "when": "pre-v0.20",
+     "area": "training",
+     "text": "Declare models in YAML with per-environment overlays; each model gets its own training deployment. Includes multi-user JupyterHub notebooks."
+    },
+    {
+     "id": "P10",
+     "title": "Composable inference pipeline",
+     "when": "pre-v0.20",
+     "area": "serving",
+     "text": "Requests flow through ingress, feature transformation and a model router before prediction."
+    },
+    {
+     "id": "P11",
+     "title": "Sysadmin approval gate",
+     "when": "pre-v0.20",
+     "area": "governance",
+     "text": "Model changes from CI wait for an administrator to approve or reject them, from the CLI or the dashboard."
+    },
+    {
+     "id": "P12",
+     "title": "Model-zoo webhooks and freshness",
+     "when": "pre-v0.20",
+     "area": "platform",
+     "text": "GitLab/GitHub webhooks keep the platform in sync with the model repository, with freshness badges."
+    },
+    {
+     "id": "P13",
+     "title": "Approval-gate metrics",
+     "when": "pre-v0.20",
+     "area": "monitoring",
+     "text": "Approval queue activity is exported as Prometheus metrics."
+    },
+    {
+     "id": "P14",
+     "title": "Per-model YAML source of truth",
+     "when": "pre-v0.20",
+     "area": "training",
+     "text": "Each model's YAML file is the single place its configuration lives."
+    },
+    {
+     "id": "P15",
+     "title": "Four-area monorepo",
+     "when": "pre-v0.20",
+     "area": "platform",
+     "text": "Platform, pipelines, serving and model code live in clearly separated packages in one workspace."
+    },
+    {
+     "id": "P16",
+     "title": "Pipeline operations CLI",
+     "when": "pre-v0.20",
+     "area": "cli",
+     "text": "Deploy, export and scaffold pipelines from the exa CLI and a dashboard Pipelines page; options show their valid choices in --help."
+    },
+    {
+     "id": "P17",
+     "title": "Alerting and distributed tracing",
+     "when": "pre-v0.20",
+     "area": "monitoring",
+     "text": "Get Alertmanager alerts and follow requests end to end with OpenTelemetry traces in Grafana Tempo."
+    },
+    {
+     "id": "P18",
+     "title": "Skipper operations agent",
+     "when": "pre-v0.20",
+     "area": "agents",
+     "text": "Ask an AI operations agent to inspect and act on the platform, with confirmation before any write."
+    }
+   ]
+  },
+  {
+   "name": "Operations and HPC",
+   "span": "v0.20 to July 2026",
+   "items": [
+    {
+     "id": "P19",
+     "title": "Operational observability store",
+     "when": "v0.20.0",
+     "area": "monitoring",
+     "text": "Diff model versions, view lineage, drift, audit history and traffic from exa commands backed by one shared platform store."
+    },
+    {
+     "id": "P20",
+     "title": "Closed-loop auto-retrain",
+     "when": "v0.20.0",
+     "area": "monitoring",
+     "text": "Turn on automatic retraining when drift crosses a threshold, with a dry-run preview."
+    },
+    {
+     "id": "P21",
+     "title": "Input embedding drift",
+     "when": "2026-06-11",
+     "area": "monitoring",
+     "text": "Detect drift in the inputs themselves, not only in predictions, against a stored baseline."
+    },
+    {
+     "id": "P22",
+     "title": "Pipeline validation gate",
+     "when": "2026-06-12",
+     "area": "training",
+     "text": "Smoke-test a model's serving latency before promotion; the command fails CI on an SLA breach. Adds exa doctor self-diagnosis."
+    },
+    {
+     "id": "R0.23",
+     "title": "Smoke checks and self-healing",
+     "when": "2026-06-12",
+     "area": "platform",
+     "text": "Deployments are smoke-checked after rollout and unhealthy containers are restarted automatically."
+    },
+    {
+     "id": "R0.24",
+     "title": "Delivery toolkit",
+     "when": "2026-06-24",
+     "area": "serving",
+     "text": "Roll back models, run shadow and A/B tests, batch inference, explanations, hyperparameter searches, model cards and namespaces from the CLI."
+    },
+    {
+     "id": "R0.26",
+     "title": "Platform-wide fault tolerance",
+     "when": "2026-07-01",
+     "area": "platform",
+     "text": "A shared resilience layer (retries, circuit breakers, timeouts) removes single points of failure across services."
+    },
+    {
+     "id": "P23",
+     "title": "HPC scheduler abstraction",
+     "when": "2026-07-01",
+     "area": "hpc",
+     "text": "Submit training to Slurm or Flux (or a mock) through one scheduler-neutral interface over SSH, with GPU/account/QoS resources and job cost linked to runs."
+    },
+    {
+     "id": "P24",
+     "title": "Feedback, A/B stats, FinOps",
+     "when": "2026-07-01",
+     "area": "governance",
+     "text": "Join ground-truth labels back to predictions, analyze A/B tests with proper statistics, and track budgets and carbon emissions."
+    }
+   ]
+  },
+  {
+   "name": "Agent-native CLI and the new dashboard",
+   "span": "July 2026",
+   "items": [
+    {
+     "id": "P25a",
+     "title": "Agent long-term memory",
+     "when": "2026-07-10",
+     "area": "agents",
+     "text": "The Skipper agent remembers procedures, episodes and preferences across sessions using local embeddings, with export and erase controls."
+    },
+    {
+     "id": "P25b",
+     "title": "Agent-native CLI via MCP",
+     "when": "2026-07-10",
+     "area": "agents",
+     "text": "Expose platform capabilities as MCP tools (exa mcp serve) with an A2A agent card; writes require explicit opt-in."
+    },
+    {
+     "id": "P26",
+     "title": "Conversational CLI front door",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Ask questions in plain English (exa ask), get explained help (exa explain) and did-you-mean suggestions."
+    },
+    {
+     "id": "P27",
+     "title": "Live terminal views",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Watch status auto-refresh in the terminal with inline sparklines and bars."
+    },
+    {
+     "id": "P28",
+     "title": "Output formats and completion",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Print any command as table, JSON, YAML or CSV, and install shell completion."
+    },
+    {
+     "id": "P29",
+     "title": "Safe mutating commands",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Preview retrains with --dry-run, confirm before changes, and have every trigger audited."
+    },
+    {
+     "id": "P30",
+     "title": "Config profiles and contexts",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Switch between named environments (exa config use) and see where each setting came from (exa env)."
+    },
+    {
+     "id": "P31",
+     "title": "CLI plugin system",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Install third-party exa subcommands as Python packages."
+    },
+    {
+     "id": "P32",
+     "title": "MCP resources and prompts",
+     "when": "2026-07-10",
+     "area": "agents",
+     "text": "Agents can read platform context as MCP resources and run guided workflows such as drift diagnosis and safe promotion."
+    },
+    {
+     "id": "P33",
+     "title": "Generated CLI reference",
+     "when": "2026-07-10",
+     "area": "cli",
+     "text": "Generate the full command reference from the live CLI so docs cannot drift (exa docs)."
+    },
+    {
+     "id": "P34",
+     "title": "Dashboard next-gen (24 features)",
+     "when": "2026-07-10",
+     "area": "dashboard",
+     "text": "A rebuilt dashboard with MLOps, facility, LLMOps, FinOps, governance and self-observability consoles, command palette, accessibility, i18n (EN/IT), NOC wall and embedded copilot."
+    }
+   ]
+  },
+  {
+   "name": "Programmable MLOps and Next-Gen 40",
+   "span": "July 2026",
+   "items": [
+    {
+     "id": "P35",
+     "title": "Pluggable calculation providers",
+     "when": "2026-07-15",
+     "area": "platform",
+     "text": "Swap the formula behind carbon and cost calculations via config, inline expressions or plugins, without code changes."
+    },
+    {
+     "id": "P36",
+     "title": "HPC fleet management",
+     "when": "2026-07-15",
+     "area": "hpc",
+     "text": "Discover clusters, approve them before use, place jobs on the best cluster, preflight them and account GPU-hours, cost and carbon."
+    },
+    {
+     "id": "P37",
+     "title": "Programmable MLOps and autopilot",
+     "when": "2026-07-15",
+     "area": "platform",
+     "text": "Extend the platform through a typed SDK, provider registry and policy-as-code, and run a self-driving autopilot with a kill switch and approval hooks."
+    },
+    {
+     "id": "P40-W1",
+     "title": "Next-Gen 40 wave 1 (13 features)",
+     "when": "2026-07-16",
+     "area": "llmops",
+     "text": "Dataset versioning, lineage, data contracts, prompt registry, secrets, relationship RBAC, model signing/BOM, inference engines, eval suites and gates, model gateway and KServe manifests (A1, A2, A5, B1, B2, C1, C2, C3, D3, D6, D7, E1, E2)."
+    },
+    {
+     "id": "P40-W2",
+     "title": "RAG and guardrails",
+     "when": "2026-07-16",
+     "area": "llmops",
+     "text": "Vector store, semantic cache, retrieval-augmented generation with citations and guardrails for injection/PII (B3, B4, B5, D8)."
+    },
+    {
+     "id": "P40-W3",
+     "title": "Quality and governance depth",
+     "when": "2026-07-16",
+     "area": "governance",
+     "text": "AgentOps analytics, concept drift, model-quality SLOs, shadow and champion-challenger, fairness, EU AI Act tooling, NIST AI RMF controls and an immutable audit trail (C4-C8, D1, D2, D4)."
+    },
+    {
+     "id": "P40-W4-6",
+     "title": "Features, reproducibility, GPU",
+     "when": "2026-07-16",
+     "area": "training",
+     "text": "Feature store, asset-centric pipelines, reproducibility bundles, Croissant/model cards, GPU sharing, autoscaling policies and fine-tuning adapter registry (A3, A4, A6, A8, B7, E3, E5)."
+    },
+    {
+     "id": "P40-W7-13",
+     "title": "Next-Gen 40 infra waves",
+     "when": "2026-07-18",
+     "area": "hpc",
+     "text": "Policy-as-code engine, distributed and federated training, embedding lifecycle, structured output, KV-aware inference gateway and heterogeneous/hybrid HPC-cloud placement (D5, E6, B6, B8, E4, E7, E8)."
+    },
+    {
+     "id": "P40-A7",
+     "title": "Synthetic data generation",
+     "when": "2026-07-29",
+     "area": "data",
+     "text": "Generate synthetic datasets with fidelity and privacy checks; synthetic-only models are refused at promotion. Completes 40/40 first implementations."
+    },
+    {
+     "id": "P41",
+     "title": "Projects and workspaces",
+     "when": "2026-07-18",
+     "area": "platform",
+     "text": "Group models, pipelines, connections, storage, members, budgets and notebooks into one project workspace, from CLI, dashboard or agent."
+    },
+    {
+     "id": "P42",
+     "title": "Dashboard edit parity",
+     "when": "2026-07-18",
+     "area": "dashboard",
+     "text": "Create and test connections, manage project members and provision project storage from the dashboard using the same code paths as the CLI."
+    },
+    {
+     "id": "P43",
+     "title": "Enterprise readiness phase 0",
+     "when": "2026-07-18",
+     "area": "platform",
+     "text": "Safe multi-writer operation: storage backend seam, concurrency-safe audit chain, atomic autopilot triggers, hardened defaults, telemetry retention and backup/restore with DR drill."
+    },
+    {
+     "id": "ER-P1-5",
+     "title": "Enterprise foundations, first slices",
+     "when": "2026-07-20",
+     "area": "platform",
+     "text": "Helm chart, event outbox, admission queue, OIDC token validation, key rotation, WORM audit anchor, Prometheus SD, reports, fleet what-if simulation and signed exchange packages."
+    },
+    {
+     "id": "R-USECASE",
+     "title": "Platform vs use-case separation",
+     "when": "2026-07-29",
+     "area": "platform",
+     "text": "Deployment-specific models and configs live in installable use-case packs on top of a use-case-agnostic platform."
+    },
+    {
+     "id": "R-DR",
+     "title": "Whole-platform backup and recovery",
+     "when": "2026-07-22",
+     "area": "platform",
+     "text": "Back up and restore every store (databases, object storage, config) as one bundle, on a schedule, off-site."
+    },
+    {
+     "id": "R-GRID",
+     "title": "Live grid carbon intensity",
+     "when": "2026-07-29",
+     "area": "governance",
+     "text": "Carbon accounting can use a live grid carbon-intensity feed instead of a static factor."
+    },
+    {
+     "id": "P44",
+     "title": "Grouped CLI help",
+     "when": "2026-07-29",
+     "area": "cli",
+     "text": "exa --help groups commands into 12 MLOps-lifecycle panels."
+    }
+   ]
+  },
+  {
+   "name": "Enterprise depth",
+   "span": "July to September 2026",
+   "items": [
+    {
+     "id": "P45",
+     "title": "Self-documenting CLI groups",
+     "when": "2026-07-31",
+     "area": "cli",
+     "text": "Every command group shows common tasks and where to learn more; every command and dashboard action has a documented use case and example."
+    },
+    {
+     "id": "R-SKIPPER2",
+     "title": "Next-gen Skipper agent",
+     "when": "2026-07-31",
+     "area": "agents",
+     "text": "Supervisor with specialist skills, docs-grounded answers, layered write-safety tiers, self-instrumentation, monitoring memory and per-project memory scoping."
+    },
+    {
+     "id": "R-DASH2",
+     "title": "Enterprise dashboard rebuild",
+     "when": "2026-07-31",
+     "area": "dashboard",
+     "text": "Lifecycle-organized navigation and new consoles for traffic, events, admission, scaling, providers, SLOs, secrets, feature store, fairness and autopilot."
+    },
+    {
+     "id": "R-PLATOPS",
+     "title": "Platform ops from notebooks",
+     "when": "2026-07-31",
+     "area": "platform",
+     "text": "Govern the platform from a notebook through a single facade."
+    },
+    {
+     "id": "R-VLLM",
+     "title": "vLLM and vision-language serving",
+     "when": "2026-08-05",
+     "area": "llmops",
+     "text": "Serve LLMs and vision-language models through a vLLM server with token streaming, health checks, metrics and HPC or external launchers (exa serve llm)."
+    },
+    {
+     "id": "R-PG",
+     "title": "Postgres datastore backend",
+     "when": "2026-08-25",
+     "area": "platform",
+     "text": "Run platform state on Postgres instead of SQLite for multi-writer deployments."
+    },
+    {
+     "id": "P46",
+     "title": "Judge calibration gate",
+     "when": "2026-08-25",
+     "area": "llmops",
+     "text": "An LLM judge must be calibrated (agreement, position bias, repeatability) before its scores can gate a promotion."
+    },
+    {
+     "id": "R-AGENTEVAL",
+     "title": "Agent quality measurement",
+     "when": "2026-09-04",
+     "area": "agents",
+     "text": "Measure the agent across the whole CLI for correctness, grounding, safety refusals, latency and cost, with history."
+    },
+    {
+     "id": "AIDC-W1",
+     "title": "Correctness set",
+     "when": "2026-09-04",
+     "area": "monitoring",
+     "text": "Silent-data-corruption detection that suppresses drift retrains, typed carbon signals, and a quantization parity gate before promotion."
+    },
+    {
+     "id": "R-EVIDENCE",
+     "title": "Causal evidence chain",
+     "when": "2026-09-04",
+     "area": "governance",
+     "text": "Audit events carry correlation, on-behalf-of and rollback references so an action's full chain can be reconstructed."
+    },
+    {
+     "id": "R-NG40-DEPTH",
+     "title": "Next-Gen 40 gap closure",
+     "when": "2026-09-04",
+     "area": "governance",
+     "text": "Live traffic mirroring for shadow deployments, enforced data contracts, lineage on training/promotion/retrain, gateway guardrails and schema-valid responses, and EU Declaration of Conformity export."
+    },
+    {
+     "id": "R-RELEASE",
+     "title": "CI-built releases with rollback",
+     "when": "2026-09-04",
+     "area": "platform",
+     "text": "Releases are built once in CI, deployed by digest, recorded in the audit chain, and can be rolled back even when the pipeline is red."
+    },
+    {
+     "id": "AIDC-W2",
+     "title": "Governed autonomy prerequisites",
+     "when": "2026-09-10",
+     "area": "governance",
+     "text": "Autonomous behaviours publish blast-radius contracts, can be set per behaviour to autonomous/review/disabled, interrupted mid-run, and telemetry is anchored into the audit chain."
+    },
+    {
+     "id": "R-APICONTRACT",
+     "title": "API contract guard",
+     "when": "2026-09-10",
+     "area": "platform",
+     "text": "Control-plane API changes become reviewable diffs; accidental interface changes fail CI."
+    },
+    {
+     "id": "P47",
+     "title": "CLI Console in dashboard",
+     "when": "2026-09-10",
+     "area": "dashboard",
+     "text": "Run any exa command from the dashboard through generated forms, with read/admin/destructive tiers and full audit."
+    }
+   ]
+  }
+ ],
+ "planned": [
+  {
+   "name": "Close the loop",
+   "text": "The two steps that finish the governed drift-to-retrain loop.",
+   "items": [
+    {
+     "id": "OPEN-1",
+     "title": "Approval on drift-triggered retrains",
+     "status": "planned",
+     "area": "governance",
+     "text": "Route drift-triggered retrains through the human approval queue; today approval gates CI-driven model changes, while drift retrains are governed by cooldowns, storm caps, corruption checks and audit."
+    },
+    {
+     "id": "OPEN-2",
+     "title": "Live Flux-scheduled retrain",
+     "status": "planned",
+     "area": "hpc",
+     "text": "Exercise one complete drift-to-retrain loop as a real Flux-scheduled job with measured queue wait (the adapter exists; a live closed loop has not been run)."
+    }
+   ]
+  },
+  {
+   "name": "Finish what has started",
+   "text": "Capabilities that ship today with a named piece still missing.",
+   "items": [
+    {
+     "id": "NG-A2",
+     "title": "Hosted lineage server",
+     "status": "partial",
+     "area": "data",
+     "text": "Ship an optional lineage-server profile to browse the provenance graph; events are already emitted."
+    },
+    {
+     "id": "NG-A5",
+     "title": "Standard data-contract engine + CI step",
+     "status": "partial",
+     "area": "data",
+     "text": "Adopt a standard validation engine and a blocking CI data-validation step; contracts already gate training."
+    },
+    {
+     "id": "NG-C3",
+     "title": "Eval gate in CI and dashboard",
+     "status": "partial",
+     "area": "llmops",
+     "text": "A blocking CI job before any alias move and a dashboard page showing the gate report."
+    },
+    {
+     "id": "NG-B1",
+     "title": "MLflow prompt registry backend",
+     "status": "partial",
+     "area": "llmops",
+     "text": "Store prompts in the MLflow prompt registry in addition to the built-in store."
+    },
+    {
+     "id": "NG-D7",
+     "title": "External secrets manager",
+     "status": "partial",
+     "area": "governance",
+     "text": "Run an external secrets manager and inject secrets into every service at startup."
+    },
+    {
+     "id": "NG-D1",
+     "title": "Dedicated compliance page",
+     "status": "partial",
+     "area": "governance",
+     "text": "A standalone dashboard Compliance page (compliance currently lives inside the Governance console)."
+    },
+    {
+     "id": "NG-A3",
+     "title": "Online feature store for serving",
+     "status": "partial",
+     "area": "data",
+     "text": "An online feature store and serving that reads feature views directly, removing train/serve skew; plus scheduled materialization."
+    },
+    {
+     "id": "NG-B5",
+     "title": "Hybrid search and ANN indexes",
+     "status": "partial",
+     "area": "llmops",
+     "text": "Hybrid dense+sparse search, configurable ANN indexes, and ingestion from features and drift snapshots."
+    },
+    {
+     "id": "NG-C6",
+     "title": "More SLO sources",
+     "status": "partial",
+     "area": "monitoring",
+     "text": "SLIs from gateway latency/errors, a serving availability probe and live Prometheus evaluation."
+    },
+    {
+     "id": "NG-C7",
+     "title": "Champion-challenger naming alignment",
+     "status": "partial",
+     "area": "serving",
+     "text": "Shadow mirroring and challenger scoring have shipped; remaining work aligns the scoreboard naming with the design before formal acceptance."
+    },
+    {
+     "id": "NG-C8",
+     "title": "Standard fairness engine",
+     "status": "partial",
+     "area": "governance",
+     "text": "Optionally adopt a standard fairness library instead of the built-in metric implementation."
+    },
+    {
+     "id": "NG-D8",
+     "title": "Standard guardrail engines",
+     "status": "partial",
+     "area": "llmops",
+     "text": "Integrate established PII and policy guardrail engines alongside the built-in detectors."
+    },
+    {
+     "id": "NG-E5",
+     "title": "Autoscaling actuation",
+     "status": "partial",
+     "area": "serving",
+     "text": "Apply scaling decisions automatically (including scale-to-zero with cold-start activation); decisions are computed today but applied by an operator."
+    },
+    {
+     "id": "NG-B8",
+     "title": "Constrained decoding and reasoning budgets",
+     "status": "partial",
+     "area": "llmops",
+     "text": "Constrain generation to a schema at decode time and enforce and account reasoning-token budgets in the gateway and FinOps."
+    },
+    {
+     "id": "NG-A4",
+     "title": "Dashboard asset views",
+     "status": "partial",
+     "area": "dashboard",
+     "text": "Browse data/model assets and their staleness in the dashboard."
+    },
+    {
+     "id": "NG-A8",
+     "title": "One-command reproduction",
+     "status": "partial",
+     "area": "training",
+     "text": "Rebuild code, data and environment and re-run training automatically from a reproducibility bundle; today the bundle is verified and the rebuild steps are listed."
+    },
+    {
+     "id": "NG-B6",
+     "title": "Encoder registry in MLflow",
+     "status": "partial",
+     "area": "llmops",
+     "text": "Keep the embedding-encoder registry as MLflow artifacts."
+    },
+    {
+     "id": "NG-B7",
+     "title": "Real fine-tuning jobs",
+     "status": "partial",
+     "area": "training",
+     "text": "Run actual PEFT/LoRA fine-tuning on the scheduler with measured eval scores, and serve multiple adapters through the engine; the adapter registry and promotion gate exist, but fine-tuning itself does not train yet."
+    },
+    {
+     "id": "NG-E6",
+     "title": "Distributed training from pipeline run",
+     "status": "partial",
+     "area": "training",
+     "text": "Launch distributed training directly from the standard pipeline run command."
+    },
+    {
+     "id": "NG-E1",
+     "title": "Live KServe activation",
+     "status": "partial",
+     "area": "serving",
+     "text": "Deploy models to KServe on Kubernetes; manifests are generated today."
+    },
+    {
+     "id": "NG-D3",
+     "title": "Keyless signing and transparency log",
+     "status": "partial",
+     "area": "governance",
+     "text": "Keyless Sigstore signing with a public transparency log for models and audit checkpoints; key-based signing and a WORM anchor exist."
+    },
+    {
+     "id": "ADR-0110",
+     "title": "Insufficient-evidence reporting",
+     "status": "partial",
+     "area": "governance",
+     "text": "Compliance packs name their own evidence gaps instead of omitting them."
+    },
+    {
+     "id": "ADR-0112",
+     "title": "Carbon-aware placement benchmark",
+     "status": "partial",
+     "area": "hpc",
+     "text": "Benchmark any multi-objective carbon placement policy against a simple baseline and define a retirement criterion before shipping it built-in."
+    },
+    {
+     "id": "ADR-0117",
+     "title": "LLM serving topology as policy",
+     "status": "partial",
+     "area": "serving",
+     "text": "Prefill/decode topology and routing as runtime policy, paired TTFT/TPOT SLOs, and engine/accelerator-family parity checks."
+    },
+    {
+     "id": "CLI-SAFETY",
+     "title": "Dry-run everywhere",
+     "status": "partial",
+     "area": "cli",
+     "text": "Extend dry-run, confirmation and audit to the remaining mutating commands."
+    },
+    {
+     "id": "GPU-1",
+     "title": "GPU LLM serving",
+     "status": "partial",
+     "area": "serving",
+     "text": "Originally deferred GPU feature #1; vLLM server mode shipped, GPU quantization and throughput targets pending."
+    },
+    {
+     "id": "GPU-2",
+     "title": "GPU scheduling and GPU-aware serving",
+     "status": "partial",
+     "area": "hpc",
+     "text": "Originally deferred GPU feature #2; scheduler-neutral GPU resources and fractional-allocation planning exist, live GPU validation pending."
+    },
+    {
+     "id": "GPU-3",
+     "title": "Elastic autoscaling",
+     "status": "partial",
+     "area": "serving",
+     "text": "Originally deferred GPU feature #3; scaling policy decisions exist, automatic actuation pending."
+    },
+    {
+     "id": "GPU-4",
+     "title": "Multi-node distributed training",
+     "status": "partial",
+     "area": "training",
+     "text": "Originally deferred GPU feature #4; distributed/fault-tolerant training module exists, live multi-node GPU runs pending."
+    }
+   ]
+  },
+  {
+   "name": "Enterprise scale",
+   "text": "High availability, identity, fleet observability and one versioned API.",
+   "items": [
+    {
+     "id": "ER-1",
+     "title": "HA and horizontal scale-out",
+     "status": "partial",
+     "area": "platform",
+     "text": "Survive a host loss and scale out: HA Postgres/object storage on Kubernetes, live event broker fan-out, Redis coordination, worker fleets, serving autoscaling and model sharding, agent replicas, bulk HPC polling. Shipped: Helm chart with rolling upgrades, event outbox/relay, admission queue, coordination seam, non-blocking HPC wait, SSE resume, capacity aggregation."
+    },
+    {
+     "id": "ER-2",
+     "title": "Identity, tenancy and governance",
+     "status": "partial",
+     "area": "governance",
+     "text": "Single sign-on (OIDC/SAML/SCIM), per-user identity in every audit record, cloud KMS, keyless signing, dedicated authorization service and hard per-tenant isolation. Shipped: OIDC token validation, key rotation, WORM audit anchor, OpenFGA model export, cross-tenant conformance test."
+    },
+    {
+     "id": "ER-3",
+     "title": "Fleet observability and reporting",
+     "status": "partial",
+     "area": "monitoring",
+     "text": "Node and GPU telemetry across thousands of nodes, long-term HA metrics, scheduled reports and a customer-facing SLA report. Shipped: Prometheus SD from the fleet registry, collector/remote-write config, cardinality guard, alert routing with heartbeat, report generation, SLO burn-rate engine, telemetry retention prune."
+    },
+    {
+     "id": "ER-4",
+     "title": "Cohesion, contract and UI scale",
+     "status": "partial",
+     "area": "platform",
+     "text": "One versioned API across domains, typed settings, fleet-scale tables in the UI, full localization and load/chaos test tiers. Shipped: per-domain data modules, SDK decoupling, surface contract tests, env validation, result envelope, keyset pagination primitive, agent circuit breaker, API contract guard."
+    },
+    {
+     "id": "ER-5",
+     "title": "Futuristic differentiation",
+     "status": "partial",
+     "area": "hpc",
+     "text": "Fleet digital twin with spatial view, predictive autopilot, carbon+cost bursting, 3D fleet/NOC wall, governed NL fleet copilot, cross-institution exchange, compliance-as-product. Shipped: what-if simulation, drift forecasting and root-cause classifier, carbon/cost placement providers, heatmap tile API, fleet_simulate agent tool, signed exchange packages, Annex IV/V generation."
+    }
+   ]
+  },
+  {
+   "name": "Agent governance",
+   "text": "Designed, not built: governed identities and brokers for autonomous agents.",
+   "items": [
+    {
+     "id": "AIDC-W3",
+     "title": "Governance spine and capability broker",
+     "status": "in design",
+     "area": "agents",
+     "text": "Agent identities with scoped just-in-time grants, re-authorization on every hop, signed capability descriptors, guardrail boundaries and per-call cost caps."
+    },
+    {
+     "id": "AIDC-W4",
+     "title": "Data and compute brokers",
+     "status": "in design",
+     "area": "hpc",
+     "text": "Short-lived credential vending for data, agent memory as a governed dataset, hybrid retrieval, quota-reserving compute admission and a Kubernetes/Kueue adapter."
+    },
+    {
+     "id": "AIDC-W5",
+     "title": "Suspend and resume",
+     "status": "in design",
+     "area": "hpc",
+     "text": "One suspend/resume service used by preemption, backfill, carbon shifting and fault recovery."
+    }
+   ]
+  },
+  {
+   "name": "Later",
+   "text": "Deferred, or planned without a date.",
+   "items": [
+    {
+     "id": "NG-E2",
+     "title": "GPU quantization compute",
+     "status": "deferred",
+     "area": "serving",
+     "text": "Real AWQ/GPTQ/FP8 quantization on GPU hosts; without a GPU it is recorded as provenance-only and the parity gate reports inert."
+    },
+    {
+     "id": "INC-7",
+     "title": "MCP OAuth 2.1 transport",
+     "status": "deferred",
+     "area": "agents",
+     "text": "Authenticated remote MCP access for agents on other hosts."
+    },
+    {
+     "id": "INC-8",
+     "title": "Pipeline-as-code DSL",
+     "status": "deferred",
+     "area": "training",
+     "text": "Define pipelines in a typed DSL compiled to an intermediate representation."
+    },
+    {
+     "id": "R-GITOPS",
+     "title": "GitOps reconcile and webhooks",
+     "status": "deferred",
+     "area": "platform",
+     "text": "Reconcile platform state from Git and emit outbound event webhooks."
+    },
+    {
+     "id": "CLI-TUI",
+     "title": "Full-screen terminal UI",
+     "status": "deferred",
+     "area": "cli",
+     "text": "A Textual-based exa tui live dashboard."
+    },
+    {
+     "id": "PROJ-JUPYTER",
+     "title": "Per-project JupyterHub spawn",
+     "status": "deferred",
+     "area": "platform",
+     "text": "Launch a JupyterHub notebook server scoped to a project."
+    },
+    {
+     "id": "PROJ-PROMLABEL",
+     "title": "Project label on serving metrics",
+     "status": "deferred",
+     "area": "monitoring",
+     "text": "Break down serving metrics per project in Prometheus."
+    },
+    {
+     "id": "SKIPPER-MEM",
+     "title": "Automatic memory distillation",
+     "status": "deferred",
+     "area": "agents",
+     "text": "Automatically distill procedures and reflect on episodes in the background; review queue in the dashboard."
+    },
+    {
+     "id": "DASH-SSO",
+     "title": "Dashboard SSO and tenant switcher",
+     "status": "planned",
+     "area": "dashboard",
+     "text": "OIDC sign-in, tenant switcher, service accounts with scoped tokens, and step-up for governed actions."
+    },
+    {
+     "id": "DASH-QA",
+     "title": "Dashboard E2E and visual tests",
+     "status": "planned",
+     "area": "dashboard",
+     "text": "End-to-end browser journeys, visual regression, bundle budgets and preview deploys in CI."
+    },
+    {
+     "id": "DASH-RUM",
+     "title": "Dashboard self-observability",
+     "status": "planned",
+     "area": "dashboard",
+     "text": "Self-hosted JS error tracking, browser tracing, web-vitals and synthetic monitoring."
+    },
+    {
+     "id": "CICD-SIGN",
+     "title": "Signed release archives",
+     "status": "planned",
+     "area": "platform",
+     "text": "Sign release archives in CI."
+    },
+    {
+     "id": "ADR-0077",
+     "title": "Explained placement decisions",
+     "status": "planned",
+     "area": "hpc",
+     "text": "Show why a cluster was chosen (exa hpc place --explain)."
+    }
+   ]
+  }
+ ]
+}

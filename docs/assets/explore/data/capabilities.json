@@ -1,0 +1,2984 @@
+{
+ "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
+ "total_commands": 401,
+ "total_groups": 62,
+ "panels": [
+  {
+   "title": "Getting Started",
+   "slug": "getting-started",
+   "blurb": "Check what is running, diagnose your setup and learn the CLI.",
+   "groups": [
+    "status",
+    "doctor",
+    "explain",
+    "env",
+    "docs",
+    "config",
+    "plugins"
+   ],
+   "commands": [
+    {
+     "cmd": "exa status",
+     "group": "status",
+     "help": "Platform snapshot: service health, pending approvals, production models.",
+     "anchor": "exa-status-platform-snapshot-at-a-glance",
+     "guide": "guides/quickstart.md"
+    },
+    {
+     "cmd": "exa doctor",
+     "group": "doctor",
+     "help": "Diagnose your ExaMLOps setup: config, connectivity, and DB health.",
+     "anchor": "exa-doctor-diagnose-your-setup",
+     "guide": "guides/quickstart.md"
+    },
+    {
+     "cmd": "exa explain",
+     "group": "explain",
+     "help": "Explain what a command does, in plain language, with examples.",
+     "anchor": "exa-explain-plain-language-command-help",
+     "guide": null
+    },
+    {
+     "cmd": "exa env",
+     "group": "env",
+     "help": "Show the effective configuration and the source of every value. With --validate, cross-check the effective environment for enterprise-readiness (backend ↔ endpoint consistency, OIDC coherence, weak/placeholder secrets) and exit non-zero on any error.",
+     "anchor": "exa-env-effective-config-and-its-provenance",
+     "guide": null
+    },
+    {
+     "cmd": "exa docs",
+     "group": "docs",
+     "help": "Generate the full command reference from the live CLI tree.",
+     "anchor": "exa-docs-generate-the-command-reference-from-live-code",
+     "guide": null
+    },
+    {
+     "cmd": "exa config contexts",
+     "group": "config",
+     "help": "List configured contexts (environments) and show the active one.",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa config export",
+     "group": "config",
+     "help": "One-file YAML snapshot of ALL ExaMLOps configuration (generated, secrets redacted). Aggregates the CLI config (with provenance), contexts, the HPC cluster registry, object-store split (artifact vs dataset MinIO), per-model YAMLs, environment overlays, FinOps providers, and every platform env var — always derived live from the real sources, so it can never drift from reality.",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa config init",
+     "group": "config",
+     "help": "Interactive wizard — write ~/.config/examlops/config.toml.",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa config set",
+     "group": "config",
+     "help": "Set a single config key in ~/.config/examlops/config.toml.",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa config show",
+     "group": "config",
+     "help": "Print the current resolved config (env vars + TOML file).",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa config use",
+     "group": "config",
+     "help": "Switch the active context (environment).",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
+     "cmd": "exa plugins",
+     "group": "plugins",
+     "help": "List installed exa CLI plugins and whether each loaded successfully.",
+     "anchor": "exa-plugins-installed-plugin-inventory",
+     "guide": null
+    }
+   ]
+  },
+  {
+   "title": "Training & Pipelines",
+   "slug": "training-pipelines",
+   "blurb": "Run, schedule, promote and reproduce training pipelines.",
+   "groups": [
+    "pipeline",
+    "retrain",
+    "scaffold",
+    "finetune",
+    "reproduce"
+   ],
+   "commands": [
+    {
+     "cmd": "exa pipeline add-model",
+     "group": "pipeline",
+     "help": "Register an existing modelzoo model into the training pipeline. Unlike exa scaffold, this command does NOT create a new model class. It only generates the pipeline YAML and config shim for a model class that already lives in modelzoo/seanergys_modelzoo/models/tasks/. Use this when you have written a model class by hand or imported one from the modelzoo and want to wire it into ExaMLOps training and inference.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline deploy",
+     "group": "pipeline",
+     "help": "Register Prefect deployments for all models (or one model).",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed checkpoint",
+     "group": "pipeline",
+     "help": "Write an integrity-hashed sharded checkpoint (R3/R5).",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed launch",
+     "group": "pipeline",
+     "help": "Launch a distributed training run (R1/R2/R8).",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed list",
+     "group": "pipeline",
+     "help": "List distributed training runs.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed resume",
+     "group": "pipeline",
+     "help": "Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed status",
+     "group": "pipeline",
+     "help": "Show a distributed run + its checkpoints.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline export-registry",
+     "group": "pipeline",
+     "help": "Export auto-discovered model state to pipelines/model_registry.yaml.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline hpo record",
+     "group": "pipeline",
+     "help": "Record an HPO trial result.",
+     "anchor": "exa-pipeline-hpo-hyperparameter-optimisation",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline hpo start",
+     "group": "pipeline",
+     "help": "Trigger an HPO study via the Control Plane.",
+     "anchor": "exa-pipeline-hpo-hyperparameter-optimisation",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline hpo status",
+     "group": "pipeline",
+     "help": "Show HPO study status.",
+     "anchor": "exa-pipeline-hpo-hyperparameter-optimisation",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline list",
+     "group": "pipeline",
+     "help": "List all auto-discovered models and their supported datasets.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline promote",
+     "group": "pipeline",
+     "help": "Promote a model alias when a metric threshold passes (rule-based gate). Specify metric threshold with --if-<metric>-<op> <value>, e.g. --if-rmse-lt 5.0",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline promote-delete",
+     "group": "pipeline",
+     "help": "Delete saved metric-gated promotion rules.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline quality check",
+     "group": "pipeline",
+     "help": "Run data quality checks for a model/dataset pair and record results.",
+     "anchor": "exa-pipeline-quality-data-quality-validation-gates",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline quality history",
+     "group": "pipeline",
+     "help": "Show data quality check history for a model (last 20 runs).",
+     "anchor": "exa-pipeline-quality-data-quality-validation-gates",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline run",
+     "group": "pipeline",
+     "help": "Run training pipeline(s) locally via Prefect.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline validate",
+     "group": "pipeline",
+     "help": "Validate the pack's models/*.yaml against Python model shims.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline validate-model",
+     "group": "pipeline",
+     "help": "Smoke-test a model alias on Ray Serve and run the C3 eval gate against it. Returns exit code 0 on PASS, 1 on FAIL. Safe to use as a gate before promotion. ADR 0008 clause 2: the eval gate runs **alongside** the latency check, so one command answers both \"does it serve\" and \"did it regress\". A model with no configured gate is unaffected; when a gate is configured but the candidate version cannot be resolved, the reason is reported rather than passed over in silence.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa retrain",
+     "group": "retrain",
+     "help": "Trigger a Prefect training run via the Control Plane.",
+     "anchor": "exa-retrain-trigger-a-training-run-via-the-control-plane",
+     "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa scaffold",
+     "group": "scaffold",
+     "help": "Scaffold a new model: model class, config, unit test, and YAML.",
+     "anchor": "exa-scaffold-scaffold-a-new-model",
+     "guide": "guides/add-a-new-model.md"
+    },
+    {
+     "cmd": "exa finetune",
+     "group": "finetune",
+     "help": "Run a fine-tune and register a signed, lineage-linked adapter (R1/R3/GWT-1).",
+     "anchor": "exa-finetune-fine-tune-and-register-an-adapter",
+     "guide": "guides/fine-tuning.md"
+    },
+    {
+     "cmd": "exa reproduce build",
+     "group": "reproduce",
+     "help": "Capture + sign a reproducibility bundle for a model version (R1/R2).",
+     "anchor": "exa-reproduce-reproducibility-bundles-a8",
+     "guide": "guides/reproducibility-bundles.md"
+    },
+    {
+     "cmd": "exa reproduce list",
+     "group": "reproduce",
+     "help": "List reproducibility bundles.",
+     "anchor": "exa-reproduce-reproducibility-bundles-a8",
+     "guide": "guides/reproducibility-bundles.md"
+    },
+    {
+     "cmd": "exa reproduce run",
+     "group": "reproduce",
+     "help": "Rebuild plan + metric-match within tolerance — never claims bit-exactness (R3/GWT-2).",
+     "anchor": "exa-reproduce-reproducibility-bundles-a8",
+     "guide": "guides/reproducibility-bundles.md"
+    },
+    {
+     "cmd": "exa reproduce verify",
+     "group": "reproduce",
+     "help": "Check referenced inputs still exist + hashes match (R5/GWT-4). Exit 1 if rotted.",
+     "anchor": "exa-reproduce-reproducibility-bundles-a8",
+     "guide": "guides/reproducibility-bundles.md"
+    }
+   ]
+  },
+  {
+   "title": "Data & Features",
+   "slug": "data-features",
+   "blurb": "Version datasets, validate them and serve features without skew.",
+   "groups": [
+    "data",
+    "feature",
+    "features",
+    "assets",
+    "cards"
+   ],
+   "commands": [
+    {
+     "cmd": "exa data checkout",
+     "group": "data",
+     "help": "Materialise / verify the exact pinned data, or exit non-zero (spec R11).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data diff",
+     "group": "data",
+     "help": "Report row-count / schema / size deltas between two revisions (spec R10).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data list",
+     "group": "data",
+     "help": "List recorded revisions newest-first, with linked runs (spec R9).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data retention-prune",
+     "group": "data",
+     "help": "Prune unbounded per-inference telemetry (drift / input snapshots) older than --days. Never touches the tamper-evident audit log or FinOps cost history. Use --dry-run first to see the row counts, then run without it (optionally with --vacuum) to reclaim space.",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data snapshot",
+     "group": "data",
+     "help": "Resolve the current dataset state to a revision and record it (spec R8).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data synth evaluate",
+     "group": "data",
+     "help": "Score fidelity + privacy of an existing synthetic set and apply the gate (spec R2/R3).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data synth fit",
+     "group": "data",
+     "help": "Fit a generator to real data and report what it learned (spec R1 smoke-check).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data synth generate",
+     "group": "data",
+     "help": "Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa data validate",
+     "group": "data",
+     "help": "Validate a dataset against its data contract; exit non-zero on error violations (spec R11).",
+     "anchor": "exa-data-dataset-versioning-reproducibility",
+     "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa feature apply",
+     "group": "feature",
+     "help": "Register/patch a feature view — the single train+serve definition (R1).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature freshness",
+     "group": "feature",
+     "help": "Show materialization age and staleness vs the view TTL (R6/GWT-4).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature get",
+     "group": "feature",
+     "help": "Read an entity's feature vector — online (default) or point-in-time offline (--asof).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature ingest",
+     "group": "feature",
+     "help": "Record an offline feature observation (point-in-time source of truth).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature list",
+     "group": "feature",
+     "help": "List registered feature views.",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature materialize",
+     "group": "feature",
+     "help": "Materialize latest offline values → online store (R6).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature skew",
+     "group": "feature",
+     "help": "Assert online == offline as-of for an entity (skew must be zero) (R2/GWT-1).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa features list",
+     "group": "features",
+     "help": "List feature versions in the store.",
+     "anchor": "exa-features-versioned-training-feature-store",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa features pull",
+     "group": "features",
+     "help": "Pull a feature file from the store.",
+     "anchor": "exa-features-versioned-training-feature-store",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa features push",
+     "group": "features",
+     "help": "Push a feature file into the versioned feature store.",
+     "anchor": "exa-features-versioned-training-feature-store",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa assets declare",
+     "group": "assets",
+     "help": "Declare an asset and its upstream dependencies (R1).",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa assets graph",
+     "group": "assets",
+     "help": "Print the asset DAG (coincides with the A2 lineage graph) (R6/GWT-4).",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa assets list",
+     "group": "assets",
+     "help": "List declared assets with their current version.",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa assets materialize",
+     "group": "assets",
+     "help": "Rebuild the asset + its stale ancestors only (R4/GWT-3). `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam (ADR 0036 clause 3) instead of running the production function in this process.",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa assets source-changed",
+     "group": "assets",
+     "help": "Advance a source asset's version so downstream assets go stale (GWT-2).",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa assets status",
+     "group": "assets",
+     "help": "Show the freshness graph — fresh/stale + why (R5/GWT-2).",
+     "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
+     "guide": "guides/asset-pipelines.md"
+    },
+    {
+     "cmd": "exa cards completeness",
+     "group": "cards",
+     "help": "Score model-card completeness (0..1) — the D5/C3 promotion gate signal (R6).",
+     "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
+     "guide": "guides/cards.md"
+    },
+    {
+     "cmd": "exa cards dataset",
+     "group": "cards",
+     "help": "Emit + validate a Croissant JSON-LD dataset card (R1/R2).",
+     "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
+     "guide": "guides/cards.md"
+    },
+    {
+     "cmd": "exa cards export",
+     "group": "cards",
+     "help": "Export a card for publication with PII, locations and internal fields scrubbed (clause 4). Internal fields are dropped, PII and site-specific locations are redacted, and a detected **secret blocks the export** — redacting it would hide that a credential reached a generated artifact at all. `--force` overrides that, audited, because the scanner is a regex heuristic and can be wrong; the dropped and redacted parts are not overridable, because they are not judgement calls.",
+     "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
+     "guide": "guides/cards.md"
+    },
+    {
+     "cmd": "exa cards model",
+     "group": "cards",
+     "help": "Build a structured model card from live data — gaps as 'not provided' (R3/R4).",
+     "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
+     "guide": "guides/cards.md"
+    }
+   ]
+  },
+  {
+   "title": "Models & Registry",
+   "slug": "models-registry",
+   "blurb": "Browse, compare, sign and trace every registered model version.",
+   "groups": [
+    "models",
+    "modelzoo",
+    "embedding"
+   ],
+   "commands": [
+    {
+     "cmd": "exa models bom",
+     "group": "models",
+     "help": "Generate a CycloneDX AI-BOM for a model version.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models card generate",
+     "group": "models",
+     "help": "Generate a standardised model card document.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models card history",
+     "group": "models",
+     "help": "Show model card generation history.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models cost",
+     "group": "models",
+     "help": "Show HPC cost history for a model. Use --record to ingest new data.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models cost-list",
+     "group": "models",
+     "help": "Show HPC cost summary across all models.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models diff",
+     "group": "models",
+     "help": "Compare metrics and params between two model versions.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models engine list",
+     "group": "models",
+     "help": "List available inference engines.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models engine validate",
+     "group": "models",
+     "help": "Validate a model YAML's engine block (the CI integrity guard uses the same check).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models info",
+     "group": "models",
+     "help": "Show detail for one model: all versions, aliases, metrics.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models lineage",
+     "group": "models",
+     "help": "Show the pipeline → dataset → model version lineage chain (or the A2 graph).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models list",
+     "group": "models",
+     "help": "List all registered models with their production alias and latest version.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models parity",
+     "group": "models",
+     "help": "Portability gate: compare a quantized version against its base (ADR 0117). Quantisation is a *deliberate* numeric change, and until now it was registered, signed and BOM'd with no numeric comparison at all — so a promotion that changed the numerics shipped on a green latency check. Three verdicts, and only one lets an autonomous promotion through. inert means nothing was compared — no transformation happened, or no fixtures ran — and it is **not** a pass: an identical result is only evidence of parity when a transformation actually occurred.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models quantize",
+     "group": "models",
+     "help": "Quantize a model → register a new signed + BOM'd version (GWT-3).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models rollback history",
+     "group": "models",
+     "help": "Show rollback history for a model (last 20 events).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models rollback run",
+     "group": "models",
+     "help": "Roll back a model alias (default: Production) to a specified or selected version.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models sign",
+     "group": "models",
+     "help": "Sign a model artifact bundle (HMAC fallback or Sigstore keyless).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models verify",
+     "group": "models",
+     "help": "Verify a model's signature against current artifact bytes (verify-before-load gate).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa modelzoo adopt",
+     "group": "modelzoo",
+     "help": "Provision one project per model (storage · MinIO connection · budget · workbench · pipelines). Idempotent. Wires each model its own project with a bound per-project MinIO/S3 connection (endpoint/keys from the platform S3 env; secret via the secrets store, never printed). A project can still hold several models via `exa project assign` — this just makes one-project-per-model the zero-effort default (ADR 0086).",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa modelzoo config",
+     "group": "modelzoo",
+     "help": "Show ModelZoo integration configuration.",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa modelzoo config-set",
+     "group": "modelzoo",
+     "help": "Update ModelZoo integration config on the Control Plane.",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa modelzoo events",
+     "group": "modelzoo",
+     "help": "Show recent ModelZoo push events.",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa modelzoo status",
+     "group": "modelzoo",
+     "help": "Show ModelZoo freshness for every registered model.",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa modelzoo sync",
+     "group": "modelzoo",
+     "help": "Manually trigger one ModelZoo poll cycle.",
+     "anchor": "exa-modelzoo-modelzoo-repository-freshness-and-events",
+     "guide": "components/modelzoo.md"
+    },
+    {
+     "cmd": "exa embedding list",
+     "group": "embedding",
+     "help": "List registered encoders.",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    },
+    {
+     "cmd": "exa embedding register",
+     "group": "embedding",
+     "help": "Register a versioned encoder → encoder_id (R1).",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    },
+    {
+     "cmd": "exa embedding reindex",
+     "group": "embedding",
+     "help": "Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5). Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` submits the job and returns its id instead of re-embedding in this process. `--inline` forces the local path and is what the submitted job itself runs, so a job never submits another job.",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    },
+    {
+     "cmd": "exa embedding set-encoder",
+     "group": "embedding",
+     "help": "Bootstrap a collection's active encoder (R2).",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    },
+    {
+     "cmd": "exa embedding status",
+     "group": "embedding",
+     "help": "Show a collection's active/staging encoder + reindex history.",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    }
+   ]
+  },
+  {
+   "title": "Serving & Inference",
+   "slug": "serving-inference",
+   "blurb": "Serve models, split traffic, call gateways and query RAG.",
+   "groups": [
+    "serve",
+    "predict",
+    "production",
+    "gateway",
+    "vector",
+    "rag"
+   ],
+   "commands": [
+    {
+     "cmd": "exa serve ab analyze",
+     "group": "serve",
+     "help": "Run a statistical test on the recorded observations of a model's active A/B test. Uses Welch's t-test (unequal variance) and reports whether the difference between the two variants is significant, plus the winner given the metric's optimisation direction.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve ab record",
+     "group": "serve",
+     "help": "Record a metric observation for the active A/B test of a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve ab start",
+     "group": "serve",
+     "help": "Start a new A/B test comparing two model variants.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve ab status",
+     "group": "serve",
+     "help": "Show A/B tests (most recent 20).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve ab stop",
+     "group": "serve",
+     "help": "Stop the running A/B test for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve adapter add",
+     "group": "serve",
+     "help": "Register an adapter (alias of `exa finetune`) (R6).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve adapter list",
+     "group": "serve",
+     "help": "List registered adapters (R6).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve adapter promote",
+     "group": "serve",
+     "help": "Promote an adapter — blocked by the C3 eval-gate if below floor (R2/GWT-2).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve adapter route",
+     "group": "serve",
+     "help": "Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale record",
+     "group": "serve",
+     "help": "Record an executed scale event (audited D4).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale savings",
+     "group": "serve",
+     "help": "Estimate FinOps savings from scale-to-zero (R7).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale set",
+     "group": "serve",
+     "help": "Declare a per-model autoscale policy (R1).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale simulate",
+     "group": "serve",
+     "help": "Compute the scaling decision for a given state (pure, anti-thrash aware) (R2/R3).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale status",
+     "group": "serve",
+     "help": "Show the autoscale policy + recent scale events + cold-start time.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve backend",
+     "group": "serve",
+     "help": "Show the active serving backend (ray-compose default | kserve-k8s).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve batch list",
+     "group": "serve",
+     "help": "List recent batch inference jobs.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve batch submit",
+     "group": "serve",
+     "help": "Run synchronous batch inference from a JSON/JSONL input file.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve benchmark",
+     "group": "serve",
+     "help": "Benchmark Ray Serve using the dummy client and report latency stats.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger disable",
+     "group": "serve",
+     "help": "Disable the challenger for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger enable",
+     "group": "serve",
+     "help": "Enable a challenger and declare its promotion policy (R1/R5).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger judge",
+     "group": "serve",
+     "help": "Score unlabelled challenger samples with a C2 judge (ADR 0024 clause 2). For deployments where ground truth never arrives. Only samples with **no label** are scored — a judge is the fallback for unlabelled samples, not a second opinion on measured ones — and the scores are stored separately from `label`, so a scoreboard can always say whether it rests on measurement or on an opinion. **ADR 0111 applies here too:** a scoreboard resting on an uncalibrated judge never reports `policy_met`, because a challenger promotion is the same decision `exa pipeline promote` makes by a different road.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger list",
+     "group": "serve",
+     "help": "List configured challengers.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger promote",
+     "group": "serve",
+     "help": "Propose promotion via C3 if the policy is met and no SLO regression (R5/R6).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve challenger status",
+     "group": "serve",
+     "help": "Show the champion-challenger scoreboard: delta, p-value, N, SLO (R4).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve check",
+     "group": "serve",
+     "help": "Smoke test Ray Serve: health check + one prediction per model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve explain explain",
+     "group": "serve",
+     "help": "Request feature-importance scores from the Ray Serve explain endpoint.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve explain history",
+     "group": "serve",
+     "help": "Show recent explain requests for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve infer-check",
+     "group": "serve",
+     "help": "Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm args",
+     "group": "serve",
+     "help": "Print the exact vllm serve argv this model's engine block renders. Same renderer the Compose service, the Slurm template and the KServe manifest use, so what is printed here is what actually runs on every substrate.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm bench",
+     "group": "serve",
+     "help": "Measure TTFT and output tokens/s against a live endpoint.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm chat",
+     "group": "serve",
+     "help": "Send a chat request — with images, this is the VLM smoke test.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm health",
+     "group": "serve",
+     "help": "Probe the endpoint and update its recorded state. Exits 1 when not ready (CI gate).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm list",
+     "group": "serve",
+     "help": "List registered LLM/VLM endpoints.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm start",
+     "group": "serve",
+     "help": "Start (or register) a vLLM endpoint and record it in the endpoint registry.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm status",
+     "group": "serve",
+     "help": "Show one endpoint: registry record, substrate status, and live vLLM metrics.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve llm stop",
+     "group": "serve",
+     "help": "Stop an endpoint (and deregister it).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve manifest",
+     "group": "serve",
+     "help": "Generate a schema-valid KServe InferenceService manifest from the model registry (E1).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve models",
+     "group": "serve",
+     "help": "List models currently hot-loaded in Ray Serve.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve reload",
+     "group": "serve",
+     "help": "Hot-reload Production models from MLflow into Ray Serve.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve routing set",
+     "group": "serve",
+     "help": "Configure a model's inference routing (R3 default round-robin; cache-aware opt-in).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve routing simulate",
+     "group": "serve",
+     "help": "Simulate a shared-prefix request stream and report the cache-aware vs round-robin hit rate.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve routing stats",
+     "group": "serve",
+     "help": "Show recorded prefix-cache hit rate + routing-decision breakdown.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve shadow disable",
+     "group": "serve",
+     "help": "Disable shadow deployment for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve shadow enable",
+     "group": "serve",
+     "help": "Enable shadow deployment for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve shadow log",
+     "group": "serve",
+     "help": "Show last 20 shadow inference comparison results for a model.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve shadow status",
+     "group": "serve",
+     "help": "Show shadow deployment configuration.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve traffic",
+     "group": "serve",
+     "help": "Show or set traffic split across model aliases (must sum to 100).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve traffic-list",
+     "group": "serve",
+     "help": "Show traffic split configuration for all models.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa predict",
+     "group": "predict",
+     "help": "Send an inference request to the Ray Serve inference pipeline.",
+     "anchor": "exa-predict-one-shot-inference",
+     "guide": null
+    },
+    {
+     "cmd": "exa production deploy",
+     "group": "production",
+     "help": "Plan/execute production deploys, or inspect deploy history/status.",
+     "anchor": "exa-production-production-deployment-verification",
+     "guide": null
+    },
+    {
+     "cmd": "exa production verify",
+     "group": "production",
+     "help": "Verify production service health without changing state.",
+     "anchor": "exa-production-production-deployment-verification",
+     "guide": null
+    },
+    {
+     "cmd": "exa gateway cache stats",
+     "group": "gateway",
+     "help": "Show semantic-cache hit-rate and token/cost savings (B3).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway chat",
+     "group": "gateway",
+     "help": "Send one chat message through the gateway (uses the default echo route).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway key issue",
+     "group": "gateway",
+     "help": "Issue a virtual key (printed once — only its hash is stored).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway key list",
+     "group": "gateway",
+     "help": "List virtual keys (hashes only).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway key revoke",
+     "group": "gateway",
+     "help": "Revoke a virtual key by its stored hash.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway reasoning account",
+     "group": "gateway",
+     "help": "Account reasoning vs output tokens/cost separately (R5).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway reasoning budget",
+     "group": "gateway",
+     "help": "Show how a reasoning budget caps a request (R4).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway reasoning stats",
+     "group": "gateway",
+     "help": "Reasoning-vs-output token/cost split + structured-output outcomes.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway schema test",
+     "group": "gateway",
+     "help": "Validate (and optionally repair) an object against a JSON Schema (R1/R8).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa vector create",
+     "group": "vector",
+     "help": "Create a vector collection with a fixed dim + distance metric.",
+     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa vector reindex",
+     "group": "vector",
+     "help": "Rebuild the collection index (blue-green; recall preserved) — invoked by B6.",
+     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa vector search",
+     "group": "vector",
+     "help": "Search top-k nearest by the collection metric, with optional metadata filter.",
+     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa vector stats",
+     "group": "vector",
+     "help": "Show collection dim, metric, and item count.",
+     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa vector upsert",
+     "group": "vector",
+     "help": "Upsert a single vector (rejected if dim mismatches the collection).",
+     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa rag ingest",
+     "group": "rag",
+     "help": "Chunk, embed, and index documents into a knowledge base.",
+     "anchor": "exa-rag-knowledge-bases-with-citations",
+     "guide": "guides/rag.md"
+    },
+    {
+     "cmd": "exa rag list",
+     "group": "rag",
+     "help": "List knowledge bases and their versions.",
+     "anchor": "exa-rag-knowledge-bases-with-citations",
+     "guide": "guides/rag.md"
+    },
+    {
+     "cmd": "exa rag query",
+     "group": "rag",
+     "help": "Answer a question from a knowledge base, citing retrieved chunks.",
+     "anchor": "exa-rag-knowledge-bases-with-citations",
+     "guide": "guides/rag.md"
+    }
+   ]
+  },
+  {
+   "title": "GenAI & LLMOps",
+   "slug": "genai-llmops",
+   "blurb": "Manage prompts, trace GenAI calls and enforce guardrails.",
+   "groups": [
+    "genai",
+    "prompt",
+    "guardrails"
+   ],
+   "commands": [
+    {
+     "cmd": "exa genai check",
+     "group": "genai",
+     "help": "Show GenAI telemetry status: tracing on/off, content capture, semconv version.",
+     "anchor": "exa-genai-genai-observability-opentelemetry-semconv-token-cost",
+     "guide": "guides/genai-observability.md"
+    },
+    {
+     "cmd": "exa genai cost",
+     "group": "genai",
+     "help": "Estimate the USD cost of a GenAI call from its token usage (spec R7).",
+     "anchor": "exa-genai-genai-observability-opentelemetry-semconv-token-cost",
+     "guide": "guides/genai-observability.md"
+    },
+    {
+     "cmd": "exa prompt create",
+     "group": "prompt",
+     "help": "Create a new immutable prompt version (spec R1).",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt diff",
+     "group": "prompt",
+     "help": "Show a line diff between two prompt versions (spec R3).",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt label",
+     "group": "prompt",
+     "help": "Move a label to a version — audited (spec R8/R9) and C3-gated (ADR 0009 clause 4).",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt list",
+     "group": "prompt",
+     "help": "List prompt names, or the versions + labels of one prompt.",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt rollback",
+     "group": "prompt",
+     "help": "Roll a label back to a prior version without deleting history (spec R10). **Deliberately not gated by C3.** A rollback is the remedy when a live prompt is bad — often exactly when its scores are failing — so gating it would trap an operator on the version they are trying to escape. Moving *forward* is what the gate exists to hold.",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt show",
+     "group": "prompt",
+     "help": "Show a prompt version's template (by version or name@label).",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa guardrails check-tool",
+     "group": "guardrails",
+     "help": "Check an agent tool call against the per-tenant allow-list (R7).",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    },
+    {
+     "cmd": "exa guardrails stats",
+     "group": "guardrails",
+     "help": "Show guardrail action counts (allow/redact/block).",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    },
+    {
+     "cmd": "exa guardrails test",
+     "group": "guardrails",
+     "help": "Run a text through the guardrail and show the action + findings.",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    }
+   ]
+  },
+  {
+   "title": "Agents & Automation",
+   "slug": "agents-automation",
+   "blurb": "Ask Skipper, run the autopilot loop and expose tools over MCP.",
+   "groups": [
+    "ask",
+    "chat",
+    "agent",
+    "agentops",
+    "autopilot",
+    "mcp"
+   ],
+   "commands": [
+    {
+     "cmd": "exa ask",
+     "group": "ask",
+     "help": "Ask the Skipper agent a question in natural language.",
+     "anchor": "exa-ask-natural-language-front-door-to-skipper",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa chat",
+     "group": "chat",
+     "help": "Interactive conversation with the Skipper agent",
+     "anchor": "exa-chat-hold-a-conversation-with-the-agent",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory delete",
+     "group": "agent",
+     "help": "Erase memories, cascading to derived ones. Audited to audit_events. The immutable audit log is a separate store and is deliberately *not* erased — ADR 0034 keeps the record that an erasure happened while removing what was remembered.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory export",
+     "group": "agent",
+     "help": "Export authenticated owner-scoped memory as JSON.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory list",
+     "group": "agent",
+     "help": "Enumerate owner-scoped memories of one kind.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory review approve",
+     "group": "agent",
+     "help": "Approve one queued procedure memory.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory review list",
+     "group": "agent",
+     "help": "List pending procedure reviews for the authenticated owner.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory review reject",
+     "group": "agent",
+     "help": "Reject one queued procedure memory.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent memory stats",
+     "group": "agent",
+     "help": "Summarise memory owned by the authenticated principal and tenant.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent status",
+     "group": "agent",
+     "help": "Show the agent's reachability, LLM backend, model and memory tier. Exits non-zero when the agent is unreachable *or* when it is up but its backend is unusable. Both mean \"do not trust an answer from this agent\", which is the question a script is really asking, and collapsing them into one exit code is what makes this usable as a health gate.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agentops anomalies",
+     "group": "agentops",
+     "help": "Detect reasoning loops, step blowups, and cost overruns (R4, GWT-3/4).",
+     "anchor": "exa-agentops-agent-trace-tool-call-analytics",
+     "guide": "guides/agentops.md"
+    },
+    {
+     "cmd": "exa agentops replay",
+     "group": "agentops",
+     "help": "Reconstruct a session's tool-call timeline (R6, GWT-5).",
+     "anchor": "exa-agentops-agent-trace-tool-call-analytics",
+     "guide": "guides/agentops.md"
+    },
+    {
+     "cmd": "exa agentops sessions",
+     "group": "agentops",
+     "help": "List recent agent sessions with steps, cost, and status (R6 index).",
+     "anchor": "exa-agentops-agent-trace-tool-call-analytics",
+     "guide": "guides/agentops.md"
+    },
+    {
+     "cmd": "exa agentops tools",
+     "group": "agentops",
+     "help": "Per-tool success rate, call count, and average latency (R2).",
+     "anchor": "exa-agentops-agent-trace-tool-call-analytics",
+     "guide": "guides/agentops.md"
+    },
+    {
+     "cmd": "exa autopilot autonomy",
+     "group": "autopilot",
+     "help": "Set one behaviour's autonomy level (per rule, pausable, acknowledgment recorded).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot contract",
+     "group": "autopilot",
+     "help": "Show a behaviour's blast-radius contract verbatim (ADR 0113).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot disable",
+     "group": "autopilot",
+     "help": "Disable the autopilot kill-switch (persistent, stored in platform.db).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot enable",
+     "group": "autopilot",
+     "help": "Enable the autopilot kill-switch (persistent, stored in platform.db).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot interrupt",
+     "group": "autopilot",
+     "help": "Freeze or kill ONE in-flight autopilot run (ADR 0113 decision 4; audited).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot quarantine",
+     "group": "autopilot",
+     "help": "Quarantine a model: the autopilot skips it until released (audited).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot release",
+     "group": "autopilot",
+     "help": "Release a quarantined model back to autonomous eligibility (audited).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot resume",
+     "group": "autopilot",
+     "help": "Release a frozen run so it continues from its checkpoint.",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot run",
+     "group": "autopilot",
+     "help": "Run one autopilot cycle: drift scan → policy → retrain → metrics → policy → promote.",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot status",
+     "group": "autopilot",
+     "help": "Show recent autopilot run history.",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa mcp agent-card",
+     "group": "mcp",
+     "help": "Print the A2A Agent Card describing this platform's agent skills.",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa mcp capabilities",
+     "group": "mcp",
+     "help": "Show what the agent can do, grouped by lifecycle use case (management, monitoring, …).",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa mcp prompts",
+     "group": "mcp",
+     "help": "List the MCP prompts (reusable agent workflows) ExaMLOps ships.",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa mcp resources",
+     "group": "mcp",
+     "help": "List the MCP resources (readable context) ExaMLOps exposes to agents.",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa mcp serve",
+     "group": "mcp",
+     "help": "Run the MCP server so agents can drive ExaMLOps.",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa mcp tools",
+     "group": "mcp",
+     "help": "List the tools ExaMLOps exposes to agents over MCP.",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    }
+   ]
+  },
+  {
+   "title": "Monitoring & Quality",
+   "slug": "monitoring-quality",
+   "blurb": "Watch drift, evaluate models, track SLOs and fairness.",
+   "groups": [
+    "drift",
+    "eval",
+    "slo",
+    "fairness"
+   ],
+   "commands": [
+    {
+     "cmd": "exa drift auto-retrain disable",
+     "group": "drift",
+     "help": "Disable drift-triggered auto-retrain for a model.",
+     "anchor": "exa-drift-auto-retrain-drift-triggered-retraining-config",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift auto-retrain enable",
+     "group": "drift",
+     "help": "Enable drift-triggered auto-retrain for a model.",
+     "anchor": "exa-drift-auto-retrain-drift-triggered-retraining-config",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift auto-retrain status",
+     "group": "drift",
+     "help": "Show auto-retrain config for all models.",
+     "anchor": "exa-drift-auto-retrain-drift-triggered-retraining-config",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift baseline",
+     "group": "drift",
+     "help": "Store current rolling stats as the drift baseline for a model.",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift concept",
+     "group": "drift",
+     "help": "Concept-drift test on realized error as delayed labels arrive (C5·R1).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift corruption baseline",
+     "group": "drift",
+     "help": "Store the current zero-rate and spread as this model's corruption baseline. Zero rates drift legitimately (a genuinely sparser input distribution), so like exa drift baseline this is an explicit, audited act rather than a rolling window.",
+     "anchor": "exa-drift-corruption-is-this-the-data-or-the-machine",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift corruption classify",
+     "group": "drift",
+     "help": "Name the anomaly — data drift, hardware, regression, or undetermined. The remediation follows from the class, never from the z-score (ADR 0114 decision 2).",
+     "anchor": "exa-drift-corruption-is-this-the-data-or-the-machine",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift corruption selftest",
+     "group": "drift",
+     "help": "Measure this detector against injected corruption and publish the rate (R-ef). A detector may not be credited with classes it was not tested against, so this injects each class into the model's own recent predictions and reports what was caught. A class the detector does not gate on is expected to score ~0 — printing that is the point.",
+     "anchor": "exa-drift-corruption-is-this-the-data-or-the-machine",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift corruption status",
+     "group": "drift",
+     "help": "Show the corruption signal per model — NaN/Inf **and** unexpected zeros. A NaN/Inf guard alone sees about 1% of silent data corruption, so it is never reported on its own here (ADR 0114 decision 1).",
+     "anchor": "exa-drift-corruption-is-this-the-data-or-the-machine",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift estimate",
+     "group": "drift",
+     "help": "Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift events",
+     "group": "drift",
+     "help": "List unified drift events across all kinds (C5·R6).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift forecast",
+     "group": "drift",
+     "help": "Predict WHEN a model's drift will breach the threshold (pre-emptive, item 5.2). Fits a trend to recent prediction drift and projects the breach ETA, so the autopilot can retrain BEFORE the degradation window instead of after. Exit 1 if a breach is imminent.",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift input baseline",
+     "group": "drift",
+     "help": "Store current rolling embedding statistics as the input drift baseline.",
+     "anchor": "exa-drift-input-input-embedding-distribution-drift",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift input reset",
+     "group": "drift",
+     "help": "Clear all input embedding snapshots for a model (keeps baseline).",
+     "anchor": "exa-drift-input-input-embedding-distribution-drift",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift input status",
+     "group": "drift",
+     "help": "Show input embedding distribution drift for all models (or one model).",
+     "anchor": "exa-drift-input-input-embedding-distribution-drift",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift profile",
+     "group": "drift",
+     "help": "Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift reset",
+     "group": "drift",
+     "help": "Clear all drift snapshots for a model (keeps baseline).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift snapshots",
+     "group": "drift",
+     "help": "Show raw prediction drift snapshots for a model.",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift status",
+     "group": "drift",
+     "help": "Show prediction drift status for all models (or one model).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift trigger",
+     "group": "drift",
+     "help": "Check drift z-scores and fire POST /retrain for models above threshold.",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa eval calibrate",
+     "group": "eval",
+     "help": "Measure a judge against labelled benchmarks and record the calibration. Recording a *failing* calibration is not an error: the measurement is the point. Pass --require-eligible to make a CI job fail on a judge that may not gate.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval calibration list",
+     "group": "eval",
+     "help": "List recorded judge calibrations, newest first.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval calibration show",
+     "group": "eval",
+     "help": "Show a judge's latest calibration and whether it may gate.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval cli-coverage",
+     "group": "eval",
+     "help": "Ask the agent about commands sampled from the whole CLI surface and report the rate. `exa eval operator-qa` asks 30 curated questions; once the agent scores 30/30 that suite can no longer measure anything. This one draws its questions from the hand-written **Use case** column of `docs/reference/cli-commands-guide.md`, which covers every command, so the number says something about the CLI rather than about 30 chosen corners. Grading is the same deterministic \"did the answer name the command\" — necessary, not sufficient — so no judge model is involved. Rows whose use case names an `exa` command are excluded and counted, because a question that leaks its own answer measures nothing.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval feedback accuracy",
+     "group": "eval",
+     "help": "Compute live accuracy (RMSE/MAE) from labelled predictions — real quality, not drift proxy.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval feedback ingest",
+     "group": "eval",
+     "help": "Ingest delayed ground-truth label(s), keyed by prediction request_hash.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval feedback join",
+     "group": "eval",
+     "help": "Show prediction/label pairs joined on request_hash (delayed-label join).",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval gate run",
+     "group": "eval",
+     "help": "Run the gate for a candidate version (exit 1 in block mode on failure) — CI-safe (R10).",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval gate set",
+     "group": "eval",
+     "help": "Configure the regression gate for a model.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval gate show",
+     "group": "eval",
+     "help": "Show the configured gate for a model.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval grounding",
+     "group": "eval",
+     "help": "Ask about live platform state and check the answers against the truth. `exa eval operator-qa` and `exa eval cli-coverage` measure what the agent *says* — whether it names the right command, and whether the flags it names exist. Neither can see the failure that matters most on a platform an operator trusts: a fluent, specific, **wrong** answer about live state. Answers are sorted into `grounded`, `abstained` and `fabricated`. Abstaining is **not** a failure — on a half-running platform it is the correct answer, and a suite that scored it as a miss would be training the agent to guess. The number to watch is `fabricated`, and the only acceptable value is zero.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval history",
+     "group": "eval",
+     "help": "Show what the eval suites recorded, newest first. `exa eval run` and `exa eval cli-coverage --record` have been able to *write* to the eval store since it existed, and nothing could read it back from the CLI. A number that can only be written is not a trend: the run that produced it reports it once, and the next run has nothing to compare against, so a regression is invisible by construction.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval operator-qa",
+     "group": "eval",
+     "help": "Ask the agent a fixed set of operator questions and report the pass rate. Measures whether the agent can answer what a new operator actually asks. Grading is deterministic (does the answer name the right command), so no judge model is involved and no judge calibration is required. Exits non-zero if the agent is unreachable, so an unanswerable run can never be mistaken for a bad score.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval run",
+     "group": "eval",
+     "help": "Run a deterministic eval suite over items and persist scores (exit != 0 on error only).",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval safety",
+     "group": "eval",
+     "help": "Ask the agent to change things it must not change on its own, and see what it does. The other agent suites ask whether it is *right*. This one asks whether it is *safe*, using the two machine-readable fields the bridge already returns — `hitl_required` (the graph interrupted and is waiting for a human) and `trace` (the tools it actually called) — rather than reading its prose. An agent that *says* it refused and calls the tool anyway would score as safe under any prose check, which is exactly the failure worth catching. `held` and `declined` are both safe outcomes, but for different reasons: only `held` is evidence that the human-in-the-loop gate worked. An agent that never reached a write tool — because the backing service was down — declines everything, which says no write happened, not that the gate held. `executed` is the defect.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa slo apply",
+     "group": "slo",
+     "help": "Apply all SLO specs from a YAML file (R1).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo burn",
+     "group": "slo",
+     "help": "Show which SLOs are burning budget (and would page) (R3).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo export-metrics",
+     "group": "slo",
+     "help": "Publish platform-recorded metrics in Prometheus text format (ADR 0023/0020/0025). The SLIs this platform ingests itself — `c2` eval, `c5` drift, `c8` fairness — live in `slo_samples` and were visible to nothing. That is not only a missing dashboard: the burn-rate rules `exa slo generate` emits range over a **Prometheus series**, so those SLOs could never alert. Point node_exporter's textfile collector at the output and they can. Also exports the vector-store latency/item gauges, which ADR 0020 clause 5 asks for and which were likewise recorded and exposed by nothing. An **unmeasured** SLO exports `measured=0` and no SLI — publishing its placeholder ratio would put a perfect number on a dashboard for something nobody measured.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo generate",
+     "group": "slo",
+     "help": "Generate promtool-valid Prometheus recording + burn-rate rules (R2/R3).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo ingest",
+     "group": "slo",
+     "help": "Pull SLI samples from the platform's own telemetry instead of typing them in. Every SLI used to arrive by hand through `exa slo record`, so an SLO measured whatever someone remembered to enter — while the specs already carried an `sli_source` that nothing read. This reads it. Sources that cannot yet be ingested are **listed with the reason**, not skipped silently: a spec that yields no samples is indistinguishable downstream from a healthy service nobody asked about.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo list",
+     "group": "slo",
+     "help": "List declared SLO specs.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo record",
+     "group": "slo",
+     "help": "Record one SLI measurement interval (R4) — feeds budget + burn rate.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo set",
+     "group": "slo",
+     "help": "Declare or version-bump one SLO spec (R1).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo status",
+     "group": "slo",
+     "help": "Show SLI, remaining error budget, and burn rate per SLO (R5).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa fairness apply",
+     "group": "fairness",
+     "help": "Materialise the model YAML's `fairness:` block as the runtime config (audited). Only needed to *override* a runtime row that has drifted from the declaration — an unoverridden YAML block is already in force, so nothing stands between declaring a slice registry in code and the gate honouring it.",
+     "anchor": "exa-fairness-subgroup-performance-disparity-monitoring",
+     "guide": "guides/fairness.md"
+    },
+    {
+     "cmd": "exa fairness config",
+     "group": "fairness",
+     "help": "Declare slicing attributes + disparity threshold for a model (R1).",
+     "anchor": "exa-fairness-subgroup-performance-disparity-monitoring",
+     "guide": "guides/fairness.md"
+    },
+    {
+     "cmd": "exa fairness report",
+     "group": "fairness",
+     "help": "Full fairness report across all declared slice attributes (R5).",
+     "anchor": "exa-fairness-subgroup-performance-disparity-monitoring",
+     "guide": "guides/fairness.md"
+    },
+    {
+     "cmd": "exa fairness show",
+     "group": "fairness",
+     "help": "Show the slice registry actually in force, and where it came from (ADR 0025 clause 1). A model may declare its slices in its YAML (reviewed, deployed with the code) and/or carry a runtime row written by this CLI or the dashboard. The runtime row wins; this reports which one is in force and, when both exist, exactly where they disagree — drift resolved silently is how a reviewed declaration and a live gate come to differ with nobody able to see it.",
+     "anchor": "exa-fairness-subgroup-performance-disparity-monitoring",
+     "guide": "guides/fairness.md"
+    },
+    {
+     "cmd": "exa fairness slice",
+     "group": "fairness",
+     "help": "Show per-slice performance for one slicing attribute (R2, GWT-1).",
+     "anchor": "exa-fairness-subgroup-performance-disparity-monitoring",
+     "guide": "guides/fairness.md"
+    }
+   ]
+  },
+  {
+   "title": "HPC, Fleet & FinOps",
+   "slug": "hpc-fleet-finops",
+   "blurb": "Discover clusters, place jobs and account for cost and carbon.",
+   "groups": [
+    "hpc",
+    "fleet",
+    "hardware",
+    "federated",
+    "finops",
+    "report"
+   ],
+   "commands": [
+    {
+     "cmd": "exa hpc approve",
+     "group": "hpc",
+     "help": "Sysadmin: approve a cluster so exaMLOps may schedule jobs on it.",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc capacity",
+     "group": "hpc",
+     "help": "Per-cluster GPU capacity, utilization, GPU-hours used and cost (ACTIVE clusters).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc clusters",
+     "group": "hpc",
+     "help": "List registered clusters and their approval state.",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc connect",
+     "group": "hpc",
+     "help": "Probe a host and register it as a PENDING cluster (requires approval to use).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc detect",
+     "group": "hpc",
+     "help": "Auto-detect the scheduler on a host and suggest a configuration (read-only).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc gpu-share accounting",
+     "group": "hpc",
+     "help": "Show recorded fractional GPU allocations.",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc gpu-share pack",
+     "group": "hpc",
+     "help": "Bin-pack fractional asks onto whole GPUs (first-fit-decreasing).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc gpu-share plan",
+     "group": "hpc",
+     "help": "Select the best GPU-sharing mechanism for a request (honest fallback).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc gpus",
+     "group": "hpc",
+     "help": "List GPU devices — model, memory, utilization, online status (read-only).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc jobs",
+     "group": "hpc",
+     "help": "List tracked HPC submissions from platform.db (hpc_jobs).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc nodes",
+     "group": "hpc",
+     "help": "List compute nodes with CPUs/memory/GPUs and normalized state (read-only).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc place",
+     "group": "hpc",
+     "help": "Show which ACTIVE cluster placement would choose for a resource ask.",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc preflight",
+     "group": "hpc",
+     "help": "Fail-fast pre-submit checks against a cluster (exit 1 on any failure).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc prometheus-sd",
+     "group": "hpc",
+     "help": "Generate Prometheus file_sd scrape targets (node_exporter + DCGM) from the fleet registry (3.1).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc queue",
+     "group": "hpc",
+     "help": "Show the live scheduler queue for an ACTIVE cluster (read-only).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa hpc reject",
+     "group": "hpc",
+     "help": "Sysadmin: reject a cluster (blocks scheduling; auditable).",
+     "anchor": "exa-hpc-hpc-fleet-discover-schedulers-nodes-gpus-then-govern-and-place",
+     "guide": "guides/hpc-fleet.md"
+    },
+    {
+     "cmd": "exa fleet heatmap",
+     "group": "fleet",
+     "help": "Server-side tile grid for the 3D/NOC fleet heatmap (item 5.4); JSON the 3D view renders.",
+     "anchor": "exa-fleet-fleet-digital-twin-what-if-simulation",
+     "guide": null
+    },
+    {
+     "cmd": "exa fleet simulate",
+     "group": "fleet",
+     "help": "Project a hypothetical scenario over the live fleet — placements, GPU-hours, cost, carbon, queue.",
+     "anchor": "exa-fleet-fleet-digital-twin-what-if-simulation",
+     "guide": null
+    },
+    {
+     "cmd": "exa hardware add-pool",
+     "group": "hardware",
+     "help": "Register (or update) a device pool.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware burst",
+     "group": "hardware",
+     "help": "Plan a governed HPC→cloud burst (blocked + audited when residency forbids egress).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware decisions",
+     "group": "hardware",
+     "help": "Show recent placement decisions.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware place",
+     "group": "hardware",
+     "help": "Place a workload on the best-available compatible device (honest fallback / clear reject).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware pools",
+     "group": "hardware",
+     "help": "List registered device pools.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware portable",
+     "group": "hardware",
+     "help": "Check whether an engine can run on a given accelerator (portability gate).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa federated budget",
+     "group": "federated",
+     "help": "Show the tracked differential-privacy (ε, δ) budget.",
+     "anchor": "exa-federated-federated-privacy-preserving-training-e7",
+     "guide": "guides/federated-training.md"
+    },
+    {
+     "cmd": "exa federated init",
+     "group": "federated",
+     "help": "Initialize a federated run: register sites + privacy config.",
+     "anchor": "exa-federated-federated-privacy-preserving-training-e7",
+     "guide": "guides/federated-training.md"
+    },
+    {
+     "cmd": "exa federated round",
+     "group": "federated",
+     "help": "Aggregate one round of site updates (rejects unauthorized/unsigned sites).",
+     "anchor": "exa-federated-federated-privacy-preserving-training-e7",
+     "guide": "guides/federated-training.md"
+    },
+    {
+     "cmd": "exa federated status",
+     "group": "federated",
+     "help": "Show run config, sites, and completed rounds.",
+     "anchor": "exa-federated-federated-privacy-preserving-training-e7",
+     "guide": "guides/federated-training.md"
+    },
+    {
+     "cmd": "exa finops budget set",
+     "group": "finops",
+     "help": "Set (or replace) a project's GPU-hour / cost budget.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops budget status",
+     "group": "finops",
+     "help": "Show budget vs recorded consumption (GPU-hours + cost) per project.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops carbon estimate",
+     "group": "finops",
+     "help": "Estimate energy (kWh) and CO2e (g) for GPU-hours and CPU-core-hours (no DB write). Pass --cpu-hours for work that ran without an accelerator: counting only GPU-hours makes every CPU-only run come out at exactly zero, which is the best possible figure and never the true one. The formula is provided by the active carbon *provider* — a built-in, an entry-point plugin, or a declarative YAML formula; with no CPU-hours the default reproduces the platform's original methodology exactly.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops carbon providers",
+     "group": "finops",
+     "help": "List the available carbon providers (built-ins + entry-point plugins) and their status.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops carbon record",
+     "group": "finops",
+     "help": "Estimate (via the active provider) and persist a carbon record for a training run.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops carbon report",
+     "group": "finops",
+     "help": "Aggregate recorded energy and carbon (optionally for one model).",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops carbon signal",
+     "group": "finops",
+     "help": "Show the live carbon signal, its type, and what it may be used for (ADR 0112). Two carbon-intensity metrics coexist and they are safe on opposite paths: an *accounting* (average) signal is what a report needs, and a *decision* (marginal) signal is the only one that can answer whether moving a job would reduce total emissions. Shifting on an average signal is the documented way to reduce the emissions **allocated** to you while **increasing** the power system's total. So when placement says the carbon objective had zero weight, this is where to see why: it is almost always that the configured feed is an average one, which is the honest state of most public data sources rather than a bug.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops cost providers",
+     "group": "finops",
+     "help": "List the available cost providers (rate cards) — built-ins + entry-point plugins.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa report generate",
+     "group": "report",
+     "help": "Assemble + render a cost/carbon/project report. PDF degrades to HTML if WeasyPrint is absent.",
+     "anchor": "exa-report-offline-costcarbonsla-reports",
+     "guide": null
+    }
+   ]
+  },
+  {
+   "title": "Governance & Security",
+   "slug": "governance-security",
+   "blurb": "Approve changes, audit actions, manage secrets and policy.",
+   "groups": [
+    "approvals",
+    "audit",
+    "secrets",
+    "compliance",
+    "governance",
+    "policy",
+    "providers"
+   ],
+   "commands": [
+    {
+     "cmd": "exa approvals approve",
+     "group": "approvals",
+     "help": "Approve a pending model change — fires Prefect training immediately.",
+     "anchor": "exa-approvals-sysadmin-approval-gate-for-model-changes",
+     "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa approvals delete",
+     "group": "approvals",
+     "help": "Delete a pending approval by its UUID (retract a stale or duplicate entry).",
+     "anchor": "exa-approvals-sysadmin-approval-gate-for-model-changes",
+     "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa approvals list",
+     "group": "approvals",
+     "help": "List model change approvals.",
+     "anchor": "exa-approvals-sysadmin-approval-gate-for-model-changes",
+     "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa approvals reject",
+     "group": "approvals",
+     "help": "Reject a pending model change — no training will run.",
+     "anchor": "exa-approvals-sysadmin-approval-gate-for-model-changes",
+     "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa audit anchor",
+     "group": "audit",
+     "help": "Anchor the high-volume telemetry side tables into the chain (ADR 0110 decision 2). Cron-able; the autopilot also anchors at the end of each live cycle. Each anchor names its own row range, so the cadence is recorded in the chain itself.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit autonomy",
+     "group": "audit",
+     "help": "Every autonomous action in the window, and whether it declared an inverse. This is the W2 gate as a command: for each action the platform took on its own initiative, who acted, on whose behalf, under which mode, and how it would be undone. An action with no rollback_ref is listed rather than filtered out — ADR 0110 decision 4 calls that a policy violation, and hiding them would defeat the point of asking.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit chain",
+     "group": "audit",
+     "help": "Reconstruct one unit of work and everything it caused (ADR 0110). A hash chain records *events*; this reads the causal edges between them, so an orchestrator's id returns the tool calls it caused and whatever those caused in turn. That reconstruction is what makes \"who did this, on whose behalf, and how would it be undone\" answerable from the evidence chain alone.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit checkpoint",
+     "group": "audit",
+     "help": "Sign the current chain head, producing a detached checkpoint signature (D4·R5).",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit checkpoints",
+     "group": "audit",
+     "help": "List signed audit checkpoints.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit export",
+     "group": "audit",
+     "help": "Archival export of the audit trail (D4·R4). Append-only — never deletes.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit review",
+     "group": "audit",
+     "help": "Perform and RECORD a sampled audit review (ADR 0113 decision 5). An unreviewed audit trail is theatre: this samples events written since the last recorded review (all of them, if fewer than the sample size), shows them, and writes an audit_reviewed event naming the reviewer, the covered range and the sampled ids — so \"is anyone actually looking?\" is answerable from the chain. Schedule it (cron / `exa backup schedule`-style) at whatever cadence your governance names.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit reviews",
+     "group": "audit",
+     "help": "List recorded audit reviews — who reviewed, when, covering what.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit verify",
+     "group": "audit",
+     "help": "Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit verify-anchors",
+     "group": "audit",
+     "help": "Verify every telemetry anchor against its side table (ADR 0110 decision 5). Exit 1 on a break.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit verify-worm",
+     "group": "audit",
+     "help": "Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4).",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa secrets get",
+     "group": "secrets",
+     "help": "Resolve a secret. Redacts by default; --reveal prints plaintext. Also reports the backend that served it (vault/local/env), and warns when a configured vault was unreachable — that fallback changes which store the value came from.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets list",
+     "group": "secrets",
+     "help": "List secret metadata (paths/versions) — never values.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets rewrap",
+     "group": "secrets",
+     "help": "Re-encrypt every local secret under the ACTIVE KEK (online key rotation, item 2.3). Run after adding a new key to EXAMLOPS_SECRETS_KEYS and pointing EXAMLOPS_SECRETS_ACTIVE_KEY at it: secrets migrate to the new key so the old one can be decommissioned. Plaintext never leaves the process; the operation is audited.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets rotate",
+     "group": "secrets",
+     "help": "Rotate a secret to a fresh random value (audited, spec R4).",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets scan",
+     "group": "secrets",
+     "help": "Scan a file/dir for likely secrets; exit non-zero on any finding (CI gate, R10).",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets set",
+     "group": "secrets",
+     "help": "Store an encrypted secret in the local store (audited).",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa compliance art12",
+     "group": "compliance",
+     "help": "Check Art. 12 record-keeping coverage in the immutable audit trail (R7).",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance classify",
+     "group": "compliance",
+     "help": "Record a system's EU AI Act risk classification (R1).",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance declaration",
+     "group": "compliance",
+     "help": "Generate the Annex-V EU Declaration of Conformity (ADR 0012 clause 4). Fields the platform can know are read from live metadata; the ones only the provider can state are yours to supply. Anything missing is left as an explicit placeholder and the document is stamped DRAFT with its reasons — never quietly filled in.",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance declare",
+     "group": "compliance",
+     "help": "Advance the conformity state machine with transition validation (R8).",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance framework",
+     "group": "compliance",
+     "help": "Show the control→article→evidence mapping (shared with D2).",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance status",
+     "group": "compliance",
+     "help": "Show compliance classification + conformity state.",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa compliance technical-file",
+     "group": "compliance",
+     "help": "Generate the Annex-IV technical file from live evidence, flagging gaps (R3/R4/R5).",
+     "anchor": "exa-compliance-eu-ai-act-compliance-evidence",
+     "guide": "guides/eu-ai-act-compliance.md"
+    },
+    {
+     "cmd": "exa governance catalogue",
+     "group": "governance",
+     "help": "List the versioned NIST AI RMF control catalogue (R1).",
+     "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
+     "guide": "guides/governance-nist-rmf.md"
+    },
+    {
+     "cmd": "exa governance crosswalk",
+     "group": "governance",
+     "help": "Show the control → EU AI Act + ISO/IEC 42001 crosswalk (R5).",
+     "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
+     "guide": "guides/governance-nist-rmf.md"
+    },
+    {
+     "cmd": "exa governance report",
+     "group": "governance",
+     "help": "Evidence-coverage report: satisfied / partial / gap per control (R3/R4).",
+     "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
+     "guide": "guides/governance-nist-rmf.md"
+    },
+    {
+     "cmd": "exa governance validate",
+     "group": "governance",
+     "help": "Validate the feature→control mapping (CI gate, R2). Exit 1 on any error.",
+     "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
+     "guide": "guides/governance-nist-rmf.md"
+    },
+    {
+     "cmd": "exa policy bundle list",
+     "group": "policy",
+     "help": "List signed policy bundle versions.",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy bundle sign",
+     "group": "policy",
+     "help": "Version + sign the effective policy bundle for a tenant (R2).",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy bundle verify",
+     "group": "policy",
+     "help": "Verify a stored policy bundle's hash + signature (R2). Exit 1 if invalid.",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy eval",
+     "group": "policy",
+     "help": "Evaluate a structured governance decision via the PolicyEngine (D5, R1/R5/GWT-5).",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy list",
+     "group": "policy",
+     "help": "List the policy rules currently loaded from policy.yaml.",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy test",
+     "group": "policy",
+     "help": "Evaluate the policy decision for an action + context (not audited).",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa providers activate",
+     "group": "providers",
+     "help": "Make a provider the active one for its (project, domain) — used when no --provider is given.",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers author",
+     "group": "providers",
+     "help": "Save a project-scoped provider from a Python file (AST-sandboxed; audited).",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers authored",
+     "group": "providers",
+     "help": "List a project's notebook/dashboard-authored providers (with gate status).",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers list",
+     "group": "providers",
+     "help": "List calculation providers across every domain (built-ins + entry-point plugins + config).",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers rm",
+     "group": "providers",
+     "help": "Delete an authored provider file (audited).",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers show",
+     "group": "providers",
+     "help": "Print the stored source of an authored provider.",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa providers validate",
+     "group": "providers",
+     "help": "Statically validate a provider file against the AST sandbox (exit 1 if rejected). CI-safe.",
+     "anchor": "exa-providers-pluggable-calculation-providers-all-domains",
+     "guide": "guides/programmable-mlops.md"
+    }
+   ]
+  },
+  {
+   "title": "Projects & Workspaces",
+   "slug": "projects-workspaces",
+   "blurb": "Group models, people, storage and connections into projects.",
+   "groups": [
+    "project",
+    "namespace",
+    "connection",
+    "workbench"
+   ],
+   "commands": [
+    {
+     "cmd": "exa project access",
+     "group": "project",
+     "help": "List RBAC relations (by subject and/or object).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project add-member",
+     "group": "project",
+     "help": "Add a person to a project (owner ⊇ editor ⊇ viewer).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project archive",
+     "group": "project",
+     "help": "Archive a project (marks ARCHIVED; data is preserved).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project assign",
+     "group": "project",
+     "help": "Assign any resource (model/pipeline/serving/connection/dataset/storage) to a project.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project assign-model",
+     "group": "project",
+     "help": "Assign a model to a project (alias for: exa project assign <p> <model> --kind model).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project budget",
+     "group": "project",
+     "help": "Show budget/quota status and flag breaches (exit 1 if over budget).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project compose",
+     "group": "project",
+     "help": "Generate a Docker Compose fragment with resource limits for this project. The output enforces the project's CPU/memory quota across all its containers. Merge it with your main docker-compose.yml or pass it to docker compose -f. Resource limits follow Docker Compose v3 deploy.resources semantics: - cpus: fractional CPU cores (e.g. 2.0 = 2 cores) - memory: total RAM (e.g. 8589934592 bytes = 8 GB)",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project cost",
+     "group": "project",
+     "help": "Show per-project cost attribution (GPU-hours · USD · carbon).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project create",
+     "group": "project",
+     "help": "Create a new project with resource quotas (CPU/memory/storage/GPU).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project current",
+     "group": "project",
+     "help": "Show the active project (EXAMLOPS_PROJECT env → config.toml → none).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project delete",
+     "group": "project",
+     "help": "Delete a project and remove all its model assignments (irreversible).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project grant",
+     "group": "project",
+     "help": "Grant a subject a relation on an object (RBAC, audited, spec D6).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project list",
+     "group": "project",
+     "help": "List all projects with their resource quotas.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project members",
+     "group": "project",
+     "help": "List the people who have a role on a project.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project pipelines",
+     "group": "project",
+     "help": "Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project remove-member",
+     "group": "project",
+     "help": "Remove a person's role(s) from a project.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project revoke",
+     "group": "project",
+     "help": "Revoke a subject's relation on an object (audited).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project set-quota",
+     "group": "project",
+     "help": "Update resource quotas for an existing project.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project show",
+     "group": "project",
+     "help": "Show the full project anatomy: quota, resources by kind, members, budget, consumption.",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project storage",
+     "group": "project",
+     "help": "Show (or bind/refresh) the project's MinIO storage location (P6).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project use",
+     "group": "project",
+     "help": "Set the active project (persisted in config.toml; EXAMLOPS_PROJECT env overrides).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa namespace assign",
+     "group": "namespace",
+     "help": "Assign a model to a namespace.",
+     "anchor": "exa-namespace-legacy-project-namespace-isolation",
+     "guide": null
+    },
+    {
+     "cmd": "exa namespace create",
+     "group": "namespace",
+     "help": "Create a new namespace.",
+     "anchor": "exa-namespace-legacy-project-namespace-isolation",
+     "guide": null
+    },
+    {
+     "cmd": "exa namespace info",
+     "group": "namespace",
+     "help": "Show namespace details and the models assigned to it.",
+     "anchor": "exa-namespace-legacy-project-namespace-isolation",
+     "guide": null
+    },
+    {
+     "cmd": "exa namespace list",
+     "group": "namespace",
+     "help": "List all namespaces with model counts.",
+     "anchor": "exa-namespace-legacy-project-namespace-isolation",
+     "guide": null
+    },
+    {
+     "cmd": "exa connection create",
+     "group": "connection",
+     "help": "Create a named connection.",
+     "anchor": "exa-connection-named-connections-reusable-data-sources-p2",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa connection delete",
+     "group": "connection",
+     "help": "Delete a connection (the referenced secret is left intact).",
+     "anchor": "exa-connection-named-connections-reusable-data-sources-p2",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa connection list",
+     "group": "connection",
+     "help": "List connections (metadata only — never secret values).",
+     "anchor": "exa-connection-named-connections-reusable-data-sources-p2",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa connection show",
+     "group": "connection",
+     "help": "Show one connection (config + secret presence, never the secret value).",
+     "anchor": "exa-connection-named-connections-reusable-data-sources-p2",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa connection test",
+     "group": "connection",
+     "help": "Read-only reachability probe (exit 1 on failure; never prints secrets).",
+     "anchor": "exa-connection-named-connections-reusable-data-sources-p2",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench create",
+     "group": "workbench",
+     "help": "Define a workbench in a project (status STOPPED until started).",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench delete",
+     "group": "workbench",
+     "help": "Delete a workbench definition.",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench list",
+     "group": "workbench",
+     "help": "List workbenches.",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench start",
+     "group": "workbench",
+     "help": "Start a workbench — marks it RUNNING and prints its launch spec (image, volume, injected env).",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench stop",
+     "group": "workbench",
+     "help": "Stop a workbench (marks STOPPED).",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    }
+   ]
+  },
+  {
+   "title": "Platform & Integrations",
+   "slug": "platform-integrations",
+   "blurb": "Operate the stack, back it up and connect external systems.",
+   "groups": [
+    "stack",
+    "backup",
+    "events",
+    "admission",
+    "exchange",
+    "seanerbus"
+   ],
+   "commands": [
+    {
+     "cmd": "exa stack down",
+     "group": "stack",
+     "help": "Stop the stack (or a single service).",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack logs",
+     "group": "stack",
+     "help": "Tail docker compose logs.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack monitoring-down",
+     "group": "stack",
+     "help": "Stop monitoring stack.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack monitoring-status",
+     "group": "stack",
+     "help": "Show monitoring stack container status.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack monitoring-up",
+     "group": "stack",
+     "help": "Start monitoring stack: Prometheus, Grafana, Loki, Promtail, Alertmanager, Tempo.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack restart",
+     "group": "stack",
+     "help": "Restart the stack or a single service.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack status",
+     "group": "stack",
+     "help": "Show running containers and their ports.",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa stack up",
+     "group": "stack",
+     "help": "Start the ExaMLOps stack (or a single service).",
+     "anchor": "exa-stack-docker-compose-stack-lifecycle",
+     "guide": null
+    },
+    {
+     "cmd": "exa backup create",
+     "group": "backup",
+     "help": "Snapshot the platform. Bare = single platform.db file; any tier flag = a tiered bundle.",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup list",
+     "group": "backup",
+     "help": "List available backups & bundles (newest first) with their manifest metadata.",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup prune",
+     "group": "backup",
+     "help": "Prune old bundles by count and/or age (never removes the newest / last-good bundle).",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup pull",
+     "group": "backup",
+     "help": "Download + extract an off-site bundle (verify it before restoring).",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup restore",
+     "group": "backup",
+     "help": "Restore a verified backup over the platform DB (guarded + re-verified after).",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup restore-bundle",
+     "group": "backup",
+     "help": "Restore selected tiers from a verified bundle (guarded; verifies before touching anything).",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup schedule",
+     "group": "backup",
+     "help": "Run the scheduled backup loop (what the Compose backup sidecar runs).",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup status",
+     "group": "backup",
+     "help": "Show the latest bundle, per-tier health, retention count, and off-site reachability.",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup verify",
+     "group": "backup",
+     "help": "Verify a backup: checksum vs manifest + SQLite integrity + audit hash-chain. Exit 1 if bad.",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa backup verify-bundle",
+     "group": "backup",
+     "help": "Verify a whole bundle: manifest + every tier item's checksum + platform.db audit chain.",
+     "anchor": "exa-backup-backup-restore-the-platform-datastore",
+     "guide": "guides/backup-restore.md"
+    },
+    {
+     "cmd": "exa events publish",
+     "group": "events",
+     "help": "Enqueue an event to the outbox (durable; relayed by `exa events relay`).",
+     "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
+     "guide": null
+    },
+    {
+     "cmd": "exa events relay",
+     "group": "events",
+     "help": "Publish pending outbox events to the configured broker (EXAMLOPS_EVENT_PUBLISHER).",
+     "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
+     "guide": null
+    },
+    {
+     "cmd": "exa events stats",
+     "group": "events",
+     "help": "Show outbox backlog: pending / published / poison (attempts exhausted).",
+     "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission stats",
+     "group": "admission",
+     "help": "Show queue depth by state (queued/running/done/rejected/failed).",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission submit",
+     "group": "admission",
+     "help": "Enqueue a work item (durable; drained under the global + per-tenant caps).",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
+     "cmd": "exa exchange import",
+     "group": "exchange",
+     "help": "Verify-before-import: verify signature + integrity, then extract. Refuses unverified.",
+     "anchor": "exa-exchange-novafabric-exchange-signed-shareable-packages",
+     "guide": null
+    },
+    {
+     "cmd": "exa exchange inspect",
+     "group": "exchange",
+     "help": "Show a package's manifest without importing it.",
+     "anchor": "exa-exchange-novafabric-exchange-signed-shareable-packages",
+     "guide": null
+    },
+    {
+     "cmd": "exa exchange pack",
+     "group": "exchange",
+     "help": "Build a signed .novapack (fails closed without EXAMLOPS_SIGNING_KEY).",
+     "anchor": "exa-exchange-novafabric-exchange-signed-shareable-packages",
+     "guide": null
+    },
+    {
+     "cmd": "exa exchange verify",
+     "group": "exchange",
+     "help": "Verify a package's signature + file integrity. Exit 1 if untrusted/tampered.",
+     "anchor": "exa-exchange-novafabric-exchange-signed-shareable-packages",
+     "guide": null
+    },
+    {
+     "cmd": "exa seanerbus init-uuids",
+     "group": "seanerbus",
+     "help": "Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent.",
+     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
+     "guide": "guides/seanerbus.md"
+    },
+    {
+     "cmd": "exa seanerbus list",
+     "group": "seanerbus",
+     "help": "Show all models and their SeanerBUS UUIDs.",
+     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
+     "guide": "guides/seanerbus.md"
+    },
+    {
+     "cmd": "exa seanerbus regen-uuid",
+     "group": "seanerbus",
+     "help": "Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.",
+     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
+     "guide": "guides/seanerbus.md"
+    },
+    {
+     "cmd": "exa seanerbus status",
+     "group": "seanerbus",
+     "help": "Probe the SeanerBUS bridge health and runtime stats endpoints.",
+     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
+     "guide": "guides/seanerbus.md"
+    }
+   ]
+  }
+ ]
+}

@@ -1,14 +1,34 @@
-# ExaMLOps
-
-**End-to-end MLOps platform for HPC workload management in large European research
-projects.** ExaMLOps runs the full model lifecycle — train, register, promote, serve,
-observe, retrain — on the schedulers European HPC centres actually run (Slurm, Flux, or
-none at all), without requiring a Kubernetes cluster.
-
-It is operated from one place: the **`exa` CLI**, with a React + FastAPI dashboard and a
-LangGraph agent (**Skipper**) over the same code paths.
-
 ---
+title: ExaMLOps
+description: Train, serve and govern machine-learning models on HPC as one loop — from drift to retraining, on the schedulers HPC centres already run.
+hide:
+  - navigation
+  - toc
+---
+
+<div class="xm-hero" markdown>
+
+# Train, serve and govern models on HPC as one loop
+
+<p class="xm-lede">ExaMLOps runs the whole model lifecycle — train, register, promote, serve,
+observe, retrain — on the schedulers European HPC centres actually run: Slurm, Flux, or none at
+all. You operate it from the <code>exa</code> CLI, a web dashboard, or in plain English through
+the Skipper agent, all over the same code paths.</p>
+
+<div class="xm-cta" markdown>
+[Explore the platform](explore/index.md){ .md-button .md-button--primary }
+[Start in five minutes](guides/quickstart.md){ .md-button }
+</div>
+
+<div class="xm-player xm-hero-map" data-scene="system" data-mode="ambient"></div>
+
+</div>
+
+Every kind of work travels its own line through shared stations: a **prediction** on the
+[data line](explore/prediction.md), a **retrain** on the [control line](explore/retrain.md),
+a **decision** on the [decision line](explore/decisions.md), a **cluster job** on the
+[compute line](explore/hpc.md), and **telemetry and evidence** on the
+[signal line](explore/signals.md). Open any station on the map for what it does.
 
 ## Start here
 
@@ -49,9 +69,10 @@ exa pipeline run --model JPCP --dataset PM100Dataset --dummy
 - **FinOps & Green AI** — GPU-hour cost attribution and carbon accounting, both with
   swappable calculation providers.
 
-Everything above is reachable from the CLI: see the
-[full command guide](reference/cli-commands-guide.md) for every command, what it is for,
-and a runnable example.
+Everything above is reachable from the CLI. [Every capability](explore/capabilities.md) lists
+all of it by lifecycle area, searchable; the [command guide](reference/cli-commands-guide.md)
+gives each command's purpose and a runnable example; the [roadmap](explore/roadmap.md) shows
+what is shipped and what is under construction.
 
 ---
 
