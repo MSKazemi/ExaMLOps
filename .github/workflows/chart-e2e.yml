@@ -1,0 +1,186 @@
+name: Chart install e2e
+
+# The chart installed for real: the three images it deploys are built from this commit, loaded into
+# a throwaway kind cluster next to a Postgres, and `helm install --wait` must bring every tier to
+# Ready; each is then probed through its Service. Lint, schema and kubeconform say the manifests are
+# well-formed — only an install says the images and the chart agree (probes, uid 10001 on a
+# read-only root filesystem, the Secret keys each tier reads, the Postgres backend).
+#
+# A REPORT, not a gate (outside ci-ok / security-ok), while one known defect makes it fail: on an
+# empty Postgres every tier bootstraps the schema at once, the loser of a concurrent
+# `CREATE TABLE IF NOT EXISTS` gets a pg_type duplicate-key error, and the control plane's startup
+# check keeps the pod NotReady until it is restarted. Found by this job's first run (2026-09-10);
+# both are fixed in examlops.storage (advisory-locked bootstrap) and the control plane (failed
+# startup checks are re-run), and the dashboard's Alembic upgrade takes the same kind of lock. It
+# becomes a gate once those fixes have run green here.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "platform/infra/helm/**"
+      - "platform/services/**"
+      - "platform/cli/**"
+      - "platform/infra/docker-compose/Dockerfile.dashboard"
+      - "pipelines/**"
+      - "usecases/**"
+      - ".github/workflows/chart-e2e.yml"
+  # No push:main trigger: the PR run covers every change that can break the install, and the
+  # weekly run catches drift in the upstream images and the kind node.
+  schedule:
+    - cron: "41 3 * * 2"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: chart-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HELM_VERSION: v3.22.0
+  POSTGRES_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 # 16-alpine
+  NS: examlops
+  REGISTRY: e2e.local/
+
+jobs:
+  install:
+    name: helm install on kind (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read # read the tree
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Helm (checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tarball="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${tarball}"
+          curl -fsSLO "https://get.helm.sh/${tarball}.sha256sum"
+          sha256sum -c "${tarball}.sha256sum"
+          tar -xzf "$tarball" linux-amd64/helm
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: examlops-e2e
+          wait: 120s
+
+      - name: Build the chart's images from this commit and load them
+        run: |
+          set -euo pipefail
+          version="$(python3 platform/ci/release_version.py current)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          while read -r name dockerfile; do
+            docker build -q -f "$dockerfile" -t "${REGISTRY}examlops-${name}:${version}" .
+            kind load docker-image --name examlops-e2e "${REGISTRY}examlops-${name}:${version}"
+          done <<'IMAGES'
+          control-plane platform/services/control_plane/Dockerfile
+          dashboard platform/infra/docker-compose/Dockerfile.dashboard
+          agent platform/services/agent/Dockerfile
+          IMAGES
+
+      # The chart brings no state of its own (by design); a single Postgres stands in for the
+      # CloudNativePG cluster a site would run.
+      - name: Postgres + the Secret every tier reads
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NS"
+          pgpw="$(openssl rand -hex 16)"; echo "::add-mask::$pgpw"
+          kubectl -n "$NS" apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata: {name: pg}
+          spec:
+            selector: {matchLabels: {app: pg}}
+            template:
+              metadata: {labels: {app: pg}}
+              spec:
+                containers:
+                  - name: pg
+                    image: ${POSTGRES_IMAGE}
+                    env: [{name: POSTGRES_PASSWORD, value: "${pgpw}"}, {name: POSTGRES_DB, value: examlops}]
+                    ports: [{containerPort: 5432}]
+                    readinessProbe: {exec: {command: [pg_isready, -U, postgres]}, periodSeconds: 3}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata: {name: examlops-pg-rw}
+          spec: {selector: {app: pg}, ports: [{port: 5432}]}
+          EOF
+          kubectl -n "$NS" rollout status deploy/pg --timeout=180s
+          fernet="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          agent_key="$(openssl rand -hex 16)"
+          dsn="postgresql://postgres:${pgpw}@examlops-pg-rw:5432/examlops"
+          kubectl -n "$NS" create secret generic examlops-secrets \
+            --from-literal=CONTROL_PLANE_TOKEN="e2e-$(openssl rand -hex 16)" \
+            --from-literal=EXAMLOPS_POSTGRES_DSN="$dsn" \
+            --from-literal=AGENT_POSTGRES_DSN="$dsn" \
+            --from-literal=DATABASE_URL="postgresql+asyncpg://postgres:${pgpw}@examlops-pg-rw:5432/examlops" \
+            --from-literal=DASHBOARD_JWT_SECRET="$(openssl rand -hex 32)" \
+            --from-literal=DASHBOARD_SECRET_KEY="$fernet" \
+            --from-literal=DASHBOARD_ADMIN_PASSWORD="a-$(openssl rand -hex 12)" \
+            --from-literal=DASHBOARD_VIEWER_PASSWORD="v-$(openssl rand -hex 12)" \
+            --from-literal=DASHBOARD_AGENT_API_KEY="$agent_key" \
+            --from-literal=AGENT_API_KEYS_JSON="{\"dashboard\": \"${agent_key}\"}" \
+            --from-literal=EXAMLOPS_SECRETS_KEYS="k1:${fernet}"
+
+      - name: helm install --wait (every tier must become Ready)
+        run: |
+          helm -n "$NS" install examlops platform/infra/helm/examlops \
+            --set "global.imageRegistry=${REGISTRY}" \
+            --set ingress.enabled=false \
+            --wait --timeout 8m
+
+      - name: Probe every tier through its Service
+        run: |
+          set -euo pipefail
+          probe() {  # service local-port remote-port path
+            kubectl -n "$NS" port-forward "svc/examlops-examlops-$1" "$2:$3" >/dev/null 2>&1 &
+            local pf=$!
+            sleep 3
+            local code
+            code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2$4")"
+            kill "$pf" 2>/dev/null || true
+            echo "$1 $4 -> $code"
+            [ "$code" = "200" ]
+          }
+          probe control-plane 28002 8002 /health
+          probe dashboard 28099 8099 /api/health
+          probe agent 28104 18004 /
+
+      - name: Every pod runs as uid 10001 on a read-only root filesystem
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" get pods -l app.kubernetes.io/instance=examlops -o json | python3 -c '
+          import json, sys
+          bad = []
+          for pod in json.load(sys.stdin)["items"]:
+              uid = pod["spec"].get("securityContext", {}).get("runAsUser")
+              for c in pod["spec"]["containers"]:
+                  if uid != 10001 or not c.get("securityContext", {}).get("readOnlyRootFilesystem"):
+                      bad.append(pod["metadata"]["name"])
+          assert not bad, bad
+          print("all pods: uid 10001, read-only root filesystem")'
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/diag"
+          kubectl -n "$NS" get pods -o wide | tee "$RUNNER_TEMP/diag/pods.txt" || true
+          kubectl -n "$NS" describe pods > "$RUNNER_TEMP/diag/describe.txt" 2>&1 || true
+          for pod in $(kubectl -n "$NS" get pods -o name); do
+            kubectl -n "$NS" logs "$pod" --all-containers --tail=300 > "$RUNNER_TEMP/diag/$(basename "$pod").log" 2>&1 || true
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: chart-e2e-diagnostics
+          path: ${{ runner.temp }}/diag/
+          if-no-files-found: ignore

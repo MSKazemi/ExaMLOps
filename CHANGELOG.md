@@ -38,6 +38,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   every tier; a scheme-less endpoint is rejected by the schema.
 - **A ServiceMonitor for the control plane** (`metrics.serviceMonitor.enabled`) — the one tier that
   serves `/metrics`. Without the Prometheus Operator CRDs the render fails with that instruction.
+- **The chart is installed for real on every relevant change** — `.github/workflows/chart-e2e.yml`
+  builds the three images from the commit, loads them into a kind cluster beside a Postgres,
+  `helm install --wait`s, probes each tier through its Service and asserts every pod runs as uid
+  10001 on a read-only root filesystem. Its first run found two defects no unit suite could: on an
+  empty Postgres the tiers race to bootstrap the schema (the loser of a concurrent
+  `CREATE TABLE IF NOT EXISTS` gets a `pg_type` duplicate-key error), and the control plane's
+  startup DB check is never re-evaluated, so the pod stays NotReady until restarted. A report until
+  those are fixed; then a gate.
 - **Dashboard replicas starting together no longer race their migrations.** Each replica runs
   `alembic upgrade head` at start; on an empty Postgres they raced to create the version table and
   the losers died on the same `pg_type` duplicate-key error (5 of 6 concurrent upgrades, reproduced)
