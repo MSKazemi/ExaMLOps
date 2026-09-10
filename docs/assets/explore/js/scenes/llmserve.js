@@ -41,7 +41,7 @@ XM.register("llmserve", {
     { id: "gateway", x: 1320, y: 140, label: "Gateway route", sub: "named after the endpoint", line: "control",
       info: { title: "A gateway route", tasks: ["Keys, budgets, guardrails, caching and cost now apply to the model", "Stopped, disabled and addressless endpoints are left out"], cli: ["exa gateway chat qwen --message \"hello\""], links: [{ text: "Model gateway", href: "guides/model-gateway.md" }] } },
     { id: "prom", x: 1320, y: 390, label: "Prometheus", sub: "vLLM /metrics · alerts", line: "observe",
-      info: { title: "Metrics and alerts", tasks: ["Scrapes the Compose server as the vllm job", "exa hpc prometheus-sd writes a target for each READY or STARTING endpoint with a recorded address; re-run it when that changes", "Alerts: endpoint down, KV cache near full, queue backlog, high time to first token"],
+      info: { title: "Metrics and alerts", tasks: ["Scrapes the Compose server as the vllm job", "exa hpc prometheus-sd writes a target for each other READY or STARTING endpoint with a recorded, non-loopback address; re-run it when that changes", "Alerts: endpoint down, KV cache near full, queue backlog, high time to first token"],
         cli: ["exa hpc prometheus-sd --out platform/infra/docker-compose/targets/fleet.json"] } }
   ],
   edges: [

@@ -54,6 +54,18 @@ def node_targets(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [groups[k] for k in sorted(groups)]
 
 
+def _is_loopback(target: str) -> bool:
+    """True for ``host[:port]`` targets that name this machine (``localhost``, ``127.*``, ``::1``)."""
+    if target.startswith("[") and "]" in target:  # [v6]:port
+        host = target[1 : target.index("]")]
+    elif target.count(":") == 1:  # host:port
+        host = target.rsplit(":", 1)[0]
+    else:  # bare host, or a bare v6 address
+        host = target
+    host = host.lower()
+    return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
+
+
 def llm_endpoint_targets(endpoints: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build ``file_sd`` groups for running vLLM endpoints (Track V / ADR 0107).
 
@@ -64,15 +76,23 @@ def llm_endpoint_targets(endpoints: list[dict[str, Any]]) -> list[dict[str, Any]
 
     Only endpoints that are actually up are emitted: scraping a PENDING or STOPPED
     endpoint just manufactures a permanently-down target and a false alert.
+
+    For the same reason two kinds of address are left out. A Compose endpoint is recorded
+    at its host-side port (``localhost:18011``), and the static ``vllm`` job already scrapes
+    the service by name inside the Compose network. Any loopback address is the Prometheus
+    container itself when Prometheus runs in Compose — a target that can never answer, and
+    a critical ``VLLMEndpointDown`` for a server that is healthy.
     """
     groups: dict[str, dict[str, Any]] = {}
     tenant = _tenant()
     for ep in endpoints:
         if str(ep.get("state", "")).upper() not in ("READY", "STARTING"):
             continue
+        if str(ep.get("launcher", "")).lower() == "compose":
+            continue
         base = str(ep.get("base_url") or "")
-        target = base.split("://", 1)[-1].rstrip("/")
-        if not target:
+        target = base.split("://", 1)[-1].split("/", 1)[0]
+        if not target or _is_loopback(target):
             continue
         cluster = ep.get("cluster") or "local"
         grp = groups.setdefault(

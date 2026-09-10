@@ -107,6 +107,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   get back unchecked text stored by a caller that asked for none; hits are now validated like a
   fresh reply, and one that does not fit is treated as a miss so the model is asked. Requests made of
   content parts no longer touch the cache, which keys on text.
+- **`exa hpc prometheus-sd` raised false `VLLMEndpointDown` alerts.** It emitted a Compose endpoint
+  at its host-side `localhost:18011` — the Prometheus container itself — so a healthy server showed
+  as down. Compose endpoints (already scraped by the static `vllm` job) and loopback addresses are
+  left out, and a target is now `host:port` only.
 - **A registry prompt was scanned as if it were user input.** In enforce mode a reviewed template
   containing a phrase such as "you are now" blocked every request it served; the guardrail now scans
   only the caller's messages, and the template is prepended after the scan.

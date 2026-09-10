@@ -76,3 +76,51 @@ def test_dcgm_presence(gpus, expect_dcgm):
     groups = node_targets([_node("c", "n", gpus)])
     has_dcgm = any(g["labels"]["job"] == "dcgm" for g in groups)
     assert has_dcgm is expect_dcgm
+
+
+# ── vLLM endpoints (Track V) ──────────────────────────────────────────────────
+
+
+def _ep(model, base_url, *, state="READY", launcher="slurm", cluster="c1"):
+    return {
+        "model": model,
+        "base_url": base_url,
+        "state": state,
+        "launcher": launcher,
+        "cluster": cluster,
+    }
+
+
+def test_running_hpc_endpoints_become_vllm_targets():
+    from examlops.prometheus_sd import llm_endpoint_targets
+
+    [grp] = llm_endpoint_targets(
+        [_ep("a", "http://10.0.0.5:8000"), _ep("b", "http://gpu02:8000/", state="STARTING")]
+    )
+    assert grp["targets"] == ["10.0.0.5:8000", "gpu02:8000"]
+    assert grp["labels"]["job"] == "vllm" and grp["labels"]["cluster"] == "c1"
+
+
+def test_a_target_is_host_and_port_only():
+    from examlops.prometheus_sd import llm_endpoint_targets
+
+    [grp] = llm_endpoint_targets([_ep("a", "https://gpu01:8443/v1")])
+    assert grp["targets"] == ["gpu01:8443"]
+
+
+@pytest.mark.parametrize(
+    "ep",
+    [
+        _ep("compose", "http://localhost:18011", launcher="compose"),
+        _ep("loop", "http://127.0.0.1:8000", launcher="external"),
+        _ep("loop6", "http://[::1]:8000", launcher="external"),
+        _ep("stopped", "http://10.0.0.5:8000", state="STOPPED"),
+        _ep("noaddr", None, state="STARTING"),
+    ],
+    ids=["compose", "loopback", "loopback-v6", "stopped", "no-address"],
+)
+def test_targets_prometheus_can_never_reach_are_left_out(ep):
+    """Each would be a permanently-down target and a false critical VLLMEndpointDown."""
+    from examlops.prometheus_sd import llm_endpoint_targets
+
+    assert llm_endpoint_targets([ep]) == []
