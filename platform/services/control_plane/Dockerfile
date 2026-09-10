@@ -2,6 +2,13 @@
 # FastAPI image with the local pipeline registry plus shared storage, coordination, and event
 # publisher implementations from the CLI package.
 
+# The upstream model library is NOT part of the platform (ADR 0094) and not in the public tree,
+# so it arrives as an optional named build context. Unset, this empty stage stands in and the
+# image builds from the public tree alone — which is how the release workflow builds it. A site
+# build that wants it baked in passes `--build-context modelzoo=<dir>`; compose does so from
+# EXAMLOPS_MODELZOO_BUILD_CONTEXT.
+FROM scratch AS modelzoo
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -12,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Minimal runtime deps — uvicorn / fastapi for the API; the pipeline import
 # during validation pulls in scikit-learn etc., so install the full project.
 COPY pipelines /app/pipelines
-COPY modelzoo /app/modelzoo
+COPY --from=modelzoo / /app/modelzoo/
 COPY platform/cli /app/platform/cli
 COPY platform/services/control_plane /app/platform/services/control_plane
 # ADR 0094: concrete model YAML lives in the use-case pack, not pipelines/models. The control

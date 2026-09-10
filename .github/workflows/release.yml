@@ -1,0 +1,471 @@
+name: Release
+
+# One tag → every artifact, at one version, signed (ADR 0129).
+#
+#   verify ─┬─ python-dist ─────────────┐
+#           ├─ images (matrix) ─ chart ─┼─ github-release ─ pypi
+#           └───────────────────────────┘
+#
+# A release is `git tag vX.Y.Z && git push github vX.Y.Z`. Before anything is built the tag
+# must name the tree's version, every version copy must agree, the tagged commit must be on
+# main and green on CI, and the CHANGELOG must have a section for it. Images are pushed by
+# DIGEST only, scanned by digest, and receive their version tags only once the scan passes —
+# a rejected image never has a name. PyPI goes last: a version there can never be re-uploaded.
+#
+# Publishing happens only from the public repository: the private repo tracks .github/ too,
+# and a tag pushed there must not publish anything (every job is gated on github.repository).
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. v0.52.0 — every step is idempotent"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  IMAGE_NAMESPACE: ghcr.io/mskazemi
+  CHART_REGISTRY: ghcr.io/mskazemi/charts
+  # The checks that must have passed on the tagged commit before it may be released: every CI
+  # job (ci.yml) and every security gate (security.yml), each through its one aggregate.
+  REQUIRED_CHECKS: ci-ok security-ok
+  # Helm 3 line (latest v3.22.0): matches the chart job in ci.yml until the chart is validated
+  # on Helm 4; downloaded from get.helm.sh and verified against its published sha256.
+  HELM_VERSION: v3.22.0
+  TRIVY_VERSION: v0.74.0
+  TWINE: twine@7.0.0
+
+jobs:
+  verify:
+    name: verify tag ↔ tree
+    if: github.repository == 'MSKazemi/ExaMLOps'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # check out the tag
+      checks: read # read the ci-ok / security-ok verdicts on the tagged commit
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tag names this tree's version, and every copy agrees
+        id: version
+        run: |
+          set -euo pipefail
+          python3 platform/ci/release_version.py tag "$TAG"
+          python3 platform/ci/release_version.py check
+          version="$(python3 platform/ci/release_version.py current)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) pre=true ;; *) pre=false ;; esac
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+
+      - name: CHANGELOG has a section for this version
+        run: |
+          set -euo pipefail
+          python3 platform/ci/release_version.py notes "${TAG#v}" > release-notes.md
+          echo "release notes: $(wc -l < release-notes.md) lines"
+
+      # A tag on a commit that never reached main is a release of unreviewed code.
+      - name: Tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$(git rev-list -n1 "$TAG")" origin/main \
+            || { echo "::error::$TAG is not an ancestor of main — merge first, then tag"; exit 1; }
+
+      - name: Tagged commit passed CI and the security gates (${{ env.REQUIRED_CHECKS }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-list -n1 "$TAG")"
+          for check in $REQUIRED_CHECKS; do
+            conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=${check}" \
+              --jq '[.check_runs[] | select(.status == "completed")] | sort_by(.completed_at) | last | .conclusion // "missing"')"
+            echo "$check on ${sha:0:12}: $conclusion"
+            [ "$conclusion" = "success" ] \
+              || { echo "::error::$check is '$conclusion' on $sha — only a green commit is released"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  python-dist:
+    name: wheel + sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the tag
+      id-token: write # Sigstore identity for the attestations
+      attestations: write # store the provenance + SBOM attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Build
+        run: uv build platform/cli --out-dir dist
+
+      - name: Metadata renders on PyPI
+        run: uvx "$TWINE" check --strict dist/*
+
+      # The SBOM of what `pip install examlops` actually resolves — the wheel plus every
+      # dependency version it pulled on the release day — not just the wheel's own METADATA.
+      - name: Resolve the install and write its SBOM
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$RUNNER_TEMP/sbom-env"
+          uv pip install --python "$RUNNER_TEMP/sbom-env/bin/python" dist/*.whl
+          mkdir -p sbom
+          uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment --of JSON \
+            -o "sbom/examlops-${VERSION}.cdx.json" "$RUNNER_TEMP/sbom-env/bin/python"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.whl
+          sbom-path: sbom/examlops-${{ needs.verify.outputs.version }}.cdx.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-dist
+          path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-python
+          path: sbom/
+          if-no-files-found: error
+
+  images:
+    name: image · ${{ matrix.name }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read # check out the tag
+      packages: write # push the image to GHCR
+      id-token: write # cosign keyless signing + attestations
+      attestations: write # store the provenance attestation
+    strategy:
+      fail-fast: false
+      matrix:
+        # The platform images: use-case-agnostic (ADR 0094), buildable from the public tree.
+        # tests/unit/test_release_workflow.py holds this list to the Dockerfiles on disk.
+        include:
+          - name: control-plane
+            dockerfile: platform/services/control_plane/Dockerfile
+            description: ExaMLOps control plane — retrain API, approvals, admission
+          - name: dashboard
+            dockerfile: platform/infra/docker-compose/Dockerfile.dashboard
+            description: ExaMLOps dashboard — React UI and FastAPI backend
+          - name: agent
+            dockerfile: platform/services/agent/Dockerfile
+            description: ExaMLOps Skipper management agent
+          - name: backup
+            dockerfile: platform/infra/docker-compose/Dockerfile.backup
+            description: ExaMLOps whole-platform backup runner
+          - name: ray-serving
+            dockerfile: serving/ray_serving/Dockerfile
+            description: ExaMLOps multi-model Ray Serve inference
+          # Thin wrappers over upstream images, published under our name so a pull-only
+          # install references one namespace and every image it runs passed this scan.
+          - name: postgres
+            context: platform/infra/docker-compose
+            dockerfile: platform/infra/docker-compose/Dockerfile.postgres
+            description: PostgreSQL 15 with the ExaMLOps MLflow + Prefect databases
+          - name: mlflow
+            context: platform/infra/docker-compose
+            dockerfile: platform/infra/docker-compose/Dockerfile.mlflow
+            description: MLflow tracking server with PostgreSQL + S3 support
+    env:
+      IMAGE: ghcr.io/mskazemi/examlops-${{ matrix.name }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.title=examlops-${{ matrix.name }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=ExaMLOps
+          annotations: |
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      # Quarantine: pushed by digest only — no tag yet, so nothing can pull it by name.
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context || '.' }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+      # The gate: a CRITICAL vulnerability that has a fix available blocks the release. Unfixed
+      # CRITICALs are reported (below) but cannot be acted on by upgrading, so they do not block.
+      - name: Scan the exact digest (blocking on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Full vulnerability report (HIGH + CRITICAL, advisory)
+        if: always() && steps.build.outputs.digest != ''
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+          TRIVY_SKIP_DB_UPDATE: "true"
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-${{ matrix.name }}.json
+          exit-code: "0"
+
+      # Promote: the scanned digest receives its names. imagetools copies no layers.
+      - name: Tag the scanned digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r t; do [ -n "$t" ] && args+=(-t "$t"); done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless: the signature binds the digest to this workflow's OIDC identity
+      # (repo + workflow file + ref), recorded in the public Rekor transparency log.
+      - name: Sign the digest (cosign keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record the published reference
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          NAME: ${{ matrix.name }}
+        run: |
+          mkdir -p refs
+          echo "${IMAGE}:${VERSION}@${DIGEST}" > "refs/${NAME}.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.name }}
+          path: |
+            refs/
+            trivy-${{ matrix.name }}.json
+          if-no-files-found: error
+
+  chart:
+    name: helm chart (OCI)
+    needs: [verify, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the tag
+      packages: write # push the chart to GHCR
+      id-token: write # cosign keyless signing + attestations
+      attestations: write # store the provenance attestation
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Install Helm (checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tarball="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${tarball}"
+          curl -fsSLO "https://get.helm.sh/${tarball}.sha256sum"
+          sha256sum -c "${tarball}.sha256sum"
+          tar -xzf "$tarball" linux-amd64/helm
+          install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      # The same lint the CI chart job runs, against the registry the images were just pushed to.
+      - name: Lint against the published registry
+        run: helm lint platform/infra/helm/examlops --set "global.imageRegistry=${IMAGE_NAMESPACE}/"
+
+      - name: Package
+        run: helm package platform/infra/helm/examlops --version "$VERSION" --app-version "$VERSION" -d dist
+
+      - name: Push to GHCR (OCI)
+        id: push
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$REGISTRY_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          helm push "dist/examlops-${VERSION}.tgz" "oci://${CHART_REGISTRY}" 2>&1 | tee push.log
+          digest="$(grep -oE 'sha256:[0-9a-f]{64}' push.log | tail -1)"
+          [ -n "$digest" ] || { echo "::error::helm push printed no digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the chart (cosign keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          COSIGN_USER: ${{ github.actor }}
+          COSIGN_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$COSIGN_TOKEN" | cosign login ghcr.io -u "$COSIGN_USER" --password-stdin
+          cosign sign --yes "${CHART_REGISTRY}/examlops@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.CHART_REGISTRY }}/examlops
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helm-chart
+          path: dist/
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: [verify, python-dist, images, chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release and upload its assets
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+
+      - name: Assemble assets + SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          cp artifacts/python-dist/* artifacts/sbom-python/* artifacts/helm-chart/* assets/
+          cat artifacts/image-*/refs/*.txt | sort > "assets/images-${VERSION}.txt"
+          mkdir -p assets/trivy && cp artifacts/image-*/trivy-*.json assets/trivy/
+          tar -czf "assets/trivy-reports-${VERSION}.tar.gz" -C assets trivy && rm -rf assets/trivy
+          (cd assets && sha256sum -- * > SHA256SUMS)
+          cat "assets/images-${VERSION}.txt"
+          cat assets/SHA256SUMS
+
+      # Created only if absent: the owner's release loop may already have created this release
+      # by hand with the same CHANGELOG text (it mirrors it to the private repo). Assets are then
+      # uploaded with --clobber, so a re-run replaces rather than fails.
+      - name: Create the release if absent, then upload
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            flags=(--verify-tag --title "$TAG" --notes-file artifacts/release-notes/release-notes.md)
+            [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+            gh release create "$TAG" "${flags[@]}"
+          fi
+          gh release upload "$TAG" assets/* --clobber
+
+  pypi:
+    name: PyPI (Trusted Publishing)
+    needs: [verify, github-release]
+    # Off until the owner has registered the Trusted Publisher on PyPI and set the repository
+    # variable PYPI_PUBLISH=true; without that the job would fail on the OIDC exchange.
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/examlops/${{ needs.verify.outputs.version }}/
+    permissions:
+      id-token: write # PyPI Trusted Publishing (OIDC) — no stored token exists
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-dist
+          path: dist
+
+      # PEP 740 attestations are generated and uploaded by default under Trusted Publishing.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

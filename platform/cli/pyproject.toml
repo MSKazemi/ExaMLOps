@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=65"]
+# >=77 is the floor for PEP 639 (`license` as an SPDX expression + `license-files`); pinned at
+# the current stable so the published metadata is what this file says it is.
+requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +9,29 @@ name = "examlops"
 version = "0.51.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
+# The PyPI project page. The repo README links relatively into docs/, which PyPI cannot
+# resolve, so the package carries its own; tests/unit/test_package_metadata.py keeps it honest.
+readme = "README.md"
+license = "Apache-2.0"
+# A copy of the root LICENSE: PEP 639 forbids license-files outside the project directory.
+# tests/unit/test_package_metadata.py fails if the two ever differ.
+license-files = ["LICENSE"]
+authors = [{ name = "Mohsen Seyedkazemi Ardebili" }]
+keywords = ["mlops", "hpc", "slurm", "flux", "mlflow", "ray-serve", "model-registry", "llmops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
 dependencies = [
     "typer>=0.12",
     # Imported directly at module load by cli/_help.py, cli/commands/explain_command.py and
@@ -113,6 +138,13 @@ synth = [
 
 [project.scripts]
 exa = "examlops.cli.main:app"
+
+[project.urls]
+Homepage = "https://mskazemi.github.io/ExaMLOps/"
+Documentation = "https://mskazemi.github.io/ExaMLOps/"
+Repository = "https://github.com/MSKazemi/ExaMLOps"
+Issues = "https://github.com/MSKazemi/ExaMLOps/issues"
+Changelog = "https://github.com/MSKazemi/ExaMLOps/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

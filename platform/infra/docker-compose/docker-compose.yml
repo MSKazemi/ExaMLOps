@@ -194,6 +194,10 @@ services:
       context: ../../..
       dockerfile: platform/services/control_plane/Dockerfile
       network: host
+      # The upstream model library, baked in when the checkout has it (ADR 0094: it is not part
+      # of the platform, and the Dockerfile builds without it). Point elsewhere for a site build.
+      additional_contexts:
+        modelzoo: ${EXAMLOPS_MODELZOO_BUILD_CONTEXT:-../../../modelzoo}
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-control-plane:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-control-plane
     mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}

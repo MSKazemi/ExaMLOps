@@ -25,13 +25,10 @@ REPO = Path(__file__).resolve().parents[2]
 
 # COPY sources that are NOT in the published tree, with the reason and the fix owner.
 # Shrink this set; never grow it.  An entry here is a bug that is tracked, not a licence.
-KNOWN_GAPS = {
-    # `usecases/seanergy/pack.toml` puts `../../modelzoo` on sys.path and names its framework
-    # classes, so the baked-in default pack drags the private upstream library into the image.
-    # Fixing it is a distribution decision (ship the public image with no default pack, mount
-    # the pack at runtime, or publish modelzoo), not a Dockerfile tweak.
-    ("platform/services/control_plane/Dockerfile", "modelzoo"),
-}
+# Empty since 2026-09-10 (ADR 0129): the control-plane image took `modelzoo` from the checkout;
+# it is now an optional named build context, so the published tree builds it, and the image
+# starts and serves /health without it.
+KNOWN_GAPS: set[tuple[str, str]] = set()
 
 _COPY = re.compile(r"^\s*COPY\s+(?P<args>.+)$", re.IGNORECASE)
 

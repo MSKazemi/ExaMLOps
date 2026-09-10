@@ -48,6 +48,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - Vectors containing NaN or infinity are refused on both backends. Rankings break ties by id, so
   results are deterministic. `CollectionNotFound` messages are no longer printed in quotes.
 
+### Added — one tag publishes every artifact, signed: GitHub becomes the release authority (ADR 0129)
+
+- **`.github/workflows/release.yml`.** The GitLab remote that ran every build, scan and publish job
+  is gone, and GitHub Actions ran only the quality subset: nothing built a wheel, pushed an image,
+  signed or released. A `vX.Y.Z` tag now produces the `examlops` wheel + sdist, seven GHCR images
+  (`control-plane`, `dashboard`, `agent`, `backup`, `ray-serving`, `postgres`, `mlflow`), the Helm
+  chart as an OCI artifact, and a GitHub Release whose notes are that version's CHANGELOG section,
+  with a CycloneDX SBOM of the resolved Python install, image references by digest, Trivy reports
+  and `SHA256SUMS`. PyPI is published last, by Trusted Publishing from a protected environment.
+- **Images are quarantined until scanned.** Each is pushed by digest only, the digest is scanned,
+  and a fixable CRITICAL vulnerability fails the release before the image has a name; it is then
+  tagged, cosign-signed (keyless) and attested (SLSA Build L2 provenance + BuildKit SBOM). The
+  chart is published only after its images, and is signed and attested the same way.
+- **A release refuses a bad tag before building anything**: the tag must name the tree's version,
+  every version copy must agree, the commit must be on `main` and green on `ci-ok`, and the
+  CHANGELOG must have its section. Publishing runs only in `MSKazemi/ExaMLOps`, never from the
+  private repository that tracks the same workflow files.
+- **`platform/ci/release_version.py`** — one version, every artifact: `check` / `set` / `tag` /
+  `notes`. It holds the three member `pyproject.toml` files and the chart's `version` +
+  `appVersion` to the root version; `notes` reproduces, byte for byte on every existing tag, the
+  extractor the published GitLab releases used.
+- **The wheel is built and run outside the repository on every PR.** New CI `package` job (Python
+  3.12 and 3.13): build, `twine check --strict`, install into a fresh venv in a directory with no
+  checkout, and require `exa --version`, `--help` and `--json docs` to work there — the only check
+  that notices runtime code reaching back into the source tree.
+- **`examlops` is PyPI-ready**: PEP 639 licence expression (`Apache-2.0`) with the licence file in
+  the wheel, a package README with no links PyPI cannot resolve, classifiers, keywords and project
+  URLs. `tests/unit/test_package_metadata.py` fails on a relative README link, a docs link to a page
+  the site does not build, or a licence copy that drifted from the root.
+- **The control-plane image builds from the public tree.** It copied `modelzoo/`, which is not in
+  the public repository (ADR 0094), so no public build could produce the image the chart deploys.
+  The model library is now an optional named build context: absent, the image builds without it;
+  compose passes it from `EXAMLOPS_MODELZOO_BUILD_CONTEXT` (default: the checkout's `modelzoo/`),
+  so an existing site build is unchanged.
+- Guide: [Releases — what is published & how to verify it](docs/guides/release-process.md).
+
 ### Added — security in levels on every change, each one a named gate or a named report (ADR 0129)
 
 - **`.github/workflows/security.yml`** runs on every pull request, every push to `main` and

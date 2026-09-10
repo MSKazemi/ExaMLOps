@@ -151,6 +151,7 @@ nav:
       - CI/CD — GitLab Pipeline: guides/cicd.md
       - JupyterHub Notebooks: guides/jupyter.md
       - Enterprise Installation & Configuration: guides/enterprise-installation.md
+      - Releases — what is published & how to verify it: guides/release-process.md
       - Production Hardening Checklist: guides/production-hardening.md
       - Backup, Restore & Disaster Recovery: guides/backup-restore.md
       - HPC Fleet (discover · connect · schedule): guides/hpc-fleet.md

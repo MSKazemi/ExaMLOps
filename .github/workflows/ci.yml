@@ -87,6 +87,65 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
+  package:
+    # The `examlops` wheel is what `pip install examlops` delivers, and nothing built it:
+    # the docs advertised an install no job had ever performed. This job builds the wheel +
+    # sdist exactly as the release does, then installs the wheel into a fresh venv in a
+    # directory with NO checkout and runs the CLI there — the only test that notices when
+    # runtime code reaches back into the repository instead of into its own package.
+    name: package (wheel · py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      # Every artifact of a release carries one version; a drifted copy fails here, on the
+      # PR, rather than as a tag whose chart and wheel disagree about what they are.
+      - name: Version copies agree
+        run: python3 platform/ci/release_version.py check
+
+      - name: Build wheel + sdist
+        run: uv build platform/cli --out-dir dist
+
+      - name: Metadata renders on PyPI (twine check --strict)
+        run: uvx twine@7.0.0 check --strict dist/*
+
+      - name: Install the wheel outside the repository and run it
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          want="$(python3 platform/ci/release_version.py current)"
+          wheel="$(ls "$PWD"/dist/examlops-*.whl)"
+          smoke="$RUNNER_TEMP/smoke"
+          mkdir -p "$smoke/home" && cd "$smoke"
+          uv venv --python "$PY" venv
+          uv pip install --python venv/bin/python "$wheel"
+          export HOME="$smoke/home" PLATFORM_DB="$smoke/platform.db"
+          got="$(venv/bin/exa --version)"
+          echo "$got"
+          [ "$got" = "exa version $want" ] || { echo "::error::installed exa reports '$got', expected $want"; exit 1; }
+          venv/bin/exa --help >/dev/null
+          venv/bin/exa --json docs > docs.json
+          venv/bin/python -c "import json; json.load(open('docs.json'))"
+
+      - name: Upload distributions
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-dist
+          path: dist/
+          if-no-files-found: error
+
   agent:
     # The Skipper suite (206 tests) ran nowhere: `make check` is `pytest tests/` at the
     # repo root, and these live under platform/services/agent/tests, so a change to
