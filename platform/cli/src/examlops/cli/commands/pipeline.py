@@ -69,32 +69,36 @@ _EXAMPLES_VALIDATE = (
 )
 
 
-# These tools write their own output; `_output.run_external` streams it in table mode and turns it
-# into one document under `--json`, where it used to land on stdout as raw text.
-
-
 def _run_generator(args: list[str]) -> None:
-    _output.run_external(
-        [sys.executable, _GENERATOR, *args],
-        not_found="pipeline_generator.py not found — run exa pipeline commands from the repo root",
-        failed="Pipeline generator exited with code {code}",
-    )
+    cmd = [sys.executable, _GENERATOR, *args]
+    try:
+        subprocess.run(cmd, check=True, text=True, capture_output=False)  # noqa: S603
+    except FileNotFoundError:
+        _output.error(
+            "pipeline_generator.py not found — run exa pipeline commands from the repo root"
+        )
+    except subprocess.CalledProcessError as e:
+        _output.error(f"Pipeline generator exited with code {e.returncode}")
 
 
 def _run_deploy(args: list[str]) -> None:
-    _output.run_external(
-        [sys.executable, _DEPLOY, *args],
-        not_found="pipelines/deploy.py not found — run exa pipeline deploy from the repo root",
-        failed="deploy.py exited with code {code}",
-    )
+    cmd = [sys.executable, _DEPLOY, *args]
+    try:
+        subprocess.run(cmd, check=True, text=True, capture_output=False)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("pipelines/deploy.py not found — run exa pipeline deploy from the repo root")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"deploy.py exited with code {e.returncode}")
 
 
 def _run_pytest(args: list[str]) -> None:
-    _output.run_external(
-        [sys.executable, "-m", "pytest", *args],
-        not_found="pytest not found — run make install-dev or uv pip install -e '.[dev]'",
-        failed="pytest exited with code {code}",
-    )
+    cmd = [sys.executable, "-m", "pytest", *args]
+    try:
+        subprocess.run(cmd, check=True, text=True, capture_output=False)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("pytest not found — run make install-dev or uv pip install -e '.[dev]'")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"pytest exited with code {e.returncode}")
 
 
 def _resolve_cluster_env(cluster: str, gpus: int) -> bool:

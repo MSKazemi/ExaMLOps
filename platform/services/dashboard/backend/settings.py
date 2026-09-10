@@ -15,9 +15,6 @@ class Settings(BaseSettings):
     minio_url: str = "http://localhost:19000"
     minio_console_url: str = "http://localhost:19001"
     control_plane_url: str = "http://localhost:18002"
-    # Fallback bearer credential for control-plane reads when the Config page's encrypted
-    # `control_plane_token` secret is unset (control_plane_auth.py). Never sent to the browser.
-    control_plane_token: str = ""
     agent_url: str = "http://localhost:18004"
     dashboard_agent_api_key: str = ""
     agent_api_key: str = ""

@@ -44,24 +44,6 @@ from prefect.schedules import Cron  # noqa: E402
 
 from pipelines.pipeline_generator import run_all_flows, training_flow  # noqa: E402
 
-# The deployment the control plane dispatches every retrain to (`POST /retrain`, the approval gate,
-# ModelZoo auto-retrain). It serves `training_flow` itself, so its parameter schema is exactly
-# model_name / dataset_cls_name / is_dummy / backend_name — what the control plane sends. The
-# control plane's PREFECT_DEPLOYMENT_NAME default and the compose default must name this same
-# deployment; tests/unit/test_dispatch_contract.py fails if the three drift apart. Until
-# 2026-09-10 the control plane defaulted to `examlops_scheduled_training/nightly`, which nothing
-# created and whose flow would have refused those parameters anyway: every dispatched retrain 404'd.
-DISPATCH_DEPLOYMENT_NAME = "examlops-dispatch"
-
-
-def dispatch_deployment():  # noqa: ANN201 - a prefect RunnerDeployment
-    """The unscheduled `training_flow/examlops-dispatch` deployment the control plane targets."""
-    return training_flow.to_deployment(
-        name=DISPATCH_DEPLOYMENT_NAME,
-        tags=["examlops", "training", "dispatch"],
-        description="Control-plane dispatch target: one model x dataset per run.",
-    )
-
 
 def build_deployment_params(entries: list) -> list[dict]:
     """Extract Prefect deployment parameters from enabled ModelEntry objects.
@@ -131,17 +113,12 @@ def deploy(
     else:
         print("No schedule — manual trigger only")
 
-    from prefect import serve as prefect_serve  # noqa: PLC0415
-
-    main = target_flow.to_deployment(
+    target_flow.serve(
         name=name,
         schedules=[schedule] if schedule else [],
         tags=["examlops", "training"],
-        # Only the scheduled wrapper takes parameters; the targeted flow is closed over its pair.
-        parameters={"is_dummy": False} if target_flow is scheduled_training_flow else None,
+        parameters={"is_dummy": False},
     )
-    print(f"Dispatch target: training_flow/{DISPATCH_DEPLOYMENT_NAME} (control-plane retrains)")
-    prefect_serve(main, dispatch_deployment())
 
 
 def deploy_from_registry(
@@ -212,12 +189,10 @@ def deploy_from_registry(
         deployments.append(dep)
         print(f"[deploy] queued '{p['deployment_name']}' for {model_name} (cron={p['cron']!r})")
 
-    if not deployments:
-        print("[deploy] No enabled models in registry — serving only the dispatch target.")
-    # Always serve the control-plane dispatch target too: a registry-driven deploy is still the
-    # process that executes control-plane retrains.
-    deployments.append(dispatch_deployment())
-    prefect_serve(*deployments)  # type: ignore[arg-type]
+    if deployments:
+        prefect_serve(*deployments)  # type: ignore[arg-type]
+    else:
+        print("[deploy] No enabled models in registry — nothing to deploy.")
 
 
 def parse_args() -> argparse.Namespace:

@@ -213,7 +213,7 @@ def test_card_history_all_models():
 def test_card_mlflow_unreachable_still_generates():
     from examlops.cli._client import ClientError
 
-    def _side_effect(url: str, token: str = ""):  # noqa: ARG001 - mirrors _client.get
+    def _side_effect(url: str):
         if "/meta" in url:
             return _META_RESPONSE
         raise ClientError("MLflow unreachable")
@@ -230,7 +230,7 @@ def test_card_mlflow_unreachable_still_generates():
 # ---------------------------------------------------------------------------
 
 
-def _side_effect_get(url: str, token: str = ""):  # noqa: ARG001 - mirrors _client.get
+def _side_effect_get(url: str):
     """Route mock GET calls based on URL pattern."""
     if "/meta" in url:
         return _META_RESPONSE

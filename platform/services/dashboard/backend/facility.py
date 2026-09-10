@@ -168,9 +168,7 @@ def set_cluster_state(
     """
     _shared_set_state: Callable[..., bool] | None
     try:
-        from examlops.data.hpc import set_cluster_state
-
-        _shared_set_state = set_cluster_state
+        from examlops.data.hpc import set_cluster_state as _shared_set_state
     except ImportError:  # pragma: no cover - degraded deployment without examlops
         _shared_set_state = None
 

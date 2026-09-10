@@ -68,7 +68,7 @@ from typing import Any
 import mlflow
 import mlflow.pyfunc
 import ray
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from ray import serve
 from ray.util.metrics import Counter, Gauge, Histogram
@@ -117,37 +117,6 @@ PREDICT_TIMEOUT = float(os.getenv("RAY_PREDICT_TIMEOUT", "30"))
 # Retry the startup hot-set scan so a transient MLflow blip at boot doesn't leave
 # the replica permanently empty until the next poll cycle.
 from examlops.resilience import is_transient_network, retry_call  # noqa: E402
-from serving.admin_auth import require_serving_admin  # noqa: E402
-
-# Verify-before-load (plan P0.6 / finding S3): `off` (default until models are signed at
-# registration, plan P4.10) | `warn` | `enforce`. Serving loads pickled artifacts, so whoever can
-# move an MLflow alias or write the artifact store can otherwise run code in this process.
-_VERIFY_MODE = os.getenv("EXAMLOPS_SERVING_VERIFY", "off").strip().lower()
-
-
-def _verified_uri(name: str, version: str, uri: str) -> str:
-    """The URI to load: ``uri`` itself, or a local copy whose bytes passed signature verification.
-
-    In ``warn``/``enforce`` mode the artifacts are downloaded once, verified with
-    ``examlops.supplychain.verify_before_load``, and the *verified local copy* is what gets loaded.
-    Loading ``uri`` again after checking a separate download would verify one set of bytes and run
-    another. ``enforce`` refuses (raises) on an unsigned, tampered or unverifiable artifact; the
-    hot-set loader then keeps serving the last-known-good version.
-    """
-    if _VERIFY_MODE not in ("warn", "enforce"):
-        return uri
-    from pathlib import Path  # noqa: PLC0415
-
-    from examlops.supplychain import verify_before_load  # noqa: PLC0415
-
-    local = mlflow.artifacts.download_artifacts(artifact_uri=uri)
-    paths = [p for p in Path(local).rglob("*") if p.is_file()]
-    if not verify_before_load(name, version, paths, mode=_VERIFY_MODE):
-        raise RuntimeError(
-            f"refusing to load {name} v{version}: signature verification failed "
-            f"(EXAMLOPS_SERVING_VERIFY={_VERIFY_MODE}; sign with `exa models sign`)"
-        )
-    return local
 
 _REGISTRY_ENTRIES: list | None = None
 
@@ -549,7 +518,7 @@ class MultiModelServer:
             pass
 
         suffix = f"@{alias}" if alias else f"/{mv.version}"
-        uri = _verified_uri(name, str(mv.version), f"models:/{name}{suffix}")
+        uri = f"models:/{name}{suffix}"
 
         if flavour == "pytorch":
             return importlib.import_module("mlflow.pytorch").load_model(uri)
@@ -948,11 +917,8 @@ class MultiModelServer:
             from examlops.platform_db import get_db
 
             with get_db() as conn:
-                # Case-insensitive: the CLI and dashboard store the canonical lowercase key, but a
-                # direct `/predict/JPCP` call names the model as typed (plan P0.4 / finding B4).
                 row = conn.execute(
-                    "SELECT shadow_alias, enabled FROM shadow_config WHERE lower(model)=lower(?) "
-                    "ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT shadow_alias, enabled FROM shadow_config WHERE model=?",
                     (model_name,),
                 ).fetchone()
             if row and row["enabled"]:
@@ -1174,8 +1140,7 @@ class MultiModelServer:
             prediction=prediction,
         )
 
-    # Admin routes need RAY_SERVE_ADMIN_TOKEN (plan P0.6 / finding S1); /predict does not.
-    @_app.post("/reload", dependencies=[Depends(require_serving_admin)])
+    @_app.post("/reload")
     def reload(self) -> dict:
         """Hot-reload every model in the hot set from MLflow."""
         try:
@@ -1197,7 +1162,7 @@ class MultiModelServer:
             "count": len(hot_keys),
         }
 
-    @_app.post("/reload/{model_name}", dependencies=[Depends(require_serving_admin)])
+    @_app.post("/reload/{model_name}")
     def reload_model(self, model_name: str) -> dict:
         """Targeted hot-reload — used by the Prefect webhook on promotion."""
         try:

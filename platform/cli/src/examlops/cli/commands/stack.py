@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import typer
 
 from examlops.cli import _output
@@ -26,28 +28,14 @@ _EXAMPLES_LOGS = (
 _EXAMPLES_STATUS = "Examples:\n\n  exa stack status"
 
 
-def _parse_ps(text: str) -> list[dict]:
-    """`docker compose ps --format json` prints an array, or one object per line (by version)."""
-    import json
-
-    text = text.strip()
-    if not text:
-        return []
+def _dc(args: list[str]) -> None:
+    cmd = _BASE_CMD + args
     try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, list) else [parsed]
-    except ValueError:
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
-
-
-def _dc(args: list[str], *, ps: bool = False) -> None:
-    structured = ps and _output.json_mode
-    _output.run_external(
-        _BASE_CMD + args + (["--format", "json"] if structured else []),
-        not_found="docker not found — is Docker installed?",
-        failed="docker compose exited with {code}",
-        parse=_parse_ps if structured else None,
-    )
+        subprocess.run(cmd, check=True)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("docker not found — is Docker installed?")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"docker compose exited with {e.returncode}")
 
 
 @app.command(epilog=_EXAMPLES_UP)
@@ -110,7 +98,7 @@ def logs(
 @app.command(epilog=_EXAMPLES_STATUS)
 def status():
     """Show running containers and their ports."""
-    _dc(["ps"], ps=True)
+    _dc(["ps"])
 
 
 # ── Monitoring stack (same compose file, --profile monitoring) ──────────────
@@ -118,8 +106,14 @@ def status():
 _MONITORING_SERVICES = ["prometheus", "grafana", "loki", "promtail", "alertmanager", "tempo"]
 
 
-def _dc_monitoring(args: list[str], *, ps: bool = False) -> None:
-    _dc(["--profile", "monitoring", *args], ps=ps)
+def _dc_monitoring(args: list[str]) -> None:
+    cmd = _BASE_CMD + ["--profile", "monitoring"] + args
+    try:
+        subprocess.run(cmd, check=True)  # noqa: S603
+    except FileNotFoundError:
+        _output.error("docker not found — is Docker installed?")
+    except subprocess.CalledProcessError as e:
+        _output.error(f"docker compose exited with {e.returncode}")
 
 
 @app.command("monitoring-up")
@@ -137,4 +131,4 @@ def monitoring_down():
 @app.command("monitoring-status")
 def monitoring_status():
     """Show monitoring stack container status."""
-    _dc_monitoring(["ps"], ps=True)
+    _dc_monitoring(["ps"])

@@ -235,9 +235,7 @@ def _rollback(deploy_id: str, *, execute: bool) -> None:
     record["alias_results"] = alias_results
 
     try:
-        reload_result = _client.post(
-            f"{cfg.ray_serve_url}/reload", {}, token=cfg.ray_serve_admin_token
-        )
+        reload_result = _client.post(f"{cfg.ray_serve_url}/reload", {})
     except _client.ClientError as exc:
         fail_record("reload", str(exc))
         _output.error(f"Ray Serve reload failed: {exc}")
@@ -428,31 +426,6 @@ def _run_verification_checks(cfg) -> list[CheckResult]:
     ]
 
 
-_EXAMPLES_RELOAD = (
-    "Examples:\n\n"
-    "  # After adding or editing model YAML, or fixing the DB/token config:\n"
-    "  exa production reload"
-)
-
-
-@app.command("reload", epilog=_EXAMPLES_RELOAD)
-def reload() -> None:
-    """Hot-reload the control plane's model registry and re-run its startup checks (no restart)."""
-    cfg = load_config()
-    try:
-        result = _client.post(
-            f"{cfg.control_plane_url}/admin/reload", {}, token=cfg.control_plane_token
-        )
-    except _client.ClientError as exc:
-        _output.error(
-            f"Control plane reload failed: {exc}",
-            hint="Needs a reachable control plane and a CONTROL_PLANE_TOKEN with write scope.",
-        )
-    models = result.get("models", []) if isinstance(result, dict) else []
-    _output.ok(f"Control plane registry reloaded — {len(models)} model(s)")
-    _output.print_record(result if isinstance(result, dict) else {"result": result})
-
-
 @app.command("verify", epilog=_EXAMPLES_VERIFY)
 def verify():
     """Verify production service health without changing state."""
@@ -626,9 +599,7 @@ def deploy(
     deploy_record["retrain_results"] = retrain_results
 
     try:
-        reload_result = _client.post(
-            f"{cfg.ray_serve_url}/reload", {}, token=cfg.ray_serve_admin_token
-        )
+        reload_result = _client.post(f"{cfg.ray_serve_url}/reload", {})
     except _client.ClientError as exc:
         fail_record("reload", str(exc))
         _output.error(f"Ray Serve reload failed: {exc}")

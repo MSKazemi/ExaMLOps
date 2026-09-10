@@ -625,7 +625,7 @@ runtime configuration remain local, so do not infer multi-replica safety from Po
 ```json
 {
   "flow_run_id": "abc123",
-  "deployment": "training_flow/examlops-dispatch",
+  "deployment": "examlops_scheduled_training/nightly",
   "status_url": "/retrain/abc123"
 }
 ```

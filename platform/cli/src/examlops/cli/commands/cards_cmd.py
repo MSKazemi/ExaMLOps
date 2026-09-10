@@ -155,8 +155,7 @@ def generate(
     meta: dict = {}
     meta_url = f"{cfg.control_plane_url}/models/{urllib.parse.quote(model)}/meta"
     try:
-        # `/models/{name}/meta` needs a read-scoped credential (plan P0.3 / finding B3).
-        meta = _client.get(meta_url, token=cfg.control_plane_token)
+        meta = _client.get(meta_url)
     except _client.ClientError as exc:
         _output.error(
             f"Control plane unreachable or model not found: {exc}",

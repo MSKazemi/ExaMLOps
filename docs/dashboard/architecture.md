@@ -347,7 +347,7 @@ tenant scoping: tenant_visible / assert_tenant_access / scope_to_tenant   (defau
 UI: useCapabilities() ← /me · <CapabilityGate capability> hides/disables + explains (R3) · tenant badge (R4)
 ```
 
-- **`backend/capabilities.py`** — a `role → capability set` catalogue (viewer = `view`+`search`+`cli.run`;
+- **`backend/capabilities.py`** — a `role → capability set` catalogue (viewer = `view`+`search`;
   admin adds `model.promote`, `approval.decide`, `retrain.trigger`, `config.write`, `secret.reveal`,
   `service.control`, …). `capabilities_for`/`can`/`deny_reason` (R3 explains denials);
   `require_capability(cap)` is the BFF enforcement dependency (R2); `STEP_UP_CAPABILITIES` flags
@@ -711,40 +711,6 @@ lib/grafana.ts: GRAFANA_PANELS registry {name → {uid, panelId}}  +  base URL (
 - **Auth/security** — internal/lxp deployments may use anonymous Viewer; exposed deployments use a
   service-account token/proxy, and the embed origin is scoped by `frame-ancestors` (owned by F16).
 
-## CLI Console — the dashboard runs `exa` (ADR 0119)
-
-Every `exa` command is reachable from the dashboard without a router per command: the dashboard
-runs the real CLI. What may run, by whom and with which arguments is decided by the platform's
-own surface table, not by the dashboard.
-
-```
-GET  /api/v1/cli/catalog ─► routers/cli.py ─► subprocess: python -m examlops.cli.surface
-                                              (live Click tree → descriptors + tiers; cached, gzip)
-POST /api/v1/cli/runs {command,args}
-   └─► surface.build_argv(descriptor, args, workspace)   type/choice/bounds · blocked flags ·
-   │                                                     paths contained · tier escalation
-   ├─► capability by effective tier (cli.run | cli.write) · destructive ⇒ confirm == command
-   ├─► audit `cli_run` (secrets masked)
-   └─► cli_runner.RUNNER.submit ─► subprocess: python -m examlops.cli --output json --yes <argv>
-            cwd = CLI workspace · stdin /dev/null · env minus dashboard credentials,
-            EXAMLOPS_ACTOR=dashboard:<sub> · timeout kills the process group · output capped
-        ─► on finish: audit `cli_run_finished` · run kept in bounded in-memory history
-GET  /api/v1/cli/runs/{id} ─► status, exit code, stdout/stderr, parsed JSON, files written
-```
-
-- **`examlops.cli.surface`** (platform package) — `TIERS` for every leaf command (`read` · `admin` ·
-  `destructive` · `cli_only` + reason), `build_catalog()`, `build_argv()`, `contain_path()`.
-  Guarded by `tests/unit/test_cli_surface.py` (every command classified; no file-ish param without a
-  containment decision; mutating verbs never `read`).
-- **`backend/cli_runner.py`** — isolated subprocess per run; concurrency caps (global + per session,
-  429 when busy); SIGTERM→SIGKILL on timeout/cancel; drains past the output cap so a child never
-  blocks on a full pipe.
-- **`backend/routers/cli.py`** — catalog, runs, cancel, and the admin CLI workspace (upload,
-  download, delete; every path through `contain_path`).
-- **Frontend** — `pages/CliConsole.tsx` + `components/cli/*` (browser, generated form, output
-  renderer, workspace); `lib/cli.ts` mirrors escalation for the badge only. ⌘K lists matching CLI
-  commands; `components/cli/CliContextLink.tsx` links every console to its `exa` commands.
-
 ## Sequence: login
 
 ```
@@ -806,5 +772,4 @@ Browser                       Backend (proxy.py)          Grafana
 | DB dump + env file leaked together | Approach 3 (Vault) — not implemented; flagged as future work.           | —                                                                   |
 | Brute-force login                  | None at this layer.                                                     | Rate limiting, fail2ban-style throttles — operator's reverse proxy. |
 | Lost `DASHBOARD_SECRET_KEY`        | Fail-fast on boot; documented re-entry procedure.                       | Automatic recovery (impossible by design).                          |
-| Abuse of the CLI Console (a browser starts processes) | Per-command tiers from `examlops.cli.surface`; argv only, values glued to options; paths contained in the CLI workspace; dashboard credentials stripped from the child env; timeout, output and concurrency caps; every run in the audit chain. | An admin is trusted with the CLI's full surface — the admin password is the boundary. |
 

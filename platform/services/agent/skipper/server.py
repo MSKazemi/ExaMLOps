@@ -20,9 +20,7 @@ from pydantic import BaseModel, Field
 
 from skipper import config, instrument
 from skipper.auth import (
-    MISCONFIGURED_DETAIL,
     AgentIdentity,
-    auth_misconfigured,
     auth_required,
     authenticate,
     authenticate_key,
@@ -99,8 +97,6 @@ def _request_authorized(request: Request) -> bool:
 
 
 async def _require_agent_auth(request: Request) -> AgentIdentity:
-    if auth_misconfigured():
-        raise HTTPException(status_code=503, detail=MISCONFIGURED_DETAIL)
     identity = _request_identity(request)
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")

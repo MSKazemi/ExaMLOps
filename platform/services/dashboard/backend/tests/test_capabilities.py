@@ -10,9 +10,7 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 
 def test_viewer_has_only_read_capabilities():
     caps = set(cap.capabilities_for("viewer"))
-    # `cli.run` is a read capability: it runs only `read`-tier `exa` commands (ADR 0119).
-    assert caps == {cap.VIEW, cap.SEARCH, cap.CLI_RUN}
-    assert not cap.can("viewer", cap.CLI_WRITE)
+    assert caps == {cap.VIEW, cap.SEARCH}
     assert not cap.can("viewer", cap.MODEL_PROMOTE)
 
 
@@ -93,7 +91,7 @@ async def test_me_returns_capabilities_for_viewer(client):
     assert r.status_code == 200
     body = r.json()
     assert body["tenant"] == "default"
-    assert set(body["capabilities"]) == {cap.VIEW, cap.SEARCH, cap.CLI_RUN}
+    assert set(body["capabilities"]) == {cap.VIEW, cap.SEARCH}
 
 
 @pytest.mark.asyncio

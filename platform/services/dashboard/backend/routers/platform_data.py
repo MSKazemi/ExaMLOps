@@ -60,8 +60,7 @@ async def get_model_traffic_rules(model: str, _=Depends(_viewer)) -> dict | None
         conn = connect(_db_path())
         try:
             row = conn.execute(
-                "SELECT model, rules, updated_at, updated_by FROM traffic_rules "
-                "WHERE lower(model)=lower(?) ORDER BY updated_at DESC LIMIT 1",
+                "SELECT model, rules, updated_at, updated_by FROM traffic_rules WHERE model=?",
                 (model,),
             ).fetchone()
             conn.close()

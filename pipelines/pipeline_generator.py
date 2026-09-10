@@ -1183,11 +1183,6 @@ def _notify_ray_serve(model_id: str) -> None:
         import urllib.request
 
         req = urllib.request.Request(f"{url.rstrip('/')}/reload/{model_id}", method="POST")
-        # /reload is an admin route (plan P0.6); without the token it answers 401/503 and the
-        # 60 s alias poller still picks the promotion up.
-        admin_token = os.getenv("RAY_SERVE_ADMIN_TOKEN", "")
-        if admin_token:
-            req.add_header("Authorization", f"Bearer {admin_token}")
         urllib.request.urlopen(req, timeout=2.0).close()  # noqa: S310
         print(f"[pipeline] Notified Ray Serve at {url} for model={model_id}")
     except Exception as exc:  # noqa: BLE001

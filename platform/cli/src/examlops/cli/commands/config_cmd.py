@@ -9,19 +9,12 @@ import typer
 
 from examlops.cli import _output
 from examlops.cli._config import (
-    _FIELDS,
-    InvalidConfigValue,
-    UnknownConfigKey,
     active_context,
-    canonical_key,
-    clear_active_context,
     config_path,
-    delete_context,
     list_contexts,
     load_config,
     resolve_with_provenance,
     set_active_context,
-    unset_config,
     write_config,
 )
 
@@ -49,13 +42,17 @@ _SECRET_CONFIG_KEYS = {"control_plane_token", "dashboard_token", "agent_token"}
 def show():
     """Print the current resolved config (env vars + TOML file)."""
     cfg = load_config()
-    # Every field the resolver knows, from the one spec — a hand-kept list here once left out
-    # `dashboard_token` and `seanerbus_bridge_url`, so `show` hid settings `env` reported.
-    data: dict[str, str] = {}
-    for field, _key, _env, _default, is_secret in _FIELDS:
-        value = getattr(cfg, field)
-        data[field] = ("***" if value else "(unset)") if is_secret else value
-    data["config_file"] = str(config_path())
+    data = {
+        "control_plane_url": cfg.control_plane_url,
+        "ray_serve_url": cfg.ray_serve_url,
+        "mlflow_url": cfg.mlflow_url,
+        "prefect_url": cfg.prefect_url,
+        "dashboard_url": cfg.dashboard_url,
+        "agent_url": cfg.agent_url,
+        "control_plane_token": "***" if cfg.control_plane_token else "(unset)",
+        "agent_token": "***" if cfg.agent_token else "(unset)",
+        "config_file": str(config_path()),
+    }
     _output.print_record(data)
 
 
@@ -104,18 +101,11 @@ def set_config(
     ),
 ):
     """Set a single config key in ~/.config/examlops/config.toml."""
-    try:
-        key = canonical_key(key)
-    except UnknownConfigKey as exc:
-        _output.error(str(exc))
     if value is None:
         if key not in _SECRET_CONFIG_KEYS:
             _output.error(f"A value is required for {key}.")
         value = typer.prompt(f"  {key}", hide_input=True, confirmation_prompt=True)
-    try:
-        write_config({key: value}, context=context or None)
-    except InvalidConfigValue as exc:
-        _output.error(str(exc))
+    write_config({key: value}, context=context or None)
     where = f" (context: {context})" if context else ""
     display = "***" if key in _SECRET_CONFIG_KEYS and value else value
     _output.ok(f"Set {key} = {display}{where}")
@@ -149,70 +139,11 @@ def contexts():
 
 
 @app.command(epilog=_EXAMPLES_USE)
-def use(
-    name: str | None = typer.Argument(None, help="Context name to activate"),
-    clear: bool = typer.Option(
-        False, "--clear", help="Leave any context and use the base configuration"
-    ),
-):
-    """Switch the active context (environment), or return to the base config with --clear."""
-    if clear:
-        if name:
-            _output.error("Give a context name or --clear, not both.")
-        clear_active_context()
-        _output.ok("No active context — using the base configuration")
-        return
-    if not name:
-        _output.error("Name a context to activate, or pass --clear.", hint="exa config contexts")
+def use(name: str = typer.Argument(..., help="Context name to activate")):
+    """Switch the active context (environment)."""
     set_active_context(name)
     _output.ok(f"Active context is now {name}")
     _output.hint("Verify effective settings with: exa env")
-
-
-_EXAMPLES_UNSET = (
-    "Examples:\n\n"
-    "  [dim]# Revert a value to its default[/dim]\n"
-    "  exa config unset mlflow\n\n"
-    "  [dim]# Drop a context's override; the base value applies again[/dim]\n"
-    "  exa config unset control_plane_token --context production"
-)
-
-
-@app.command(epilog=_EXAMPLES_UNSET)
-def unset(
-    key: str = typer.Argument(..., help="Config key to remove (e.g. mlflow, agent_token)"),
-    context: str = typer.Option(
-        "", "--context", "-c", help="Remove it from a named context instead of the base config"
-    ),
-):
-    """Remove a config value so the next source applies (context → base → default)."""
-    try:
-        removed = unset_config(key, context=context or None)
-    except UnknownConfigKey as exc:
-        _output.error(str(exc))
-    where = f" in context {context}" if context else ""
-    if removed:
-        _output.ok(f"Removed {canonical_key(key)}{where}")
-    else:
-        _output.info(f"{canonical_key(key)} was not set{where} — nothing to remove")
-
-
-_EXAMPLES_DELETE_CONTEXT = "Examples:\n\n  exa config delete-context staging"
-
-
-@app.command("delete-context", epilog=_EXAMPLES_DELETE_CONTEXT)
-def delete_context_cmd(
-    name: str = typer.Argument(..., help="Context to delete"),
-):
-    """Delete a named context and all its values (clears it if it was active)."""
-    was_active = active_context() == name
-    if not _output.confirm(f"Delete context '{name}' and all its values?"):
-        raise typer.Exit(1)
-    if not delete_context(name):
-        _output.error(f"No context named {name!r}.", hint="exa config contexts")
-    _output.ok(
-        f"Deleted context {name}" + (" — now using the base configuration" if was_active else "")
-    )
 
 
 # ── One-file snapshot of ALL platform configuration ────────────────────────────

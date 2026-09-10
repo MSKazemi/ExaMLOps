@@ -497,12 +497,8 @@ async def test_successful_inference_records_drift_success(mock_http_client):
 # ── QW10: per-inference telemetry writes are bundled + offloaded to a worker thread ──
 
 
-def test_persist_inference_telemetry_writes_drift_and_input_but_no_audit_row(monkeypatch):
-    """Drift + input-embedding writes with correct args — and no per-inference audit event.
-
-    The audit chain records decisions. An `inference_served` row per prediction was read by
-    nothing, never pruned, and took the platform-wide audit lock on the hot path (plan P0.5).
-    """
+def test_persist_inference_telemetry_writes_all_three(monkeypatch):
+    """The bundled helper performs the drift, input-embedding and audit writes with correct args."""
     calls: dict[str, object] = {}
     monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: calls.__setitem__("drift", a))
     monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: calls.__setitem__("input", a))
@@ -514,7 +510,7 @@ def test_persist_inference_telemetry_writes_drift_and_input_but_no_audit_row(mon
     # embedding [3, 4] ⇒ norm=5.0, mean=3.5, std=0.5
     _, _, norm, mean, std, jid = calls["input"]  # type: ignore[misc]
     assert round(norm, 6) == 5.0 and mean == 3.5 and std == 0.5 and jid == "job-1"
-    assert "audit" not in calls
+    assert calls["audit"][0] == "bridge" and calls["audit"][3] == "JPCP"  # type: ignore[index]
 
 
 def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
@@ -785,84 +781,3 @@ async def test_accepted_drift_trigger_counts_and_audits(mock_http_client, monkey
     assert "JPCP" in tracker._last_retrain
     actions = [a[2] for a in seen]
     assert actions == ["retrain_triggered"]
-
-
-# ── reply first: the database is never on the bus reply path (plan P0.5 / finding B5) ─────────
-#
-# The drift/input writes used to be awaited inside _call_pipeline. A locked or unreachable database
-# therefore failed a prediction that had already succeeded, and every job paid the write latency.
-
-
-def _ok_response():
-    response = MagicMock()
-    response.json.return_value = {"prediction": 12.0, "run_id": "r", "model_version": "3"}
-    response.raise_for_status = MagicMock()
-    response.status_code = 200
-    return response
-
-
-def _sample(name: str) -> float:
-    from prometheus_client import REGISTRY
-
-    return REGISTRY.get_sample_value(name) or 0.0
-
-
-@pytest.fixture
-def fresh_spool(monkeypatch):
-    spool = bridge._TelemetrySpool(maxsize=2)
-    monkeypatch.setattr(bridge, "_telemetry_spool", spool)
-    return spool
-
-
-@pytest.mark.asyncio
-async def test_a_database_failure_does_not_fail_the_inference(
-    mock_http_client, monkeypatch, fresh_spool
-):
-    def _db_down(*_a, **_k):
-        raise RuntimeError("database is locked")
-
-    monkeypatch.setattr(bridge, "write_drift_snapshot", _db_down)
-    mock_http_client.post = AsyncMock(return_value=_ok_response())
-    before = _sample("seanerbus_telemetry_persist_failures_total")
-
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
-        prediction, _run, _version = await bridge._call_pipeline(_make_hpc_job())
-    await fresh_spool.join()
-
-    assert prediction == 12.0
-    assert _sample("seanerbus_telemetry_persist_failures_total") == before + 1
-
-
-@pytest.mark.asyncio
-async def test_the_reply_does_not_wait_for_the_database(mock_http_client, monkeypatch, fresh_spool):
-    import asyncio
-    import threading
-
-    release = threading.Event()
-    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: release.wait(5))
-    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
-    mock_http_client.post = AsyncMock(return_value=_ok_response())
-
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
-        result = await asyncio.wait_for(bridge._call_pipeline(_make_hpc_job()), timeout=1.0)
-
-    assert result[0] == 12.0
-    release.set()
-    await fresh_spool.join()
-
-
-@pytest.mark.asyncio
-async def test_a_full_spool_drops_and_counts_instead_of_blocking(monkeypatch, fresh_spool):
-    import threading
-
-    gate = threading.Event()
-    monkeypatch.setattr(bridge, "_persist_inference_telemetry", lambda *a: gate.wait(5))
-    before = _sample("seanerbus_telemetry_dropped_total")
-
-    accepted = [fresh_spool.offer(("M", "Production", 1.0, None, str(i))) for i in range(6)]
-
-    # maxsize=2: the worker may already hold one record, so at most three are accepted.
-    assert accepted.count(False) >= 3
-    assert _sample("seanerbus_telemetry_dropped_total") == before + accepted.count(False)
-    gate.set()
-    await fresh_spool.join()

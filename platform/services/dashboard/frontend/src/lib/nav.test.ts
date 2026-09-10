@@ -46,8 +46,6 @@ const KNOWN_ROUTES = new Set([
   '/govern/fairness',
   '/govern/secrets',
   // platform
-  '/platform/cli',
-  '/platform/resources',
   '/platform/projects',
   '/platform/ops',
   '/platform/events',

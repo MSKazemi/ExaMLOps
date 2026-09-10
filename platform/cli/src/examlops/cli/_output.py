@@ -19,10 +19,6 @@ yes_mode: bool = False  # --yes/-y skips confirmation prompts
 quiet_mode: bool = False  # --quiet/-q suppresses non-essential chatter (info/hint/detail)
 verbose_mode: bool = False  # --verbose/-v enables extra detail() output
 output_format: str = "table"  # one of: table | json | yaml | csv
-# The last info() line suppressed in a structured mode — the fallback document carries it.
-_last_info: str | None = None
-# Documents buffered by print_json while the structured-output guard is installed.
-_buffer: list[Any] | None = None
 
 
 # ── Core output primitives ────────────────────────────────────────────────────
@@ -34,18 +30,7 @@ def print_json(data: Any) -> None:
     Named ``print_json`` for historical reasons — it now dispatches on ``output_format``.
     The whole CLI reaches structured output through this one function, so every format is
     uniform without touching individual commands (add a format here, all commands gain it).
-
-    Under the structured-output guard (every real `exa` invocation in a structured mode) the
-    document is buffered and emitted — merged with any others — when the command closes, so a
-    command that calls ``ok()`` and then prints a record still prints one document.
     """
-    if _buffer is not None:
-        _buffer.append(data)
-        return
-    _emit(data)
-
-
-def _emit(data: Any) -> None:
     if output_format == "yaml":
         typer.echo(_to_yaml(data))
     elif output_format == "csv":
@@ -193,26 +178,16 @@ def error(message: str, exit_code: int = 1, hint: str | None = None) -> NoReturn
 
 
 def warning(message: str) -> None:
-    """Non-fatal warning — does not exit. Always on stderr: in a structured mode stdout carries
-    exactly one document, and a warning printed there made it two."""
+    """Non-fatal warning — does not exit."""
     if json_mode:
-        err_console.print(json.dumps({"warning": message}), highlight=False, markup=False)
+        print_json({"warning": message})
     else:
         err_console.print(f"[yellow]⚠[/yellow] {escape(message)}")
 
 
 def info(message: str) -> None:
-    """Informational message — skipped in JSON or quiet mode.
-
-    In a structured mode the line is remembered: when a command's only output was an info
-    line (typically "No X yet."), the end-of-command fallback reports it as one document
-    instead of printing nothing (see :func:`install_structured_guard`).
-    """
-    global _last_info
-    if json_mode:
-        _last_info = message
-        return
-    if quiet_mode:
+    """Informational message — skipped in JSON or quiet mode."""
+    if json_mode or quiet_mode:
         return
     console.print(f"[dim]{escape(message)}[/dim]")
 
@@ -259,126 +234,6 @@ def print_record(data: dict[str, Any]) -> None:
         return
     for k, v in data.items():
         console.print(f"  [bold cyan]{k}:[/bold cyan] {v}")
-
-
-# ── The structured-output contract ────────────────────────────────────────────
-# `--json` (and yaml/csv/md/html) promise exactly one document on stdout. Two mechanisms keep
-# that true for every command without each one remembering to: a watch that emits a fallback
-# document when a command printed nothing, and `run_external` for tools that write their own
-# output.
-
-
-class _StdoutWatch:
-    """A transparent stdout proxy that notes whether anything visible was written."""
-
-    def __init__(self, inner: Any) -> None:
-        self._inner = inner
-        self.written = False
-
-    def write(self, text: str) -> int:
-        if text.strip():
-            self.written = True
-        return self._inner.write(text)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
-
-
-_STATUS_KEYS = frozenset({"ok", "message", "error", "exit_code", "hint", "warning"})
-
-
-def merge_documents(docs: list[Any]) -> Any:
-    """Fold a command's structured documents into one.
-
-    Status documents (``ok()``/``error()`` shapes) and data documents merge into one object —
-    data keys win over status keys, later data over earlier. A single list of data stays a list
-    when there is no status to carry, else it goes under ``items``. An error anywhere removes the
-    ``ok: true`` an earlier ``ok()`` claimed.
-    """
-    if len(docs) == 1:
-        return docs[0]
-    status: dict[str, Any] = {}
-    data: list[Any] = []
-    for doc in docs:
-        if isinstance(doc, dict) and doc and set(doc) <= _STATUS_KEYS:
-            status.update(doc)
-        else:
-            data.append(doc)
-    if "error" in status:
-        status.pop("ok", None)
-    if data and all(isinstance(d, dict) for d in data):
-        merged: dict[str, Any] = dict(status)
-        for d in data:
-            merged.update(d)
-        # An error raised after the data is the outcome; keep it visible over any data key.
-        for key in ("error", "exit_code", "hint"):
-            if key in status:
-                merged[key] = status[key]
-        return merged
-    if not data:
-        return status
-    if len(data) == 1 and not status:
-        return data[0]
-    return {**status, "items": data[0] if len(data) == 1 else data}
-
-
-def install_structured_guard(ctx: Any) -> None:
-    """In a structured mode, make sure the command ends having printed exactly one document.
-
-    Two failure modes, one mechanism. A command whose only output was a suppressed ``info()``
-    line printed *nothing* — an empty stdout every JSON consumer rejects; now it reports
-    ``{"ok": true, "message": <that line>}``. A command that called ``ok()`` and then printed
-    its record printed *two* (``exa --json retrain`` printed three); now ``print_json`` buffers
-    and the documents are merged (:func:`merge_documents`) when the command closes.
-    """
-    import sys
-
-    global _last_info, _buffer
-    _last_info = None
-    _buffer = []
-    watch = _StdoutWatch(sys.stdout)
-    sys.stdout = watch
-
-    def _close() -> None:
-        global _buffer
-        docs, _buffer = _buffer or [], None
-        sys.stdout = watch._inner
-        if docs:
-            _emit(merge_documents(docs))
-        elif not watch.written:
-            _emit({"ok": True, "message": _last_info} if _last_info else {"ok": True})
-
-    ctx.call_on_close(_close)
-
-
-def run_external(
-    cmd: list[str], *, not_found: str, failed: str, parse: Callable[[str], Any] | None = None
-) -> None:
-    """Run an external tool (docker compose, pytest, a generator script).
-
-    In table mode its output streams to the terminal as before. In a structured mode it is
-    captured and reported as one document — ``parse(stdout)`` when given (e.g. ``docker compose
-    ps --format json``), else ``{"ok": true, "output": …}`` — because the tool's own text on
-    stdout made `--json` output unparseable. ``failed`` may contain ``{code}``.
-    """
-    import subprocess
-
-    if not json_mode:
-        try:
-            subprocess.run(cmd, check=True, text=True)  # noqa: S603
-        except FileNotFoundError:
-            error(not_found)
-        except subprocess.CalledProcessError as exc:
-            error(failed.format(code=exc.returncode))
-        return
-    try:
-        done = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
-    except FileNotFoundError:
-        error(not_found)
-    if done.returncode != 0:
-        tail = [ln for ln in (done.stderr or done.stdout).strip().splitlines() if ln.strip()]
-        error(failed.format(code=done.returncode), hint=tail[-1][:300] if tail else None)
-    print_json(parse(done.stdout) if parse else {"ok": True, "output": done.stdout})
 
 
 # ── Interaction helpers ───────────────────────────────────────────────────────

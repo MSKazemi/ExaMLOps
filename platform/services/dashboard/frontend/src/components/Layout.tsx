@@ -18,7 +18,6 @@ import {
   type NavItem,
 } from '@/lib/nav'
 import { CommandPalette } from '@/components/CommandPalette'
-import { CliContextLink } from '@/components/cli/CliContextLink'
 import { CopilotPanel } from '@/components/CopilotPanel'
 import { HelpDrawer } from '@/components/HelpDrawer'
 import { OnboardingTour } from '@/components/OnboardingTour'
@@ -330,7 +329,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </div>
       <CopilotPanel />
       <HelpDrawer />
-      <CliContextLink />
       <OnboardingTour />
     </div>
   )

@@ -162,75 +162,6 @@ def test_copilot_is_wired_to_agent_and_dashboard_owns_api_routes():
     assert backends["/api/changes"] == "rel-examlops-control-plane"
 
 
-def _dashboard(*extra: str) -> dict:
-    result = _render("--set", "global.imageRegistry=ghcr.io/example/", *extra)
-    assert result.returncode == 0, result.stderr
-    return next(
-        doc
-        for doc in yaml.safe_load_all(result.stdout)
-        if doc
-        and doc.get("kind") == "Deployment"
-        and doc["metadata"]["name"].endswith("-dashboard")
-    )
-
-
-@needs_helm
-def test_dashboard_cli_state_lives_on_a_writable_volume():
-    # The root filesystem is read-only; the CLI Console's config.toml and workspace must not be.
-    spec = _dashboard()["spec"]["template"]["spec"]
-    container = spec["containers"][0]
-    env = {item["name"]: item.get("value") for item in container["env"]}
-    assert env["EXAMLOPS_CONFIG"].startswith("/var/lib/examlops-dashboard/")
-    assert env["EXAMLOPS_DASHBOARD_CLI_WORKSPACE"].startswith("/var/lib/examlops-dashboard/")
-    mounts = {m["name"]: m["mountPath"] for m in container["volumeMounts"]}
-    assert mounts["cli-state"] == "/var/lib/examlops-dashboard"
-    volumes = {v["name"]: v for v in spec["volumes"]}
-    assert "emptyDir" in volumes["cli-state"]  # default: per pod
-
-
-@needs_helm
-def test_dashboard_cli_state_can_be_shared_across_replicas():
-    spec = _dashboard("--set", "dashboard.cliState.existingClaim=cli-rwx")["spec"]["template"][
-        "spec"
-    ]
-    volumes = {v["name"]: v for v in spec["volumes"]}
-    assert volumes["cli-state"]["persistentVolumeClaim"]["claimName"] == "cli-rwx"
-
-
-@needs_helm
-def test_notes_warn_when_replicas_do_not_share_cli_state():
-    shared = subprocess.run(
-        [
-            HELM,
-            "install",
-            "rel",
-            str(CHART),
-            "--dry-run",
-            "--set",
-            "global.imageRegistry=ghcr.io/example/",
-            "--set",
-            "dashboard.cliState.existingClaim=rwx",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    lone = subprocess.run(
-        [
-            HELM,
-            "install",
-            "rel",
-            str(CHART),
-            "--dry-run",
-            "--set",
-            "global.imageRegistry=ghcr.io/example/",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert "CLI Console state is per pod" in lone.stdout
-    assert "CLI Console state is per pod" not in shared.stdout
-
-
 @needs_helm
 def test_ha_agent_uses_shared_checkpoint_backend_and_requires_api_key():
     result = _render("--set", "global.imageRegistry=ghcr.io/example/")
@@ -277,16 +208,6 @@ def test_control_plane_image_contains_the_shared_postgres_backend():
     dockerfile = (REPO / "platform" / "services" / "control_plane" / "Dockerfile").read_text()
     assert "COPY platform/cli /app/platform/cli" in dockerfile
     assert "platform/cli[coordination,postgres]" in dockerfile
-
-
-def test_dashboard_image_contains_the_platform_package():
-    # The CLI Console, Resources, config and every shared-code-path write router import
-    # `examlops`; compose bind-mounts it, a Kubernetes pod has only what the image carries.
-    dockerfile = (
-        REPO / "platform" / "infra" / "docker-compose" / "Dockerfile.dashboard"
-    ).read_text()
-    assert "COPY platform/cli /app/platform/cli" in dockerfile
-    assert "platform/cli[postgres]" in dockerfile
 
 
 @needs_helm

@@ -61,13 +61,7 @@ def validate() -> None:
 
     errors = validate_mapping()
     if _output.json_mode:
-        # One document: the verdict and the problems together (it used to print the list and
-        # then an ok()/error() document after it).
-        problems = [{"control": e.control_id, "problem": e.problem} for e in errors]
-        _output.print_json({"ok": not errors, "errors": problems})
-        if errors:
-            raise typer.Exit(1)
-        return
+        _output.print_json([{"control": e.control_id, "problem": e.problem} for e in errors])
     if errors:
         for e in errors:
             _output.error(f"{e.control_id}: {e.problem}")

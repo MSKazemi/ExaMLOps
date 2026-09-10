@@ -44,14 +44,7 @@ from langgraph.types import Command
 from starlette.background import BackgroundTask
 
 from skipper import config, instrument
-from skipper.auth import (
-    MISCONFIGURED_DETAIL,
-    AgentIdentity,
-    auth_misconfigured,
-    authenticate_bearer,
-    scope_thread_id,
-    server_secret,
-)
+from skipper.auth import AgentIdentity, authenticate_bearer, scope_thread_id, server_secret
 from skipper.turns import TurnBusy, TurnCoordinationUnavailable, TurnLease, acquire_turn
 
 router = APIRouter()
@@ -68,8 +61,6 @@ _EPHEMERAL_ACTION_SECRET = secrets.token_bytes(32)
 
 def _check_auth(authorization: str | None) -> AgentIdentity:
     """Resolve the verified bearer credential to its server-owned principal."""
-    if auth_misconfigured():
-        raise HTTPException(status_code=503, detail=MISCONFIGURED_DETAIL)
     identity = authenticate_bearer(authorization)
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")

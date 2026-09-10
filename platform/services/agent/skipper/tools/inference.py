@@ -72,9 +72,7 @@ def reload_models(model_name: str = "") -> str:
         model_name: Optional single model to reload; empty reloads everything.
     """
     path = f"/reload/{model_name}" if model_name else "/reload"
-    data, err = _http.request_json(
-        "ray_serve", "POST", f"{config.RAY_SERVE_URL}{path}", headers=_http.serving_admin_headers()
-    )
+    data, err = _http.request_json("ray_serve", "POST", f"{config.RAY_SERVE_URL}{path}")
     if err:
         return err
     return f"reload result: {data}"

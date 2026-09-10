@@ -26,13 +26,7 @@ Each role maps to a capability set:
 | `service.control` | — | ✅ |
 | `project.manage` | — | ✅ |
 | `connection.manage` | — | ✅ |
-| `cli.run` | ✅ | ✅ |
-| `cli.write` | — | ✅ |
 
-`cli.run` lets anyone signed in run **read**-tier `exa` commands in the CLI Console; `cli.write`
-gates every command that changes state (admin and destructive tiers, and a read whose arguments
-persist, name a file or reach another host) plus the CLI workspace — see
-[CLI Console](dashboard-cli-console.md) (ADR 0119).
 `project.manage` gates project create/delete, resource assign, and member add/remove;
 `connection.manage` gates connection create/test/delete and project storage binding. Both write paths
 call the same `examlops.*` code the `exa` CLI uses, so a secret entered in the dashboard is stored in

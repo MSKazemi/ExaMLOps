@@ -316,11 +316,7 @@ def _pipelines(conn, name: str, models: list[str]) -> dict:
         traffic: dict = {}
         for m in models:
             try:
-                tr = conn.execute(
-                    "SELECT rules FROM traffic_rules WHERE lower(model)=lower(?) "
-                    "ORDER BY updated_at DESC LIMIT 1",
-                    (m,),
-                ).fetchone()
+                tr = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (m,)).fetchone()
                 if tr:
                     traffic[m] = json.loads(tr["rules"])
             except Exception:

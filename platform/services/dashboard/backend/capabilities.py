@@ -47,11 +47,6 @@ TRAFFIC_MANAGE = "traffic.manage"  # serve ab/shadow — start/stop A/B tests + 
 PLATFORM_MANAGE = (
     "platform.manage"  # Platform Ops — cost/provider/knob writes via examlops.platform_admin
 )
-# ADR 0119 CLI Console — run `exa` commands. `cli.run` covers the `read` tier (what a viewer can
-# already see elsewhere); `cli.write` covers every command that changes state (`admin` and
-# `destructive` tiers, and a read that its arguments turn into a write).
-CLI_RUN = "cli.run"
-CLI_WRITE = "cli.write"
 
 # Actions that additionally require step-up/MFA (F15 R6 / F16). **Nothing enforces this yet, and
 # nothing consumes it either** — the stated justification (the UI prompts, the audit trail records
@@ -62,7 +57,7 @@ CLI_WRITE = "cli.write"
 # anywhere, and keep it identical to the frontend's `STEP_UP` (guarded).
 STEP_UP_CAPABILITIES: frozenset[str] = frozenset({MODEL_PROMOTE, SECRET_REVEAL})
 
-_VIEWER_CAPS: frozenset[str] = frozenset({VIEW, SEARCH, CLI_RUN})
+_VIEWER_CAPS: frozenset[str] = frozenset({VIEW, SEARCH})
 _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
     {
         MODEL_PROMOTE,
@@ -88,7 +83,6 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
         EVENTS_MANAGE,
         TRAFFIC_MANAGE,
         PLATFORM_MANAGE,
-        CLI_WRITE,
     }
 )
 

@@ -36,7 +36,7 @@ circuit_breaker_opens: Counter = Counter(
 retrain_requests: Counter = Counter(
     "examlops_retrain_requests_total",
     "Total retrain requests by model, dataset, and outcome",
-    ["model_name", "dataset_name", "outcome"],  # outcome: success | error | dedup | throttled
+    ["model_name", "dataset_name", "outcome"],  # outcome: success | error | dedup
 )
 retrain_duration: Histogram = Histogram(
     "examlops_retrain_duration_seconds",

@@ -29,13 +29,6 @@ Registered navigation and action commands from the command registry (`lib/comman
 - **Actions** — expose the equivalent `exa` command for **GUI↔CLI parity** (F2 R6). Selecting an
   action copies its command (e.g. `exa drift status`) to the clipboard.
 
-### Every `exa` command
-
-As soon as you type, the palette also lists matching commands from the whole `exa` CLI (group
-**CLI**, up to eight per query). Picking one opens it in the
-[CLI Console](dashboard-cli-console.md) with its form ready, so any CLI command is two keystrokes
-away even when no console covers it. The catalog is fetched once, on the first query.
-
 Commands are **role-scoped** (F15): a viewer never sees admin-only entries like *Go to Audit* or
 *Go to Approvals*. Destructive actions still route through the page's own confirm/approval gate — the
 palette never performs one-keystroke destruction (F2 R5).

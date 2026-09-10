@@ -30,14 +30,6 @@ FAKE_REGISTRY = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _dispatch_probe_refused(monkeypatch):
-    """The lifespan probes the dispatch deployment (plan P0.2). Every test here points it at a port
-    that refuses instantly, so no test can reach a Prefect running on this machine."""
-    monkeypatch.setattr(cp, "PREFECT_API_URL", "http://127.0.0.1:1/api")
-    monkeypatch.setattr(cp, "_dispatch_cache", None)
-
-
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     """TestClient with a fixed token, fake registry, and mocked Prefect gateway."""

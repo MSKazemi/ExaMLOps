@@ -128,10 +128,7 @@ _QUICK_START = (
 # fails if any registered command is left out.
 _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("Getting Started", ["status", "doctor", "explain", "env", "docs", "config", "plugins"]),
-    (
-        "Training & Pipelines",
-        ["pipeline", "retrain", "retrain-status", "scaffold", "finetune", "reproduce"],
-    ),
+    ("Training & Pipelines", ["pipeline", "retrain", "scaffold", "finetune", "reproduce"]),
     ("Data & Features", ["data", "feature", "features", "assets", "cards"]),
     ("Models & Registry", ["models", "modelzoo", "embedding"]),
     ("Serving & Inference", ["serve", "predict", "production", "gateway", "vector", "rag"]),
@@ -187,7 +184,6 @@ class OutputFormat(StrEnum):
 
 @app.callback()
 def main(
-    ctx: typer.Context,
     output: OutputFormat = typer.Option(
         OutputFormat.table,
         "--output",
@@ -221,9 +217,6 @@ def main(
     _output.yes_mode = yes
     _output.quiet_mode = quiet
     _output.verbose_mode = verbose
-    if _output.json_mode:
-        # One document on stdout, always — even for a command whose only line was an info().
-        _output.install_structured_guard(ctx)
     # A one-off --context is exposed to load_config() via the same env var it already reads.
     if context:
         os.environ["EXAMLOPS_CONTEXT"] = context
@@ -424,7 +417,6 @@ app.command("ask", epilog=ask_cmd._EXAMPLES)(ask_cmd.ask)
 app.command("explain", epilog=explain_command._EXAMPLES)(explain_command.explain)
 app.command("env", epilog=env_cmd._EXAMPLES)(env_cmd.env)
 app.command("retrain", epilog=retrain._EXAMPLES)(retrain.retrain)
-app.command("retrain-status", epilog=retrain._EXAMPLES_STATUS)(retrain.retrain_status)
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)

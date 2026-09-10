@@ -9,7 +9,6 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any  # noqa: F401
 
 from examlops.data._rowid import last_insert_id
@@ -230,11 +229,11 @@ def append_audit_event(
     Writing on the caller's connection also makes the audit **atomic with the mutation**: they
     commit together or not at all, so an action can no longer succeed while its record is lost.
 
-    The chain's integrity rests on head-read and append being indivisible. When the caller is
-    already mid-write it holds the lock and the audit joins that transaction; when the connection
-    is idle, :func:`_lock_chain_head` takes an IMMEDIATE lock on it first — the caller still owns
-    the commit. (It used to be a documented *requirement* that the caller hold the lock; 24
-    dashboard routes did not, and concurrent requests forked the chain.)
+    **Must be called inside an open write transaction.** The chain's integrity rests on
+    head-read and append being indivisible; the standalone path buys that with an IMMEDIATE
+    lock, and here it comes from the caller already holding a RESERVED lock through its own
+    write. Called on an idle connection, a concurrent writer could interleave between the two
+    statements and fork the chain.
     """
     _append_on(
         conn, source, actor, action, target, json.dumps(details) if details else None, tenant
@@ -261,17 +260,8 @@ def _lock_chain_head(conn: Any) -> None:
     advisory lock (released at commit), which is exactly the serialization the standalone
     ``_immediate_write`` path already gets. Re-acquiring it there is safe: advisory xact locks
     stack within a session and all release at transaction end.
-
-    On SQLite the "caller already holds RESERVED" premise is a contract the caller can break: a
-    router that committed its change through a helper and then opened a *fresh* connection just to
-    audit it hands over an idle connection, and head-read + append run unlocked. Twenty-four
-    dashboard routes did exactly that and forked the chain under concurrency. So an idle SQLite
-    connection takes the lock here; one already mid-transaction keeps it (and keeps the audit
-    atomic with its mutation).
     """
     if type(conn).__name__ == "PgConnection":
-        conn.execute("BEGIN IMMEDIATE")
-    elif isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
 
 

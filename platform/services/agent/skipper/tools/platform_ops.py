@@ -255,9 +255,8 @@ def set_traffic_split(
     data, err = _http.request_json(
         "ray_serve",
         "POST",
-        f"{config.RAY_SERVE_URL}/infer-pipeline/traffic-rules/{model_name}",
+        f"{config.RAY_SERVE_URL}/traffic-rules/{model_name}",
         json=rules,
-        headers=_http.serving_admin_headers(),
     )
     if err:
         return f"Rules saved to DB but could not apply to Ray Serve: {err}"

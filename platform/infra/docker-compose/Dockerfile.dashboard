@@ -14,14 +14,6 @@ WORKDIR /app
 COPY platform/services/dashboard/backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# The platform package (`examlops` + the `exa` CLI). The CLI Console runs it, and Resources, the
-# config page and every shared-code-path write router import it. Compose overrides this with the
-# live bind-mounted source (PYTHONPATH=/repo/platform/cli/src takes precedence); a Kubernetes pod
-# has only what is baked here. [postgres] so the shared run store and platform state work on the
-# Postgres backend too.
-COPY platform/cli /app/platform/cli
-RUN pip install --no-cache-dir '/app/platform/cli[postgres]'
-
 COPY platform/services/dashboard/backend/ ./backend/
 COPY tools/ /app/tools/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
