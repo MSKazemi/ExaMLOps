@@ -187,3 +187,11 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}        # add the label your Prometheus' serviceMonitorSelector matches, e.g. release: kube-prometheus-stack
+
+# ── OpenTelemetry export (traces + metrics) ──────────────────────────────────────────────────────
+# Every image runs under `opentelemetry-instrument`. With no collector it retries localhost:4317
+# forever and logs an export error every few seconds, so export is OFF unless an endpoint is set
+# (OTEL_SDK_DISABLED=true, the compose default). Set it to your collector, e.g.
+# http://otel-collector.monitoring:4317, to turn tracing on for every tier.
+otel:
+  endpoint: ""

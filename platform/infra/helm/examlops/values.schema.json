@@ -233,6 +233,13 @@
         "extraEgress": {"type": "array"}
       }
     },
+    "otel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {"type": "string", "pattern": "^$|^https?://", "description": "OTLP collector endpoint; empty = export disabled (OTEL_SDK_DISABLED=true)."}
+      }
+    },
     "metrics": {
       "type": "object",
       "additionalProperties": false,

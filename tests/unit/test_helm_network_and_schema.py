@@ -173,3 +173,33 @@ def test_values_without_the_agent_toggle_still_isolate_the_agent():
     """Older values files have no `agent.enabled`; the agent is deployed, so it must be isolated."""
     policies = _policies("--set", "agent.enabled=null")
     assert set(policies) == {"control-plane", "dashboard", "agent"}
+
+
+# ── OpenTelemetry ──────────────────────────────────────────────────────────────────────────
+
+
+def _config_map(*extra: str) -> dict:
+    (cm,) = [
+        d
+        for d in _docs(*extra)
+        if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-config")
+    ]
+    return cm["data"]
+
+
+def test_telemetry_export_is_off_without_a_collector():
+    """Every image runs under opentelemetry-instrument; with no collector it retries forever."""
+    data = _config_map()
+    assert data["OTEL_SDK_DISABLED"] == "true"
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in data
+
+
+def test_an_endpoint_turns_export_on_for_every_tier():
+    data = _config_map("--set", "otel.endpoint=http://otel-collector.monitoring:4317")
+    assert data["OTEL_SDK_DISABLED"] == "false"
+    assert data["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://otel-collector.monitoring:4317"
+
+
+def test_an_endpoint_without_a_scheme_is_rejected():
+    out = _helm("--set", "otel.endpoint=otel-collector:4317")
+    assert out.returncode != 0 and "endpoint" in out.stderr.lower(), out.stderr

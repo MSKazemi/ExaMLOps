@@ -191,3 +191,7 @@ tier that serves `/metrics`. Add the label your Prometheus selects on
 `monitoring.coreos.com/v1` CRDs the render fails with that instruction instead of producing an
 object the API server rejects. `tests/unit/test_helm_network_and_schema.py` renders all of the above
 with the pinned helm.
+
+**Tracing.** Every image runs under `opentelemetry-instrument`. Export is off by default
+(`OTEL_SDK_DISABLED=true`, the compose default) so no pod retries a collector that does not exist;
+`--set otel.endpoint=http://otel-collector.monitoring:4317` turns it on for every tier.

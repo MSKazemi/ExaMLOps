@@ -31,6 +31,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   `/metrics`, DNS, and per-tier egress to the services the chart does not deploy by port
   (`networkPolicy.egressPorts`, plus `extraEgress`). Per tier rather than release-wide, so the
   pre-upgrade Job is never caught. Opt-in because the namespace labels are site-specific.
+- **Telemetry export is off unless a collector is configured** (`otel.endpoint`). Every image runs
+  under `opentelemetry-instrument`; installed without a collector, each pod retried `localhost:4317`
+  and logged an export error every few seconds (seen on the first kind install). The chart now sets
+  `OTEL_SDK_DISABLED=true` by default, as compose does, and `otel.endpoint` turns export on for
+  every tier; a scheme-less endpoint is rejected by the schema.
 - **A ServiceMonitor for the control plane** (`metrics.serviceMonitor.enabled`) — the one tier that
   serves `/metrics`. Without the Prometheus Operator CRDs the render fails with that instruction.
 - **Dashboard replicas starting together no longer race their migrations.** Each replica runs
