@@ -1,10 +1,15 @@
-# CI/CD — GitLab Pipeline
+# CI/CD
 
-ExaMLOps uses GitLab as its primary CI/CD host. The pipeline runs on every push and merge request, covers all four source areas (modelzoo, infra, examlops, integration), and deploys automatically to `lxp-cpu01` after a successful run on `main`.
+The repository contains two pipelines:
 
-The deployment pipeline lives in `.gitlab-ci.yml` at the repo root. Pull requests on GitHub are
-gated by GitHub Actions (`.github/workflows/ci.yml`), which runs the same checks without the deploy
-stages; see [GitHub Actions — the pull-request gate](#github-actions-the-pull-request-gate).
+- **GitHub Actions** (`.github/workflows/`) is the CI for this repository. `ci.yml` gates every
+  pull request and every push to `main`; see
+  [GitHub Actions — the pull-request gate](#github-actions-the-pull-request-gate). Security
+  scanning, releases and the OpenSSF Scorecard are covered in the [release process](release-process.md).
+- **GitLab CI** (`.gitlab-ci.yml`) is the pipeline for a self-hosted install. On a GitLab instance
+  it runs on every push and merge request, covers all four source areas (modelzoo, infra,
+  examlops, integration), and deploys to the site's host after a green run on `main`. Most of
+  this page describes that pipeline.
 
 ---
 
