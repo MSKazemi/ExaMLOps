@@ -34,9 +34,13 @@ on:
 
 permissions: {}
 
+# A newer commit supersedes an older one's scan — on main too: scanning is the heaviest workflow
+# (CodeQL ×3) and only the newest verdict is acted on, so a burst of pushes must not queue a full
+# scan per commit behind the runners. Scheduled scans have their own group and are never cancelled
+# by a push. A release tags a commit whose scan finished (or re-runs it from the Actions tab).
 concurrency:
-  group: security-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   # Every scanner image is pinned by digest — a scanner is code that reads the whole tree.
@@ -153,7 +157,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       # Every package the lock resolves, every extra included: what a full install runs.
       - name: Audit the locked environment
@@ -252,7 +256,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('trivy-config.sarif') != ''
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: trivy-config.sarif
           category: trivy-config

@@ -153,7 +153,8 @@ python3 platform/ci/release_version.py set X.Y.Z   # every version copy, in one 
 # write the `## [X.Y.Z] - YYYY-MM-DD` section in CHANGELOG.md
 python3 platform/ci/release_version.py check
 python3 platform/ci/release_version.py notes X.Y.Z  # preview the release notes
-# commit, merge to main, wait for ci-ok and security-ok on that commit, then:
+# commit, merge to main, wait for ci-ok and security-ok on that commit (a newer push cancels an
+# older commit's security scan — tag the newest, or re-run its scan), then:
 git tag vX.Y.Z && git push github vX.Y.Z
 ```
 
