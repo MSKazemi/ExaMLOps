@@ -508,4 +508,4 @@ That sequence *is* the product.
 
 ---
 
-*Version at time of writing: v0.50.0.*
+*Version at time of writing: v0.51.0.*

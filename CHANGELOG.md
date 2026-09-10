@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-09-10
+
 ### Added — dev-velocity layer + API contract guard
 
 - **Sub-minute feedback layer** below `make test-fast`: `make watch W=<path>` (pytest-watcher,
