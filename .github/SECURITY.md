@@ -52,8 +52,8 @@ that require an already-compromised host or administrator credentials.
 ## Hardening guidance
 
 Operators deploying ExaMLOps should read the
-[Production hardening checklist](https://mskazemi.github.io/ExaMLOps/guides/production-hardening/)
-and [Dashboard security hardening](https://mskazemi.github.io/ExaMLOps/guides/dashboard-security/).
+[Production hardening checklist](https://mskazemi.com/ExaMLOps/guides/production-hardening/)
+and [Dashboard security hardening](https://mskazemi.com/ExaMLOps/guides/dashboard-security/).
 Never commit real credentials: secrets are supplied through environment variables, and the
 control plane refuses placeholder tokens such as `changeme` (protected endpoints return 503
 until a real credential is set).

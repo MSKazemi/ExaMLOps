@@ -1,12 +1,12 @@
 # Contributing to ExaMLOps
 
 Thank you for taking the time to look. ExaMLOps is an open-source MLOps platform for HPC:
-it trains models as cluster jobs (Slurm or Flux), versions them in MLflow, gates production
-behind a human approval, serves them with Ray Serve and watches drift, cost and carbon
-afterwards. Contributions of every size are welcome, and **you do not need a supercomputer
+it trains models as cluster jobs (Slurm or Flux), versions them in MLflow, promotes them
+through metric and approval gates, serves them with Ray Serve and watches drift, cost and
+carbon afterwards. Contributions of every size are welcome, and **you do not need a supercomputer
 to contribute** — the whole unit suite runs on a laptop with the scheduler in `mock` mode.
 
-- **Docs site:** <https://mskazemi.github.io/ExaMLOps/>
+- **Docs site:** <https://mskazemi.com/ExaMLOps/>
 - **Starter tasks:** [`good first issue`](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
   · [`help wanted`](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 - **Code of conduct:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · **Security reports:** [SECURITY.md](SECURITY.md) (never in a public issue)
@@ -32,12 +32,12 @@ ExaMLOps is built so most extensions live **outside** this repository:
 
 - **Use-case packs** — a directory with `pack.toml`, `models/*.yaml`, `model_configs/*.py`
   and `datasets/schemas.json`, selected with `EXAMLOPS_USECASE_DIR`. The platform core never
-  names a concrete model; see [Add a new model](https://mskazemi.github.io/ExaMLOps/guides/add-a-new-model/).
+  names a concrete model; see [Add a new model](https://mskazemi.com/ExaMLOps/guides/add-a-new-model/).
 - **Calculation providers** — Python packages registered under the
   `exa.providers.<domain>` entry-point group (for example `exa.providers.carbon`).
   A complete example lives in [`examples/exa-carbon-plugin/`](../examples/exa-carbon-plugin/);
-  the design is in [Programmable MLOps](https://mskazemi.github.io/ExaMLOps/guides/programmable-mlops/)
-  and [FinOps providers](https://mskazemi.github.io/ExaMLOps/guides/finops-providers/).
+  the design is in [Programmable MLOps](https://mskazemi.com/ExaMLOps/guides/programmable-mlops/)
+  and [FinOps providers](https://mskazemi.com/ExaMLOps/guides/finops-providers/).
 - **CLI plugins** — third-party `exa` sub-commands registered under the
   `examlops.cli_plugins` entry-point group; `exa plugins` lists what loaded.
 
@@ -70,8 +70,8 @@ cd platform/services/dashboard/frontend && npm install && npm test   # dashboard
 The upstream model library `modelzoo/` is **not** part of this repository. Tests that need
 it skip cleanly when it is absent, so a fresh clone is fully testable.
 
-Deeper orientation: [Developer onboarding](https://mskazemi.github.io/ExaMLOps/guides/developer-onboarding/)
-(what every directory is for) and [Testing strategy](https://mskazemi.github.io/ExaMLOps/guides/testing/).
+Deeper orientation: [Developer onboarding](https://mskazemi.com/ExaMLOps/guides/developer-onboarding/)
+(what every directory is for) and [Testing strategy](https://mskazemi.com/ExaMLOps/guides/testing/).
 
 ## Making a change
 

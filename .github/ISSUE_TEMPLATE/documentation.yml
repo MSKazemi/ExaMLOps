@@ -8,7 +8,7 @@ body:
     attributes:
       label: Page
       description: URL of the docs page (or the file under docs/).
-      placeholder: https://mskazemi.github.io/ExaMLOps/guides/quickstart/
+      placeholder: https://mskazemi.com/ExaMLOps/guides/quickstart/
     validations:
       required: true
   - type: dropdown

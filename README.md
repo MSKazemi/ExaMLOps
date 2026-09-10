@@ -9,7 +9,7 @@ changes.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
-[![Docs](https://img.shields.io/badge/docs-mskazemi.github.io%2FExaMLOps-indigo.svg)](https://mskazemi.github.io/ExaMLOps/)
+[![Docs](https://img.shields.io/badge/docs-mskazemi.com%2FExaMLOps-indigo.svg)](https://mskazemi.com/ExaMLOps/)
 [![Good first issues](https://img.shields.io/github/issues/MSKazemi/ExaMLOps/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](.github/CODE_OF_CONDUCT.md)
 
@@ -246,7 +246,7 @@ Run all CI checks locally: `make ci`
 
 ## Documentation
 
-The documentation site is published at **https://mskazemi.github.io/ExaMLOps/**. Its
+The documentation site is published at **https://mskazemi.com/ExaMLOps/**. Its
 [Explore](docs/explore/index.md) section shows the platform in motion — an interactive
 [system map](docs/explore/index.md), animated tours that
 [follow a prediction](docs/explore/prediction.md), [a retrain](docs/explore/retrain.md),
@@ -273,7 +273,7 @@ a laptop with the scheduler in `mock` mode.
   [`good first issue`](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) list.
 - **Extend without forking:** use-case packs, provider plugins (`exa.providers.<domain>`) and
   `exa` CLI plugins (`examlops.cli_plugins`) live in their own packages — see
-  [Get involved](https://mskazemi.github.io/ExaMLOps/community/).
+  [Get involved](https://mskazemi.com/ExaMLOps/community/).
 - **Ask or report:** [support](.github/SUPPORT.md) · [open an issue](https://github.com/MSKazemi/ExaMLOps/issues/new/choose) ·
   vulnerabilities privately via the [security policy](.github/SECURITY.md).
 - **Community standards:** [Code of Conduct](.github/CODE_OF_CONDUCT.md) · [governance](.github/GOVERNANCE.md).

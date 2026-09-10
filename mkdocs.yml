@@ -7,7 +7,7 @@ site_description: >-
   serve them with Ray Serve.
 site_author: Mohsen Seyedkazemi Ardebili
 # Set so the theme emits correct canonical URLs and a valid sitemap once the site is served.
-site_url: https://mskazemi.github.io/ExaMLOps/
+site_url: https://mskazemi.com/ExaMLOps/
 # The repo link in the header and the "edit this page" button on every page — the shortest path
 # from reading a mistake to fixing it.
 repo_url: https://github.com/MSKazemi/ExaMLOps

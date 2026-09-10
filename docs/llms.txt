@@ -1,6 +1,6 @@
 # ExaMLOps
 
-> ExaMLOps is an open-source (Apache-2.0) MLOps platform for HPC systems and supercomputers. It trains machine-learning models as Slurm or Flux jobs, versions them in an MLflow registry, gates promotion to production behind metric checks and human approval, serves them with Ray Serve, and monitors drift, cost, carbon and quality — driven by the `exa` CLI, a React + FastAPI dashboard, or an AI agent over MCP.
+> ExaMLOps is an open-source (Apache-2.0) MLOps platform for HPC systems and supercomputers. It trains machine-learning models as Slurm or Flux jobs, versions them in an MLflow registry, promotes them to production through metric and approval gates, serves them with Ray Serve, and monitors drift, cost, carbon and quality — driven by the `exa` CLI, a React + FastAPI dashboard, or an AI agent over MCP.
 
 Key facts:
 
@@ -15,33 +15,33 @@ Key facts:
 
 ## Start here
 
-- [Home](https://mskazemi.github.io/ExaMLOps/): overview and the platform in motion
-- [Quick Start](https://mskazemi.github.io/ExaMLOps/guides/quickstart/): run the stack, train, promote and serve a model locally
-- [FAQ](https://mskazemi.github.io/ExaMLOps/faq/): what it is, who it is for, schedulers, comparison with Kubeflow and MLflow, licensing
-- [System map](https://mskazemi.github.io/ExaMLOps/explore/): every service and how data, control and decisions flow between them
-- [Architecture](https://mskazemi.github.io/ExaMLOps/guides/architecture/): components and design
+- [Home](https://mskazemi.com/ExaMLOps/): overview and the platform in motion
+- [Quick Start](https://mskazemi.com/ExaMLOps/guides/quickstart/): run the stack, train, promote and serve a model locally
+- [FAQ](https://mskazemi.com/ExaMLOps/faq/): what it is, who it is for, schedulers, comparison with Kubeflow and MLflow, licensing
+- [System map](https://mskazemi.com/ExaMLOps/explore/): every service and how data, control and decisions flow between them
+- [Architecture](https://mskazemi.com/ExaMLOps/guides/architecture/): components and design
 
 ## How it works
 
-- [Follow a prediction](https://mskazemi.github.io/ExaMLOps/explore/prediction/): an inference request end to end
-- [Follow a retrain](https://mskazemi.github.io/ExaMLOps/explore/retrain/): drift to retraining to promotion
-- [Who decides](https://mskazemi.github.io/ExaMLOps/explore/decisions/): every human approval gate and the audit trail
-- [Follow a cluster job](https://mskazemi.github.io/ExaMLOps/explore/hpc/): how training lands on Slurm or Flux
-- [HPC fleet](https://mskazemi.github.io/ExaMLOps/guides/hpc-fleet/): discover, admit and place work on clusters
+- [Follow a prediction](https://mskazemi.com/ExaMLOps/explore/prediction/): an inference request end to end
+- [Follow a retrain](https://mskazemi.com/ExaMLOps/explore/retrain/): drift to retraining to promotion
+- [Who decides](https://mskazemi.com/ExaMLOps/explore/decisions/): every human approval gate and the audit trail
+- [Follow a cluster job](https://mskazemi.com/ExaMLOps/explore/hpc/): how training lands on Slurm or Flux
+- [HPC fleet](https://mskazemi.com/ExaMLOps/guides/hpc-fleet/): discover, admit and place work on clusters
 
 ## Reference
 
-- [exa command guide](https://mskazemi.github.io/ExaMLOps/reference/cli-commands-guide/): every command with a use case and an example
-- [Every capability](https://mskazemi.github.io/ExaMLOps/explore/capabilities/): all `exa` commands by lifecycle panel, searchable
-- [Environment variables](https://mskazemi.github.io/ExaMLOps/reference/env-vars/)
-- [API reference](https://mskazemi.github.io/ExaMLOps/reference/api/)
-- [All interfaces](https://mskazemi.github.io/ExaMLOps/guides/interfaces/): CLI, dashboard, agent, MCP
+- [exa command guide](https://mskazemi.com/ExaMLOps/reference/cli-commands-guide/): every command with a use case and an example
+- [Every capability](https://mskazemi.com/ExaMLOps/explore/capabilities/): all `exa` commands by lifecycle panel, searchable
+- [Environment variables](https://mskazemi.com/ExaMLOps/reference/env-vars/)
+- [API reference](https://mskazemi.com/ExaMLOps/reference/api/)
+- [All interfaces](https://mskazemi.com/ExaMLOps/guides/interfaces/): CLI, dashboard, agent, MCP
 
 ## Extending and contributing
 
-- [Get involved](https://mskazemi.github.io/ExaMLOps/community/): ways to contribute, extension points, contributor ladder
-- [Programmable MLOps](https://mskazemi.github.io/ExaMLOps/guides/programmable-mlops/): providers, policy-as-code, SDK
-- [Add a new model](https://mskazemi.github.io/ExaMLOps/guides/add-a-new-model/)
+- [Get involved](https://mskazemi.com/ExaMLOps/community/): ways to contribute, extension points, contributor ladder
+- [Programmable MLOps](https://mskazemi.com/ExaMLOps/guides/programmable-mlops/): providers, policy-as-code, SDK
+- [Add a new model](https://mskazemi.com/ExaMLOps/guides/add-a-new-model/)
 - [Contributing guide](https://github.com/MSKazemi/ExaMLOps/blob/main/.github/CONTRIBUTING.md)
 
 ## Optional

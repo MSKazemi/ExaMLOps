@@ -2,8 +2,8 @@
 
 | You want to… | Go to |
 |---|---|
-| Learn how something works | The docs: <https://mskazemi.github.io/ExaMLOps/> — start with the [Quick Start](https://mskazemi.github.io/ExaMLOps/guides/quickstart/) and the [system map](https://mskazemi.github.io/ExaMLOps/explore/) |
-| Find the right `exa` command | `exa explain <group>` in your terminal, or the [command guide](https://mskazemi.github.io/ExaMLOps/reference/cli-commands-guide/) |
+| Learn how something works | The docs: <https://mskazemi.com/ExaMLOps/> — start with the [Quick Start](https://mskazemi.com/ExaMLOps/guides/quickstart/) and the [system map](https://mskazemi.com/ExaMLOps/explore/) |
+| Find the right `exa` command | `exa explain <group>` in your terminal, or the [command guide](https://mskazemi.com/ExaMLOps/reference/cli-commands-guide/) |
 | Ask a question | Open an issue with the **question** label — include your ExaMLOps version (`exa --version`), scheduler (Slurm / Flux / mock) and what you tried |
 | Report a bug | Open a [bug report](https://github.com/MSKazemi/ExaMLOps/issues/new?template=bug_report.yml) |
 | Propose a feature | Open a [feature request](https://github.com/MSKazemi/ExaMLOps/issues/new?template=feature_request.yml) |

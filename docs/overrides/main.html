@@ -51,9 +51,15 @@
   <meta property="og:description" content="{{ xm_desc }}">
   <meta property="og:url" content="{{ xm_url }}">
   <meta property="og:locale" content="en_US">
-  <meta name="twitter:card" content="summary">
+  {#- One 1280×640 card for every page (also usable as the GitHub social preview). #}
+  <meta property="og:image" content="{{ xm_site }}assets/social-card.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="ExaMLOps — open-source MLOps for HPC and supercomputers: train as Slurm or Flux jobs, version in MLflow, gate promotions, serve with Ray Serve">
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ xm_title }}">
   <meta name="twitter:description" content="{{ xm_desc }}">
+  <meta name="twitter:image" content="{{ xm_site }}assets/social-card.png">
   {%- if page and page.is_homepage %}
   {%- set xm_ld = {
     "@context": "https://schema.org",
@@ -73,6 +79,7 @@
         "name": "ExaMLOps",
         "description": config.site_description,
         "url": xm_site,
+        "image": xm_site ~ "assets/social-card.png",
         "codeRepository": "https://github.com/MSKazemi/ExaMLOps",
         "programmingLanguage": ["Python", "TypeScript"],
         "runtimePlatform": "Python 3.12+",

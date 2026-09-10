@@ -26,12 +26,12 @@ Apache License 2.0.
 
 ## Links
 
-- Documentation site: https://mskazemi.github.io/ExaMLOps/ (its own index: https://mskazemi.github.io/ExaMLOps/llms.txt)
+- Documentation site: https://mskazemi.com/ExaMLOps/ (its own index: https://mskazemi.com/ExaMLOps/llms.txt)
 - Repository: https://github.com/MSKazemi/ExaMLOps
 - README: https://github.com/MSKazemi/ExaMLOps/blob/main/README.md
 - Citation metadata: https://github.com/MSKazemi/ExaMLOps/blob/main/CITATION.cff
-- Quickstart: https://mskazemi.github.io/ExaMLOps/guides/quickstart/
-- FAQ: https://mskazemi.github.io/ExaMLOps/faq/
+- Quickstart: https://mskazemi.com/ExaMLOps/guides/quickstart/
+- FAQ: https://mskazemi.com/ExaMLOps/faq/
 - Contributing: https://github.com/MSKazemi/ExaMLOps/blob/main/.github/CONTRIBUTING.md
-- Architecture: https://mskazemi.github.io/ExaMLOps/guides/architecture/
-- Command reference: https://mskazemi.github.io/ExaMLOps/reference/cli-commands-guide/
+- Architecture: https://mskazemi.com/ExaMLOps/guides/architecture/
+- Command reference: https://mskazemi.com/ExaMLOps/reference/cli-commands-guide/
