@@ -2446,6 +2446,8 @@ Answer a question from a knowledge base, citing retrieved chunks.
 - `--question` — The question to answer
 - `-k, --k` — Number of chunks to retrieve
 - `--tenant` — Tenant namespace
+- `--retrieval` — dense (embedding) | hybrid (embedding + BM25, rank-fused — finds exact ids/codes)
+- `--fusion` — Hybrid fusion: rrf (default) | convex
 
 ## `exa report`
 
@@ -3101,30 +3103,55 @@ Vector store — collections, upsert, search, reindex
 
 ### `exa vector create`
 
-Create a vector collection with a fixed dim + distance metric.
+Create a vector collection with a fixed dim, distance metric and ANN index.
 
 - `--dim` — Fixed dimensionality
 - `--metric` — cosine | l2 | dot
 - `--tenant` — Tenant namespace (D6)
+- `--encoder` — Stamp the encoder that produces this collection's vectors
+- `--index` — ANN index: flat (exact scan) | hnsw | ivfflat
+- `--m` — HNSW links per node (2–100, default 16)
+- `--ef-construction` — HNSW build candidate list (>= 2·m, default 64)
+- `--ef-search` — HNSW query candidate list (1–1000, default 40)
+- `--lists` — IVFFlat lists (default 100)
+- `--probes` — IVFFlat lists scanned per query
+
+### `exa vector drop`
+
+Delete a collection and every vector in it (irreversible; audited).
+
+- `--tenant` — Tenant namespace
 
 ### `exa vector reindex`
 
-Rebuild the collection index (blue-green; recall preserved) — invoked by B6.
+Rebuild the collection index blue-green (search stays up); optionally change it.
 
 - `--tenant` — Tenant namespace
+- `--index` — Switch to this index. ANN index: flat (exact scan) | hnsw | ivfflat
+- `--m` — HNSW links per node
+- `--ef-construction` — HNSW build candidate list
+- `--ef-search` — HNSW query candidate list
+- `--lists` — IVFFlat lists
+- `--probes` — IVFFlat lists scanned per query
 
 ### `exa vector search`
 
-Search top-k nearest by the collection metric, with optional metadata filter.
+Top-k search: dense (metric), sparse (BM25) or hybrid (both, rank-fused).
 
-- `--vector` — JSON array of floats (query)
+- `--vector` — JSON array of floats (query) — needed by dense and hybrid
+- `--text` — Query text — needed by sparse and hybrid
+- `--mode` — dense | sparse (BM25) | hybrid (both, fused)
+- `--fusion` — Hybrid fusion: rrf (default) | convex
+- `--alpha` — Convex fusion weight of the dense channel (0–1)
+- `--candidates` — Per-channel results fused in hybrid mode (default max(4k,50))
 - `-k, --k` — Top-k results
 - `--filter` — JSON metadata equality filter
 - `--tenant` — Tenant namespace
+- `--encoder` — Encoder that made the query
 
 ### `exa vector stats`
 
-Show collection dim, metric, and item count.
+Show collection dim, metric, index, how search is answered, and item count.
 
 - `--tenant` — Tenant namespace
 
@@ -3135,7 +3162,9 @@ Upsert a single vector (rejected if dim mismatches the collection).
 - `--id` — Item id
 - `--vector` — JSON array of floats
 - `--meta` — JSON metadata object
+- `--text` — Text for the sparse (BM25) channel of hybrid search
 - `--tenant` — Tenant namespace
+- `--encoder` — Encoder that made the vector
 
 ## `exa workbench`
 

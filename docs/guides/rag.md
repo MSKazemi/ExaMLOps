@@ -44,6 +44,18 @@ exa rag list
 exa rag query handbook --question "how does promotion work?" -k 3 --tenant acme
 ```
 
+- **Retrieval mode:** `--retrieval dense` (the default) searches by embedding only.
+  `--retrieval hybrid` adds a BM25 channel over the chunk text and fuses the two rankings
+  (`--fusion rrf`, the default, or `convex`). Use hybrid when questions name exact identifiers,
+  such as a job id, an error code or a model name. An embedding blurs those, and BM25 ranks them
+  first. Knowledge bases ingested before hybrid search existed work as they are, because the
+  chunk text was always stored with each chunk. The method is on
+  [Hybrid retrieval](../algorithms/hybrid-retrieval.md).
+
+  ```bash
+  exa rag query handbook --question "why did JPCP-4711 fail?" --retrieval hybrid
+  ```
+
 - **Rerank (R2/GWT-3):** over-retrieves then reranks. The default `lexical_reranker` orders
   by question↔chunk overlap; swap in a cross-encoder by passing `reranker=` to `RagPipeline`.
 - **RETRIEVER span (R4):** each query emits a C1 span carrying the query, retrieved doc ids,
@@ -72,6 +84,7 @@ from examlops.rag import RagPipeline
 p = RagPipeline()
 p.ingest("handbook", [{"id": "d1", "text": "..."}], tenant="acme", source_revision="abc123")
 ans = p.query("handbook", "how does promotion work?", tenant="acme", k=3)
+# hybrid retrieval: RagPipeline(retrieval="hybrid", fusion="rrf")
 # ans.answer, ans.citations[i].doc_id/score, ans.guardrail_flagged, ans.retrieval_span_id
 ```
 

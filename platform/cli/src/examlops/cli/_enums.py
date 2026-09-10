@@ -50,3 +50,26 @@ class StackService(StrEnum):
     seanerbus_sim = "seanerbus-sim"
     seanerbus_bridge = "seanerbus-bridge"
     vllm = "vllm"  # GPU-only, behind the `vllm` compose profile (ADR 0107)
+
+
+class VectorIndex(StrEnum):
+    """ANN index of a vector collection (ADR 0020 clause 2)."""
+
+    flat = "flat"
+    hnsw = "hnsw"
+    ivfflat = "ivfflat"
+
+
+class VectorSearchMode(StrEnum):
+    """Retrieval channel: embedding only, BM25 only, or both fused."""
+
+    dense = "dense"
+    sparse = "sparse"
+    hybrid = "hybrid"
+
+
+class FusionMethod(StrEnum):
+    """How hybrid search fuses the dense and sparse rankings."""
+
+    rrf = "rrf"
+    convex = "convex"

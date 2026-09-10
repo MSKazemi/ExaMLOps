@@ -5,6 +5,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — hybrid dense+sparse search, ANN index configuration, and a working pgvector store (ADR 0020)
+
+- **Hybrid search.** `exa vector search --mode hybrid` runs the embedding channel and a BM25
+  channel over each item's text, then fuses the two rankings by Reciprocal Rank Fusion
+  (`--fusion rrf`, k = 60, the default) or by a convex combination of min-max-normalised scores
+  (`--fusion convex --alpha`). It finds chunks that name an exact identifier (a job id, an error
+  code, a model name), which an embedding blurs. `--mode sparse` is BM25 alone. Each hybrid hit
+  reports its dense and sparse rank. `exa rag query --retrieval hybrid` uses it for RAG, and
+  knowledge bases ingested earlier work unchanged. BM25 uses Lucene's non-negative IDF, so a
+  common term never lowers a document's score.
+- **ANN index configuration.** `exa vector create --index flat|hnsw|ivfflat` with `--m`,
+  `--ef-construction`, `--ef-search`, `--lists` and `--probes`, validated against pgvector's
+  limits before any build. `exa vector reindex --index …` switches a collection's index, and
+  `exa vector stats` reports how search is actually answered (`exact`, `ann`, or declared but not
+  built).
+- **`exa vector drop`**: deletes a collection after a confirmation and writes a
+  `vector_collection_dropped` audit event.
+- **Algorithms section on the docs site**, with the full method for hybrid retrieval (formulas,
+  parameters, guarantees and the tests behind them), rendered with KaTeX.
+
+### Fixed — the vector store's production backend and its contract
+
+- **`PgVectorStore` was a stub.** Every method raised `NotImplementedError`, so
+  `EXAMLOPS_VECTOR_BACKEND=pgvector`, the documented production default, could not store a vector.
+  It is now a real implementation. Each collection gets its own table with a typed `vector(dim)`
+  column, HNSW or IVFFlat, a GIN-indexed `tsvector` for the lexical channel, and JSONB
+  containment filters with iterative index scans. Reindex is blue-green
+  (`CREATE INDEX CONCURRENTLY`), connections are pooled, searches have a statement timeout, and
+  one-time bootstrap is serialised by an advisory lock. A live suite
+  (`tests/unit/test_pgvector_store.py -m live`) proves it returns the same ranking as the SQLite
+  store for every metric, with and without filters. New extra: `examlops[vector]`. The error
+  message had told users to install it, but it did not exist.
+- **Re-declaring a collection could corrupt it.** `create_collection` was an
+  `INSERT OR REPLACE`: re-running `exa vector create` with another `--dim` changed the schema
+  under the stored vectors, which then scored over a truncated prefix. It also erased the ADR 0043
+  encoder stamp whenever the new call named no encoder. A dim, metric or encoder change on a
+  non-empty collection is now refused (`SchemaConflict`). An identical re-declare keeps the stamp
+  and the index.
+- **A mistyped backend silently wrote to SQLite.** `EXAMLOPS_VECTOR_BACKEND=pgvektor` fell back
+  to the SQLite store without a word. An unknown backend is now an error.
+- Vectors containing NaN or infinity are refused on both backends. Rankings break ties by id, so
+  results are deterministic. `CollectionNotFound` messages are no longer printed in quotes.
+
 ### Added — docs site: "Explore", the platform in motion
 
 - A new **Explore** tab and home page on the documentation site draw ExaMLOps as a transit map:

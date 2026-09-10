@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 401 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 402 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,7 +11,7 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **401 commands**
+Everything ExaMLOps can do is reachable from the `exa` CLI: **402 commands**
 in 62 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
@@ -28,7 +28,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | Training & Pipelines | Run, schedule, promote and reproduce training pipelines. | `pipeline`, `retrain`, `scaffold`, `finetune`, `reproduce` | 26 |
 | Data & Features | Version datasets, validate them and serve features without skew. | `data`, `feature`, `features`, `assets`, `cards` | 29 |
 | Models & Registry | Browse, compare, sign and trace every registered model version. | `models`, `modelzoo`, `embedding` | 28 |
-| Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `production`, `gateway`, `vector`, `rag` | 68 |
+| Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `production`, `gateway`, `vector`, `rag` | 69 |
 | GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 11 |
 | Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `mcp` | 30 |
 | Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 49 |

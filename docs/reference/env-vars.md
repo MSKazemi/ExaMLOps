@@ -274,6 +274,11 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_SERVING_BACKEND` | `ray-compose` | **E1** serving backend — `ray-compose` (default) or `kserve-k8s`. |
 | `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback) or `pgvector`. |
 | `EXAMLOPS_PGVECTOR_DSN` | unset | **B5** Postgres+pgvector DSN (required for the `pgvector` backend). |
+| `EXAMLOPS_PGVECTOR_SCHEMA` | unset (`public`) | **B5** schema for the pgvector registry and collection tables; a plain identifier. Lets two instances share one server. |
+| `EXAMLOPS_PGVECTOR_STATEMENT_TIMEOUT_MS` | `10000` | **B5** per-search statement timeout on pgvector, so a runaway scan cannot hold a pooled connection. |
+| `EXAMLOPS_PGVECTOR_CONNECT_TIMEOUT` | `5` | **B5** seconds to wait for the pgvector server before failing. |
+| `EXAMLOPS_PGVECTOR_POOL_MAX` | `10` | **B5** pgvector connection-pool size per process (needs `psycopg-pool`; unpooled without it). |
+| `EXAMLOPS_PGVECTOR_TEST_DSN` | unset | Opt-in DSN for the live pgvector test suite (`tests/unit/test_pgvector_store.py -m live`). |
 | `EXAMLOPS_GATEWAY_DEFAULT_MODEL` | `default` | **B2** logical model name for the default gateway route. |
 | `EXAMLOPS_CACHE_EMBED_BACKEND` | unset | **B3** semantic cache — use a real local embedder instead of the token-hash fallback. |
 

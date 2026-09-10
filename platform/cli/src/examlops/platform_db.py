@@ -1708,6 +1708,16 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # assuming. Stamping is what gives `guard_compatible` something to guard.
     "vector_collections": {
         "encoder_id": "TEXT",
+        # ADR 0020 clause 2: the collection's ANN index (flat | hnsw | ivfflat) and its
+        # parameters as JSON. NULL reads as flat — which is what every collection created before
+        # these columns existed actually is on this store (an exact scan).
+        "index_type": "TEXT",
+        "index_params": "TEXT",
+    },
+    # ADR 0020 clause 2: the text the sparse (BM25) channel of hybrid search indexes. NULL falls
+    # back to a string metadata["text"], where B4 RAG has always kept its chunk text.
+    "vector_items": {
+        "text": "TEXT",
     },
     # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
     "audit_events": {

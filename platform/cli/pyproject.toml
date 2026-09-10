@@ -86,6 +86,13 @@ postgres = [
     # unpooled connection per call — slower, still correct.
     "psycopg-pool>=3.3",
 ]
+# pgvector vector store (EXAMLOPS_VECTOR_BACKEND=pgvector, ADR 0020). Same driver as the
+# `postgres` extra, named separately because the two are independent choices: the vector store can
+# run on pgvector while platform state stays on SQLite, and the reverse.
+vector = [
+    "psycopg[binary]>=3.3",
+    "psycopg-pool>=3.3",
+]
 # Cross-host locks, idempotency, and rate limiting. Imported only when
 # EXAMLOPS_COORDINATOR=redis selects this backend.
 coordination = [

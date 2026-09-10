@@ -508,17 +508,18 @@ Budget, account, and inspect reasoning (thinking) vs output tokens separately (B
 |---|---|---|---|
 | `exa gateway schema test SCHEMA_FILE OBJECT_FILE` | Validates (and optionally `--repair`s) an object against a JSON Schema. | Verify/repair model output against a contract. | `exa gateway schema test schema.json out.json --repair` |
 
-### `exa vector` — vector store (collections, upsert, search, reindex)
+### `exa vector` — vector store (collections, upsert, dense/sparse/hybrid search, reindex, drop)
 
 A tenant-namespaced vector store with fixed-dim collections and a distance metric.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa vector create COLLECTION` | Creates a collection with a fixed `--dim` and `--metric` (cosine/l2/dot); `--tenant`. | Stand up a new embedding collection. **mutation** | `exa vector create demo --dim 384 --metric cosine` |
-| `exa vector upsert COLLECTION` | Upserts one vector (rejected on dim mismatch); `--id`, `--vector` (JSON floats), `--meta`, `--tenant`. | Add or update a single embedding. **mutation** | `exa vector upsert demo --id doc1 --vector '[0.1, 0.2, ...]' --meta '{"src":"kb"}'` |
-| `exa vector search COLLECTION` | Searches top-k nearest by the collection metric; `--vector`, `-k/--k`, `--filter` (metadata equality), `--tenant`. | Retrieve nearest neighbours for a query vector. | `exa vector search demo --vector '[0.1, 0.2, ...]' -k 5 --filter '{"src":"kb"}'` |
-| `exa vector stats COLLECTION` | Shows collection dim, metric, and item count (`--tenant`). | Inspect a collection's shape and size. | `exa vector stats demo` |
-| `exa vector reindex COLLECTION` | Rebuilds the index blue-green with recall preserved (`--tenant`); invoked by B6. | Rebuild the index after bulk changes or drift. **mutation** | `exa vector reindex demo` |
+| `exa vector create COLLECTION` | Creates a collection with a fixed `--dim`, `--metric` (cosine/l2/dot) and ANN `--index` (flat/hnsw/ivfflat with `--m`, `--ef-construction`, `--ef-search`, `--lists`, `--probes`, validated against pgvector's limits); `--encoder` stamps the encoder; `--tenant`. Re-declaring a non-empty collection with another dim/metric/encoder is refused. | Stand up a new embedding collection. **mutation** | `exa vector create demo --dim 384 --metric cosine --index hnsw --m 16` |
+| `exa vector upsert COLLECTION` | Upserts one vector (rejected on dim mismatch, NaN or foreign encoder); `--id`, `--vector` (JSON floats), `--meta`, `--text` (indexed by the BM25 channel), `--encoder`, `--tenant`. | Add or update a single embedding. **mutation** | `exa vector upsert demo --id doc1 --vector '[0.1, 0.2, ...]' --text 'JPCP job 4711 failed'` |
+| `exa vector search COLLECTION` | Top-k search in `--mode dense` (metric, `--vector`), `sparse` (BM25, `--text`) or `hybrid` (both, fused by `--fusion rrf` or `convex` with `--alpha`); `-k/--k`, `--filter` (metadata equality), `--candidates`, `--encoder`, `--tenant`. Hybrid rows show each hit's dense and sparse rank. | Retrieve nearest neighbours; use hybrid when queries name exact ids or codes. | `exa vector search demo --vector '[0.1, ...]' --text 'job 4711' --mode hybrid -k 5` |
+| `exa vector stats COLLECTION` | Shows dim, metric, index configuration, how search is actually answered (`exact`, `ann`, or declared-but-not-built), item count and encoder (`--tenant`). | Inspect a collection's shape, size and index. | `exa vector stats demo` |
+| `exa vector reindex COLLECTION` | Rebuilds the ANN index blue-green (on pgvector `CREATE INDEX CONCURRENTLY`, search stays up); with `--index` and its parameters, switches the collection to that index. Builds IVFFlat after loading. `--tenant`; invoked by B6. | Rebuild or retune the index after bulk loads. **mutation** | `exa vector reindex demo --index ivfflat --lists 200 --probes 14` |
+| `exa vector drop COLLECTION` | Deletes a collection and every vector in it after a confirmation (`--yes` skips); audited as `vector_collection_dropped`. On pgvector it drops the collection's table. `--tenant`. | Tenant erasure, or removing a retired corpus. **destructive** | `exa --yes vector drop demo` |
 
 ### `exa rag` — knowledge bases with citations
 
@@ -527,7 +528,7 @@ Ingest documents into a knowledge base and answer questions with retrieved-chunk
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa rag ingest KB` | Chunks, embeds, and indexes documents into a KB; `--docs` (JSONL of `{id, text}`), `--tenant`, `--source-revision` (A1). | Build/refresh a knowledge base from a corpus. **mutation** | `exa rag ingest kb --docs corpus.jsonl --source-revision rev123` |
-| `exa rag query KB` | Answers a question from a KB, citing retrieved chunks; `--question`, `-k/--k`, `--tenant`. | Ask a grounded question and get cited answers. | `exa rag query kb --question "What is JPCP?" -k 4` |
+| `exa rag query KB` | Answers a question from a KB, citing retrieved chunks; `--question`, `-k/--k`, `--retrieval dense\|hybrid` (hybrid adds BM25 so exact ids and codes are found), `--fusion`, `--tenant`. | Ask a grounded question and get cited answers. | `exa rag query kb --question "Why did JPCP-4711 fail?" --retrieval hybrid` |
 | `exa rag list` | Lists knowledge bases and their versions (`--tenant` filter). | See which KBs exist and their revisions. | `exa rag list` |
 
 ## GenAI & LLMOps

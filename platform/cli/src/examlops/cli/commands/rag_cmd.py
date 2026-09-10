@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from examlops.cli import _output
+from examlops.cli._enums import FusionMethod
 
 app = typer.Typer(
     help="RAG — ingest knowledge bases and query with citations",
@@ -19,6 +20,7 @@ _EXAMPLES = (
     "Examples:\n\n"
     "  exa rag ingest kb1 --docs ./docs.jsonl --source-revision abc123\n\n"
     "  exa rag query kb1 --question 'how does promotion work?' -k 3\n\n"
+    "  exa rag query kb1 --question 'why did job 4711 fail?' --retrieval hybrid\n\n"
     "  exa rag list"
 )
 
@@ -50,14 +52,26 @@ def query(
     question: str = typer.Option(..., "--question", help="The question to answer"),
     k: int = typer.Option(5, "-k", "--k", help="Number of chunks to retrieve"),
     tenant: str = typer.Option("default", "--tenant", help="Tenant namespace"),
+    retrieval: str = typer.Option(
+        "dense",
+        "--retrieval",
+        help="dense (embedding) | hybrid (embedding + BM25, rank-fused — finds exact ids/codes)",
+    ),
+    fusion: FusionMethod = typer.Option(
+        FusionMethod.rrf, "--fusion", help="Hybrid fusion: rrf (default) | convex"
+    ),
 ) -> None:
     """Answer a question from a knowledge base, citing retrieved chunks."""
-    from examlops.rag import RagPipeline
-    from examlops.vector_store import CollectionNotFound
+    from examlops.rag import RETRIEVAL_MODES, RagPipeline
+    from examlops.vector_store import CollectionNotFound, EncoderMismatch
 
+    if retrieval not in RETRIEVAL_MODES:
+        _output.error(f"--retrieval must be one of {', '.join(RETRIEVAL_MODES)}")
     try:
-        ans = RagPipeline().query(kb, question, tenant=tenant, k=k)
-    except CollectionNotFound as exc:
+        ans = RagPipeline(retrieval=retrieval, fusion=str(fusion)).query(
+            kb, question, tenant=tenant, k=k
+        )
+    except (CollectionNotFound, EncoderMismatch) as exc:
         _output.error(str(exc))
         return
     if _output.json_mode:

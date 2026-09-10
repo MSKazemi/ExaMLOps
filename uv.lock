@@ -1547,6 +1547,10 @@ synth = [
     { name = "pandas" },
     { name = "sdv" },
 ]
+vector = [
+    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg-pool" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1562,7 +1566,9 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'synth'", specifier = ">=2.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.3" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'vector'", specifier = ">=3.3" },
     { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3.3" },
+    { name = "psycopg-pool", marker = "extra == 'vector'", specifier = ">=3.3" },
     { name = "pyjwt", marker = "extra == 'oidc'", specifier = ">=2.10" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "redis", marker = "extra == 'coordination'", specifier = ">=5.0" },
@@ -1575,7 +1581,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "vllm", marker = "extra == 'serving-vllm'", specifier = ">=0.8" },
 ]
-provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "coordination", "synth"]
+provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "vector", "coordination", "synth"]
 
 [[package]]
 name = "examlops-pipelines"

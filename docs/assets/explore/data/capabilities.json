@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 401,
+ "total_commands": 402,
  "total_groups": 62,
  "panels": [
   {
@@ -1160,36 +1160,43 @@
     {
      "cmd": "exa vector create",
      "group": "vector",
-     "help": "Create a vector collection with a fixed dim + distance metric.",
-     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "help": "Create a vector collection with a fixed dim, distance metric and ANN index.",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
+     "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa vector drop",
+     "group": "vector",
+     "help": "Delete a collection and every vector in it (irreversible; audited).",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
     },
     {
      "cmd": "exa vector reindex",
      "group": "vector",
-     "help": "Rebuild the collection index (blue-green; recall preserved) — invoked by B6.",
-     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "help": "Rebuild the collection index blue-green (search stays up); optionally change it.",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
     },
     {
      "cmd": "exa vector search",
      "group": "vector",
-     "help": "Search top-k nearest by the collection metric, with optional metadata filter.",
-     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "help": "Top-k search: dense (metric), sparse (BM25) or hybrid (both, rank-fused).",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
     },
     {
      "cmd": "exa vector stats",
      "group": "vector",
-     "help": "Show collection dim, metric, and item count.",
-     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "help": "Show collection dim, metric, index, how search is answered, and item count.",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
     },
     {
      "cmd": "exa vector upsert",
      "group": "vector",
      "help": "Upsert a single vector (rejected if dim mismatches the collection).",
-     "anchor": "exa-vector-vector-store-collections-upsert-search-reindex",
+     "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
     },
     {

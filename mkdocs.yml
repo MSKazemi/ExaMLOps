@@ -80,6 +80,9 @@ extra:
 # dependency-free; each scene file registers one map. See docs/explore/ and docs/assets/explore/.
 extra_css:
   - assets/explore/css/explore.css
+  # KaTeX for the Algorithms pages (pymdownx.arithmatex below). Pinned, so a KaTeX release can
+  # never change how a published formula renders; without it the TeX source shows instead.
+  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.css
 
 extra_javascript:
   - assets/explore/js/xm-flow.js
@@ -92,6 +95,9 @@ extra_javascript:
   - assets/explore/js/scenes/roadmap.js
   - assets/explore/js/xm-atlas.js
   - assets/explore/js/xm-roadmap.js
+  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/contrib/auto-render.min.js
+  - assets/javascripts/katex.js
 
 markdown_extensions:
   - md_in_html
@@ -107,6 +113,11 @@ markdown_extensions:
   - attr_list
   - toc:
       permalink: true
+  # Math on the Algorithms pages. Inline math is \( … \) only — never `$` — so dollar amounts and
+  # shell variables elsewhere in the docs are not mistaken for TeX. Display math is $$ … $$.
+  - pymdownx.arithmatex:
+      generic: true
+      inline_syntax: [round]
 
 nav:
   - Home: index.md
@@ -242,6 +253,9 @@ nav:
           - AuthZ & multi-tenancy: guides/dashboard-auth-tenancy.md
           - Security hardening: guides/dashboard-security.md
           - Frontend engineering baseline: guides/dashboard-frontend-engineering.md
+  - Algorithms:
+      - Overview: algorithms/index.md
+      - Hybrid retrieval (BM25 + vectors): algorithms/hybrid-retrieval.md
   - Reference:
       - exa CLI — Command Guide (use cases + examples): reference/cli-commands-guide.md
       - exa CLI — Verified Examples: reference/cli-examples.md

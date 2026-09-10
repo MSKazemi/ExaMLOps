@@ -47,7 +47,9 @@ def default_embed(text: str) -> list[float]:
     """Deterministic token-hash embedding — ingest and query share this space."""
     vec = [0.0] * _EMBED_DIM
     for tok in text.lower().split():
-        h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
+        h = int(
+            hashlib.md5(tok.encode(), usedforsecurity=False).hexdigest(), 16
+        )  # bucketing, not security
         vec[h % _EMBED_DIM] += 1.0
     return vec
 
@@ -107,12 +109,24 @@ def _apply_guardrail(text: str) -> tuple[bool, str]:
 # ── pipeline ──────────────────────────────────────────────────────────────────
 
 
+RETRIEVAL_MODES = ("dense", "hybrid")
+
+
 @dataclass
 class RagPipeline:
     embed_fn: Callable[[str], list[float]] = default_embed
     reranker: Callable[[str, list], list] = lexical_reranker
     chunk_size: int = 40
     chunk_overlap: int = 10
+    # "dense" (embedding only) or "hybrid" (embedding + BM25, rank-fused; ADR 0020 clause 2).
+    # Hybrid recovers chunks that name an exact identifier — a job id, an error code, a model
+    # name — which an embedding blurs. Dense stays the default so existing answers do not move.
+    retrieval: str = "dense"
+    fusion: str = "rrf"
+
+    def __post_init__(self) -> None:
+        if self.retrieval not in RETRIEVAL_MODES:
+            raise ValueError(f"retrieval '{self.retrieval}' not in {RETRIEVAL_MODES}")
 
     def _kb_encoder(self, kb: str, tenant: str) -> str | None:
         """The encoder this KB was ingested with, or ``None`` if it was never recorded.
@@ -170,6 +184,7 @@ class RagPipeline:
                         f"{doc_id}#{ci}",
                         self.embed_fn(chunk),
                         {"text": chunk, "doc_id": doc_id, "source_revision": source_revision or ""},
+                        text=chunk,
                     )
                 )
         store.upsert(kb, items, tenant, encoder_id=encoder)
@@ -201,9 +216,22 @@ class RagPipeline:
         # different one the store refuses rather than returning ranked nonsense — retrieval is
         # the case where cross-encoder scoring is most convincing and least detectable, because
         # every hit still arrives with a plausible score and a real citation attached.
-        hits = store.search(
-            kb, qv, max(k * 3, k), None, tenant, encoder_id=self._kb_encoder(kb, tenant)
-        )  # over-retrieve for rerank
+        encoder_id = self._kb_encoder(kb, tenant)
+        if self.retrieval == "hybrid":
+            hits = store.hybrid_search(
+                kb,
+                qv,
+                question,
+                max(k * 3, k),
+                None,
+                tenant,
+                encoder_id=encoder_id,
+                fusion=self.fusion,
+            )
+        else:
+            hits = store.search(
+                kb, qv, max(k * 3, k), None, tenant, encoder_id=encoder_id
+            )  # over-retrieve for rerank
         hits = self.reranker(question, hits)[:k]  # rerank then trim (GWT-3)
 
         span_id = self._retriever_span(question, hits, tenant)
