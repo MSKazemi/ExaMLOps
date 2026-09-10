@@ -1,6 +1,6 @@
 ---
 title: ExaMLOps compared
-description: How ExaMLOps compares with Kubeflow, MLflow on its own, Ray on Slurm, ClearML and Metaflow for MLOps on HPC clusters — what each covers, what runs on Slurm or Flux, and when to choose something else.
+description: How ExaMLOps compares with Kubeflow, MLflow on its own, Ray on Slurm, ClearML, Metaflow, Valohai and DKube for MLOps on HPC clusters — what each covers, what runs on Slurm or Flux, and when to choose something else.
 ---
 
 # ExaMLOps compared with other MLOps options for HPC
@@ -27,6 +27,8 @@ edit button on this page.
 | **Ray on Slurm (do it yourself)** | Yes, with care — Ray's own docs call Slurm usage "a little bit unintuitive" | No | No (bring your own) | Ray Serve for serving; everything else is yours to build | ExaMLOps uses Ray Serve for serving |
 | **ClearML** | Yes — the Slurm Glue maps ClearML queues to Slurm jobs | Not for the Slurm path | Not checked here — see ClearML's docs | `clearml-serving` for "model deployment and orchestration" | The Slurm Glue "is available under the ClearML Enterprise plan" |
 | **Metaflow** | Via the `metaflow-slurm` extension (by Outerbounds; 0.0.4, Dec 2024) | Not for the Slurm path | Runs and results are tracked through its metadata service | Not checked here | The extension runs individual steps on Slurm over SSH |
+| **Valohai** | Yes — "now supports Slurm" (announced April 2024) | Not checked here | Not checked here | Not checked here | Commercial platform (pricing page, free trial) |
+| **DKube** | Yes — a "hub and spoke model to integrate HPC/Slurm" | Yes, for the hub ("the associated Kubernetes workloads") | Built "on top of" Kubeflow and MLflow | Not checked here | "A commercial MLOps offering" |
 
 "Not its model" and "not one of the components it describes" mean the project's own
 documentation does not present that capability — not that it is impossible to build. "Not checked
@@ -53,7 +55,8 @@ here" means we did not verify it; the project may well offer it.
   centre of gravity is the HPC scheduler.
 - **You only need experiment tracking and a registry.** A plain MLflow server is simpler.
 - **You want a packaged commercial product with Slurm integration.** ClearML's Enterprise plan
-  includes a Slurm Glue. ExaMLOps is community software; for hands-on help with a deployment, the
+  includes a Slurm Glue, Valohai supports Slurm, and DKube integrates Slurm from a Kubernetes-based
+  hub. ExaMLOps is community software; for hands-on help with a deployment, the
   maintainer [takes engagements](https://mskazemi.com/hire/).
 - **You need a mature project with many maintainers.** ExaMLOps is young and has one
   maintainer. Its reference deployment schedules on Flux; the Slurm path is covered by tests and
@@ -81,4 +84,6 @@ The [system map](explore/index.md) shows how these pieces connect.
 - MLflow — [Documentation](https://mlflow.org/docs/latest/ml/): tracking, model registry ("centralized model versioning, stage management, and model lineage tracking"), deployment and evaluation.
 - Ray — [Deploying on Slurm](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html): "Slurm usage with Ray can be a little bit unintuitive."
 - ClearML — [Slurm (Native)](https://clear.ml/docs/latest/docs/clearml_agent/clearml_agent_deployment_slurm/): "ClearML Agent can run tasks on Linux clusters managed by Slurm." · "Slurm Glue is available under the ClearML Enterprise plan." · [ClearML Serving](https://clear.ml/docs/latest/docs/clearml_serving/): "`clearml-serving` is a command line utility for model deployment and orchestration."
+- Valohai — [Introducing Slurm Support](https://valohai.com/blog/slurm-support/) (2024-04-02): "Valohai, the leading MLOps platform, now supports Slurm".
+- DKube — [MLOps on HPC/Slurm with Kubeflow](https://www.dkube.io/post/mlops-on-hpc-slurm-with-kubeflow): "DKube implements a hub and spoke model to integrate HPC/Slurm. The hub runs the MLOps management and control plane and the associated Kubernetes workloads." · "DKube is a commercial MLOps offering that is built on top of best-of-breed open-source AI/ML platforms such as Kubeflow & MLflow."
 - Metaflow — [`metaflow-slurm` on PyPI](https://pypi.org/project/metaflow-slurm/): "Slurm extension for Metaflow", by Outerbounds, version 0.0.4 (2024-12-10) · [Client API](https://docs.metaflow.org/metaflow/client): "The Client API consults the metadata service to gather results".
