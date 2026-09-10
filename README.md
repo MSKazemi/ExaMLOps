@@ -7,6 +7,9 @@ projects. Training runs as Slurm or Flux jobs, every version is tracked in MLflo
 to production is gated — by metric checks, evaluation gates, and an approval queue for model
 changes.
 
+[![CI](https://github.com/MSKazemi/ExaMLOps/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MSKazemi/ExaMLOps/actions/workflows/ci.yml)
+[![Security](https://github.com/MSKazemi/ExaMLOps/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/MSKazemi/ExaMLOps/actions/workflows/security.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/MSKazemi/ExaMLOps/badge)](https://scorecard.dev/viewer/?uri=github.com/MSKazemi/ExaMLOps)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![Docs](https://img.shields.io/badge/docs-mskazemi.com%2FExaMLOps-indigo.svg)](https://mskazemi.com/ExaMLOps/)

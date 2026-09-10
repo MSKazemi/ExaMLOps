@@ -10,7 +10,7 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 | Install path | What it is | Status |
 |---|---|---|
 | **A — Single node (Docker Compose)** | `make bootstrap` → uv venv + `docker compose up` | **Production-in-use** (this is what runs on `lxp-cpu01`). Best path today for a new machine or single VM. |
-| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis, and **the container images are not published yet**, so you must build and push them to a registry you control first. |
+| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis, and images must come from a registry you control until the first tag is released through `release.yml`, which publishes signed, scanned images and the chart to GHCR ([Releases](release-process.md)). |
 | **C — CI auto-deploy (GitLab → node)** | `deploy:lxp` SSHes to the node, `git pull`, rebuilds, smoke-gated auto-rollback | **Production-in-use, single-node.** Deploy-from-HEAD to one NFS host; no image registry, no canary. |
 
 **Bottom line:** for a *new computer or single server* you can be fully running in ~15 minutes via
@@ -136,8 +136,11 @@ values file.
 > `helm lint` still reported `0 chart(s) failed`. The chart now fails at render time with the flag
 > to set, because that is the last point where the mistake is cheap.
 
-> **Images are not published yet — build them yourself.** `make images` builds all three tiers at
-> the platform version, and `IMAGE_PREFIX` tags them for your registry:
+> **Where the images come from.** A release publishes every image and the chart to GHCR — pushed by
+> digest, scanned, cosign-signed and attested (see [Releases](release-process.md)), so
+> `--set global.imageRegistry=ghcr.io/mskazemi/` pulls exactly what CI built. Before the first
+> release, or to run from your own registry, build them: `make images` builds all three tiers at the
+> platform version, and `IMAGE_PREFIX` tags them for your registry:
 >
 > ```bash
 > make images IMAGE_PREFIX=ghcr.io/<owner>/     # control-plane · dashboard · agent
@@ -150,14 +153,14 @@ values file.
 > `PLATFORM_DB`, `HOME`) defaults to `/tmp`, the one writable mount. Override them if you want
 > persistence.
 
-> **One tier cannot be built from the public repository yet.** The control plane's Dockerfile bakes
-> in the default Seanergy use-case pack, and that pack puts `../../modelzoo` on `sys.path` and names
-> its framework classes there — but `modelzoo/` is upstream code that is not published, so
-> `COPY modelzoo /app/modelzoo` fails with `"/modelzoo": not found` on a clean clone. The dashboard
-> and agent images build fine. Until the public distribution ships without a baked-in default pack,
-> build the control plane from a checkout that has `modelzoo/` beside it, or point
-> `EXAMLOPS_USECASE_DIR` at a pack whose framework is public. `tests/unit/test_dockerfile_build_context.py`
-> pins this so no second tier drifts private without anyone noticing.
+> **Every tier builds from the public repository.** The control plane's Dockerfile used to
+> `COPY modelzoo`, which is upstream code the public repository does not carry, so a clean clone
+> failed with `"/modelzoo": not found`. The model library is now an optional named build context:
+> without it the image builds from the public tree alone (it still bakes in the default use-case
+> pack's model registry, so `/health` lists the pack's models); a site that wants the library inside
+> the image passes `--build-context modelzoo=<dir>`, which compose does from
+> `EXAMLOPS_MODELZOO_BUILD_CONTEXT` (default: the checkout's `modelzoo/`).
+> `tests/unit/test_dockerfile_build_context.py` fails if any tier COPYs a path the public tree lacks.
 
 ### Building a chart repository
 
@@ -224,11 +227,11 @@ the dashboard was rebuilt, and the live API was verified end-to-end (authenticat
 The gap list below does not block Path A; these items stand between the current
 partial Helm chart and a turnkey, HA, multi-tenant cluster install:
 
-1. **Versioned artifacts, not build-from-HEAD.** Today every path builds images on the target host
-   (`compose build`) and installs the CLI editable (`pip install -e`). Enterprise needs **published,
-   signed container images** (a registry + a release job) and a **published Helm chart / wheels** so a
-   cluster pulls immutable, versioned artifacts. *(Add an image-build+push CI job; the packages are
-   already wheel-buildable via setuptools, just not distributed.)*
+1. **Versioned artifacts, not build-from-HEAD** — *built, awaiting its first release (ADR 0129).*
+   `.github/workflows/release.yml` turns a tag into the `examlops` wheel (PyPI, Trusted Publishing),
+   seven signed and scanned GHCR images, the Helm chart as a signed OCI artifact, and a GitHub
+   Release with SBOMs and checksums ([Releases](release-process.md)). Outstanding: the first tag
+   through it and the owner-side settings it needs (PyPI Trusted Publisher, GHCR visibility).
 2. **Complete the Helm chart.** *Done: a strict `values.schema.json`, opt-in per-tier default-deny
    `NetworkPolicy`, and a control-plane `ServiceMonitor` (see the chart README).* Still to add: the
    missing tiers (MLflow, Prefect, Ray Serve, MinIO, JupyterHub), a `PrometheusRule`, and either bundle the stateful

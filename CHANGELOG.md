@@ -109,6 +109,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   them one repeated `PLATFORM_DB` default in dashboard routers). No file may gain one and no new file
   may introduce one; a count that falls must be lowered in the same change, so a removed coupling
   cannot return.
+- **The agent image can write its own volume.** It runs as uid 10001 but never created `/data`, so
+  a fresh `agent_data:/data` named volume came up root-owned and the agent could not create its
+  memory databases ("unable to open database file") — hidden on long-running hosts whose agent
+  container predated the image. `/data` now exists in the image, owned by 10001, which Docker copies
+  into an empty volume on first mount (verified with a fresh volume: write denied before, SQLite
+  database created after).
+- **The release publishes a single-node install bundle** — `examlops-compose-X.Y.Z.tar.gz`, the
+  pull-only compose stack pinned to that release by a `VERSION` file, alongside the other assets.
+  The install guides no longer say the images or the control-plane tier cannot be published, and
+  the quickstart says how to install the CLI from a checkout until the first PyPI release.
 
 ### Fixed — the documentation's architecture diagrams render
 

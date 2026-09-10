@@ -18,6 +18,7 @@ nothing is uploaded by hand.
 | Python package (`exa` CLI + SDK) | PyPI · GitHub Release | `examlops-X.Y.Z-py3-none-any.whl`, `examlops-X.Y.Z.tar.gz` |
 | Container images | GHCR | `ghcr.io/mskazemi/examlops-{control-plane,dashboard,agent,backup,ray-serving,postgres,mlflow}:X.Y.Z` |
 | Helm chart | GHCR (OCI) | `oci://ghcr.io/mskazemi/charts/examlops`, version `X.Y.Z` |
+| Single-node install bundle | GitHub Release | `examlops-compose-X.Y.Z.tar.gz` — pull-only compose stack pinned to this release ([guide](install-compose-bundle.md)) |
 | Release notes | GitHub Release | the `## [X.Y.Z]` section of `CHANGELOG.md`, verbatim |
 | SBOM of the Python install | GitHub Release | `examlops-X.Y.Z.cdx.json` (CycloneDX 1.6 — the wheel and every dependency it resolved) |
 | Image references by digest | GitHub Release | `images-X.Y.Z.txt` — `name:X.Y.Z@sha256:…` per image |

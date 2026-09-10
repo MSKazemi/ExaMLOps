@@ -29,6 +29,10 @@ exa --version
 exa status                     # points at the URLs in your active context
 ```
 
+The package reaches PyPI with the first release published through the release workflow
+([Releases](release-process.md)). Until then, install the same wheel from a checkout:
+`uv pip install ./platform/cli`.
+
 Heavier capabilities are **extras**, so the base install stays small enough for a login
 node. Each one is lazily imported, and a command that needs a missing extra says which to
 install rather than failing with a traceback:

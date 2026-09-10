@@ -44,11 +44,21 @@ ENV HOME=/tmp \
     AGENT_SERVER_HOST=0.0.0.0 \
     AGENT_SERVER_PORT=18004
 
-# uid 10001 matches podSecurityContext.runAsUser in the chart; a mismatch there fails the
-# pod at admission rather than at runtime, which is harder to read.
-RUN useradd --uid 10001 --create-home --home-dir /home/agent --shell /usr/sbin/nologin agent \
-    && chown -R 10001:10001 /app
-USER 10001
+# The default uid 10001 matches podSecurityContext.runAsUser in the chart; a mismatch there fails
+# the pod at admission rather than at runtime, which is harder to read. A development compose that
+# bind-mounts a host directory builds with APP_UID/APP_GID = the host user, so the image's user
+# owns both its named volume and the host state directory. Released images keep the default.
+ARG APP_UID=10001
+ARG APP_GID=10001
+# /data is where compose mounts the agent's named volume. Docker seeds an empty named volume
+# with the image directory's ownership on first mount, so it must exist here, owned by the app
+# user — otherwise the volume comes up root-owned and the agent cannot create its memory databases.
+RUN groupadd --gid "${APP_GID}" agent \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --home-dir /home/agent \
+       --shell /usr/sbin/nologin agent \
+    && mkdir -p /data \
+    && chown -R "${APP_UID}:${APP_GID}" /app /data
+USER ${APP_UID}:${APP_GID}
 
 EXPOSE 18004
 

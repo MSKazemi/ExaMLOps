@@ -180,3 +180,14 @@ def test_run_scripts_never_expand_untrusted_input():
             assert not re.search(r"\$\{\{\s*(inputs|github\.event)\.", script), (
                 f"{name}/{step.get('name')}: pass untrusted input through env:, not ${{{{ }}}}"
             )
+
+
+def test_the_compose_bundle_ships_every_file_it_needs():
+    """The pull-only install is assembled from files at the tag; a renamed one breaks the tar."""
+    run = "\n".join(s.get("run", "") for s in JOBS["github-release"]["steps"])
+    listed = re.search(r"install/\{([^}]+)\}", run)
+    assert listed, "the release no longer assembles the compose bundle"
+    install = ROOT / "platform" / "infra" / "docker-compose" / "install"
+    for name in listed.group(1).split(","):
+        assert (install / name).is_file(), f"bundle file missing: {name}"
+    assert "VERSION" in run, "install.sh init reads the release version from VERSION"

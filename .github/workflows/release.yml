@@ -423,11 +423,26 @@ jobs:
         with:
           path: artifacts
 
+      # Only for the compose install bundle, which is files at the tag — not a build output.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          path: src
+          persist-credentials: false
+
       - name: Assemble assets + SHA256SUMS
         run: |
           set -euo pipefail
           mkdir -p assets
           cp artifacts/python-dist/* artifacts/sbom-python/* artifacts/helm-chart/* assets/
+          # Pull-only single-node install (docs/guides/install-compose-bundle.md): images pinned to
+          # this release by the VERSION file that `install.sh init` reads.
+          bundle="examlops-compose-${VERSION}"
+          mkdir -p "$RUNNER_TEMP/$bundle"
+          cp src/platform/infra/docker-compose/install/{docker-compose.yml,env.template,install.sh,README.md} \
+            "$RUNNER_TEMP/$bundle/"
+          echo "$VERSION" > "$RUNNER_TEMP/$bundle/VERSION"
+          tar -czf "assets/${bundle}.tar.gz" -C "$RUNNER_TEMP" "$bundle"
           cat artifacts/image-*/refs/*.txt | sort > "assets/images-${VERSION}.txt"
           mkdir -p assets/trivy && cp artifacts/image-*/trivy-*.json assets/trivy/
           tar -czf "assets/trivy-reports-${VERSION}.tar.gz" -C assets trivy && rm -rf assets/trivy
