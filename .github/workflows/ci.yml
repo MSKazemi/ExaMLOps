@@ -56,8 +56,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Full history with tags: guards such as test_release_notes_are_extractable read every
+      # tag, and a default shallow checkout has none, so they fail (or, worse, would pass by
+      # inspecting nothing).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python 3.12
