@@ -12,6 +12,9 @@
 #     and keeps a compromised release from arriving as a green PR.
 #   • every `ignore` below carries its reason and the condition that lifts it. An
 #     unexplained ignore is how a pin outlives the reason it was added.
+#   • each ecosystem runs on its own weekday (uv Mon · pip Tue · npm Wed · actions Thu). On
+#     2026-09-10 all four fired at once: 13 PRs × ~11 CI jobs overran the runner pool, and
+#     main's own run sat queued until a newer push replaced it.
 version: 2
 updates:
   # Root uv workspace (pyproject.toml + uv.lock): the examlops CLI, pipelines, serving.
@@ -43,7 +46,7 @@ updates:
       - "/platform/ci"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "tuesday"
     cooldown:
       default-days: 7
       semver-major-days: 14
@@ -56,7 +59,7 @@ updates:
     directory: "/platform/services/dashboard/frontend"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "wednesday"
     cooldown:
       default-days: 7
       semver-major-days: 14
@@ -76,7 +79,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
+      day: "thursday"
     cooldown:
       default-days: 7
     groups:
