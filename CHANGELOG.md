@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — feature-store embeddings are searchable: `exa feature similar` (ADR 0020 clause 4)
+
+- A feature view can name one feature as its embedding (`exa feature apply … --embedding F`).
+  `exa feature materialize` then indexes each entity's **online** embedding into the vector
+  collection `features.<view>`, and reports what it indexed and skipped. `exa feature similar
+  VIEW --entity-id X -k N` returns the nearest entities by cosine similarity, for example jobs
+  that look like this one on FData's 384-dim job embedding.
+- Rows with a missing, non-numeric, non-finite or wrong-dimension embedding are skipped and
+  counted, never coerced. An indexing failure never undoes the materialization. Views without an
+  embedding materialize exactly as before.
+
 ### Added — three layers: core · deployment · instance data (ADR 0128)
 
 - **One instance-data root, `EXAMLOPS_DATA_DIR`.** When set, the platform datastore

@@ -78,6 +78,15 @@ Filters are metadata equality and are applied before ranking. On pgvector, a fil
 IVFFlat search uses an iterative index scan (pgvector ≥ 0.8), so a selective filter still
 returns the matching rows.
 
+## What feeds the store
+
+- **RAG knowledge bases** (`exa rag ingest`): chunks with their text, so they are
+  hybrid-searchable.
+- **Feature-store embeddings** (`exa feature apply … --embedding F`, then
+  `exa feature materialize`): each entity's online embedding goes into `features.<view>`, queried
+  with `exa feature similar`. See [Feature store](feature-store.md#embedding-features-nearest-neighbours).
+- Any caller through the `VectorStore` interface (below).
+
 ## Lifecycle
 
 ```bash

@@ -72,6 +72,32 @@ exa feature materialize job_features
 exa feature get job_features --entity-id job-42   # online (default) — low latency
 ```
 
+## Embedding features → nearest neighbours
+
+A view can name one of its features as its **embedding**, a list of floats such as FData's 384-dim
+job embedding. Materializing the view then also indexes each entity's online embedding into the
+vector collection `features.<view>`, and `exa feature similar` finds the entities nearest to one:
+
+```bash
+exa feature apply job_features --entity job --features embedding,pclass,mbwidth --embedding embedding
+exa feature materialize job_features
+# ✓ Materialized 1200 entity row(s) for job_features to the online store.
+# ✓ Indexed 1198 embedding(s) into features.job_features (dim 384).
+# ⚠ Skipped 2 row(s): job-17: no usable 'embedding' vector; …
+exa feature similar job_features --entity-id job-42 -k 5     # cosine similarity
+```
+
+- The index is built from the **online** rows, the values serving reads, so it can never disagree
+  with serving. Re-materializing updates an entity's vector.
+- A row whose embedding is missing, non-numeric, non-finite, or of another dimension is
+  **skipped and counted**, never coerced: a zero-filled vector would score as a real neighbour.
+- The online store is the durable fact and the index is derived from it. If indexing fails (say
+  pgvector is unreachable), materialization still succeeds and the failure is reported;
+  re-run to index.
+- The collection uses the [vector store](vector-store.md) backend in force (`sqlite` or
+  `pgvector`), so it gets that store's dimension checks, index configuration and hybrid search.
+  A view with no embedding feature materializes exactly as before.
+
 ## Zero skew (the guarantee)
 
 After materialization the online value is *exactly* the latest offline as-of value — same

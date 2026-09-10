@@ -28,6 +28,8 @@ _EXAMPLES = (
     "  exa feature ingest job_features --entity-id job-42 "
     '--event-ts "2026-07-16 10:00:00" --values \'{"pclass":"compute-bound"}\'\n\n'
     "  exa feature materialize job_features\n\n"
+    "  exa feature apply job_features --entity job --features embedding,pclass --embedding embedding\n\n"
+    "  exa feature similar job_features --entity-id job-42 -k 5\n\n"
     "  exa feature get job_features --entity-id job-42\n\n"
     "  exa feature freshness job_features"
 )
@@ -41,6 +43,11 @@ def apply(
     source: str = typer.Option(None, "--source", help="Offline source hint (parquet/table)"),
     ttl: int = typer.Option(0, "--ttl", help="Freshness TTL in seconds (0 = no staleness alert)"),
     dataset_revision: str = typer.Option(None, "--revision", help="A1 dataset revision pin"),
+    embedding: str = typer.Option(
+        None,
+        "--embedding",
+        help="Feature holding an embedding; materialize then indexes it for `exa feature similar`",
+    ),
 ) -> None:
     """Register/patch a feature view — the single train+serve definition (R1)."""
     from examlops.feature_store import FeatureView, apply_view
@@ -52,8 +59,12 @@ def apply(
         source=source,
         ttl_seconds=ttl,
         dataset_revision=dataset_revision,
+        embedding_feature=embedding or None,
     )
-    apply_view(view)
+    try:
+        apply_view(view)
+    except ValueError as exc:
+        _output.error(str(exc))
     _output.ok(f"Applied feature view {name} on entity '{entity}' ({len(view.features)} features).")
 
 
@@ -72,6 +83,7 @@ def list_cmd() -> None:
                     "features": v.features,
                     "ttl_seconds": v.ttl_seconds,
                     "dataset_revision": v.dataset_revision,
+                    "embedding_feature": v.embedding_feature,
                 }
                 for v in views
             ]
@@ -82,7 +94,7 @@ def list_cmd() -> None:
         return
     _output.print_table(
         "Feature Views",
-        ["Name", "Entity", "Features", "TTL(s)", "Revision"],
+        ["Name", "Entity", "Features", "TTL(s)", "Revision", "Embedding"],
         [
             [
                 v.name,
@@ -90,6 +102,7 @@ def list_cmd() -> None:
                 ", ".join(v.features),
                 str(v.ttl_seconds),
                 v.dataset_revision or "—",
+                v.embedding_feature or "—",
             ]
             for v in views
         ],
@@ -121,11 +134,41 @@ def materialize(
     start: str = typer.Option(None, "--start", help="Window start timestamp"),
     end: str = typer.Option(None, "--end", help="Window end timestamp"),
 ) -> None:
-    """Materialize latest offline values → online store (R6)."""
-    from examlops.feature_store import materialize as _materialize
+    """Materialize latest offline values → online store (R6); index its embedding, if declared."""
+    from examlops.feature_store import materialize_with_index
 
-    n = _materialize(view, start_ts=start, end_ts=end)
-    _output.ok(f"Materialized {n} entity row(s) for {view} to the online store.")
+    out = materialize_with_index(view, start_ts=start, end_ts=end)
+    idx = out["embeddings"]
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "view": view,
+                "rows": out["rows"],
+                "embeddings": None
+                if idx is None
+                else {
+                    "collection": idx.collection,
+                    "indexed": idx.indexed,
+                    "skipped": idx.skipped,
+                    "dim": idx.dim,
+                    "error": idx.error,
+                    "skipped_reasons": idx.skipped_reasons,
+                },
+            }
+        )
+        return
+    _output.ok(f"Materialized {out['rows']} entity row(s) for {view} to the online store.")
+    if idx is None:
+        return
+    if idx.error:
+        _output.warning(
+            f"Embeddings not indexed into {idx.collection}: {idx.error} "
+            "(the online store is materialized; re-run to index)"
+        )
+        return
+    _output.ok(f"Indexed {idx.indexed} embedding(s) into {idx.collection} (dim {idx.dim}).")
+    if idx.skipped:
+        _output.warning(f"Skipped {idx.skipped} row(s): " + "; ".join(idx.skipped_reasons))
 
 
 @app.command("get")
@@ -205,3 +248,34 @@ def freshness_cmd(
         _output.warning(line + " — STALE")
     else:
         _output.info(line + " — fresh")
+
+
+@app.command("similar", epilog=_EXAMPLES)
+def similar(
+    view: str = typer.Argument(..., help="Feature view with an embedding feature"),
+    entity_id: str = typer.Option(..., "--entity-id", help="Entity to find neighbours of"),
+    k: int = typer.Option(5, "-k", "--k", help="How many neighbours"),
+) -> None:
+    """Entities whose embedding is nearest to this one's (ADR 0020 clause 4)."""
+    from examlops.feature_store import similar_entities
+    from examlops.vector_store import CollectionNotFound
+
+    if k < 1:
+        _output.error("-k must be >= 1")
+    try:
+        hits = similar_entities(view, entity_id, k)
+    except (KeyError, ValueError, CollectionNotFound) as exc:
+        _output.error(str(exc).strip("'\""))
+    if _output.json_mode:
+        _output.print_json(
+            [{"entity_id": h.id, "score": h.score, "metadata": h.metadata} for h in hits]
+        )
+        return
+    if not hits:
+        _output.ok("No other entities indexed yet — run: exa feature materialize " + view)
+        return
+    _output.print_table(
+        f"Nearest to {entity_id} in {view}",
+        ["Entity", "Cosine similarity", "Materialized at"],
+        [[h.id, f"{h.score:.4f}", str(h.metadata.get("event_ts", "—"))] for h in hits],
+    )

@@ -1746,6 +1746,12 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "vector_items": {
         "text": "TEXT",
     },
+    # ADR 0020 clause 4 (A3 ingestion): which declared feature of a view holds an embedding. When
+    # set, materialization also indexes it into the `features.<view>` vector collection. NULL = the
+    # view has no embedding, and materialization behaves exactly as before.
+    "feature_views": {
+        "embedding_feature": "TEXT",
+    },
     # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
     "audit_events": {
         "tenant": "TEXT NOT NULL DEFAULT 'default'",

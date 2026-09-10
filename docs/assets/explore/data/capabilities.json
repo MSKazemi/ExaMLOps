@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 420,
+ "total_commands": 421,
  "total_groups": 65,
  "panels": [
   {
@@ -412,7 +412,14 @@
     {
      "cmd": "exa feature materialize",
      "group": "feature",
-     "help": "Materialize latest offline values → online store (R6).",
+     "help": "Materialize latest offline values → online store (R6); index its embedding, if declared.",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature similar",
+     "group": "feature",
+     "help": "Entities whose embedding is nearest to this one's (ADR 0020 clause 4).",
      "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
      "guide": "guides/feature-store.md"
     },

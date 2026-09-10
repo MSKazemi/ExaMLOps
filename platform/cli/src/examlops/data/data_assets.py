@@ -327,6 +327,25 @@ def list_encoders() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_online_features(view: str) -> list[dict[str, Any]]:
+    """Every materialized online row of a view: ``{entity_id, event_ts, values}``."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT entity_id, event_ts, values_json FROM online_features WHERE view=? "
+            "ORDER BY entity_id",
+            (view,),
+        ).fetchall()
+    return [
+        {
+            "entity_id": r["entity_id"],
+            "event_ts": r["event_ts"],
+            "values": json.loads(r["values_json"] or "{}"),
+        }
+        for r in rows
+    ]
+
+
 def list_feature_views() -> list[dict[str, Any]]:
     init_db()
     with get_db() as conn:
@@ -940,19 +959,30 @@ def upsert_feature_view(
     source: str | None = None,
     ttl_seconds: int = 0,
     dataset_revision: str | None = None,
+    embedding_feature: str | None = None,
 ) -> None:
     """Register/patch a feature view (single definition for train + serve) (R1)."""
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO feature_views
-                   (name, entity, features_json, source, ttl_seconds, dataset_revision, updated_at)
-               VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)
+                   (name, entity, features_json, source, ttl_seconds, dataset_revision,
+                    embedding_feature, updated_at)
+               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
                ON CONFLICT(name) DO UPDATE SET
                    entity=excluded.entity, features_json=excluded.features_json,
                    source=excluded.source, ttl_seconds=excluded.ttl_seconds,
-                   dataset_revision=excluded.dataset_revision, updated_at=CURRENT_TIMESTAMP""",
-            (name, entity, json.dumps(features), source, ttl_seconds, dataset_revision),
+                   dataset_revision=excluded.dataset_revision,
+                   embedding_feature=excluded.embedding_feature, updated_at=CURRENT_TIMESTAMP""",
+            (
+                name,
+                entity,
+                json.dumps(features),
+                source,
+                ttl_seconds,
+                dataset_revision,
+                embedding_feature,
+            ),
         )
 
 

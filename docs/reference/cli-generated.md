@@ -1193,6 +1193,7 @@ Register/patch a feature view — the single train+serve definition (R1).
 - `--source` — Offline source hint (parquet/table)
 - `--ttl` — Freshness TTL in seconds (0 = no staleness alert)
 - `--revision` — A1 dataset revision pin
+- `--embedding` — Feature holding an embedding; materialize then indexes it for `exa feature similar`
 
 ### `exa feature freshness`
 
@@ -1219,10 +1220,17 @@ List registered feature views.
 
 ### `exa feature materialize`
 
-Materialize latest offline values → online store (R6).
+Materialize latest offline values → online store (R6); index its embedding, if declared.
 
 - `--start` — Window start timestamp
 - `--end` — Window end timestamp
+
+### `exa feature similar`
+
+Entities whose embedding is nearest to this one's (ADR 0020 clause 4).
+
+- `--entity-id` — Entity to find neighbours of
+- `-k, --k` — How many neighbours
 
 ### `exa feature skew`
 
