@@ -31,6 +31,7 @@ enough for an HPC login node:
 | `examlops[backup]` | object-store tier of whole-platform backup |
 | `examlops[coordination]` | Redis cross-host locks and rate limits |
 | `examlops[vector]` | pgvector vector store, independent of where platform state lives |
+| `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics (a pure-Python fallback computes the same numbers without it) |
 | `examlops[synth]` | synthetic dataset generation |
 | `examlops[serving-vllm]` / `examlops[serving-sglang]` | in-process vLLM / SGLang engines (GPU host) |
 

@@ -111,6 +111,12 @@ postgres = [
     # unpooled connection per call — slower, still correct.
     "psycopg-pool>=3.3",
 ]
+# Fairness & subgroup monitoring (ADR 0025). Fairlearn's MetricFrame computes the slice metrics
+# when installed; without it a pure-Python path computes the same numbers (held to parity by
+# tests/unit/test_fairness_engine.py), so `exa fairness` works on a bare install too.
+fairness = [
+    "fairlearn>=0.14",
+]
 # pgvector vector store (EXAMLOPS_VECTOR_BACKEND=pgvector, ADR 0020). Same driver as the
 # `postgres` extra, named separately because the two are independent choices: the vector store can
 # run on pgvector while platform state stays on SQLite, and the reverse.

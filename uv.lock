@@ -1522,6 +1522,9 @@ backup = [
 coordination = [
     { name = "redis" },
 ]
+fairness = [
+    { name = "fairlearn" },
+]
 finops = [
     { name = "simpleeval" },
 ]
@@ -1557,6 +1560,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'backup'", specifier = ">=1.34" },
     { name = "click", specifier = ">=8.1" },
     { name = "cryptography", specifier = ">=43.0" },
+    { name = "fairlearn", marker = "extra == 'fairness'", specifier = ">=0.14" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "numpy", marker = "extra == 'analysis'", specifier = ">=1.26" },
@@ -1581,7 +1585,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "vllm", marker = "extra == 'serving-vllm'", specifier = ">=0.8" },
 ]
-provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "vector", "coordination", "synth"]
+provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "fairness", "vector", "coordination", "synth"]
 
 [[package]]
 name = "examlops-pipelines"
@@ -1660,6 +1664,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "fairlearn" },
     { name = "httpx" },
     { name = "mypy" },
     { name = "pandas-stubs" },
@@ -1678,6 +1683,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.28.0" },
     { name = "examlops", editable = "platform/cli" },
+    { name = "fairlearn", marker = "extra == 'dev'", specifier = ">=0.14" },
     { name = "fastapi", specifier = ">=0.100.0,<0.137" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.24" },
@@ -1738,6 +1744,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/28/c14e053b6762b1044f34a13aab6859bbf40456d37d23aa286ac24cfd9a5d/executing-2.2.1.tar.gz", hash = "sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4", size = 1129488, upload-time = "2025-09-01T09:48:10.866Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl", hash = "sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017", size = 28317, upload-time = "2025-09-01T09:48:08.5Z" },
+]
+
+[[package]]
+name = "fairlearn"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/58/07/f8b79188e1d148634f0aa88e2c503c9174c8ae26c5575747e832f989a837/fairlearn-0.14.0.tar.gz", hash = "sha256:dc9d12fc6d3f4c94f1bf32eb11032b73363c4a62c986485bcc87febe2e583ebd", size = 105832, upload-time = "2026-06-07T16:14:20.225Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/bd/776182bf82b0a3223773a43b0e7b9510afe6c3d32ed8dd5a27b30a89530b/fairlearn-0.14.0-py3-none-any.whl", hash = "sha256:2ffe37b71f5b6a8e140b5db75a7990da64fd04b46e7acfc81654f92497ed2ece", size = 135513, upload-time = "2026-06-07T16:14:18.888Z" },
 ]
 
 [[package]]

@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — fairness slice metrics pair each prediction with its own label; Fairlearn computes them (ADR 0025 — ADR 0025 now Accepted)
+
+- **Accuracy and MAE were wrong whenever labels lag predictions.** They summed over labelled
+  pairs but divided by every prediction, so 10 predictions with 5 correct labels reported 50 %
+  accuracy, and a fairness gate could block on disparities that were only missing ground truth.
+  They now divide by the labelled samples only.
+- **Predictions could be scored against another sample's label.** Predictions and labels were
+  collected into two independent lists and zipped. Each sample now keeps its own pair, and a
+  label with no recorded prediction is not scored.
+- **Fairlearn is now actually used.** The module said it used Fairlearn's `MetricFrame` when
+  installed, but nothing imported it. With `examlops[fairness]` (new extra) it computes the slice
+  metrics; the pure-Python fallback is held to exact parity by
+  `tests/unit/test_fairness_engine.py`. Results now carry `"engine"`.
+
 ### Added — the Helm chart validates its values and can isolate its tiers on the network (ADR 0129)
 
 - **`values.schema.json`.** helm now validates values on install, upgrade, lint and template. Every

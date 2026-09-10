@@ -141,9 +141,20 @@ if fairness_gate("JPCP"):                             # used by the C3 gate
 
 ## Graceful degradation
 
-Fairlearn's `MetricFrame` is used when installed; otherwise a pure-Python implementation
-computes the same per-slice performance and the standard fairness metrics against
-`platform_db.fairness_samples`. No external service is required.
+With `pip install 'examlops[fairness]'`, Fairlearn's `MetricFrame` computes the per-slice
+metrics (accuracy, selection rate, TPR, FPR, and MAE for regression slices). Without it, a
+pure-Python implementation computes **the same numbers**: a parity test holds the two engines to
+agreement at 1e-12 across randomised slices, including a slice with no positives (TPR is *none*,
+not 0) and rows whose label has not arrived yet. Every result records which engine produced it
+(`"engine": "fairlearn" | "pure-python"`). No external service is required.
+
+**How samples are scored.** Each sample keeps its prediction and its label together:
+
+- Accuracy, TPR, FPR and MAE use only the samples whose label has arrived. A prediction still
+  waiting for ground truth is not a miss.
+- Selection rate uses every prediction, because it needs no label.
+- A label that arrived for a request with no recorded prediction pairs with nothing, and is not
+  scored.
 
 ## See also
 

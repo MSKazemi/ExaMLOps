@@ -45,11 +45,16 @@ class FairnessResult:
     accuracy_range: float | None = None
     threshold: float = DEFAULT_THRESHOLD
     disparity_exceeded: bool = False
+    #: Which engine computed the per-slice metrics: "fairlearn" (its MetricFrame, ADR 0025
+    #: clause 2) or "pure-python" (the dependency-free fallback). Recorded so a report says how
+    #: its numbers were produced; the parity test holds the two to the same results.
+    engine: str = "pure-python"
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "model": self.model,
             "slice_attr": self.slice_attr,
+            "engine": self.engine,
             "tenant": self.tenant,
             "threshold": self.threshold,
             "demographic_parity_diff": self.demographic_parity_diff,
@@ -77,26 +82,144 @@ def _is_binary(vals: list[float]) -> bool:
     return all(v in (0.0, 1.0) for v in vals)
 
 
-def _slice_metric(
-    slice_value: str, preds: list[float], labels: list[float], min_samples: int
-) -> SliceMetric:
+# One row per sample: its prediction and, when ground truth has arrived, its label. Rows are
+# kept as pairs because labels lag predictions: building two independent lists and zipping them
+# paired each prediction with whichever label happened to share its index — another row's.
+Row = tuple[float, float | None]
+
+
+def _is_binary_slice(rows: list[Row]) -> bool:
+    labels = [y for _, y in rows if y is not None]
+    return bool(labels) and _is_binary([p for p, _ in rows]) and _is_binary(labels)
+
+
+def _slice_metric(slice_value: str, rows: list[Row], min_samples: int) -> SliceMetric:
+    """Per-slice metrics in pure Python. Label metrics divide by the *labelled* rows only.
+
+    Dividing by every prediction counted each not-yet-labelled one as a miss: 10 predictions with
+    5 correct labels read as 50 % accuracy. Selection rate uses every prediction — it needs no
+    label.
+    """
+    preds = [p for p, _ in rows]
+    pairs = [(p, y) for p, y in rows if y is not None]
     n = len(preds)
     below = n < min_samples
-    binary = bool(labels) and _is_binary(preds) and _is_binary(labels)
     accuracy = error = selection_rate = tpr = fpr = None
-    if binary:
-        correct = sum(1 for p, y in zip(preds, labels) if round(p) == round(y))
-        accuracy = correct / n if n else None
+    if _is_binary_slice(rows):
+        accuracy = sum(1 for p, y in pairs if round(p) == round(y)) / len(pairs)
         selection_rate = sum(1 for p in preds if round(p) == 1) / n if n else None
-        pos = [(p, y) for p, y in zip(preds, labels) if round(y) == 1]
-        neg = [(p, y) for p, y in zip(preds, labels) if round(y) == 0]
-        tpr = (sum(1 for p, _ in pos if round(p) == 1) / len(pos)) if pos else None
-        fpr = (sum(1 for p, _ in neg if round(p) == 1) / len(neg)) if neg else None
+        pos = [p for p, y in pairs if round(y) == 1]
+        neg = [p for p, y in pairs if round(y) == 0]
+        tpr = (sum(1 for p in pos if round(p) == 1) / len(pos)) if pos else None
+        fpr = (sum(1 for p in neg if round(p) == 1) / len(neg)) if neg else None
     else:
-        if labels:
-            error = sum(abs(p - y) for p, y in zip(preds, labels)) / n if n else None
+        if pairs:
+            error = sum(abs(p - y) for p, y in pairs) / len(pairs)
         selection_rate = (sum(1 for p in preds if p > 0.5) / n) if n else None
     return SliceMetric(slice_value, n, accuracy, error, selection_rate, tpr, fpr, below)
+
+
+def _fairlearn_slice_metrics(
+    groups: dict[str, list[Row]], min_samples: int
+) -> list[SliceMetric] | None:
+    """The same per-slice metrics computed by Fairlearn's ``MetricFrame`` (ADR 0025 clause 2).
+
+    ``None`` when Fairlearn is not installed. The definitions match :func:`_slice_metric`
+    exactly — including ``None`` rather than 0 for a TPR/FPR with no positives/negatives, where
+    sklearn would warn and return 0, and selection rate over every prediction rather than only the
+    labelled ones — so switching engine never moves a number. ``tests/unit/test_fairness_engine.py``
+    holds the two to parity.
+    """
+    try:
+        import numpy as np
+        import pandas as pd
+        from fairlearn.metrics import (
+            MetricFrame,
+            false_positive_rate,
+            selection_rate,
+            true_positive_rate,
+        )
+        from sklearn.metrics import accuracy_score, mean_absolute_error
+    except ImportError:
+        return None
+
+    def by_group(metric: Any, y_true: list, y_pred: list, sf: list) -> dict[str, float]:
+        if not sf:
+            return {}
+        frame = MetricFrame(
+            metrics=metric,
+            y_true=np.asarray(y_true, dtype=float),
+            y_pred=np.asarray(y_pred, dtype=float),
+            # A named Series, not an ndarray: Fairlearn rejects a one-element array of strings
+            # ("Feature array has too many dimensions"), which a single-sample slice produces.
+            sensitive_features=pd.Series(sf, name="slice", dtype=object),
+        )
+        return {str(k): float(v) for k, v in frame.by_group.items()}
+
+    binary = {v for v, rows in groups.items() if _is_binary_slice(rows)}
+    # Labelled pairs of the binary slices → accuracy; positives → TPR; negatives → FPR.
+    lab = [
+        (v, round(p), round(y))
+        for v, rows in groups.items()
+        if v in binary
+        for p, y in rows
+        if y is not None
+    ]
+    acc = by_group(
+        accuracy_score, [y for _, _, y in lab], [p for _, p, _ in lab], [v for v, _, _ in lab]
+    )
+    pos = [t for t in lab if t[2] == 1]
+    neg = [t for t in lab if t[2] == 0]
+    tpr = by_group(
+        lambda yt, yp: true_positive_rate(yt, yp, pos_label=1),
+        [y for _, _, y in pos],
+        [p for _, p, _ in pos],
+        [v for v, _, _ in pos],
+    )
+    fpr = by_group(
+        lambda yt, yp: false_positive_rate(yt, yp, pos_label=1),
+        [y for _, _, y in neg],
+        [p for _, p, _ in neg],
+        [v for v, _, _ in neg],
+    )
+    # Selection rate needs no label (Fairlearn's ignores y_true), so it runs over every prediction.
+    allp = [(v, round(p)) for v, rows in groups.items() if v in binary for p, _ in rows]
+    sel = by_group(
+        lambda yt, yp: selection_rate(yt, yp, pos_label=1),
+        [p for _, p in allp],
+        [p for _, p in allp],
+        [v for v, _ in allp],
+    )
+    reg = [
+        (v, p, y) for v, rows in groups.items() if v not in binary for p, y in rows if y is not None
+    ]
+    mae = by_group(
+        mean_absolute_error, [y for _, _, y in reg], [p for _, p, _ in reg], [v for v, _, _ in reg]
+    )
+
+    out: list[SliceMetric] = []
+    for value, rows in sorted(groups.items()):
+        n = len(rows)
+        if value in binary:
+            out.append(
+                SliceMetric(
+                    value,
+                    n,
+                    acc.get(value),
+                    None,
+                    sel.get(value),
+                    tpr.get(value),
+                    fpr.get(value),
+                    n < min_samples,
+                )
+            )
+        else:
+            preds = [p for p, _ in rows]
+            selection = (sum(1 for p in preds if p > 0.5) / n) if n else None
+            out.append(
+                SliceMetric(value, n, None, mae.get(value), selection, None, None, n < min_samples)
+            )
+    return out
 
 
 def slice_metrics(
@@ -104,8 +227,9 @@ def slice_metrics(
 ) -> FairnessResult:
     """Per-slice performance for a slicing attribute (R2, GWT-1).
 
-    Uses Fairlearn's ``MetricFrame`` when available; otherwise pure-Python. Reads samples
-    from ``platform_db.fairness_samples``.
+    Uses Fairlearn's ``MetricFrame`` when installed (``pip install 'examlops[fairness]'``);
+    otherwise the pure-Python fallback, which computes the same numbers. ``result.engine`` says
+    which ran. Reads samples from ``platform_db.fairness_samples``.
     """
     cfg, _source = effective_fairness_config(model)
     if min_samples is None:
@@ -113,22 +237,26 @@ def slice_metrics(
     threshold = cfg["threshold"] if cfg else DEFAULT_THRESHOLD
 
     samples = platform_db.get_fairness_samples(model, slice_attr, tenant=tenant)
-    groups: dict[str, dict[str, list[float]]] = {}
+    groups: dict[str, list[Row]] = {}
     for s in samples:
-        g = groups.setdefault(s["slice_value"], {"preds": [], "labels": []})
-        if s["prediction"] is not None:
-            g["preds"].append(s["prediction"])
-        if s["label"] is not None:
-            g["labels"].append(s["label"])
+        if s["prediction"] is None:
+            continue  # nothing to score: a label with no prediction pairs with nothing
+        label = None if s["label"] is None else float(s["label"])
+        groups.setdefault(s["slice_value"], []).append((float(s["prediction"]), label))
 
-    slices = []
-    for value, data in sorted(groups.items()):
-        # Align preds/labels length (labels may lag); use the common prefix.
-        m = _slice_metric(value, data["preds"], data["labels"], min_samples)
-        slices.append(m)
+    slices = _fairlearn_slice_metrics(groups, min_samples)
+    engine = "fairlearn"
+    if slices is None:
+        slices = [_slice_metric(v, rows, min_samples) for v, rows in sorted(groups.items())]
+        engine = "pure-python"
 
     result = FairnessResult(
-        model=model, slice_attr=slice_attr, tenant=tenant, slices=slices, threshold=threshold
+        model=model,
+        slice_attr=slice_attr,
+        tenant=tenant,
+        slices=slices,
+        threshold=threshold,
+        engine=engine,
     )
     _fill_disparities(result)
     return result

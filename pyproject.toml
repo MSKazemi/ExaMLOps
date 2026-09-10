@@ -72,6 +72,9 @@ dev = [
                         # dep lives in pipelines/pyproject.toml, but CI installs only the
                         # root workspace `.[dev]`, so without it here the executor tests
                         # fail in CI with ModuleNotFoundError while passing locally.
+    "fairlearn>=0.14",  # ADR 0025's named engine: tests/unit/test_fairness_engine.py holds its
+                        # MetricFrame to exact parity with the pure-Python fallback, and skips
+                        # without it — so CI must install it or the parity is never checked.
     "simpleeval>=1.0",  # Declarative-expression provider (ADR 0074) + policy `when`
                         # conditions (ADR 0079). The runtime dep is the optional
                         # `examlops[finops]` extra, but CI installs only root `.[dev]`;
