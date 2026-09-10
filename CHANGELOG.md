@@ -33,6 +33,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   pre-upgrade Job is never caught. Opt-in because the namespace labels are site-specific.
 - **A ServiceMonitor for the control plane** (`metrics.serviceMonitor.enabled`) — the one tier that
   serves `/metrics`. Without the Prometheus Operator CRDs the render fails with that instruction.
+- **Dashboard replicas starting together no longer race their migrations.** Each replica runs
+  `alembic upgrade head` at start; on an empty Postgres they raced to create the version table and
+  the losers died on the same `pg_type` duplicate-key error (5 of 6 concurrent upgrades, reproduced)
+  — the crash-restarting dashboard pod of a fresh install. `alembic/env.py` now takes a
+  transaction-scoped advisory lock first, so one replica migrates and the rest find the head
+  already applied. `tests/test_alembic_concurrent_upgrade_live.py` (opt-in with
+  `EXAMLOPS_POSTGRES_TEST_DSN`) runs six upgrades at once on a fresh database: all pass with the
+  lock, five fail without it.
 - `tests/unit/test_helm_network_and_schema.py` (15 tests, run by the CI chart job) renders each of
   these with helm 3.16 and 3.20, including that a typo is rejected and that disabling the agent
   removes every path to it, while a values file with no `agent.enabled` still isolates the agent.

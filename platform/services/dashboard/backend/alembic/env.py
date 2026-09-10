@@ -63,6 +63,15 @@ def do_run_migrations(connection: Connection) -> None:
     )
 
     with context.begin_transaction():
+        if connection.dialect.name == "postgresql":
+            # Every dashboard replica runs `alembic upgrade head` as it starts. On an empty Postgres
+            # they raced to create the version table and the loser died on a pg_type duplicate-key
+            # error (3 of 4 concurrent upgrades, measured) — a crash-restarting pod on every fresh
+            # install. DDL is transactional here, so the first to take this lock migrates and
+            # commits; the others then find the version table at head and do nothing.
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_xact_lock(hashtext('examlops-dashboard:alembic'))"
+            )
         context.run_migrations()
 
 
