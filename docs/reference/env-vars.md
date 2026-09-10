@@ -279,6 +279,10 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_PGVECTOR_CONNECT_TIMEOUT` | `5` | **B5** seconds to wait for the pgvector server before failing. |
 | `EXAMLOPS_PGVECTOR_POOL_MAX` | `10` | **B5** pgvector connection-pool size per process (needs `psycopg-pool`; unpooled without it). |
 | `EXAMLOPS_PGVECTOR_TEST_DSN` | unset | Opt-in DSN for the live pgvector test suite (`tests/unit/test_pgvector_store.py -m live`). |
+| `EXAMLOPS_CARBON_POLICY_MARGIN_PP` | `5.0` | **ADR 0112 R-ec** — percentage points of carbon-agnostic emissions a carbon-weighing placement policy must beat the best simple baseline by before it may place on carbon. |
+| `EXAMLOPS_CARBON_POLICY_RETEST_DAYS` | `90` | **R-ed** — an evaluation older than this no longer licenses a carbon policy (re-test overdue). |
+| `EXAMLOPS_CARBON_POLICY_RETIRE_BELOW_PCT` | `2.0` | **R-ed** — a shipped carbon policy saving less than this share of emissions is retired: carbon leaves placement. |
+| `EXAMLOPS_CARBON_POLICY_GATE` | `enforce` | `enforce` applies the R-ec/R-ed gate; `warn` lets the requested policy run and records what `enforce` would have done. |
 | `EXAMLOPS_GATEWAY_DEFAULT_MODEL` | `default` | **B2** logical model name for the default gateway route. |
 | `EXAMLOPS_CACHE_EMBED_BACKEND` | unset | **B3** semantic cache — use a real local embedder instead of the token-hash fallback. |
 

@@ -7,10 +7,22 @@ degrading to least-loaded when no carbon/cost signal is present (backward compat
 
 from __future__ import annotations
 
+import pytest
+
 from examlops.hpc_placement import ResourceAsk, choose_cluster, headroom_score
 from examlops.hpc_placement_providers import resolve_placement_score_fn
 
 _ASK = ResourceAsk(gpus=1, nodes=1)
+
+
+@pytest.fixture(autouse=True)
+def _formulas_not_governance(monkeypatch, tmp_path):
+    """These tests pin each provider's *scoring formula*. Whether a carbon-weighing policy may
+    run at all is ADR 0112's R-ec gate, tested in test_carbon_policy.py; in `warn` mode the gate
+    records its verdict and lets the requested policy score, which is what a formula test needs.
+    """
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    monkeypatch.setenv("EXAMLOPS_CARBON_POLICY_GATE", "warn")
 
 
 def _cluster(name, *, idle_gpus, carbon=None, cost=None):

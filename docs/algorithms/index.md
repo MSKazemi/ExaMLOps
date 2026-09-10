@@ -15,6 +15,16 @@ code makes, and the tests that pin them down, with references to the literature 
 
     [Read: hybrid retrieval →](hybrid-retrieval.md)
 
+-   **Carbon-aware placement**
+
+    ---
+
+    A carbon policy is simulated against two simple baselines and a perfect-foresight oracle on a
+    real intensity trace. It may place jobs on carbon only if it wins by a declared margin, and
+    it is retired once it stops paying.
+
+    [Read: carbon-aware placement →](carbon-aware-placement.md)
+
 </div>
 
 ## Where the other methods are documented

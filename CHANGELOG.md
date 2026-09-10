@@ -5,6 +5,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — carbon is reported as operational, never as a total (ADR 0112 R-ee — ADR 0112 now Accepted)
+
+- Every carbon figure the platform records is operational (energy × grid intensity), and embodied
+  carbon is not measured. Four surfaces summed operational carbon and called it a total; that
+  understates emissions in the direction that flatters the platform. `exa finops carbon report`,
+  `exa report generate`, the FinOps console and NOC wall, and Skipper's `get_carbon_summary` now
+  say **operational**, report embodied carbon as *unavailable* (never zero), and report no total.
+  They all go through one definition, `examlops.finops.carbon.carbon_scope`.
+- **Breaking (JSON):** `exa finops carbon report --json` drops `total_co2e_g` in favour of
+  `operational_co2e_g`, and adds `scope`, `operational_kg_co2e`, `embodied_kg_co2e: null`,
+  `embodied` and `total_kg_co2e: null`. The offline report's carbon section now carries
+  `operational_kg_co2e` (its `total_kg_co2e` is always `null`). Skipper's carbon tool now returns
+  `operational_kg_co2e`.
+- Guard: `tests/unit/test_carbon_is_not_reported_as_total.py` scans the CLI, dashboard and agent
+  code for a carbon figure labelled a total.
+
+### Added — carbon-aware placement must beat the simple baseline, and keep beating it (ADR 0112 R-ec, R-ed)
+
+- **`exa finops carbon policy evaluate <policy> --trace grid.json`** simulates a carbon policy
+  against carbon-agnostic placement, both simple baselines named in ADR 0112
+  (`lowest-average-region`, `threshold-shift`) and a perfect-foresight oracle, all on the same
+  workload and hourly intensity trace. It decides what ships: the candidate only if it beats the
+  best simple policy by a declared margin (5 pp of carbon-agnostic emissions,
+  `EXAMLOPS_CARBON_POLICY_MARGIN_PP`). The capability is retired when the shipped policy saves
+  under 2 % (`…_RETIRE_BELOW_PCT`). `--record` chains the result into the audit log.
+  `forecast-greedy`, a deployable spatio-temporal policy on a 24-hour persistence forecast,
+  ships as a reference candidate. `status`, `list` and `sample` (a synthetic demo trace) complete
+  the group.
+- **Placement enforces it.** Every placement path (`exa hpc place`, `exa fleet`, the SDK, MCP,
+  `exa pipeline run --cluster auto`) now probes whether the requested policy weighs carbon. If it
+  does, and has no current, real, winning evaluation (re-test cadence 90 days,
+  `…_RETEST_DAYS`), then `carbon-aware` is replaced by the new **`carbon-simple`** provider
+  (lowest declared intensity first; unknown intensity ranks last, since unknown is not green).
+  Any other carbon-weighing policy runs with carbon neutralised, keeping its other objectives. A
+  retired capability gets no carbon input at all. The placement reason and
+  `objectives.placement_policy` say which policy placed the job and why.
+  `EXAMLOPS_CARBON_POLICY_GATE=warn` records the verdict without applying it. Synthetic
+  evaluations never gate.
+- **Behaviour change:** a deployment that selected `carbon-aware`, `carbon-cost-balanced`,
+  `cost-aware` or a carbon-weighing YAML formula without an evaluation now places with the simple
+  baseline, or with carbon neutralised, until one is recorded. Those providers shipped before any
+  measurement of their benefit; ADR 0112 does not allow that.
+- **Algorithms page** *Carbon-aware placement* (the model, the decision rule, the gate, the
+  synthetic-trace numbers and the tests behind them).
+
 ### Added — compliance packs name what they cannot vouch for (ADR 0110 decision 6 — ADR 0110 now Accepted)
 
 - **Evidence is judged for integrity, not only presence.** Every section of the Annex-IV

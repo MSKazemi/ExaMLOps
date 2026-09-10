@@ -61,6 +61,14 @@ EXAMLOPS_PLACEMENT_PROVIDER=expression exa hpc place --gpus 4
 
 The formula is evaluated **safely** (sandboxed arithmetic — no imports, no attribute access, no I/O).
 
+!!! note "A formula that weighs carbon has to earn it"
+    A score that depends on `carbon_intensity` is a carbon-aware policy, so ADR 0112's R-ec gate
+    applies. Until a recorded evaluation shows it beats the simple baselines
+    (`exa finops carbon policy evaluate expression --trace grid.json --record`), it runs with
+    carbon neutralised: every cluster scores at the same intensity, and the rest of the formula
+    still decides. `exa hpc place` says so in its reason. See
+    [Carbon-aware placement](../algorithms/carbon-aware-placement.md).
+
 ### Option B — a plugin (Python)
 
 Ship a package exposing a `Provider` under the `exa.providers.placement` entry-point group:

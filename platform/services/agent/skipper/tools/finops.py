@@ -82,12 +82,22 @@ def get_carbon_summary(model_name: str = "") -> str:
     rows = get_carbon_records(model_name or None)
     if not rows:
         return "No carbon records yet — record one with `exa finops carbon`."
-    total_g = sum(float(r.get("co2e_g") or 0) for r in rows)
-    return json.dumps(
-        {"total_kg_co2e": round(total_g / 1000.0, 4), "records": rows[:50]},
-        default=str,
-        indent=2,
-    )
+    operational_g = sum(float(r.get("co2e_g") or 0) for r in rows)
+    # ADR 0112 R-ee: the sum is operational only. Handing an agent a "total" would let it tell
+    # a user their footprint is complete when embodied carbon was never measured.
+    try:
+        from examlops.finops.carbon import carbon_scope
+
+        scope = carbon_scope(operational_g)
+    except Exception:  # noqa: BLE001 - older examlops without the helper
+        scope = {
+            "scope": "operational",
+            "operational_kg_co2e": round(operational_g / 1000.0, 4),
+            "embodied_kg_co2e": None,
+            "embodied": "unavailable",
+            "total_kg_co2e": None,
+        }
+    return json.dumps({**scope, "records": rows[:50]}, default=str, indent=2)
 
 
 @tool

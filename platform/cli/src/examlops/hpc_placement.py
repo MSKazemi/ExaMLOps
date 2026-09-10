@@ -149,6 +149,9 @@ def choose_cluster(
     score = score_fn or headroom_score
     objectives_unavailable: list[str] = []
     objectives: dict = {}
+    policy = getattr(score, "placement_policy", None)  # ADR 0112 R-ec gate outcome, if any
+    if policy:
+        objectives["placement_policy"] = policy
     carbon_usable, carbon_reason = carbon_objective_state(carbon_signal)
     if carbon_usable and carbon_signal is not None:
         objectives["carbon"] = carbon_signal.as_dict()
@@ -194,6 +197,13 @@ def choose_cluster(
         f"{best['idle_gpus']}/{best['total_gpus']} idle GPUs, "
         f"{best['idle_nodes']}/{best['total_nodes']} idle nodes"
     )
+    if policy and policy.get("action") != "allow":
+        # ADR 0112 R-ec/R-ed: say which policy actually placed the job, and why it is not the
+        # one that was asked for — a silent substitution would read as the requested policy.
+        reason += (
+            f" [placement policy: {policy['requested']} → {policy['effective']}"
+            f"{'' if policy.get('carbon_input') else ', carbon input withheld'}: {policy['reason']}]"
+        )
     if objectives_unavailable:
         reason += (
             f" [objectives unavailable: {', '.join(objectives_unavailable)} — {carbon_reason}]"

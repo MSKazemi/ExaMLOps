@@ -13,13 +13,16 @@ Open it from the sidebar (**FinOps**, the `$` icon) or navigate to `/finops`.
 
 ## What you see
 
-- **KPI tiles** (reusing the F4 `<KpiTile>`): total spend, GPU-hours, estimated carbon (with its ±
-  uncertainty band), and cost-per-training-run.
+- **KPI tiles** (reusing the F4 `<KpiTile>`): total spend, GPU-hours, **operational** carbon (with
+  its ± uncertainty band), and cost-per-training-run. The carbon tile is operational only
+  (energy × grid intensity). Embodied carbon is not measured, so the figure is not a total (ADR
+  0112 R-ee), and the footnote says so.
 - **Cost by model** — a table of GPU-hours, run count, and USD per model (rolled up from `model_costs`).
 - **Budgets** — per-project budget usage (GPU-hour % and cost %) with an **Over budget** pill when
   actuals exceed the configured budget.
 - **Carbon methodology footnote** — the estimation method + uncertainty, always shown so figures are
-  never read as exact.
+  never read as exact, followed by the scope note (`scopeNote` in the payload: operational only,
+  embodied not measured).
 
 ## Data source & CLI
 

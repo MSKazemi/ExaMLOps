@@ -40,9 +40,10 @@ export function buildNocSlides(
     },
     {
       id: 'carbon',
-      title: 'Estimated carbon',
+      title: 'Operational carbon (est.)',
       value: carbon ? carbonLabel(carbon.co2e_kg, carbon.uncertainty ?? 0) : '—',
-      sub: 'Green-AI accounting',
+      // ADR 0112 R-ee: an operational sum on a wall display must not read as the whole footprint.
+      sub: 'Embodied carbon not measured — not a total',
     },
   ]
 }

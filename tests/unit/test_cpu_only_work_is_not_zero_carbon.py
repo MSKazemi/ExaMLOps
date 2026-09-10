@@ -140,5 +140,6 @@ def test_a_report_with_no_carbon_records_does_not_publish_a_zero(tmp_path, monke
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "t.db"))
     report = reporting.assemble_report(generated_at="2026-08-24T00:00:00Z")
     assert report["sections"]["carbon"]["records"] == 0
+    assert report["sections"]["carbon"]["operational_kg_co2e"] is None
     assert report["sections"]["carbon"]["total_kg_co2e"] is None
     assert "not measured" in reporting.render_text(report)

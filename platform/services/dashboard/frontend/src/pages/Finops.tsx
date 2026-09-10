@@ -225,6 +225,12 @@ export function Finops() {
             <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
               <Leaf className="inline size-3 mr-1" aria-hidden="true" />
               {carbon.methodology}
+              {carbon.scopeNote && (
+                <>
+                  {' '}
+                  <span className="font-medium">{carbon.scopeNote}</span>
+                </>
+              )}
             </p>
           )}
         </>

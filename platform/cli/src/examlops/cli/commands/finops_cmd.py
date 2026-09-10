@@ -5,6 +5,7 @@ import os
 import typer
 
 from examlops.cli import _output
+from examlops.cli.commands.carbon_policy_cmd import app as carbon_policy_app
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.finops import get_carbon_records, write_carbon_record
@@ -48,6 +49,8 @@ cost_app = typer.Typer(
 app.add_typer(budget_app, name="budget")
 app.add_typer(carbon_app, name="carbon")
 app.add_typer(cost_app, name="cost")
+# Carbon-aware placement must beat the simple baselines before it may place (ADR 0112 R-ec/R-ed).
+carbon_app.add_typer(carbon_policy_app, name="policy")
 
 _EX_BUDGET_SET = (
     "Examples:\n\n"
@@ -453,9 +456,20 @@ def carbon_report(
         _output.info("No carbon records yet. Record one with: exa finops carbon record <model> ...")
         return
     total_kwh = sum(r["kwh"] or 0.0 for r in records)
-    total_co2e = sum(r["co2e_g"] or 0.0 for r in records)
+    operational_g = sum(r["co2e_g"] or 0.0 for r in records)
+    # ADR 0112 R-ee: every record is operational (energy × grid intensity); embodied carbon is not
+    # measured, so this sum is not a total and must not be labelled one.
+    from examlops.finops.carbon import EMBODIED_UNAVAILABLE, carbon_scope
+
     if _output.json_mode:
-        _output.print_json({"n": len(records), "total_kwh": total_kwh, "total_co2e_g": total_co2e})
+        _output.print_json(
+            {
+                "n": len(records),
+                "total_kwh": total_kwh,
+                "operational_co2e_g": operational_g,
+                **carbon_scope(operational_g),
+            }
+        )
         return
     _output.print_table(
         "Carbon Report" + (f" — {model}" if model else ""),
@@ -463,7 +477,8 @@ def carbon_report(
         [
             ["Runs", str(len(records))],
             ["Total energy (kWh)", f"{total_kwh:.3f}"],
-            ["Total CO2e (g)", f"{total_co2e:.1f}"],
-            ["Total CO2e (kg)", f"{total_co2e / 1000.0:.3f}"],
+            ["Operational CO2e (g)", f"{operational_g:.1f}"],
+            ["Operational CO2e (kg)", f"{operational_g / 1000.0:.3f}"],
+            ["Embodied CO2e", EMBODIED_UNAVAILABLE],
         ],
     )

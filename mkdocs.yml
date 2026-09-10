@@ -261,6 +261,7 @@ nav:
   - Algorithms:
       - Overview: algorithms/index.md
       - Hybrid retrieval (BM25 + vectors): algorithms/hybrid-retrieval.md
+      - Carbon-aware placement (R-ec · R-ed): algorithms/carbon-aware-placement.md
   - Reference:
       - exa CLI — Command Guide (use cases + examples): reference/cli-commands-guide.md
       - exa CLI — Verified Examples: reference/cli-examples.md

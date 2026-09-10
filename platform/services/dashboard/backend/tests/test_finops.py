@@ -84,6 +84,9 @@ def test_carbon_summary_totals_and_uncertainty(platform_db):
     out = finops.carbon_summary(platform_db)
     assert out["totals"]["co2e_g"] == 4500.0
     assert out["co2e_kg"] == 4.5
+    # ADR 0112 R-ee: labelled operational, embodied unavailable — the UI shows scopeNote
+    assert out["scope"] == "operational" and out["embodiedKg"] is None
+    assert "not a total" in out["scopeNote"]
     # honest estimation: uncertainty + methodology present (no false precision)
     assert out["uncertainty"] == finops.CARBON_UNCERTAINTY
     assert "±30%" in out["methodology"]

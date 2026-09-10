@@ -32,6 +32,35 @@ DEFAULT_PUE = 1.5
 DEFAULT_GRID_INTENSITY_G_PER_KWH = 300.0
 
 
+#: ADR 0112 R-ee. Every carbon figure this platform records is **operational** — energy × grid
+#: intensity. Embodied carbon (manufacturing the GPUs, servers and network) is not measured, and
+#: as grids decarbonise it comes to dominate (Acun et al., *Carbon Explorer*, ASPLOS '23). So an
+#: operational sum is never a total: a total would understate emissions, in the direction that
+#: flatters the platform. ``carbon_scope`` is the one definition every surface reports through.
+SCOPE_OPERATIONAL = "operational"
+EMBODIED_UNAVAILABLE = (
+    "unavailable — embodied (manufacturing) carbon is not measured, so this is not a total"
+)
+
+
+def carbon_scope(operational_g: float | None) -> dict[str, object]:
+    """Report a carbon sum with its scope: operational figure, embodied unavailable, no total.
+
+    ``operational_g`` is ``None`` when nothing was measured — reported as ``None``, never 0.0,
+    because "0 kg CO2e" for an unmeasured platform reads as an achievement. ``total_kg_co2e`` is
+    always ``None`` until embodied carbon is measured: an operational-only figure MUST NOT be
+    reported as a total (R-ee), and unavailable embodied carbon is reported as unavailable, never
+    as zero (P5).
+    """
+    return {
+        "scope": SCOPE_OPERATIONAL,
+        "operational_kg_co2e": None if operational_g is None else round(operational_g / 1000.0, 3),
+        "embodied_kg_co2e": None,
+        "embodied": EMBODIED_UNAVAILABLE,
+        "total_kg_co2e": None,
+    }
+
+
 class CarbonInputUnaccounted(ValueError):
     """The chosen provider has no term for an input it was given.
 

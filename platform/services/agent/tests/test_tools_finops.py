@@ -47,7 +47,9 @@ def test_model_cost_history_empty(finops_tools):
 
 def test_carbon_summary_totals(finops_tools):
     out = json.loads(finops_tools.get_carbon_summary.invoke({"model_name": "jpcp"}))
-    assert out["total_kg_co2e"] == 0.5
+    assert out["operational_kg_co2e"] == 0.5
+    # ADR 0112 R-ee: the agent is never handed an operational sum labelled as a total
+    assert out["total_kg_co2e"] is None and out["scope"] == "operational"
     assert out["records"][0]["provider"] == "green-ai-default"
 
 

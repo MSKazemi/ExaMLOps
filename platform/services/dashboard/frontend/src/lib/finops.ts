@@ -28,6 +28,10 @@ export interface FinopsOverview {
     totals: { kwh: number; co2e_g: number; records: number }
     byModel: { model: string; kwh: number; co2e_g: number }[]
     co2e_kg: number
+    /** ADR 0112 R-ee: every figure is operational; embodied carbon is not measured. */
+    scope?: 'operational'
+    embodiedKg?: number | null
+    scopeNote?: string
     uncertainty: number
     methodology: string
   }

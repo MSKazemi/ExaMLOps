@@ -30,7 +30,11 @@ def test_assemble_aggregates_cost_and_carbon(seeded):
     cost = r["sections"]["cost"]
     assert cost["total_gpu_hours"] == 6.0
     assert cost["total_cost_usd"] == 15.0
-    assert r["sections"]["carbon"]["total_kg_co2e"] == 1.5  # 1500 g → 1.5 kg
+    carbon = r["sections"]["carbon"]
+    assert carbon["operational_kg_co2e"] == 1.5  # 1500 g → 1.5 kg
+    # ADR 0112 R-ee: an operational sum is not a total while embodied carbon is unmeasured
+    assert carbon["total_kg_co2e"] is None and carbon["embodied_kg_co2e"] is None
+    assert carbon["scope"] == "operational"
     assert any(p["name"] == "research" for p in r["sections"]["projects"]["rows"])
 
 

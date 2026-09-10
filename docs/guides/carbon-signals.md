@@ -83,18 +83,39 @@ that *"simple scheduling policies often yield most of these reductions, with mor
 techniques yielding little additional benefit"* — so losing the sophisticated path in signal-poor
 regions forfeits little.
 
-## Not yet implemented
+## Carbon-aware placement must earn its place (R-ec, R-ed)
 
-Two requirements from ADR 0112's V16 amendment are **not** met, and the ADR records that:
+A placement policy that weighs carbon may do so only while a recorded evaluation shows it beats
+the simple baselines by a declared margin (5 pp of carbon-agnostic emissions), on a trace no older
+than the re-test cadence (90 days), and while the shipped policy still saves more than the
+retirement threshold (2 %). Otherwise `carbon-aware` is replaced by the simple baseline
+`carbon-simple`, and other carbon-weighing policies run with carbon neutralised:
 
-- **R-ec — simple-baseline dominance.** A multi-objective placement policy must be measured
-  against a simple baseline on the same trace, and ship the simple one if it does not win by a
-  declared margin. No such benchmark exists. This is why no built-in carbon-aware *scoring policy*
-  ships here: the typing and the guards do, so nothing can use the wrong signal, but a policy that
-  makes carbon claims would owe the measurement first.
-- **R-ed — declining-benefit re-test and a retirement criterion.** The benefit of carbon-aware
-  scheduling falls as the grid decarbonises, fastest on the European grids this platform targets.
-  No cadence and no retirement threshold are defined yet.
+```bash
+exa finops carbon policy evaluate carbon-aware --trace grid.json --record
+exa finops carbon policy status carbon-aware
+```
+
+The method, the model and the gate are on
+[Carbon-aware placement](../algorithms/carbon-aware-placement.md).
+
+## Operational, not total (R-ee)
+
+Every carbon figure the platform records is **operational**: energy × grid intensity. Embodied
+carbon (manufacturing the GPUs, servers and network) is not measured, and as grids decarbonise it
+comes to dominate. So no surface reports an operational sum as a *total*:
+
+| surface | what it shows |
+|---|---|
+| `exa finops carbon report` | *Operational CO2e* rows and *Embodied CO2e: unavailable*; JSON `operational_co2e_g`, `total_kg_co2e: null` |
+| `exa report generate` | *operational kg CO2e* and *embodied kg CO2e: unavailable* |
+| FinOps console, NOC wall | *Operational carbon (est.)*, with a note that embodied carbon is not measured |
+| Skipper `get_carbon_summary` | `operational_kg_co2e`, `embodied_kg_co2e: null`, `total_kg_co2e: null` |
+
+All four report through one definition, `examlops.finops.carbon.carbon_scope`. Unavailable
+embodied carbon is reported as unavailable, never as zero. `total_kg_co2e` stays `null` until it
+is measured. `tests/unit/test_carbon_is_not_reported_as_total.py` scans the CLI, dashboard and
+agent code for a carbon figure labelled a total.
 
 ## Design
 

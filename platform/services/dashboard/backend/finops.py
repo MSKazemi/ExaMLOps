@@ -191,7 +191,15 @@ def carbon_summary(db_path: str) -> dict[str, Any]:
             "totals": totals,
             "byModel": by_model,
             "providers": providers,
+            # Operational only (ADR 0112 R-ee): every figure here is energy × grid intensity.
+            # Embodied carbon is not measured, so none of these is a total, and the UI says so.
             "co2e_kg": round(totals["co2e_g"] / 1000.0, 2),
+            "scope": "operational",
+            "embodiedKg": None,
+            "scopeNote": (
+                "Operational carbon only (energy × grid intensity). Embodied carbon from "
+                "manufacturing the hardware is not measured, so this is not a total."
+            ),
             "uncertainty": uncertainty,
             "methodology": methodology,
         }

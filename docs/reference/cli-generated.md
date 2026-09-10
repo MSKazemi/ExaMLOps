@@ -1339,6 +1339,38 @@ original methodology exactly.
 - `--pue` — Override datacentre PUE
 - `--gpu-tdp` — Override GPU TDP (watts)
 
+#### `exa finops carbon policy`
+
+Evaluate carbon-aware placement against simple baselines (R-ec) and re-test it (R-ed)
+
+##### `exa finops carbon policy evaluate`
+
+Measure a carbon policy against both simple baselines on one trace, and decide what ships.
+
+- `--trace` — JSON: {method, regions:{r:[g/kWh…]}, jobs:[…]}
+- `--margin` — pp the candidate must beat the best simple policy by (default 5)
+- `--retire-below` — % saving below which the capability is retired (default 2)
+- `--record` — Chain the result into the audit log — the gate reads it
+
+##### `exa finops carbon policy list`
+
+Recorded evaluations, newest first (read back from the audit chain).
+
+- `--limit` — How many, newest first
+
+##### `exa finops carbon policy sample`
+
+Write a synthetic demo trace. Evaluations over it are marked synthetic and gate nothing.
+
+- `--out` — Where to write the synthetic trace JSON
+- `--days` — Trace length in days
+- `--jobs` — Number of jobs
+- `--seed` — Random seed (the trace is deterministic per seed)
+
+##### `exa finops carbon policy status`
+
+What placement will do with this policy right now, and why (the R-ec/R-ed gate).
+
 #### `exa finops carbon providers`
 
 List the available carbon providers (built-ins + entry-point plugins) and their status.

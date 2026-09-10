@@ -99,7 +99,11 @@ def test_carbon_record_and_report(db_path):
     assert payload["n"] == 2
     # 15 GPU-h total → 9 kWh → 2700 gCO2e
     assert payload["total_kwh"] == pytest.approx(9.0)
-    assert payload["total_co2e_g"] == pytest.approx(2700.0)
+    # Operational only (ADR 0112 R-ee): embodied carbon is unmeasured, so there is no total.
+    assert payload["operational_co2e_g"] == pytest.approx(2700.0)
+    assert payload["operational_kg_co2e"] == pytest.approx(2.7)
+    assert payload["embodied_kg_co2e"] is None and payload["total_kg_co2e"] is None
+    assert "total_co2e_g" not in payload
 
 
 def test_carbon_report_empty(db_path):
