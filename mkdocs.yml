@@ -162,6 +162,7 @@ nav:
       - JupyterHub Notebooks: guides/jupyter.md
       - Core · Deployment · Instance Data (three layers): guides/three-layer-architecture.md
       - Enterprise Installation & Configuration: guides/enterprise-installation.md
+      - Install on a Single Node (Compose bundle): guides/install-compose-bundle.md
       - Upgrades & Compatibility (keep user data across releases): guides/upgrade-and-compatibility.md
       - Site Feature Profiles (modules per centre): guides/site-feature-profiles.md
       - Releases — what is published & how to verify it: guides/release-process.md

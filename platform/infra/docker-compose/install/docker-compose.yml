@@ -1,0 +1,437 @@
+# ExaMLOps — install bundle (single node, pull-only).
+#
+# This is the *deployment* layer of ADR 0128, shipped on its own: it pulls the released images and
+# never builds, never mounts the source tree, and refuses to start with a missing or weak secret.
+# Everything a site creates lives in ./state (the ADR 0128 data root, mounted at /state).
+#
+#   ./install.sh init        # writes .env with generated secrets, creates ./state
+#   docker compose up -d     # core stack
+#   docker compose --profile backup up -d backup
+#
+# Differences from the development stack (../docker-compose.yml), each deliberate:
+#   * images come from ${EXAMLOPS_REGISTRY}; application images are pinned to ${EXAMLOPS_VERSION}
+#     and every upstream image is pinned by digest, so an install is reproducible;
+#   * no `env_file:` — each service gets only the variables it uses, so a secret reaches only the
+#     services that need it;
+#   * no `container_name:` — two installs can share a host under different project names;
+#   * every port binds to ${EXAMLOPS_BIND} (loopback by default); widen it deliberately, or put a
+#     TLS-terminating reverse proxy in front;
+#   * one use-case pack for the whole stack: /state/usecase (EXAMLOPS_USECASE_DIR). With no pack
+#     the platform starts empty rather than serving a pack baked into one image but not another.
+#
+# Not in this bundle yet: the monitoring stack, JupyterHub, the SeanerBUS bridge and vLLM. They run
+# from the development stack; see docs/guides/install-compose-bundle.md.
+#
+# Guarded by tests/unit/test_install_bundle.py.
+
+name: ${EXAMLOPS_PROJECT_NAME:-examlops}
+
+x-state-env: &state-env
+  PLATFORM_DB: /state/platform.db
+  EXAMLOPS_DATA_DIR: /state
+  EXAMLOPS_USECASE_DIR: /state/usecase
+  EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+  EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+
+services:
+
+  # One-shot: create the data root (idempotent; never overwrites an existing pack). Set
+  # EXAMLOPS_SEED_PACK to a pack path inside the image (e.g. /app/usecases/seanergy) to seed
+  # /state/usecase on first start.
+  #
+  # The services do not share a uid (the agent runs as 10001, others as root), so the data root is
+  # handed to the operator's uid/gid, group-writable with setgid directories, and every non-root
+  # service joins that group. SQLite gives a new WAL/journal the database file's owner and mode,
+  # so a root service opening platform.db first does not lock the others out.
+  instance-init:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-control-plane:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        exa --json instance init --data-dir /state $${EXAMLOPS_SEED_PACK:+--pack "$$EXAMLOPS_SEED_PACK"}
+        mkdir -p /state/agent
+        chown -R "$${EXAMLOPS_STATE_UID}:$${EXAMLOPS_STATE_GID}" /state
+        chmod -R g+rwX /state
+        find /state -type d -exec chmod g+s {} +
+    environment:
+      <<: *state-env
+      EXAMLOPS_SEED_PACK: ${EXAMLOPS_SEED_PACK:-}
+      EXAMLOPS_STATE_UID: ${EXAMLOPS_STATE_UID:?set EXAMLOPS_STATE_UID in .env (./install.sh init records it)}
+      EXAMLOPS_STATE_GID: ${EXAMLOPS_STATE_GID:?set EXAMLOPS_STATE_GID in .env (./install.sh init records it)}
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+    restart: "no"
+
+  postgres:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-postgres:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    environment:
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (./install.sh init generates it)}
+      POSTGRES_DB: mlflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlops -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    # MinIO stopped publishing community images after this release (2025-09-07). Point the stack at
+    # an S3 service you maintain for production; see the guide.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    mem_limit: ${MINIO_MEM_LIMIT:-1g}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_MINIO:-19000}:9000"
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_MINIO_CONSOLE:-19001}:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: buckets + the read-only credential Ray Serve uses (it only ever downloads models).
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing local/mlflow-artifacts
+        mc mb --ignore-existing "local/$${EXAMLOPS_PROJECTS_BUCKET}"
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::mlflow-artifacts","arn:aws:s3:::mlflow-artifacts/*"]}]}' > /tmp/serving-readonly.json
+        mc admin policy create local serving-readonly /tmp/serving-readonly.json
+        mc admin user add local "$${MINIO_SERVING_ACCESS_KEY}" "$${MINIO_SERVING_SECRET_KEY}"
+        mc admin policy attach local serving-readonly --user "$${MINIO_SERVING_ACCESS_KEY}" 2>/dev/null || true
+        echo '[minio-init] buckets and read-only serving credential ready.'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
+      MINIO_SERVING_ACCESS_KEY: ${MINIO_SERVING_ACCESS_KEY:?set MINIO_SERVING_ACCESS_KEY in .env}
+      MINIO_SERVING_SECRET_KEY: ${MINIO_SERVING_SECRET_KEY:?set MINIO_SERVING_SECRET_KEY in .env}
+    restart: "no"
+
+  mlflow:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-mlflow:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mlops:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/mlflow
+      --default-artifact-root s3://mlflow-artifacts/
+      --artifacts-destination s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts "mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*,${PUBLIC_HOST:-localhost},${PUBLIC_HOST:-localhost}:*"
+      --cors-allowed-origins "http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_DASHBOARD:-18099}"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_MLFLOW:-15000}:5000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Prefect server. The development stack's orchestrator image adds nothing to upstream, so the
+  # bundle uses upstream directly, pinned by digest.
+  orchestrator:
+    image: prefecthq/prefect:3.6.27-python3.11@sha256:ed9c73b555c114a8abca2a833ae4b36f7d47d918a25d6b7e08803e214755b0b4
+    mem_limit: ${ORCHESTRATOR_MEM_LIMIT:-2g}
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_UI_API_URL: /api
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/prefect
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_PREFECT:-14200}:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ray-serving:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-ray-serving:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    environment:
+      <<: *state-env
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_SERVING_ACCESS_KEY:?set MINIO_SERVING_ACCESS_KEY in .env}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SERVING_SECRET_KEY:?set MINIO_SERVING_SECRET_KEY in .env}
+      MODEL_STAGE: Production
+      RAY_NUM_REPLICAS: "1"
+      RAY_SERVE_PORT: "8001"
+      RAY_METRICS_EXPORT_PORT: "8080"
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}
+      EXAMLOPS_SERVING_VERIFY: ${EXAMLOPS_SERVING_VERIFY:-off}
+      EXAMLOPS_SIGNING_KEY: ${EXAMLOPS_SIGNING_KEY:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ray-serving
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_RAY_SERVE:-18001}:8001"
+      # Always loopback: the Ray dashboard's Jobs API runs arbitrary code and has no auth.
+      - "127.0.0.1:${EXAMLOPS_PORT_RAY_DASHBOARD:-18265}:8265"
+    shm_size: '2gb'
+    mem_limit: ${RAY_MEM_LIMIT:-6g}
+    cpus: ${RAY_CPUS:-2.0}
+    depends_on:
+      instance-init:
+        condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    # /ready, not /health: /health is 503 while the hot set is empty, which would restart-loop.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/ready')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  control-plane:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-control-plane:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
+    environment:
+      <<: *state-env
+      CONTROL_PLANE_PORT: "8002"
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:?set CONTROL_PLANE_TOKEN in .env}
+      CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-localhost,127.0.0.1,control-plane}
+      PREFECT_API_URL: http://orchestrator:4200/api
+      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-training_flow/examlops-dispatch}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RAY_SERVE_URL: http://ray-serving:8001
+      DASHBOARD_URL: http://dashboard:8099
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: control-plane
+    volumes:
+      - control_plane_data:/data
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_CONTROL_PLANE:-18002}:8002"
+    depends_on:
+      instance-init:
+        condition: service_completed_successfully
+      orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Skipper agent (the dashboard Copilot). Loopback only; the dashboard reaches it in-network.
+  agent:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-agent:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    mem_limit: ${AGENT_MEM_LIMIT:-2g}
+    environment:
+      <<: *state-env
+      AGENT_SERVER_HOST: 0.0.0.0
+      AGENT_SERVER_PORT: "18004"
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-llama3.1:8b}
+      AGENT_OLLAMA_URL: ${AGENT_CONTAINER_OLLAMA_URL:-http://host.docker.internal:11434}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RAY_SERVE_URL: http://ray-serving:8001
+      CONTROL_PLANE_URL: http://control-plane:8002
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:?set CONTROL_PLANE_TOKEN in .env}
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}
+      DASHBOARD_URL: http://dashboard:8099
+      # The agent's memory is instance data: it lives in the data root, not in a volume the
+      # image's uid (10001) could not write to.
+      AGENT_DB: /state/agent/agent_memory.db
+      AGENT_MEMORY_DB: /state/agent/skipper_memory.db
+      AGENT_MEMORY_REVIEW_DB: /state/agent/skipper_review.db
+      AGENT_DOCS_ROOT: /app/docs
+      AGENT_KNOWLEDGE_ROOTS: /app/docs
+    # The image runs as uid 10001; the data root's group makes /state/platform.db writable to it.
+    group_add:
+      - "${EXAMLOPS_STATE_GID:?set EXAMLOPS_STATE_GID in .env (./install.sh init records it)}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${EXAMLOPS_PORT_AGENT:-18004}:18004"
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:18004/healthz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Scoped Docker API for the dashboard's service controls: containers + lifecycle POSTs only.
+  # A raw docker.sock mount would be root-equivalent; this proxy holds it read-only.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2.0@sha256:083bd0ed8783e366d745f332f0e4489816dd35d984bef8f16e6d89484a22c082
+    mem_limit: ${SOCKET_PROXY_MEM_LIMIT:-128m}
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      EXEC: "0"
+      INFO: "0"
+      AUTH: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  dashboard:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-dashboard:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}
+    environment:
+      <<: *state-env
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      MLFLOW_URL: http://mlflow:5000
+      PREFECT_URL: http://orchestrator:4200
+      RAY_SERVE_URL: http://ray-serving:8001
+      RAY_DASHBOARD_URL: http://ray-serving:8265
+      MINIO_URL: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      DASHBOARD_MINIO_BUCKET: dashboard-model-docs
+      DATABASE_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/mlflow
+      DASHBOARD_VIEWER_PASSWORD: ${DASHBOARD_VIEWER_PASSWORD:?set DASHBOARD_VIEWER_PASSWORD in .env}
+      DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:?set DASHBOARD_ADMIN_PASSWORD in .env}
+      DASHBOARD_JWT_SECRET: ${DASHBOARD_JWT_SECRET:?set DASHBOARD_JWT_SECRET in .env}
+      DASHBOARD_JWT_TTL_HOURS: ${DASHBOARD_JWT_TTL_HOURS:-12}
+      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:?set DASHBOARD_SECRET_KEY in .env}
+      DASHBOARD_PORT: "8099"
+      CONTROL_PLANE_URL: http://control-plane:8002
+      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:?set CONTROL_PLANE_TOKEN in .env}
+      AGENT_URL: http://agent:18004
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_DASHBOARD:-18099}
+      PUBLIC_MLFLOW_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_MLFLOW:-15000}
+      PUBLIC_PREFECT_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_PREFECT:-14200}
+      PUBLIC_RAY_SERVE_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_RAY_SERVE:-18001}
+      PUBLIC_CONTROL_PLANE_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_CONTROL_PLANE:-18002}
+      PUBLIC_MINIO_CONSOLE_URL: http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_MINIO_CONSOLE:-19001}
+      SLURM_MODE: ${EXAMLOPS_SLURM_MODE:-mock}
+      EXAMLOPS_PROVIDERS_DIR: /state/.providers
+      EXAMLOPS_CONFIG: /var/lib/examlops-dashboard/config.toml
+      EXAMLOPS_DASHBOARD_CLI_WORKSPACE: /var/lib/examlops-dashboard/cli-workspace
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: dashboard
+    ports:
+      - "${EXAMLOPS_BIND:-127.0.0.1}:${EXAMLOPS_PORT_DASHBOARD:-18099}:8099"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+      - dashboard_cli_data:/var/lib/examlops-dashboard
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Scheduled whole-platform backup (opt-in): docker compose --profile backup up -d backup
+  # Profile-gated, so no `:?` here: compose interpolates before filtering by profile, and a
+  # required variable would abort every command. The core services already require all of them.
+  backup:
+    image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-backup:${EXAMLOPS_VERSION}
+    profiles: [backup]
+    command: ["backup", "schedule", "--all"]
+    environment:
+      <<: *state-env
+      EXAMLOPS_ACTOR: backup-sidecar
+      EXAMLOPS_BACKUP_DIR: /backups
+      EXAMLOPS_BACKUP_INTERVAL: ${EXAMLOPS_BACKUP_INTERVAL:-3600}
+      EXAMLOPS_BACKUP_RETAIN: ${EXAMLOPS_BACKUP_RETAIN:-keep=14}
+      EXAMLOPS_BACKUP_S3_URI: ${EXAMLOPS_BACKUP_S3_URI:-}
+      CONTROL_PLANE_DB: /state/platform.db
+      PGHOST: postgres
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      EXAMLOPS_BACKUP_PG_DBS: mlflow,prefect
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
+      # The agent's memory stores (in the data root) and the dashboard's own `exa` config + CLI
+      # workspace (in its volume), so a bundle captures them too.
+      AGENT_DB: /state/agent/agent_memory.db
+      AGENT_MEMORY_DB: /state/agent/skipper_memory.db
+      AGENT_MEMORY_REVIEW_DB: /state/agent/skipper_review.db
+      EXAMLOPS_CONFIG: /dashboard-cli/config.toml
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-./state}:/state:rw
+      - backups_data:/backups
+      - dashboard_cli_data:/dashboard-cli:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  control_plane_data:
+  dashboard_cli_data:
+  backups_data:
