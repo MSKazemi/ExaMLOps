@@ -8,10 +8,100 @@ from collections.abc import Iterator
 from typing import Any
 
 from examlops.dataplane.connectors.base import BaseConnector
-from examlops.dataplane.safety import redact
-from examlops.dataplane.types import Limits, Probe, SpecError, TableBatch, TableInfo, Watermark
+from examlops.dataplane.safety import check_address, local_files_allowed, redact
+from examlops.dataplane.types import (
+    EgressDenied,
+    Limits,
+    Probe,
+    SpecError,
+    TableBatch,
+    TableInfo,
+    Watermark,
+)
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?")
+_DEFAULT_PORTS = {"postgresql": 5432, "mysql": 3306, "mariadb": 3306}
+# A query parameter that can silently redirect the connection past the netloc host the guard
+# would otherwise check: `host`/`port` (postgres and mysql both honour a query override of
+# either), `hostaddr` (libpq connects to this IP directly, bypassing hostname resolution
+# entirely — and it is literally the connect_args key this module's own hostaddr pin uses),
+# `service` (names an opaque pg_service.conf entry this code cannot inspect), `unix_socket`
+# (mysql/pymysql). Fix KS round 1, CRITICAL 1.
+_HOST_ROUTING_QUERY_KEYS = frozenset({"host", "hostaddr", "unix_socket", "service", "port"})
+
+
+def _default_port(drivername: str) -> int:
+    return _DEFAULT_PORTS.get(drivername.split("+")[0], 0)
+
+
+def _refuse_host_routing_query_params(url: Any) -> None:
+    bad = sorted({str(k).lower() for k in url.query} & _HOST_ROUTING_QUERY_KEYS)
+    if bad:
+        raise SpecError(
+            f"the sql connection URL's query must not set {bad} — a query parameter can "
+            "silently override the host/port the egress guard checked; use the URL's netloc "
+            "(scheme://host:port/db) instead"
+        )
+
+
+def _dialect_connect_kwargs(url: Any) -> dict[str, Any]:
+    """The actual kwargs the dialect hands its DBAPI's ``connect()`` — the ground truth for what
+    host a connection reaches, immune to a dialect quirk that resolves a host differently than
+    ``url.host``/``.port`` alone would suggest (fix KS round 1, CRITICAL 1)."""
+    from sqlalchemy.exc import NoSuchModuleError
+
+    try:
+        dialect = url.get_dialect()()
+    except NoSuchModuleError:
+        raise SpecError(
+            f"the sql connection URL names an unknown or uninstalled dialect/driver "
+            f"{url.drivername!r} (install its DBAPI package, e.g. the dataplane-sql extra)"
+        ) from None
+    _, kwargs = dialect.create_connect_args(url)
+    return kwargs
+
+
+def _egress_check_url(url: Any) -> dict[str, Any]:
+    """Egress-check ``url``'s effective host before any engine reaches it (ADR 0130 §10, fix KS).
+
+    Refuses a query parameter that could route the connection elsewhere first (CRITICAL 1), then
+    reads the connection's actual target from the dialect itself via ``create_connect_args``
+    rather than trusting ``url.host``/``.port`` directly — the two agree once the query is clean,
+    but this is immune to a dialect quirk neither check anticipated.
+
+    Any URL with no host, or whose effective host is a filesystem path (a Unix socket, or
+    sqlite's ``sqlite:///path``), is a local connection, not a network egress: refused unless
+    ``safety.local_files_allowed()``, the same gate the files connector applies (CRITICAL 2 — a
+    host-less URL, and ``sqlite:``, both bypassed this gate entirely before this fix). A
+    multi-host URL (``host1,host2``) is refused outright — checking every alternate is out of
+    scope here.
+
+    For ``postgresql+psycopg`` the checked address is pinned via libpq's ``hostaddr`` connect
+    arg, returned here for the caller to pass into ``connect_args``, so DNS cannot rebind
+    between the check and the connection while TLS still verifies the hostname (``host`` stays
+    the name). Other host-having dialects (mysql, postgresql+psycopg2, …) are checked but not
+    pinned — a residual, as for an S3 endpoint's ``https://`` path.
+    """
+    _refuse_host_routing_query_params(url)
+    kwargs = _dialect_connect_kwargs(url)
+    host = kwargs.get("host")
+    if host and "," in str(host):
+        raise SpecError("multi-host URLs are not supported by the dataplane egress guard")
+    if not host or "/" in str(host):
+        if not local_files_allowed():
+            raise SpecError(
+                "this sql URL has no network host (a local file or Unix-socket connection); "
+                "local connections are disabled in the dataplane. Set "
+                "EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES=1 only where the service has no access to "
+                "platform state"
+            )
+        return {}
+    port = kwargs.get("port")
+    port = int(port) if port not in (None, "") else _default_port(url.drivername)
+    ip = check_address(str(host), port)
+    if url.drivername == "postgresql+psycopg":
+        return {"hostaddr": ip}
+    return {}
 
 
 def _typed(value: Any) -> tuple[Any, str]:
@@ -82,9 +172,20 @@ class SqlConnector(BaseConnector):
                 "sql connection needs config.url (a SQLAlchemy URL without the password)"
             )
         url = make_url(conn["url"])
+        connect_args = _egress_check_url(url)
         if conn.get("secret"):
             url = url.set(password=conn["secret"])
-        return sa.create_engine(url, pool_pre_ping=True)
+        return sa.create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+
+    def _checked_engine(self, conn: dict[str, Any] | None) -> Any:
+        """``_engine()``, but an egress/spec failure comes back redacted before it leaves this
+        connector — the same path ``probe()`` uses (fix KS round 1, Important 5). Used by
+        ``discover()``/``read()``; ``probe()`` already wraps everything more broadly itself."""
+        try:
+            return self._engine(conn)
+        except (EgressDenied, SpecError) as exc:
+            secret = (conn or {}).get("secret")
+            raise type(exc)(redact(str(exc), secrets=[secret] if secret else [])) from None
 
     def probe(self, conn: dict[str, Any] | None, spec: dict[str, Any] | None = None) -> Probe:
         secret = (conn or {}).get("secret")
@@ -107,7 +208,7 @@ class SqlConnector(BaseConnector):
     def discover(self, conn: dict[str, Any] | None, spec: dict[str, Any]) -> list[TableInfo]:
         import sqlalchemy as sa
 
-        eng = self._engine(conn)
+        eng = self._checked_engine(conn)
         try:
             return [TableInfo(n) for n in sa.inspect(eng).get_table_names()[:500]]
         finally:
@@ -131,7 +232,7 @@ class SqlConnector(BaseConnector):
         import pyarrow as pa
         import sqlalchemy as sa
 
-        eng = self._engine(conn)
+        eng = self._checked_engine(conn)
         prep = eng.dialect.identifier_preparer
 
         def quoted(ident: str) -> str:

@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 
 from examlops.dataplane.connectors import kafka  # noqa: E402
-from examlops.dataplane.types import DataplaneError, Limits  # noqa: E402
+from examlops.dataplane.types import DataplaneError, EgressDenied, Limits, SpecError  # noqa: E402
 
 
 class _TP:
@@ -90,11 +90,15 @@ class _FakeConsumer:
 @pytest.fixture
 def log(monkeypatch):
     calls: list = []
+    # ADR 0130 §10 (fix KS): the bootstrap host is now egress-checked before a Consumer is built.
+    # A loopback bootstrap is what every read/probe test in this file uses, so it must be
+    # allow-listed for the pre-existing behaviour tests to keep exercising the fake consumer.
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "127.0.0.0/8")
     monkeypatch.setattr(kafka, "_consumer_factory", lambda conf: _FakeConsumer(conf, calls))
     return calls
 
 
-CONN = {"kind": "kafka", "bootstrap_servers": "broker:9092"}
+CONN = {"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092"}
 
 
 def _read(spec, since=None):
@@ -200,7 +204,142 @@ class _ErrConsumer(_FakeConsumer):
 
 def test_broker_error_text_is_redacted(monkeypatch, log):
     monkeypatch.setattr(kafka, "_consumer_factory", lambda conf: _ErrConsumer(conf, log))
-    conn = {"kind": "kafka", "bootstrap_servers": "broker:9092", "secret": "hunter2-secret"}
+    conn = {"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092", "secret": "hunter2-secret"}
     with pytest.raises(DataplaneError) as exc_info:
         list(kafka.KafkaConnector().read(conn, {"topic": "jobs"}, None, Limits()))
     assert "hunter2-secret" not in str(exc_info.value)
+
+
+# --- fix KS: kafka bootstrap.servers egress-checked (ADR 0130 §10) ------------------------------
+
+
+def test_bootstrap_entries_parses_comma_separated_and_bracketed_ipv6():
+    assert kafka._bootstrap_entries("a:1,b") == [("a", 1), ("b", 9092)]
+    assert kafka._bootstrap_entries("[::1]:9092") == [("::1", 9092)]
+    assert kafka._bootstrap_entries("[::1]") == [("::1", 9092)]
+    assert kafka._bootstrap_entries("[::1]:9092, c:10") == [("::1", 9092), ("c", 10)]
+
+
+def test_bootstrap_entries_rejects_a_malformed_entry():
+    with pytest.raises(SpecError):
+        kafka._bootstrap_entries("[::1")
+    with pytest.raises(SpecError):
+        kafka._bootstrap_entries("a:notaport")
+
+
+def test_check_bootstrap_servers_checks_every_entry_and_defaults_the_port(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(kafka, "check_address", lambda host, port: calls.append((host, port)))
+    kafka._check_bootstrap_servers("a,b:10")
+    assert calls == [("a", 9092), ("b", 10)]
+
+
+def test_conf_refuses_a_platform_internal_bootstrap_host(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(EgressDenied, match="platform-internal"):
+        kafka._conf({"kind": "kafka", "bootstrap_servers": "postgres:9092"}, None)
+
+
+def test_conf_refuses_a_loopback_bootstrap_host(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(EgressDenied):
+        kafka._conf({"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092"}, None)
+
+
+def test_conf_one_denied_entry_refuses_the_whole_bootstrap_list(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "127.0.0.0/8")
+    with pytest.raises(EgressDenied, match="platform-internal"):
+        kafka._conf({"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092,postgres:9092"}, None)
+
+
+def test_conf_admits_an_explicitly_allow_listed_internal_name(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "localhost")
+    conf = kafka._conf({"kind": "kafka", "bootstrap_servers": "localhost:9092"}, None)
+    assert conf["bootstrap.servers"] == "localhost:9092"
+
+
+def test_probe_is_refused_for_a_loopback_bootstrap_and_never_builds_a_consumer(log, monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    probe = kafka.KafkaConnector().probe({"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092"})
+    assert probe.ok is False
+    assert log == []
+
+
+def test_read_is_refused_for_an_internal_name_bootstrap_and_never_builds_a_consumer(
+    log, monkeypatch
+):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(EgressDenied):
+        list(
+            kafka.KafkaConnector().read(
+                {"kind": "kafka", "bootstrap_servers": "postgres:9092"},
+                {"topic": "jobs"},
+                None,
+                Limits(),
+            )
+        )
+    assert log == []
+
+
+# --- fix KS round 1: Important 3 — a scheme-prefixed bootstrap entry and a DNS failure ----------
+
+
+def test_bootstrap_entries_strips_a_known_listener_protocol_prefix():
+    assert kafka._bootstrap_entries("PLAINTEXT://a:1") == [("a", 1)]
+    assert kafka._bootstrap_entries("SSL://a") == [("a", 9092)]
+    assert kafka._bootstrap_entries("sasl_ssl://[::1]:9093") == [("::1", 9093)]
+    assert kafka._bootstrap_entries("SASL_PLAINTEXT://a:1,PLAINTEXT://b:2") == [
+        ("a", 1),
+        ("b", 2),
+    ]
+
+
+def test_bootstrap_entries_rejects_an_unknown_protocol_prefix():
+    with pytest.raises(SpecError, match="unknown protocol"):
+        kafka._bootstrap_entries("http://a:1")
+
+
+def test_conf_admits_a_protocol_prefixed_allow_listed_host(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "127.0.0.0/8")
+    conf = kafka._conf({"kind": "kafka", "bootstrap_servers": "PLAINTEXT://127.0.0.1:9092"}, None)
+    assert conf["bootstrap.servers"] == "PLAINTEXT://127.0.0.1:9092"
+
+
+def test_an_unresolvable_bootstrap_host_raises_egress_denied_not_a_raw_dns_error(monkeypatch):
+    """fix KS round 1, Important 3: a real DNS failure (``socket.gaierror``) must never bubble out
+    of the connector — ``safety.check_address`` maps it to ``EgressDenied`` (verified directly in
+    ``test_dataplane_safety.py``); this proves the connector benefits without stubbing anything."""
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(EgressDenied, match="did not resolve"):
+        kafka._conf(
+            {"kind": "kafka", "bootstrap_servers": "this-host-does-not-exist.invalid:9092"}, None
+        )
+
+
+# --- fix KS round 1: Important 5 — discover()/read() redact egress/spec failures ----------------
+
+
+def test_discover_redacts_a_secret_from_an_egress_denial(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    conn = {"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092", "secret": "hunter2-secret"}
+    with pytest.raises(EgressDenied) as exc_info:
+        kafka.KafkaConnector().discover(conn, {"topic": "jobs"})
+    assert "hunter2-secret" not in str(exc_info.value)
+
+
+def test_read_routes_an_egress_denial_through_the_redact_helper(monkeypatch):
+    """Proves the wiring, not just the absence of a leak: ``redact()`` is actually invoked on the
+    discover()/read() path, the same one ``probe()`` uses."""
+    calls: list[str] = []
+    real_redact = kafka.redact
+
+    def spy(text, **kw):
+        calls.append(text)
+        return real_redact(text, **kw)
+
+    monkeypatch.setattr(kafka, "redact", spy)
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", raising=False)
+    conn = {"kind": "kafka", "bootstrap_servers": "127.0.0.1:9092"}
+    with pytest.raises(EgressDenied):
+        list(kafka.KafkaConnector().read(conn, {"topic": "jobs"}, None, Limits()))
+    assert calls

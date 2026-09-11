@@ -157,6 +157,17 @@ def test_allow_list_admits_hosts_and_cidrs(monkeypatch):
     assert safety.check_address("db.lab", 5432, resolver=_resolver("10.9.9.9")) == "10.9.9.9"
 
 
+def test_a_resolution_failure_is_mapped_to_egress_denied_not_a_raw_dns_error():
+    """fix KS round 1, Important 3: a caller (sql/kafka) must never see a raw ``socket.gaierror``
+    bubble out of ``check_address`` — every failure mode is a ``DataplaneError``."""
+
+    def broken_resolver(host, port, *a, **kw):
+        raise socket.gaierror(-2, "Name or service not known")
+
+    with pytest.raises(EgressDenied, match="did not resolve"):
+        safety.check_address("broker.invalid", 9092, resolver=broken_resolver)
+
+
 def test_guarded_client_connects_to_the_checked_ip_not_a_second_lookup(monkeypatch):
     """DNS rebinding: first answer public, second answer loopback. The guard must use the first."""
     answers = iter(["93.184.216.34", "127.0.0.1"])

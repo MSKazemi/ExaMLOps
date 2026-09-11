@@ -111,7 +111,19 @@ def test_create_accepts_a_registry_kind():
     assert conn.get_connection("lab-pg")["kind"] == "sql"
 
 
-def test_probe_delegates_to_the_connector(tmp_path):
+def test_probe_delegates_to_the_connector(tmp_path, monkeypatch):
+    # A sqlite URL has no network host, so the sql connector's egress guard admits it only when
+    # local files are enabled (ADR 0130 §10).
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES", "1")
     db = tmp_path / "p.db"
     conn.create_connection("lite", "sql", config={"url": f"sqlite:///{db}"})
     assert conn.test_connection("lite")["ok"] is True
+
+
+def test_probe_refuses_a_local_database_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES", raising=False)
+    db = tmp_path / "p.db"
+    conn.create_connection("lite", "sql", config={"url": f"sqlite:///{db}"})
+    result = conn.test_connection("lite")
+    assert result["ok"] is False
+    assert "no network host" in str(result)

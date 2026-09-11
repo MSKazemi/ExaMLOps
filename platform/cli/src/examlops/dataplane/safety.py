@@ -239,7 +239,13 @@ def check_address(host: str, port: int, *, resolver: Any = socket.getaddrinfo) -
             f"{host} is a platform-internal name; add it to EXAMLOPS_DATAPLANE_ALLOWED_HOSTS "
             "to use it as a source"
         )
-    infos = resolver(name, port, proto=socket.IPPROTO_TCP)
+    try:
+        infos = resolver(name, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        # `socket.gaierror` (name resolution failure) and friends are stdlib `OSError`s, not a
+        # `DataplaneError` — a caller (sql, kafka, …) that lets one bubble up shows a raw DNS
+        # error instead of a redactable, catchable egress failure (fix KS round 1, Important 3).
+        raise EgressDenied(f"{host} did not resolve: {exc}") from None
     if not infos:
         raise EgressDenied(f"{host} did not resolve")
     for info in infos:

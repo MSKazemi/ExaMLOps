@@ -9,9 +9,10 @@ from collections.abc import Iterator
 from typing import Any
 
 from examlops.dataplane.connectors.base import BaseConnector
-from examlops.dataplane.safety import redact
+from examlops.dataplane.safety import check_address, redact
 from examlops.dataplane.types import (
     DataplaneError,
+    EgressDenied,
     Limits,
     Probe,
     SpecError,
@@ -21,6 +22,73 @@ from examlops.dataplane.types import (
 )
 
 _CHUNK = 10_000
+_DEFAULT_KAFKA_PORT = 9092
+# librdkafka accepts an optional listener-protocol prefix on a bootstrap entry
+# (`PLAINTEXT://host:port`, `SSL://…`, `SASL_PLAINTEXT://…`, `SASL_SSL://…`); without stripping
+# it, the whole `scheme://host` string was treated as an unresolvable hostname (fix KS round 1,
+# Important 3).
+_KAFKA_LISTENER_PROTOCOLS = frozenset({"plaintext", "ssl", "sasl_plaintext", "sasl_ssl"})
+
+
+def _strip_kafka_protocol(entry: str) -> str:
+    if "://" not in entry:
+        return entry
+    scheme, _, rest = entry.partition("://")
+    if scheme.strip().lower() not in _KAFKA_LISTENER_PROTOCOLS:
+        raise SpecError(f"invalid bootstrap_servers entry {entry!r}: unknown protocol {scheme!r}")
+    return rest
+
+
+def _bootstrap_entries(bootstrap_servers: str) -> list[tuple[str, int]]:
+    """Parse a librdkafka ``bootstrap.servers`` string into ``(host, port)`` pairs.
+
+    Accepts comma-separated ``host:port`` entries, a bare host (default port 9092), an optional
+    ``PLAINTEXT://``/``SSL://``/``SASL_PLAINTEXT://``/``SASL_SSL://`` listener-protocol prefix,
+    and a bracketed IPv6 literal (``[::1]:9092``, or bracketed with no port).
+    """
+    entries: list[tuple[str, int]] = []
+    for raw in str(bootstrap_servers).split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        entry = _strip_kafka_protocol(entry)
+        if entry.startswith("["):
+            end = entry.find("]")
+            if end == -1:
+                raise SpecError(f"invalid bootstrap_servers entry {raw!r}: unmatched '['")
+            host = entry[1:end]
+            rest = entry[end + 1 :]
+            port = _DEFAULT_KAFKA_PORT
+            if rest.startswith(":"):
+                try:
+                    port = int(rest[1:])
+                except ValueError:
+                    raise SpecError(f"invalid bootstrap_servers entry {raw!r}") from None
+            elif rest:
+                raise SpecError(f"invalid bootstrap_servers entry {raw!r}")
+        elif ":" in entry:
+            host, _, port_str = entry.rpartition(":")
+            try:
+                port = int(port_str)
+            except ValueError:
+                raise SpecError(f"invalid bootstrap_servers entry {raw!r}") from None
+        else:
+            host, port = entry, _DEFAULT_KAFKA_PORT
+        entries.append((host, port))
+    return entries
+
+
+def _check_bootstrap_servers(bootstrap_servers: str) -> None:
+    """Egress-check every broker in ``bootstrap.servers`` before a Consumer is built (ADR 0130
+    §10, fix KS). One denied entry refuses the whole connection.
+
+    Residual: once connected, the broker's own metadata can advertise other listener addresses
+    that librdkafka then connects to directly — those later hops are not re-checked here. The
+    allow-list covers the bootstrap; a network egress policy on the dataplane container is the
+    backstop, exactly as for an S3 endpoint's redirects (``connectors.files._guard_s3_endpoint``).
+    """
+    for host, port in _bootstrap_entries(bootstrap_servers):
+        check_address(host, port)
 
 
 def _default_factory(conf: dict[str, Any]) -> Any:
@@ -45,6 +113,7 @@ def _conf(conn: dict[str, Any] | None, spec: dict[str, Any] | None) -> dict[str,
     cfg = conn or {}
     if not cfg.get("bootstrap_servers"):
         raise SpecError("kafka connection needs config.bootstrap_servers")
+    _check_bootstrap_servers(cfg["bootstrap_servers"])
     conf: dict[str, Any] = {
         "bootstrap.servers": cfg["bootstrap_servers"],
         "group.id": f"examlops-dataplane-{uuid.uuid4().hex[:12]}",  # librdkafka requires one; never committed
@@ -60,6 +129,17 @@ def _conf(conn: dict[str, Any] | None, spec: dict[str, Any] | None) -> dict[str,
         conf["sasl.username"] = cfg.get("sasl_username", "")
         conf["sasl.password"] = cfg.get("secret", "")
     return conf
+
+
+def _checked_conf(conn: dict[str, Any] | None, spec: dict[str, Any] | None) -> dict[str, Any]:
+    """``_conf()``, but an egress/spec failure comes back redacted before it leaves this
+    connector — the same path ``probe()`` uses (fix KS round 1, Important 5). Used by
+    ``discover()``/``read()``; ``probe()`` already wraps everything more broadly itself."""
+    try:
+        return _conf(conn, spec)
+    except (EgressDenied, SpecError) as exc:
+        secret = (conn or {}).get("secret")
+        raise type(exc)(redact(str(exc), secrets=[secret] if secret else [])) from None
 
 
 def _ms(iso: str) -> int:
@@ -89,7 +169,7 @@ class KafkaConnector(BaseConnector):
             )
 
     def discover(self, conn: dict[str, Any] | None, spec: dict[str, Any]) -> list[TableInfo]:
-        consumer = _consumer_factory(_conf(conn, spec))
+        consumer = _consumer_factory(_checked_conf(conn, spec))
         try:
             return [TableInfo(t) for t in sorted(consumer.list_topics(timeout=5).topics)[:500]]
         finally:
@@ -154,7 +234,7 @@ class KafkaConnector(BaseConnector):
             max_records is not None and int(max_records) == 0
         ):
             return
-        consumer = _consumer_factory(_conf(conn, spec))
+        consumer = _consumer_factory(_checked_conf(conn, spec))
         try:
             bounds = self._bounds(consumer, topic, spec, since)
             pending = {p: lo for p, (lo, hi) in bounds.items() if lo < hi}
