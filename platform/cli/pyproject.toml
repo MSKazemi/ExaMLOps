@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examlops"
-version = "0.54.0"
+version = "0.55.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 # The PyPI project page. The repo README links relatively into docs/, which PyPI cannot

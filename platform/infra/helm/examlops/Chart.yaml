@@ -10,8 +10,8 @@ type: application
 # already cached is invisible to `helm repo update` — the upgrade path silently ends.
 # Kept in lockstep with appVersion because the chart ships from the same repo as the
 # code it deploys; tests/unit/test_helm_chart.py holds the two together.
-version: 0.54.0
-appVersion: "0.54.0"
+version: 0.55.0
+appVersion: "0.55.0"
 keywords: [mlops, hpc, kubernetes, ha]
 maintainers:
   - name: Mohsen Seyedkazemi Ardebili

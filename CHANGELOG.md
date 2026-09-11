@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-09-11
+
 ### Fixed — `exa serve llm start --launcher flux` starts the server (ADR 0107 clause 3)
 
 - The vLLM job script called Slurm's `srun` and `scontrol` unconditionally. Under `flux batch`,
