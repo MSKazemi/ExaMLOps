@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-09-11
+
+### Added — community front door and a discoverable docs site
+
+- **Contributor front door.** `.github/` now carries CONTRIBUTING (setup, test tiers, the rules CI
+  enforces, AI-assistance policy), the Contributor Covenant 2.1, SECURITY (private vulnerability
+  reporting), SUPPORT, GOVERNANCE (roles and the contributor ladder), CODEOWNERS, issue forms and a
+  pull-request template. GitHub's community-health score is 100 %.
+- **Docs site, live at <https://mskazemi.com/ExaMLOps/>.** A Community tab (Get involved, FAQ),
+  an "ExaMLOps compared" page (Kubeflow, MLflow on its own, Ray on Slurm, ClearML, Metaflow,
+  Valohai, DKube; each claim quotes that project's own docs), edit-this-page links, OpenGraph and
+  schema.org JSON-LD, a 1280×640 social card, a served `llms.txt`, and canonical URLs on
+  mskazemi.com. The HPC training guide opens with a short answer, and its governed-path example no
+  longer approves a cluster name it never registered.
+- The README no longer says nothing reaches production without a sysadmin: the approval queue
+  gates model changes from CI, while drift retrains are governed by cooldowns and autonomy levels.
+
 ### Fixed — RAG's encoder check fires, enforce mode redacts secrets, the cache survives content parts
 
 - **RAG's encoder check could never fire.** `RagPipeline.query` checked the collection's stamp
@@ -15,8 +32,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   redacted only personal data. Secrets are now redacted too (`secrets.redact_secrets`).
 - **The semantic cache crashed on content-part messages** (`bind_to_gateway`). Such requests are
   now never looked up or stored: their text alone does not identify them.
-
-## [0.52.0] - 2026-09-11
 
 ### Changed — dependencies: training and serving move together; typer 0.27
 
