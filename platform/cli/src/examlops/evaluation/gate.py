@@ -239,6 +239,71 @@ def run_eval_gate(
     return result
 
 
+def promotion_refusal(
+    names: list[str],
+    candidate_version: str,
+    *,
+    higher_is_better: bool = True,
+    actor: str = "pipeline",
+    source: str = "pipeline",
+) -> str | None:
+    """Why the eval gate refuses to let ``candidate_version`` move past the candidate stage.
+
+    For callers that move aliases on their own road — the training flow's lifecycle promotion
+    (``pipelines.pipeline_generator.promote_task``). ``names`` are the keys the model may be gated
+    under (registry name, MLflow name); the first with a configured gate is used.
+
+    Returns None when no gate is configured, or when it passes (a ``warn``-mode gate always
+    passes). A configured gate that **could not run** refuses — ADR 0008 clause 2's rule: a gate
+    that could not run is reported, never passed over. Every refusal is audited
+    (``promotion_blocked_by_gate`` / ``promotion_gate_error``).
+    """
+    from examlops.data.evaluation import get_eval_gate
+
+    target = next((n for n in names if n), "?")
+    try:
+        key = next((n for n in names if n and get_eval_gate(n) is not None), None)
+        if key is None:
+            return None
+        target = key
+        result = run_eval_gate(key, str(candidate_version), higher_is_better=higher_is_better)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"eval gate could not run ({exc})"
+        _audit_refusal(source, actor, "promotion_gate_error", target, candidate_version, reason, [])
+        return reason
+    if result is None or result.passed:
+        return None
+    failing = [m.name for m in result.metrics if m.failed] or list(result.judge_failures)
+    reason = f"eval gate FAILED: {', '.join(failing) or 'gate failed'}"
+    _audit_refusal(
+        source, actor, "promotion_blocked_by_gate", target, candidate_version, reason, failing
+    )
+    return reason
+
+
+def _audit_refusal(
+    source: str,
+    actor: str,
+    action: str,
+    target: str,
+    version: str,
+    reason: str,
+    failing: list[str],
+) -> None:
+    try:
+        from examlops.data.audit import write_audit_event
+
+        write_audit_event(
+            source,
+            actor,
+            action,
+            target,
+            {"version": str(version), "reason": reason, "failing_metrics": failing},
+        )
+    except Exception:  # noqa: BLE001 - the refusal stands whether or not it is audited
+        pass
+
+
 # ── ADR 0111 — no uncalibrated judge may gate ─────────────────────────────────
 
 

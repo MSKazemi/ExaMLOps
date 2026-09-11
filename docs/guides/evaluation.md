@@ -169,7 +169,8 @@ reason.
 
 ### Enforcement in the autopilot
 
-There are two roads to Production and the gate guards both. `exa autopilot run` promotes the
+There are three roads to Production and the gate guards each (the training flow's own is
+below). `exa autopilot run` promotes the
 same model to the same alias, so a failing `block`-mode gate stops the cycle and is audited as
 `autopilot_promote_blocked`; `warn` is advisory here exactly as it is in `promote`; an
 unconfigured gate is a no-op. There is no `--force` on this road — an autopilot that can
@@ -181,6 +182,26 @@ alias**, which is why the closed loop needs it: a model can clear `rmse < 5.0` w
 regressed from 2.0. A gate that is configured but cannot be evaluated — the Staging version does
 not resolve — blocks rather than promotes, because promoting because the check could not run is
 the failure the gate exists to prevent.
+
+### Enforcement in the training flow
+
+The training flow promotes a freshly trained version itself. Its lifecycle rules (Staging →
+Canary → Production) set every alias whose metric threshold the version clears. That was the one
+road the gate did not guard: a `block`-mode gate stopped `exa pipeline promote` and the autopilot,
+while the flow auto-promoted past it on an `rmse` threshold alone.
+
+Now every alias **past Staging** answers to the gate. The gate runs once per version, before the
+first such alias is set and before the move is announced on the event backbone. On a refusal:
+- the flow stops, and the version keeps only the aliases it had already reached (normally
+  Staging);
+- the refusal is audited as `promotion_blocked_by_gate`, and the gate report is persisted as
+  usual;
+- a configured gate that cannot run refuses too, audited as `promotion_gate_error`.
+
+`warn` mode and an unconfigured gate change nothing. Staging itself is not gated: it is the
+candidate stage the suite evaluates, and gating it would stop a fresh version from ever being
+scored. The flow's fallback direction is its lifecycle rule's, so declare the gate's direction
+(below).
 
 ### Which direction a gate uses
 

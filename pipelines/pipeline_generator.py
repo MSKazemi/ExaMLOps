@@ -1345,6 +1345,31 @@ def _notify_ray_serve(model_id: str) -> None:
         print(f"[pipeline] Ray Serve webhook to {url} failed (poller will catch up): {exc}")
 
 
+def _eval_gate_refusal(
+    model_name: str, model_id: str, version: Any, higher_is_better: bool
+) -> str | None:
+    """Why the ADR 0008 eval gate refuses this version, or None when it does not.
+
+    ``exa pipeline promote`` and the autopilot both run the gate before moving an alias; this
+    flow's own promotion did not, so a ``block``-mode gate stopped every road to Production but
+    the one most versions take. The decision is ``examlops.evaluation.gate.promotion_refusal``
+    (no gate or a ``warn`` gate → None; a failed or unrunnable gate → the reason, audited). A
+    worker image without the platform package cannot have a gate configured, so it promotes as
+    before.
+    """
+    try:
+        from examlops.evaluation.gate import promotion_refusal
+    except ImportError:
+        return None
+    return promotion_refusal(
+        [model_name, model_id],
+        str(version),
+        higher_is_better=higher_is_better,
+        actor=os.getenv("EXAMLOPS_ACTOR") or "pipeline",
+        source="pipeline",
+    )
+
+
 @task(
     name="promote",
     retries=_IO_RETRIES,
@@ -1417,6 +1442,13 @@ def promote_task(
     except Exception:  # noqa: BLE001
         previous_production = None
 
+    # ADR 0008 — the eval gate protects every alias past Staging, the candidate stage the suite
+    # evaluates (gating Staging would stop a fresh version from ever being evaluated). It is run
+    # once per version, lazily, before the first such alias move — and before the move is
+    # announced, so a refused stage is neither set nor published.
+    gate_refusal: str | None = None
+    gate_checked = False
+
     for rule in rules:
         stage = rule["name"]
         metric_val = metrics.get(rule["metric"])
@@ -1432,6 +1464,18 @@ def promote_task(
                 f"({rule['metric']}={metric_val:.4f} {op} threshold={rule['threshold']})"
             )
             continue
+        if stage != "Staging":
+            if not gate_checked:
+                gate_checked = True
+                gate_refusal = _eval_gate_refusal(
+                    model_name,
+                    model_id,
+                    version,
+                    rule.get("direction", "lower_is_better") == "higher_is_better",
+                )
+            if gate_refusal is not None:
+                print(f"[pipeline] {stage}: not promoted — {gate_refusal} (ADR 0008).")
+                break  # stages are ordered; a refused version goes no further
         client.set_registered_model_alias(model_id, stage, str(version))
         set_aliases.append(stage)
         highest_status = stage

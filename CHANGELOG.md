@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the training flow promoted past a blocking eval gate (ADR 0008)
+
+- The training flow's lifecycle promotion set Staging, Canary and Production on metric thresholds
+  alone, without consulting the ADR 0008 eval gate. A `block`-mode gate stopped
+  `exa pipeline promote` and the autopilot, but not the flow's own auto-promotion, which is the
+  road most versions take.
+- Every alias past Staging now answers to the gate. It runs once per version, before the alias is
+  set and before the move is announced. A failing or unrunnable gate stops the flow at the stage
+  it had reached, audited (`promotion_blocked_by_gate` / `promotion_gate_error`). `warn` mode and
+  unconfigured gates change nothing. The decision lives in
+  `examlops.evaluation.gate.promotion_refusal`, and a static guard checks the flow consults it
+  before moving an alias.
+
 ### Added — air-gapped and mirrored installs, verified offline
 
 - New guide, [Air-gapped and mirrored installs](docs/guides/air-gapped-install.md). It covers
