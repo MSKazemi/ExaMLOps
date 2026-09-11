@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — `exa embedding reindex --scheduler` runs the reindex, once, with its recall gate (ADR 0043 clause 4)
+
+It had the same defect as the asset scheduler path, plus two of its own:
+
+- **On Slurm and Flux it crashed.** No job script was submitted, so both refused the job.
+- **On the mock it never ran.**
+- **Where it did run, the recall gate was not applied.** The job re-entered `exa embedding
+  reindex` without `--recall` / `--recall-floor`, so it verified against the defaults and switched.
+- **It opened a second `reindex_jobs` row**, leaving the first `submitted` forever.
+
+Now a generated script runs `python -m examlops.embeddings.job --job-id N`. The job continues the
+same row, carries the operator's recall inputs, and runs only a `submitted` row, so a replay
+cannot switch twice. The row is marked `submitted` before the job exists, so an idle cluster
+cannot start it too early. A refused submission fails the command and the row. A library
+`recall_fn`, which cannot travel to a job, runs inline and records `inline-fallback`.
+
+The job-script rules now live in one place, `examlops.scheduler_jobs`, for asset and reindex
+jobs alike: 0700, shell-quoted, no environment values, the submitter's code first, outside the
+repository. The script directory setting is now `EXAMLOPS_JOB_SCRIPT_DIR` (default
+`$XDG_CACHE_HOME/examlops/jobs`). v0.53.0's `EXAMLOPS_ASSET_JOB_DIR` is still honoured as a
+deprecated alias, so an existing setting keeps working.
+
 ### Fixed — two images the release gate quarantined can publish; exceptions are scoped, reasoned and expiring
 
 - **v0.52.0 and v0.53.0 published without `examlops-postgres` and `examlops-dashboard`**: the release's

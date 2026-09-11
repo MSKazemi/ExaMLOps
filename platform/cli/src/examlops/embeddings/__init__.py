@@ -38,6 +38,10 @@ class ReindexAbortedError(RuntimeError):
     """Raised when a reindex fails recall verification and is aborted (R4)."""
 
 
+class ReindexSubmissionError(RuntimeError):
+    """The scheduler refused the reindex job; the reindex row is marked ``failed``."""
+
+
 @dataclass
 class ReindexResult:
     collection: str
@@ -104,42 +108,104 @@ def _reindex_mode(mode: str | None = None) -> str:
     return chosen if chosen in ("inline", "scheduler") else "inline"
 
 
-def submit_reindex(collection: str, new_encoder_id: str, *, tenant: str = "default") -> str | None:
-    """Submit the reindex to the phase-23 scheduler; returns its job id, or None if unavailable.
+def submit_reindex(
+    collection: str,
+    new_encoder_id: str,
+    *,
+    tenant: str = "default",
+    job_id: int | None = None,
+    corpus_size: int = 0,
+    recall: float | None = None,
+    recall_floor: float = 0.9,
+    actor: str | None = None,
+) -> str | None:
+    """Run reindex ``job_id`` as a scheduler job; returns the scheduler's job id, or ``None`` when
+    there is no scheduler here (the caller then runs it inline).
 
-    Large corpora are the case the clause names, and re-embedding one in the caller's process
-    blocks whatever asked. The submitted command re-enters the CLI pinned to ``--inline``, or the
-    job would submit another job.
+    The job is ``python -m examlops.embeddings.job --job-id N`` with the operator's recall inputs:
+    it **continues the same ``reindex_jobs`` row** — ``submitted`` → ``switched`` / ``aborted`` /
+    ``failed`` — rather than re-entering ``exa embedding reindex``, which opened a second row and
+    left the first ``submitted`` forever, and ran without ``--recall`` / ``--recall-floor``, so the
+    recall gate the operator set was never applied. Only the job id and numbers reach the script;
+    collection and encoder names are read back from the row. The job does the bookkeeping, so it
+    needs the same datastore as this process (shared ``platform.db`` or the Postgres backend).
+
+    On the mock, which executes a job only when waited on, this waits — the reindex is done when
+    it returns. On Slurm / Flux it returns once the job is queued.
     """
     try:
         adapter = _scheduler_adapter()
     except Exception:  # noqa: BLE001 - no scheduler here is an environment fact
         return None
-    return str(
-        adapter.submit_job(
-            script_path=None,
-            resources={"job_name": f"reindex-{collection}"},
-            training_data={
-                "command": (
-                    f"exa embedding reindex {collection} {new_encoder_id} "
-                    f"--tenant {tenant} --inline"
-                )
-            },
+    from examlops import scheduler_jobs as jobs
+
+    if job_id is None:  # a direct caller: open the row the job will continue
+        current = platform_db.get_collection(collection, tenant) or {}
+        job_id = platform_db.create_reindex_job(
+            collection, tenant, current.get("active_encoder_id"), new_encoder_id
         )
+        platform_db.update_reindex_job(job_id, orchestrator="scheduler")
+    argv = [
+        jobs.job_python(),
+        "-m",
+        "examlops.embeddings.job",
+        "--job-id",
+        str(job_id),
+        "--corpus-size",
+        str(int(corpus_size)),
+        "--recall-floor",
+        repr(float(recall_floor)),
+    ]
+    if recall is not None:
+        argv += ["--recall", repr(float(recall))]
+    if actor:
+        argv += ["--actor", actor]
+    script, job_key = jobs.write_script(
+        "reindex", jobs.script_text(argv, title=f"embedding reindex job {job_id} (ADR 0043)")
     )
+    scheduler = jobs.scheduler_name()
+    resources = {"job_name": f"reindex-{collection}"}
+    # `submitted` is written *before* the job exists: the job runs only a `submitted` row, and an
+    # idle cluster can start it before `submit_job` has even returned here. Afterwards only the
+    # job id is recorded — by then the job may already have moved the row on.
+    platform_db.update_reindex_job(job_id, status="submitted")
+    try:
+        hpc_job_id = jobs.submit(adapter, script, job_key, resources)
+    except Exception as exc:  # noqa: BLE001
+        platform_db.update_reindex_job(job_id, status="failed")
+        raise ReindexSubmissionError(
+            f"reindex of {collection!r}: the {scheduler} scheduler refused the job ({exc})"
+        ) from exc
+    platform_db.update_reindex_job(job_id, hpc_job_id=hpc_job_id)
+    jobs.record_job(hpc_job_id, scheduler, f"reindex:{collection}", resources)
+    _audit(
+        collection,
+        tenant,
+        "reindex_submitted",
+        {"to": new_encoder_id, "hpc_job_id": hpc_job_id, "reindex_job": job_id},
+        actor,
+    )
+    if jobs.executes_only_when_waited(scheduler):
+        try:
+            adapter.wait_until_complete(hpc_job_id)
+            status = adapter.get_job_status(hpc_job_id)
+        except Exception as exc:  # noqa: BLE001
+            status = {"state": f"UNKNOWN ({exc})"}
+        jobs.finish_job(hpc_job_id, scheduler, status)
+        if _job_row(job_id).get("status") == "submitted":
+            # The job ended without reaching the reindex (it could not start or import).
+            platform_db.update_reindex_job(job_id, status="failed")
+    return hpc_job_id
+
+
+def _job_row(job_id: int) -> dict[str, Any]:
+    return next((r for r in platform_db.list_reindex_jobs() if r.get("id") == job_id), {})
 
 
 def _scheduler_adapter() -> Any:
-    import sys
-    from pathlib import Path
+    from examlops.scheduler_jobs import scheduler_adapter
 
-    root = Path(__file__).resolve().parents[5]
-    adapter_dir = root / "platform" / "infra" / "slurm-adapter"
-    if str(adapter_dir) not in sys.path:
-        sys.path.insert(0, str(adapter_dir))
-    from adapter import get_scheduler_adapter  # noqa: PLC0415
-
-    return get_scheduler_adapter()
+    return scheduler_adapter()
 
 
 def recommend_reindex(
@@ -183,44 +249,55 @@ def reindex(
     recall_floor: float = 0.9,
     actor: str | None = None,
     orchestrator: str | None = None,
+    recall: float | None = None,
+    _resume_job_id: int | None = None,
 ) -> ReindexResult:
     """Blue-green reindex a collection to a new encoder (R4/R5/R6/GWT-3/GWT-4/GWT-5).
 
     Build a staging index → re-embed → **verify recall** → **atomic switch** (retain old
     until confirmed, then prune) → **rebaseline** input drift → audit. If recall is below
     the floor the switch is refused and the old index is kept.
+
+    Recall is ``recall_fn()`` when given, else ``recall``, else 1.0. On the scheduler path only a
+    *value* can travel to the job: a ``recall_fn`` lives in this process, so that reindex runs
+    here and is recorded ``inline-fallback`` (the rule asset closures follow). ``_resume_job_id``
+    is how the job continues the row this call opened.
     """
     if platform_db.get_encoder(new_encoder_id) is None:
         raise ValueError(f"unknown encoder {new_encoder_id!r} — register it first")
     current = platform_db.get_collection(collection, tenant) or {}
     from_encoder = current.get("active_encoder_id")
 
-    job_id = platform_db.create_reindex_job(collection, tenant, from_encoder, new_encoder_id)
-    mode = _reindex_mode(orchestrator)
     started = time.perf_counter()
-    platform_db.update_reindex_job(job_id, orchestrator=mode)
+    if _resume_job_id is not None:
+        job_id, mode = _resume_job_id, "inline"  # the row keeps orchestrator=scheduler
+    else:
+        job_id = platform_db.create_reindex_job(collection, tenant, from_encoder, new_encoder_id)
+        mode = _reindex_mode(orchestrator)
+        platform_db.update_reindex_job(job_id, orchestrator=mode)
 
-    if mode == "scheduler":
-        hpc_job_id = submit_reindex(collection, new_encoder_id, tenant=tenant)
+    if mode == "scheduler" and recall_fn is not None:
+        platform_db.update_reindex_job(job_id, orchestrator="inline-fallback")
+        _audit(
+            collection,
+            tenant,
+            "reindex_inline_fallback",
+            {"to": new_encoder_id, "reason": "a recall function cannot cross into a job"},
+            actor,
+        )
+    elif mode == "scheduler":
+        hpc_job_id = submit_reindex(
+            collection,
+            new_encoder_id,
+            tenant=tenant,
+            job_id=job_id,
+            corpus_size=corpus_size,
+            recall=recall,
+            recall_floor=recall_floor,
+            actor=actor,
+        )
         if hpc_job_id is not None:
-            platform_db.update_reindex_job(job_id, status="submitted", hpc_job_id=hpc_job_id)
-            _audit(
-                collection,
-                tenant,
-                "reindex_submitted",
-                {"to": new_encoder_id, "hpc_job_id": hpc_job_id},
-                actor,
-            )
-            return ReindexResult(
-                collection=collection,
-                tenant=tenant,
-                from_encoder=from_encoder,
-                to_encoder=new_encoder_id,
-                recall=None,
-                switched=False,
-                docs_reindexed=0,
-                reason=f"submitted to the scheduler as job {hpc_job_id}",
-            )
+            return _result_from_row(job_id, collection, tenant, from_encoder, new_encoder_id)
         # No scheduler reachable — say so and do the work here rather than not at all.
         platform_db.update_reindex_job(job_id, orchestrator="inline-fallback")
 
@@ -229,7 +306,10 @@ def reindex(
         collection, tenant, staging_encoder_id=new_encoder_id, status="building"
     )
     # 2) re-embed corpus (mock: count docs), 3) verify recall.
-    recall = recall_fn() if recall_fn is not None else 1.0
+    if recall_fn is not None:
+        recall = recall_fn()
+    elif recall is None:
+        recall = 1.0
     platform_db.update_reindex_job(job_id, recall=recall, docs_reindexed=corpus_size)
 
     if recall < recall_floor:
@@ -286,6 +366,30 @@ def reindex(
         switched=True,
         docs_reindexed=corpus_size,
         reason="switched atomically; old index pruned; drift rebaselined",
+    )
+
+
+def _result_from_row(
+    job_id: int, collection: str, tenant: str, from_encoder: str | None, to_encoder: str
+) -> ReindexResult:
+    """What a scheduler reindex has reached: ``submitted`` while queued, else its outcome."""
+    row = _job_row(job_id)
+    status = row.get("status") or "submitted"
+    reasons = {
+        "submitted": f"submitted to the scheduler as job {row.get('hpc_job_id')}",
+        "switched": "switched atomically by the scheduler job; drift rebaselined",
+        "aborted": "the scheduler job kept the old index — recall below the floor",
+        "failed": f"the scheduler job {row.get('hpc_job_id')} failed; the old index is kept",
+    }
+    return ReindexResult(
+        collection=collection,
+        tenant=tenant,
+        from_encoder=from_encoder,
+        to_encoder=to_encoder,
+        recall=row.get("recall") if status != "submitted" else None,
+        switched=status == "switched",
+        docs_reindexed=int(row.get("docs_reindexed") or 0) if status != "submitted" else 0,
+        reason=reasons.get(status, status),
     )
 
 

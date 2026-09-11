@@ -250,8 +250,8 @@ exception: an interpreter's `site-packages` is passed only to that same interpre
 different Python's own libraries it would mix two sets of compiled packages. The job gets its environment from the scheduler, which exports the
 submitter's. No environment value is ever written into the script.
 
-**The generated `run.sh`** is kept under `EXAMLOPS_ASSET_JOB_DIR`, by default
-`$XDG_CACHE_HOME/examlops/asset-jobs`, as the exact record of what the job was asked to run. It is
+**The generated `run.sh`** is kept under `EXAMLOPS_JOB_SCRIPT_DIR` (v0.53.0's
+`EXAMLOPS_ASSET_JOB_DIR` still works), by default `$XDG_CACHE_HOME/examlops/jobs`, as the exact record of what the job was asked to run. It is
 mode 0700 with every value shell-quoted, and it is never written into the repository: it holds
 this host's absolute paths.
 

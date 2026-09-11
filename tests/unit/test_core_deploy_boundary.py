@@ -49,7 +49,6 @@ BASELINE: dict[str, dict[str, int]] = {
     "pipelines/pipeline_generator.py": {"sys_path": 1},
     "pipelines/slurm_train_script.py": {"sys_path": 1},
     "pipelines/usecase.py": {"sys_path": 1},
-    "platform/cli/src/examlops/assets/__init__.py": {"repo_root": 1, "sys_path": 1},
     "platform/cli/src/examlops/cli/commands/agent_cmd.py": {"repo_root": 1},
     "platform/cli/src/examlops/cli/commands/data_cmd.py": {"repo_root": 2, "sys_path": 2},
     "platform/cli/src/examlops/cli/commands/hpc_cmd.py": {
@@ -60,9 +59,9 @@ BASELINE: dict[str, dict[str, int]] = {
     "platform/cli/src/examlops/cli/commands/project_cmd.py": {"deploy_ref": 1},
     "platform/cli/src/examlops/cli/commands/stack.py": {"deploy_ref": 1},
     "platform/cli/src/examlops/cli/commands/synth_cmd.py": {"repo_root": 1, "sys_path": 1},
-    "platform/cli/src/examlops/embeddings/__init__.py": {"repo_root": 1, "sys_path": 1},
     "platform/cli/src/examlops/llm_endpoints.py": {"deploy_ref": 2, "repo_root": 3, "sys_path": 1},
     "platform/cli/src/examlops/platform_db.py": {"repo_root": 1},
+    "platform/cli/src/examlops/scheduler_jobs.py": {"repo_root": 1, "sys_path": 1},
     "platform/cli/src/examlops/workbench_spawn.py": {"deploy_ref": 1},
     "platform/clients/model_schema_registry.py": {"repo_root": 1},
     "platform/clients/seanerbus_bridge.py": {"sys_path": 2},

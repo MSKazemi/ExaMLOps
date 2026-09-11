@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -32,8 +31,6 @@ for p in (str(ROOT / "platform" / "cli" / "src"), str(_ADAPTER_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from executor import CompletedCommand  # noqa: E402
-
 from examlops import assets  # noqa: E402
 from examlops.assets import (  # noqa: E402
     AssetBuildError,
@@ -41,6 +38,7 @@ from examlops.assets import (  # noqa: E402
     declare_asset,
     materialize,
 )
+from tests.unit._scheduler_fakes import ScriptRunningExecutor  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +51,7 @@ def clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("EXAMLOPS_HPC_REMOTE_WORKDIR", str(tmp_path / "remote"))
     monkeypatch.setenv("EXAMLOPS_TEST_ASSET_MARKER", str(tmp_path / "marker.json"))
-    monkeypatch.setenv("EXAMLOPS_ASSET_JOB_DIR", str(tmp_path / "asset-jobs"))
+    monkeypatch.setenv("EXAMLOPS_JOB_SCRIPT_DIR", str(tmp_path / "asset-jobs"))
 
 
 @pytest.fixture
@@ -74,43 +72,6 @@ def _declare(monkeypatch, name, fn, *, deps=(), resources=None):
         name,
         assets.AssetDef(name=name, kind="model", deps=list(deps), fn=fn, resources=resources),
     )
-
-
-class ScriptRunningExecutor:
-    """A cluster in a box: `sbatch` / `flux batch` run the submitted script with bash, now, and
-    the status commands report how it exited. Everything else is a no-op that succeeds."""
-
-    def __init__(self, job_id: str):
-        self.job_id = job_id
-        self.calls: list[list[str]] = []
-        self.returncode: int | None = None
-
-    def run(self, cmd, *, timeout=None, cwd=None):
-        cmd = [str(c) for c in cmd]
-        self.calls.append(cmd)
-        if cmd[0] == "mkdir":
-            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
-        elif cmd[0] == "sbatch" or cmd[:2] == ["flux", "batch"]:
-            self.returncode = subprocess.run(["bash", cmd[-1]], capture_output=True).returncode
-            out = f"Submitted batch job {self.job_id}" if cmd[0] == "sbatch" else self.job_id
-            return CompletedCommand(0, out, "")
-        elif cmd[0] == "sacct" and "--format=State,ExitCode,Start,End" in cmd:
-            state = "COMPLETED" if self.returncode == 0 else "FAILED"
-            return CompletedCommand(0, f"{state}|{self.returncode}:0|t0|t1", "")
-        elif cmd[:2] == ["flux", "jobs"]:
-            result = "COMPLETED" if self.returncode == 0 else "FAILED"
-            return CompletedCommand(0, f"INACTIVE {result} t0 t1 {self.returncode}", "")
-        return CompletedCommand(0, "", "")
-
-    def put(self, local, remote):
-        Path(remote).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(local, remote)
-
-    def get(self, remote, local):
-        raise FileNotFoundError(remote)
-
-    def close(self):
-        pass
 
 
 def _submitted_script(executor) -> str:
@@ -285,7 +246,7 @@ def test_job_scripts_are_never_written_into_the_adapter_working_dir(monkeypatch,
     holds this host's absolute paths — one `git add -A` from being published."""
     from mock_slurm_adapter import MockSlurmAdapter
 
-    monkeypatch.delenv("EXAMLOPS_ASSET_JOB_DIR")
+    monkeypatch.delenv("EXAMLOPS_JOB_SCRIPT_DIR")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     adapter_wd = tmp_path / "adapter-wd"
     monkeypatch.setattr(
@@ -295,7 +256,7 @@ def test_job_scripts_are_never_written_into_the_adapter_working_dir(monkeypatch,
     SchedulerOrchestrator().run(assets.AssetDef("Placed", fn=fx.build_marker), {})
 
     assert not list(adapter_wd.rglob("run.sh"))
-    assert list((tmp_path / "cache" / "examlops" / "asset-jobs").glob("asset-*/run.sh"))
+    assert list((tmp_path / "cache" / "examlops" / "jobs").glob("asset-*/run.sh"))
 
 
 def test_a_closure_builds_locally_and_says_why(monkeypatch):
@@ -396,12 +357,16 @@ def test_a_refused_job_raises_instead_of_building_on_this_host(monkeypatch, tmp_
 # ── the job runner ───────────────────────────────────────────────────────────
 
 
+_SRC = str(Path(assets.__file__).resolve().parents[1])
+
+
 def _job(*args, env=None):
     return subprocess.run(
         [sys.executable, "-m", "examlops.assets.job", *args],
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": str(ROOT), **(env or {})},
+        # Lead with this examlops, as run.sh does, so the helper never tests an installed copy.
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([_SRC, str(ROOT)]), **(env or {})},
         cwd=str(ROOT),
     )
 

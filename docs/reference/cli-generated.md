@@ -1034,9 +1034,10 @@ Register a versioned encoder → encoder_id (R1).
 
 Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5).
 
-Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` submits the job and
-returns its id instead of re-embedding in this process. `--inline` forces the local path and
-is what the submitted job itself runs, so a job never submits another job.
+Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` runs the reindex as
+a job (mock / Slurm / Flux) carrying `--recall` / `--recall-floor`, and returns once it is
+queued; `exa embedding status` follows the same reindex row to its outcome. `--inline` forces
+the local path.
 
 - `--tenant` — Tenant scope
 - `--corpus-size` — Docs to re-embed

@@ -300,34 +300,23 @@ class SchedulerOrchestrator:
             LocalOrchestrator().run(definition, upstream)
             return {"orchestrator": self.name, "fallback": f"local ({exc})"}
 
-        import os
-        import uuid
+        from examlops import scheduler_jobs as jobs
 
-        scheduler = (os.getenv("EXAMLOPS_HPC_SCHEDULER") or "mock").strip().lower()
-        job_key = f"asset-{uuid.uuid4().hex[:12]}"
-        local_dir = _job_dir() / job_key
-        local_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        script = local_dir / "run.sh"
-        script.write_text(_job_script(asset_name, entrypoint, fn, upstream))
-        script.chmod(0o700)
-        remote_base = os.getenv("EXAMLOPS_HPC_REMOTE_WORKDIR") or str(adapter.working_dir)
+        scheduler = jobs.scheduler_name()
+        script, job_key = jobs.write_script(
+            "asset", _job_script(asset_name, entrypoint, fn, upstream)
+        )
         resources = {
             "job_name": f"asset-{asset_name}",
             **(getattr(definition, "resources", None) or {}),
         }
         try:
-            job_id = str(
-                adapter.submit_job(
-                    script_path=str(script),
-                    resources=resources,
-                    remote_dir=f"{remote_base}/{job_key}",
-                )
-            )
+            job_id = jobs.submit(adapter, script, job_key, resources)
         except Exception as exc:  # noqa: BLE001
             raise AssetBuildError(
                 f"asset {asset_name!r}: the {scheduler} scheduler refused the job ({exc})"
             ) from exc
-        _record_asset_job(job_id, scheduler, asset_name, resources)
+        jobs.record_job(job_id, scheduler, f"asset:{asset_name}", resources)
         try:
             adapter.wait_until_complete(job_id)
             status = adapter.get_job_status(job_id)
@@ -336,11 +325,11 @@ class SchedulerOrchestrator:
                 f"asset {asset_name!r}: {scheduler} job {job_id} did not finish ({exc})"
             ) from exc
         state = str(status.get("state") or "UNKNOWN")
-        _finish_asset_job(job_id, scheduler, status)
+        jobs.finish_job(job_id, scheduler, status)
         if state != "COMPLETED":
             raise AssetBuildError(
                 f"asset {asset_name!r}: {scheduler} job {job_id} ended {state}"
-                f"{_log_tail(adapter, job_id)}"
+                f"{jobs.log_tail(adapter, job_id)}"
             )
         return {"orchestrator": self.name, "hpc_job_id": job_id, "scheduler": scheduler}
 
@@ -371,147 +360,34 @@ def _job_entrypoint(fn: Any) -> tuple[str | None, str]:
 
 
 def _job_script(asset_name: str, entrypoint: str, fn: Any, upstream: dict[str, int]) -> str:
-    """The job's ``run.sh``. Every interpolated value is shell-quoted; no environment value is
-    written into it (the scheduler exports the submitter's environment to the job)."""
+    """The job's ``run.sh`` — the shared rules of :mod:`examlops.scheduler_jobs` (quoting, no
+    environment values, the submitter's examlops first), running only the production function."""
     import json
-    import os
-    import shlex
-    import sys
-    from pathlib import Path
 
-    repo = _repo_root()
-    remote_repo = os.getenv("EXAMLOPS_HPC_REMOTE_REPO")
-    python = os.getenv("EXAMLOPS_HPC_REMOTE_PYTHON") or (
-        str(Path(remote_repo) / ".venv" / "bin" / "python") if remote_repo else sys.executable
-    )
-    # What the job's python must import: the *submitter's* examlops first — so the job runs the
-    # same `examlops.assets.job` as the code that wrote this script, not whatever copy that
-    # interpreter happens to have installed — then the production function's package. Paths
-    # inside the repo are re-rooted at EXAMLOPS_HPC_REMOTE_REPO when that is set; elsewhere they
-    # are assumed shared (the NFS layout the platform deploys on). An interpreter's library
-    # directory is exported only to that same interpreter: another Python's site-packages in
-    # front of the job's own would mix two sets of compiled libraries.
-    import examlops as _pkg
+    from examlops import scheduler_jobs as jobs
 
-    same_interpreter = python == sys.executable
-    roots: list[str] = []
-    for root in (Path(_pkg.__file__).resolve().parent.parent, _import_root(fn)):
-        if root is None:
-            continue
-        if not same_interpreter and root.name in ("site-packages", "dist-packages"):
-            continue
-        if remote_repo and root.is_relative_to(repo):
-            root = Path(remote_repo) / root.relative_to(repo)
-        if str(root) not in roots:
-            roots.append(str(root))
-    lines = [
-        "#!/usr/bin/env bash",
-        f"# ExaMLOps asset build: {asset_name!r} (ADR 0036 clause 3). Generated — runs the",
-        "# production function only; the submitting process records the version.",
-        "set -euo pipefail",
-    ]
-    if roots:
-        joined = shlex.quote(os.pathsep.join(roots))
-        lines.append(f'export PYTHONPATH={joined}"${{PYTHONPATH:+:$PYTHONPATH}}"')
-    lines.append(
-        f"exec {shlex.quote(python)} -m examlops.assets.job"
-        f" --asset {shlex.quote(asset_name)}"
-        f" --entrypoint {shlex.quote(entrypoint)}"
-        f" --upstream {shlex.quote(json.dumps(upstream, sort_keys=True))}"
+    python = jobs.job_python()
+    return jobs.script_text(
+        [
+            python,
+            "-m",
+            "examlops.assets.job",
+            "--asset",
+            asset_name,
+            "--entrypoint",
+            entrypoint,
+            "--upstream",
+            json.dumps(upstream, sort_keys=True),
+        ],
+        title=f"asset build {asset_name!r} (ADR 0036 clause 3)",
+        extra_roots=[_import_root(fn)],
     )
-    return "\n".join(lines) + "\n"
 
 
 def _import_root(fn: Any) -> Any:
-    """The sys.path entry that makes ``fn.__module__`` importable, from the module's file."""
-    import sys
-    from pathlib import Path
+    from examlops.scheduler_jobs import import_root
 
-    module = sys.modules.get(getattr(fn, "__module__", "") or "")
-    file = getattr(module, "__file__", None)
-    if not file:
-        return None
-    path = Path(file).resolve()
-    if path.name == "__init__.py":
-        path = path.parent
-    depth = len(fn.__module__.split("."))
-    return path.parents[depth - 1]
-
-
-def _job_dir() -> Any:
-    """Where generated job scripts are kept: ``EXAMLOPS_ASSET_JOB_DIR``, else
-    ``$XDG_CACHE_HOME/examlops/asset-jobs``.
-
-    Never the adapter's working directory, which for the mock sits inside the repository: a
-    ``run.sh`` holding this host's absolute paths is one ``git add -A`` away from being published.
-    Kept after the run, because the script is the exact record of what a job was asked to do.
-    """
-    import os
-    from pathlib import Path
-
-    configured = os.getenv("EXAMLOPS_ASSET_JOB_DIR")
-    if configured:
-        return Path(configured)
-    cache = os.getenv("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(cache) / "examlops" / "asset-jobs"
-
-
-def _repo_root() -> Any:
-    """The checkout this module runs from — the file's one repository coupling (ADR 0128's
-    ratchet): where the phase-23 adapters live, and what `EXAMLOPS_HPC_REMOTE_REPO` re-roots."""
-    from pathlib import Path
-
-    return Path(__file__).resolve().parents[5]
-
-
-def _log_tail(adapter: Any, job_id: str, lines: int = 20) -> str:
-    try:
-        text = str(adapter.get_job_logs(job_id) or "")
-    except Exception:  # noqa: BLE001 - the state is the finding; logs are a courtesy
-        return ""
-    tail = "\n".join(text.strip().splitlines()[-lines:])
-    return f" — last log lines:\n{tail}" if tail else ""
-
-
-def _record_asset_job(job_id: str, scheduler: str, asset_name: str, resources: dict) -> None:
-    """Best-effort `hpc_jobs` row, so an asset build appears in `exa hpc jobs` like a training."""
-    try:
-        from examlops.data.hpc import record_hpc_job
-
-        def _int(v: Any) -> int | None:
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                return None
-
-        record_hpc_job(
-            job_id=job_id,
-            scheduler=scheduler,
-            flow_run_id=None,
-            model=f"asset:{asset_name}",
-            dataset="",
-            nodes=_int(resources.get("nodes")),
-            gpus=_int(resources.get("gpus")),
-            cpus=_int(resources.get("cpus_per_task")),
-        )
-    except Exception:  # noqa: BLE001 - bookkeeping never fails a build
-        pass
-
-
-def _finish_asset_job(job_id: str, scheduler: str, status: dict) -> None:
-    try:
-        from examlops.data.hpc import update_hpc_job
-
-        update_hpc_job(
-            job_id,
-            scheduler,
-            state=status.get("state"),
-            start_time=status.get("start_time"),
-            end_time=status.get("end_time"),
-            exit_code=status.get("exit_code"),
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    return import_root(fn)
 
 
 class PrefectOrchestrator:
@@ -592,14 +468,9 @@ def _env_int(var: str, default: int) -> int:
 
 def _scheduler_adapter() -> Any:
     """The phase-23 adapter for the configured scheduler (mock / slurm / flux)."""
-    import sys
+    from examlops.scheduler_jobs import scheduler_adapter
 
-    adapter_dir = _repo_root() / "platform" / "infra" / "slurm-adapter"
-    if str(adapter_dir) not in sys.path:
-        sys.path.insert(0, str(adapter_dir))
-    from adapter import get_scheduler_adapter  # noqa: PLC0415
-
-    return get_scheduler_adapter()
+    return scheduler_adapter()
 
 
 _ORCHESTRATORS: dict[str, Callable[[], Any]] = {

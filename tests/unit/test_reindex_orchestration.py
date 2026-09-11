@@ -28,17 +28,28 @@ from examlops.platform_db import list_reindex_jobs  # noqa: E402
 
 
 class _Adapter:
+    """A queuing scheduler that records the submission and never runs it (Slurm-like: the job
+    would run later, elsewhere). It refuses a job with no script, as the real adapters do — the
+    earlier stand-in accepted one, which is how a submission that failed on every real
+    scheduler passed here. `test_reindex_scheduler_job.py` drives the real adapters."""
+
     def __init__(self):
+        import tempfile
+
+        self.working_dir = Path(tempfile.mkdtemp())
         self.submitted: list[dict] = []
 
     def submit_job(self, script_path=None, resources=None, training_data=None, remote_dir=None):
-        self.submitted.append({"resources": resources, "training_data": training_data})
+        assert script_path, "a real adapter refuses a job with no script"
+        self.submitted.append({"resources": resources, "script": Path(script_path).read_text()})
         return "reindex-job-7"
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch):
+def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("EXAMLOPS_REINDEX_ORCHESTRATOR", raising=False)
+    monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "slurm")  # `_Adapter` queues, like Slurm
+    monkeypatch.setenv("EXAMLOPS_JOB_SCRIPT_DIR", str(tmp_path / "jobs"))
 
 
 @pytest.fixture
@@ -83,14 +94,23 @@ def test_a_scheduler_reindex_submits_and_returns_the_job_id(monkeypatch, encoder
     assert adapter.submitted[0]["resources"]["job_name"] == "reindex-corpusA"
 
 
-def test_the_submitted_command_pins_inline(monkeypatch, encoder):
-    """Without it the job submits another job, and that one submits another."""
+def test_the_job_continues_the_same_row_and_cannot_resubmit(monkeypatch, encoder):
+    """The job used to re-enter `exa embedding reindex --inline`: a second row, the first left
+    `submitted` forever. It now runs `examlops.embeddings.job` on this row — which never submits
+    anything — and the collection and encoder names never reach the shell."""
     adapter = _Adapter()
     monkeypatch.setattr(embeddings, "_scheduler_adapter", lambda: adapter)
 
-    reindex("corpusB", encoder, orchestrator="scheduler")
+    reindex("corpusB", encoder, orchestrator="scheduler", recall=0.97, recall_floor=0.95)
 
-    assert "--inline" in adapter.submitted[0]["training_data"]["command"]
+    script = adapter.submitted[0]["script"]
+    row = list_reindex_jobs("corpusB")[0]
+    assert f"-m examlops.embeddings.job --job-id {row['id']}" in script
+    assert "--recall 0.97" in script and "--recall-floor 0.95" in script
+    exec_line = next(line for line in script.splitlines() if line.startswith("exec "))
+    assert "corpusB" not in exec_line and encoder not in exec_line
+    assert "examlops.cli" not in exec_line and " reindex " not in exec_line
+    assert len(list_reindex_jobs("corpusB")) == 1
 
 
 def test_a_submitted_reindex_records_no_recall(monkeypatch, encoder):
@@ -117,10 +137,21 @@ def test_no_scheduler_falls_back_to_running_here(monkeypatch, encoder):
         embeddings, "_scheduler_adapter", lambda: (_ for _ in ()).throw(RuntimeError("no sbatch"))
     )
 
-    result = reindex("corpusE", encoder, orchestrator="scheduler", recall_fn=lambda: 1.0)
+    result = reindex("corpusE", encoder, orchestrator="scheduler", recall=1.0)
 
     assert result.switched is True
     assert list_reindex_jobs("corpusE")[0]["orchestrator"] == "inline-fallback"
+
+
+def test_a_recall_function_cannot_travel_so_it_runs_here(monkeypatch, encoder):
+    """Only a value reaches a job; a callable lives in this process (the asset-closure rule)."""
+    adapter = _Adapter()
+    monkeypatch.setattr(embeddings, "_scheduler_adapter", lambda: adapter)
+
+    result = reindex("corpusE2", encoder, orchestrator="scheduler", recall_fn=lambda: 0.99)
+
+    assert result.switched is True and not adapter.submitted
+    assert list_reindex_jobs("corpusE2")[0]["orchestrator"] == "inline-fallback"
 
 
 # ── progress ──────────────────────────────────────────────────────────────────

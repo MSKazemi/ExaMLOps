@@ -32,7 +32,7 @@ from examlops.assets import (  # noqa: E402
 def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("EXAMLOPS_ASSET_ORCHESTRATOR", raising=False)
     monkeypatch.setenv("EXAMLOPS_TEST_ASSET_MARKER", str(tmp_path / "marker.json"))
-    monkeypatch.setenv("EXAMLOPS_ASSET_JOB_DIR", str(tmp_path / "asset-jobs"))
+    monkeypatch.setenv("EXAMLOPS_JOB_SCRIPT_DIR", str(tmp_path / "asset-jobs"))
 
 
 def _fx():

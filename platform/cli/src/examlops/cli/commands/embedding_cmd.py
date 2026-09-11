@@ -116,11 +116,12 @@ def reindex_cmd(
 ) -> None:
     """Blue-green reindex to a new encoder — verified switch, old retained then pruned (R4/R5).
 
-    Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` submits the job and
-    returns its id instead of re-embedding in this process. `--inline` forces the local path and
-    is what the submitted job itself runs, so a job never submits another job.
+    Large corpora belong on the scheduler (ADR 0043 clause 4): `--scheduler` runs the reindex as
+    a job (mock / Slurm / Flux) carrying `--recall` / `--recall-floor`, and returns once it is
+    queued; `exa embedding status` follows the same reindex row to its outcome. `--inline` forces
+    the local path.
     """
-    from examlops.embeddings import reindex
+    from examlops.embeddings import ReindexSubmissionError, reindex
 
     if inline and scheduler:
         _output.error("--inline and --scheduler are mutually exclusive.")
@@ -132,14 +133,13 @@ def reindex_cmd(
             new_encoder_id,
             tenant=tenant,
             corpus_size=corpus_size,
-            recall_fn=lambda: recall,
+            recall=recall,
             recall_floor=recall_floor,
             orchestrator=mode,
             actor=_actor(),
         )
-    except ValueError as exc:
+    except (ValueError, ReindexSubmissionError) as exc:
         _output.error(str(exc))
-        raise typer.Exit(1) from exc
     if _output.json_mode:
         _output.print_json(
             {

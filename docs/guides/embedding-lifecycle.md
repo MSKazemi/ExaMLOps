@@ -67,17 +67,40 @@ exa embedding reindex docs <new-id> --recall 0.5 --recall-floor 0.9
 Re-embedding a large corpus in the calling process blocks whatever asked. Submit it instead:
 
 ```bash
-exa embedding reindex docs <new-id> --scheduler
+exa embedding reindex docs <new-id> --recall 0.97 --scheduler
 # submitted to the scheduler as job 41273
+exa embedding status docs          # the same reindex row: submitted → switched / aborted / failed
 
 export EXAMLOPS_REINDEX_ORCHESTRATOR=scheduler   # or make it the default
 ```
 
-`inline` remains the default: a reindex that silently became a cluster submission on upgrade
-would strand every existing caller waiting for a result that now arrives elsewhere. The submitted
-command re-enters the CLI pinned to `--inline`, so a job never submits another job — and an
-**unreachable scheduler runs the work here** and records `inline-fallback`, because not
-reindexing at all is the worse answer.
+`inline` remains the default. A reindex that silently became a cluster submission on upgrade
+would strand every existing caller waiting for a result that now arrives elsewhere.
+
+**How the job works.** The reindex runs as a real job on mock, Slurm or Flux. Its generated
+script runs `python -m examlops.embeddings.job --job-id N`, which **continues the reindex row
+this command opened**, so there is one row per reindex from `submitted` to its outcome. It carries
+your `--recall`, `--recall-floor` and `--corpus-size`, so **the recall gate is applied where the
+work runs**. Only the job id and those numbers reach the script; the collection and encoder are
+read back from the row.
+
+- The job runs only a `submitted` row. A replayed job, or one aimed at a finished reindex, does
+  nothing rather than switching an index twice.
+- The job does the bookkeeping, so it needs the same datastore as the submitter: a shared
+  `platform.db`, or the Postgres backend.
+- On Slurm and Flux the command returns once the job is queued. The mock runs jobs only when
+  waited on, so there it returns the outcome.
+
+| Situation | Outcome |
+|---|---|
+| The scheduler refuses the job | The command fails, and the row is `failed` |
+| The job cannot start its interpreter (mock) | The row is `failed`, not left `submitted` |
+| No scheduler in this environment | Runs here and records `inline-fallback` (not reindexing at all is the worse answer) |
+| A library caller passes a `recall_fn` | Runs here and records `inline-fallback`, because a function cannot travel to a job; pass `recall=` to submit |
+
+Job scripts follow the same rules as asset jobs: mode 0700, shell-quoted, no environment
+values, kept under `EXAMLOPS_JOB_SCRIPT_DIR` and never inside the repository. The job is listed
+in `exa hpc jobs` as `reindex:<collection>`.
 
 Each job records where it ran, the scheduler job id, how many documents it re-embedded and a
 measured `duration_s` — on the aborted path too, since the time was spent either way. A
