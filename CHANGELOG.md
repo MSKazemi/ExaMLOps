@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — asset builds as Prefect flow runs (ADR 0036 clause 1)
+
+- `exa assets materialize --orchestrator prefect` (or `EXAMLOPS_ASSET_ORCHESTRATOR=prefect`)
+  runs each asset build as a Prefect flow run named `asset:<name>`, visible in the Prefect UI, and
+  records the flow-run id on the version's lineage event. It runs in-process, so no deployment
+  or worker is needed. Retries are opt-in (`EXAMLOPS_ASSET_PREFECT_RETRIES`).
+- With no Prefect API configured, the package missing, or the server unreachable, the build runs
+  locally and the provenance says why. A failure of the production function itself propagates
+  and records no version, exactly as under `local`.
+
 ### Added — the asset graph in the dashboard (ADR 0036 clause 5)
 
 - **Build → Assets** draws the software-defined asset DAG (datasets, features, models) left to

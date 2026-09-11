@@ -113,13 +113,14 @@ def materialize(
     orchestrator: str = typer.Option(
         None,
         "--orchestrator",
-        help="local | scheduler — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run",
+        help="local | scheduler | prefect — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run",
     ),
 ) -> None:
     """Rebuild the asset + its stale ancestors only (R4/GWT-3).
 
     `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam
-    (ADR 0036 clause 3) instead of running the production function in this process.
+    (ADR 0036 clause 3) instead of running the production function in this process;
+    `--orchestrator prefect` runs it as a Prefect flow run, visible in the Prefect UI (clause 1).
     """
     from examlops.assets import materialize as _materialize
 

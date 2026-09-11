@@ -128,12 +128,13 @@ This is the core win: a data change re-runs the *stale slice*, not the whole pip
 
 ## Where the work runs
 
-Materialization goes through an `AssetOrchestrator`. Two ship:
+Materialization goes through an `AssetOrchestrator`. Three ship:
 
 | Orchestrator | What it does |
 |---|---|
 | `local` (**default**) | Calls the production function in this process. |
 | `scheduler` | Submits the build through the phase-23 HPC seam — mock, Slurm or Flux, whichever `EXAMLOPS_HPC_SCHEDULER` names. |
+| `prefect` | Runs the build as a **Prefect flow run**, so it shows up in the Prefect UI with its state, duration and logs. |
 
 ```bash
 exa assets materialize jpcp_model --orchestrator scheduler
@@ -143,6 +144,44 @@ export EXAMLOPS_ASSET_ORCHESTRATOR=scheduler     # or set it for every build
 `local` stays the default deliberately: an asset layer that began submitting scheduler jobs on
 upgrade would surprise every existing caller. An unrecognised value falls back to `local` too — a
 typo should leave the asset built, not route it to an engine nobody configured.
+
+### Prefect runs
+
+```bash
+export PREFECT_API_URL=http://localhost:14200/api     # the stack's Prefect server
+exa assets materialize jpcp_model --orchestrator prefect
+```
+
+Each asset build is one flow run: flow `examlops-asset-materialize`, run name `asset:<name>`,
+with the production function as its single task. The run executes **in the calling process**, so
+nothing has to be deployed and no worker has to be running. It still gets Prefect's run record,
+and a materialization called from inside a Prefect flow (a training pipeline, say) nests under it
+as a subflow. The flow-run id is recorded on the version's lineage event
+(`prefect_flow_run_id`), so a version leads back to the run that produced it.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `EXAMLOPS_ASSET_PREFECT_RETRIES` | `0` | Task retries for a failed production function |
+| `EXAMLOPS_ASSET_PREFECT_RETRY_DELAY` | `10` | Seconds between those retries |
+
+Retries are **opt-in**. A production function that failed halfway is not known to be safe to
+repeat, so turn them on only for builds you know are idempotent.
+
+**When Prefect is not there, the asset is still built, and the provenance says why.** That covers
+no Prefect API configured, the `prefect` package missing, and a server that cannot be reached; in
+each case the build runs locally and the lineage facet records `fallback: local (<reason>)`. What
+decides it is whether the production function **started**:
+
+- An error *before* it started belongs to Prefect, and the build falls back to local.
+- An error *after* it started belongs to the asset, so it propagates exactly as it does under
+  `local`, and no version is recorded.
+
+Falling back in that second case would run a failing build twice and credit Prefect with a build
+that did not happen.
+
+With no `PREFECT_API_URL`, Prefect would normally start a temporary server of its own. The asset
+layer declines that and builds locally, because a run recorded in a throwaway database under
+`~/.prefect` is a run nobody can see.
 
 ### What the scheduler path needs, and what it does without it
 

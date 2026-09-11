@@ -208,7 +208,7 @@ def materialize(
 
 @runtime_checkable
 class AssetOrchestrator(Protocol):
-    """How an asset's production function is executed. Two implementations ship."""
+    """How an asset's production function is executed. Three implementations ship."""
 
     name: str
 
@@ -268,6 +268,82 @@ class SchedulerOrchestrator:
         return {"orchestrator": self.name, "hpc_job_id": str(job_id)}
 
 
+class PrefectOrchestrator:
+    """Run the materialization as a **Prefect flow run** — clause 1's "thin asset layer
+    generating Prefect runs".
+
+    One flow run per asset (flow ``examlops-asset-materialize``, run name ``asset:<name>``) with
+    the production function as its task, so every build shows up in the Prefect UI with its
+    state, duration and logs, and one called from inside a Prefect flow becomes that flow's
+    subflow. The run executes **in this process**: the version bump that follows it is the only
+    one, and an in-process closure needs no deployment or worker to reach it.
+
+    Retries are opt-in (``EXAMLOPS_ASSET_PREFECT_RETRIES``, default 0), because a production
+    function that failed halfway is not known to be safe to repeat.
+
+    **Prefect's absence is an environment fact, not an asset failure** (the scheduler's rule). With
+    no Prefect API configured, with the package missing, or with the server unreachable, the
+    asset is built locally and the provenance says why. The judge is whether the production
+    function *started*: an error before that is Prefect's, and falls back; an error after it is
+    the asset's, and propagates exactly as it would under ``local``. The no-API case falls back
+    rather than letting Prefect start an ephemeral server, because a run recorded in a throwaway
+    database under ``~/.prefect`` is a run nobody can see.
+    """
+
+    name = "prefect"
+
+    def run(self, definition: Any, upstream: dict[str, int]) -> dict[str, Any]:
+        asset_name = getattr(definition, "name", None) or "asset"
+        try:
+            from prefect import flow, task
+            from prefect.settings import PREFECT_API_URL
+        except ImportError as exc:
+            return self._local(definition, upstream, f"prefect is not installed ({exc})")
+        if not PREFECT_API_URL.value():
+            return self._local(definition, upstream, "no Prefect API configured (PREFECT_API_URL)")
+
+        started = False
+
+        def _produce() -> None:
+            nonlocal started
+            started = True
+            LocalOrchestrator().run(definition, upstream)
+
+        produce = task(
+            name=f"produce:{asset_name}",
+            retries=_env_int("EXAMLOPS_ASSET_PREFECT_RETRIES", 0),
+            retry_delay_seconds=_env_int("EXAMLOPS_ASSET_PREFECT_RETRY_DELAY", 10),
+        )(_produce)
+
+        @flow(name="examlops-asset-materialize", flow_run_name=f"asset:{asset_name}")
+        def _materialize() -> str:
+            from prefect.runtime import flow_run
+
+            produce()
+            return str(flow_run.id)
+
+        try:
+            flow_run_id = _materialize()
+        except Exception as exc:
+            if started:
+                raise  # the production function failed: the asset's error, not Prefect's
+            return self._local(definition, upstream, f"Prefect unavailable ({exc})")
+        return {"orchestrator": self.name, "prefect_flow_run_id": flow_run_id}
+
+    def _local(self, definition: Any, upstream: dict[str, int], why: str) -> dict[str, Any]:
+        LocalOrchestrator().run(definition, upstream)
+        return {"orchestrator": self.name, "fallback": f"local ({why})"}
+
+
+def _env_int(var: str, default: int) -> int:
+    import os
+
+    try:
+        return max(0, int(os.getenv(var, "")))
+    except ValueError:
+        return default
+
+
 def _scheduler_adapter() -> Any:
     """The phase-23 adapter for the configured scheduler (mock / slurm / flux)."""
     import sys
@@ -285,6 +361,7 @@ def _scheduler_adapter() -> Any:
 _ORCHESTRATORS: dict[str, Callable[[], Any]] = {
     "local": LocalOrchestrator,
     "scheduler": SchedulerOrchestrator,
+    "prefect": PrefectOrchestrator,
 }
 
 
@@ -350,6 +427,8 @@ def _emit_lineage(
             facets["fallback"] = prov["fallback"]
         if prov.get("hpc_job_id"):
             facets.update(hpc_job_id_facet(str(prov["hpc_job_id"])))
+        if prov.get("prefect_flow_run_id"):
+            facets["prefect_flow_run_id"] = str(prov["prefect_flow_run_id"])
         emit_lineage(
             "COMPLETE",
             job=f"asset:{name}",

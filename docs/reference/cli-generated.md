@@ -189,11 +189,12 @@ List declared assets with their current version.
 Rebuild the asset + its stale ancestors only (R4/GWT-3).
 
 `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam
-(ADR 0036 clause 3) instead of running the production function in this process.
+(ADR 0036 clause 3) instead of running the production function in this process;
+`--orchestrator prefect` runs it as a Prefect flow run, visible in the Prefect UI (clause 1).
 
 - `--force` — Rebuild even if fresh
 - `--no-deps` — Build only this asset, never its stale ancestors
-- `--orchestrator` — local | scheduler — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run
+- `--orchestrator` — local | scheduler | prefect — overrides EXAMLOPS_ASSET_ORCHESTRATOR for this run
 
 ### `exa assets source-changed`
 
