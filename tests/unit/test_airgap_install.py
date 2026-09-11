@@ -6,8 +6,8 @@ without any build failing — the first to notice would be a site with no intern
 
 * the release publishes `images-X.Y.Z.txt` (`name:tag@digest`, inside the signed `SHA256SUMS`),
   the list the guide mirrors from;
-* every image the chart renders is built from `global.imageRegistry`, so one value moves the whole
-  chart onto the mirror;
+* every ExaMLOps image the chart renders is built from `global.imageRegistry`, so one value moves
+  them onto the mirror, and any upstream image reads an overridable repository plus a pinned digest;
 * every upstream image in the Compose bundle is a digest-pinned Docker Hub image — the only kind a
   Docker `registry-mirrors` entry serves;
 * the guide's verification loop names every image the release publishes.
@@ -47,7 +47,13 @@ def test_the_release_publishes_the_signed_image_list_the_guide_mirrors_from():
     assert listed < run.index("sha256sum -- * > SHA256SUMS")
 
 
-def test_every_chart_image_is_built_from_global_image_registry():
+# An upstream image (an opt-in tier's proxy, say) cannot live under global.imageRegistry, but a
+# site can still point it at a mirror: its template reads repository AND digest from values, so the
+# repository is overridable and the digest keeps the mirrored image exact.
+_UPSTREAM_IMAGE = re.compile(r"\.image\.repository\b.*\.image\.digest\b")
+
+
+def test_every_chart_image_can_be_pointed_at_a_mirror():
     image_lines = [
         (path.name, line.strip())
         for path in sorted((CHART / "templates").glob("*.yaml"))
@@ -55,11 +61,27 @@ def test_every_chart_image_is_built_from_global_image_registry():
         if re.match(r"^\s*(-\s*)?image:", line)
     ]
     assert image_lines, "the chart renders no images?"
-    stray = [(name, line) for name, line in image_lines if 'include "examlops.image"' not in line]
-    assert not stray, f"image not built by examlops.image (a mirror would not reach it): {stray}"
+    stray = [
+        (name, line)
+        for name, line in image_lines
+        if 'include "examlops.image"' not in line and not _UPSTREAM_IMAGE.search(line)
+    ]
+    assert not stray, (
+        f"image a mirror cannot reach (neither examlops.image nor repository@digest): {stray}"
+    )
     helper = (CHART / "templates" / "_helpers.tpl").read_text()
     assert "$reg := .root.Values.global.imageRegistry" in helper
     assert 'printf "%s%s:%s" $reg' in helper
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    unpinned = [
+        name
+        for name, tier in values.items()
+        if isinstance(tier, dict)
+        and isinstance(tier.get("image"), dict)
+        and not tier["image"]["repository"].startswith("examlops-")
+        and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(tier["image"].get("digest", "")))
+    ]
+    assert not unpinned, f"upstream images a mirror could serve differently (no digest): {unpinned}"
 
 
 def test_every_upstream_compose_image_is_a_pinned_docker_hub_image():

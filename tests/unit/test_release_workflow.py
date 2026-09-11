@@ -114,17 +114,27 @@ def test_image_names_are_unique_and_registry_safe():
 
 
 def test_the_chart_can_pull_every_image_it_deploys():
+    """An ExaMLOps image must be one the release publishes; an upstream one (an opt-in tier's
+    proxy, say) is not ours to publish, so it must at least be pinned to one exact image."""
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     published = {f"examlops-{i['name']}" for i in _images()}
-    deployed = {
-        tier["image"]["repository"]
-        for tier in values.values()
+    images = {
+        name: tier["image"]
+        for name, tier in values.items()
         if isinstance(tier, dict) and isinstance(tier.get("image"), dict)
     }
-    assert deployed, "found no image repositories in the chart values"
-    assert deployed <= published, (
-        f"chart deploys images the release never pushes: {deployed - published}"
-    )
+    ours = {
+        img["repository"] for img in images.values() if img["repository"].startswith("examlops-")
+    }
+    assert ours, "found no ExaMLOps image repositories in the chart values"
+    assert ours <= published, f"chart deploys images the release never pushes: {ours - published}"
+    unpinned = [
+        f"{name}: {img['repository']}"
+        for name, img in images.items()
+        if not img["repository"].startswith("examlops-")
+        and not re.fullmatch(r"sha256:[0-9a-f]{64}", str(img.get("digest", "")))
+    ]
+    assert not unpinned, f"upstream images not pinned by digest: {unpinned}"
 
 
 def test_images_are_quarantined_until_scanned():

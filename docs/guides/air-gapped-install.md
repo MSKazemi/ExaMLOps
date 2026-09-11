@@ -158,8 +158,9 @@ serve TLS.
 
 ### 6a. Install with Helm
 
-The chart builds every image reference from `global.imageRegistry`. Point it at the mirror. In a
-mirror you operate, a tag can be moved, so pin each tier to the digest you just verified:
+The chart builds every ExaMLOps image reference from `global.imageRegistry`. Point it at the
+mirror. In a mirror you operate, a tag can be moved, so pin each tier to the digest you just
+verified:
 
 ```bash
 helm pull oci://$MIRROR/charts/examlops --version X.Y.Z
@@ -175,6 +176,10 @@ The digests are the ones in `images-X.Y.Z.txt`. The chart needs three images: co
 dashboard and agent. The data services it expects (Postgres, object storage) are covered in
 [Enterprise installation](enterprise-installation.md#path-b-enterprise-kubernetes-the-target-shape).
 The chart `.tgz` that `helm pull` returns is the one listed in `SHA256SUMS`.
+
+An opt-in tier that runs an upstream image takes that image from its own `image.repository`
+value, pinned by `image.digest` in the chart's `values.yaml`. Mirror that image under its digest
+and set the tier's `image.repository` to the mirror.
 
 ### 6b. Install with the Compose bundle
 
@@ -246,5 +251,6 @@ run.
 
 `tests/unit/test_airgap_install.py` keeps the assumptions this guide depends on true in CI:
 - the release publishes `images-X.Y.Z.txt`;
-- every chart image is built from `global.imageRegistry`;
+- every ExaMLOps chart image is built from `global.imageRegistry`, and any upstream one reads an
+  overridable repository and a pinned digest;
 - every upstream image in the Compose bundle is a digest-pinned Docker Hub image.

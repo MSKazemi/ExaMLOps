@@ -125,6 +125,17 @@ helm install examlops platform/infra/helm/examlops -f my-values.yaml \
   --set global.imageRegistry=<your-registry>/          # REQUIRED — note the trailing slash
 ```
 
+!!! warning "Known issue in the published charts (v0.54.0 through v0.56.0)"
+    On a first install against an empty Postgres, every tier creates the platform schema at the
+    same moment, and the control plane can lose that race. Its log then shows
+    `Startup check FAILED — coordinator: duplicate key value violates unique constraint
+    "pg_type_typname_nsp_index"`. It never runs the check again, so it stays `0/1` and
+    `helm install --wait` times out. Restart it once; by then the schema exists:
+    `kubectl -n <namespace> rollout restart deployment/<release>-examlops-control-plane`.
+
+    On v0.55.0 on kind, three fresh installs with the images already on the node all failed
+    this way, and one restart fixed each. The fix is not yet in a release.
+
 `CONTROL_PLANE_TOKEN` is the legacy `legacy/default` operator credential. For tenant isolation,
 store a `CONTROL_PLANE_CREDENTIALS_JSON` token map in the control-plane Secret and give the
 dashboard only its corresponding bearer value as `CONTROL_PLANE_TOKEN`. Each map entry declares a

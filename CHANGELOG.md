@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [0.56.0] - 2026-09-11
 
+### Documented — the control plane can stay unready after a first Helm install (charts v0.54.0 through v0.56.0)
+
+- **The race:** on a first install against an empty Postgres, every tier creates the platform
+  schema at once. The control plane can lose that race (`duplicate key value violates unique
+  constraint "pg_type_typname_nsp_index"`), never re-runs its startup check, and stays `0/1`.
+- **Reproduced** with the released v0.55.0 chart and images on kind: three of three fresh
+  installs failed this way when the images were already on the node. One
+  `kubectl rollout restart deployment/<release>-examlops-control-plane` fixed each.
+- **This is why `chart-e2e` has never passed:** 11 failed runs, 0 successful, because CI preloads
+  the images.
+- The workaround is in the chart README and in
+  [Enterprise installation](docs/guides/enterprise-installation.md). The fix is not yet in a
+  release.
+- The chart guards now allow an upstream image, such as an opt-in tier's proxy, as long as its
+  repository is overridable and it is pinned by digest. ExaMLOps images must still come from
+  `global.imageRegistry` and be ones the release publishes. The air-gapped guide says how to mirror
+  such an upstream image.
+
 ### Added — every release is verified as published, before PyPI (ADR 0129)
 
 - New `.github/workflows/release-verify.yml`, called by `release.yml` as the `published` job after

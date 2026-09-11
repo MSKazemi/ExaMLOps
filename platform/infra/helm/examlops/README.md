@@ -155,6 +155,24 @@ helm install examlops oci://ghcr.io/mskazemi/charts/examlops --version X.Y.Z \
 See [Releases](https://mskazemi.com/ExaMLOps/guides/release-process/) for verifying the chart and images with
 `cosign verify` / `gh attestation verify`.
 
+**Known issue in the published charts (v0.54.0 through v0.56.0): the control plane can stay unready
+after a first install.**
+- **Cause:** on a first install against an empty Postgres, every tier creates the platform schema
+  at the same moment, and the control plane can lose that race.
+- **Symptoms:** its log shows `Startup check FAILED — coordinator: duplicate key value violates
+  unique constraint "pg_type_typname_nsp_index"`, it never runs the check again, and it stays
+  `0/1`. `helm install --wait` times out.
+- **Workaround:** restart it once. By then the schema exists:
+
+    ```bash
+    kubectl -n examlops rollout restart deployment/examlops-examlops-control-plane   # <release>-examlops-control-plane
+    ```
+
+- **Measured on v0.55.0 on kind:** three fresh installs with the images already on the node all
+  failed this way, and one restart fixed each. When the images are still being pulled, the tiers
+  start at different times and the install succeeded.
+- **Fix:** not yet in a release.
+
 ## Values are validated
 
 `values.schema.json` is enforced by helm on install, upgrade, lint and template. Every object the
