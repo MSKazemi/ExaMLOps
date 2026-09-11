@@ -50,3 +50,6 @@ fbb15ef60e99737280f5f9e0e41011166630e1bc:tests/unit/test_secrets.py:generic-api-
 
 # tests/unit/test_genai_path_hardening.py — synthetic AWS-shaped key (AKIA + the alphabet in order) the guardrails must redact; no secret key exists for it
 1d5ede0979293d3ae63a62443ce97f66913eb98f:tests/unit/test_genai_path_hardening.py:aws-access-token:23
+
+# tests/unit/test_install_bundle.py — a fake pre-v0.53 `.env` (value "serving-old-secret") that the upgrade-env test migrates; used by no deployment
+218b3912b04c6b1e1baf99251cf74cd70443853c:tests/unit/test_install_bundle.py:generic-api-key:515
