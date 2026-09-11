@@ -325,7 +325,12 @@ def whoami() -> None:
             trust = None
         if value and trust is not None and trust.enabled:
             try:
-                out.update({"verified": True, **verify_access_token(value, trust).summary()})
+                out.update(
+                    {
+                        "verified": True,
+                        **verify_access_token(value, trust, accounts="readonly").summary(),
+                    }
+                )
             except AuthenticationError as exc:
                 out.update({"verified": False, "error": exc.reason})
         else:
@@ -468,7 +473,7 @@ def verify(
 
     value = _read_token(token_file)
     try:
-        principal = verify_access_token(value, provider_hint=provider)
+        principal = verify_access_token(value, provider_hint=provider, accounts="readonly")
     except AuthenticationError as exc:
         if _output.json_mode:
             _output.print_json({"valid": False, "error": exc.reason})
@@ -511,7 +516,7 @@ def decide(
 
     value = _read_token(token_file)
     try:
-        principal = verify_access_token(value)
+        principal = verify_access_token(value, accounts="readonly")
     except AuthenticationError as exc:
         _output.error(f"token rejected: {exc.reason}")
     resource: dict[str, Any] = {"type": resource_type}
@@ -531,6 +536,110 @@ def decide(
         _output.warning(f"DENY {action} for {principal.actor} — {d.reason} [{d.layer}]")
     if not d.allowed:
         raise typer.Exit(1)
+
+
+# ── the federated account directory (ADR 0132) ───────────────────────────────
+
+_EX_ACCOUNTS = (
+    "Examples:\n\n"
+    "  exa auth accounts\n\n"
+    "  exa auth accounts --provider jsc --inactive\n\n"
+    "  exa --json auth accounts --provider jsc"
+)
+_EX_DEACTIVATE = (
+    'Examples:\n\n  exa auth deactivate alice --provider jsc --reason "left the project"'
+)
+_EX_ACTIVATE = "Examples:\n\n  exa auth activate alice --provider jsc"
+
+
+def _actor() -> str:
+    import os
+
+    return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
+
+
+def _one_account(user: str, provider: str):
+    from examlops.iam import directory
+
+    acc = directory.get(user, include_deleted=True) or directory.find(
+        provider, subject=user, username=user, email=user, external_id=user
+    )
+    if acc is None or acc.provider != provider:
+        _output.error(
+            f"no account {user!r} for provider {provider!r}",
+            hint=f"exa auth accounts --provider {provider}",
+        )
+    return acc
+
+
+@app.command("accounts", epilog=_EX_ACCOUNTS)
+def accounts(
+    provider: str = typer.Option(None, "--provider", "-p", help="Only this center's accounts"),
+    inactive: bool = typer.Option(False, "--inactive", help="Only deactivated accounts"),
+    limit: int = typer.Option(100, "--limit", help="Maximum rows"),
+) -> None:
+    """The federated account directory: who signed in or was provisioned, and who was removed."""
+    from examlops.iam import directory
+
+    rows, total = directory.list_accounts(provider, active=False if inactive else None, limit=limit)
+    items = [r.summary() for r in rows]
+    if _output.json_mode:
+        _output.print_json({"total": total, "accounts": items})
+        return
+    if not items:
+        _output.info(
+            "No federated accounts yet — they appear on first sign-in or SCIM provisioning."
+        )
+        return
+    _output.print_table(
+        f"Federated accounts ({len(items)} of {total})",
+        ["Provider", "User", "Email", "Active", "Source", "Last seen", "Id"],
+        [
+            [
+                r["provider"],
+                r["username"] or r["subject"] or "?",
+                r["email"] or "",
+                "yes" if r["active"] else f"no ({r['deactivated_by'] or '?'})",
+                r["source"],
+                r["last_seen_at"] or "never",
+                r["id"],
+            ]
+            for r in items
+        ],
+    )
+
+
+@app.command("deactivate", epilog=_EX_DEACTIVATE)
+def deactivate(
+    user: str = typer.Argument(..., help="Username, email, subject or account id"),
+    provider: str = typer.Option(..., "--provider", "-p", help="The center the account belongs to"),
+    reason: str = typer.Option("", "--reason", help="Recorded in the audit trail"),
+) -> None:
+    """Deactivate a federated account now — refused everywhere within seconds, even with a valid token."""
+    from examlops.iam import directory
+
+    acc = _one_account(user, provider)
+    directory.deactivate(acc, actor=_actor(), reason=reason)
+    if _output.json_mode:
+        _output.print_json(acc.summary())
+        return
+    _output.ok(f"Deactivated {provider}:{acc.username or acc.subject} (audited)")
+
+
+@app.command("activate", epilog=_EX_ACTIVATE)
+def activate(
+    user: str = typer.Argument(..., help="Username, email, subject or account id"),
+    provider: str = typer.Option(..., "--provider", "-p", help="The center the account belongs to"),
+) -> None:
+    """Re-activate a deactivated (or deleted) federated account."""
+    from examlops.iam import directory
+
+    acc = _one_account(user, provider)
+    directory.activate(acc, actor=_actor())
+    if _output.json_mode:
+        _output.print_json(acc.summary())
+        return
+    _output.ok(f"Activated {provider}:{acc.username or acc.subject} (audited)")
 
 
 __all__ = ["app"]

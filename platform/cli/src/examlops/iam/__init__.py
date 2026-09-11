@@ -17,6 +17,10 @@ that arrangement instead of a second, competing identity silo:
   Grant (``exa auth login`` on headless HPC nodes), refresh.
 * :mod:`~examlops.iam.session` — the CLI's local token cache (0600) and ``oidc-agent`` delegation.
 * :mod:`~examlops.iam.stepup` — RFC 9470 step-up checks for high-risk actions.
+* :mod:`~examlops.iam.directory` — the federated account directory: JIT records, deactivation,
+  tombstones; enforced on every verified token (ADR 0132).
+* :mod:`~examlops.iam.scim` — SCIM 2.0 (RFC 7643/7644) provisioning, so a center pushes and
+  withdraws accounts instead of waiting for tokens to expire.
 
 Off by default: with no trust file and no ``EXAMLOPS_OIDC_ISSUER``, nothing changes.
 """
@@ -52,9 +56,11 @@ def is_enabled() -> bool:
 
 def clear_caches() -> None:
     """Forget cached trust config, discovery/JWKS, introspection and PDP answers (tests, reload)."""
-    from examlops.iam import config, metadata, pdp, tokens
+    from examlops.iam import config, directory, metadata, pdp, tokens
 
     config.clear_cache()
+    directory.invalidate()
+    directory._last_seen_written.clear()
     metadata.clear_cache()
     tokens.clear_cache()
     pdp.clear_cache()

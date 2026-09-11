@@ -34,6 +34,9 @@ providers:
     step_up:                                # promote / reveal-secret need a recent MFA login
       acr_values: ["https://refeds.org/profile/mfa"]
       max_age_s: 900
+    provisioning:                           # SCIM 2.0 from the center's IdP (ADR 0132)
+      mode: jit                             # jit: accounts on first sign-in | scim: provisioned only
+      token_ref: "env:JSC_SCIM_TOKEN"       # bearer for https://<dashboard>/api/scim/v2
     clients:
       dashboard:                            # confidential client registered for the dashboard BFF
         client_id: examlops-dashboard

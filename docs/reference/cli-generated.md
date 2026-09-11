@@ -293,6 +293,27 @@ Verify the external WORM anchor: its own chain + agreement with the DB checkpoin
 
 Sign in with your data center's identity provider; inspect federation & authorization
 
+### `exa auth accounts`
+
+The federated account directory: who signed in or was provisioned, and who was removed.
+
+- `--provider, -p` — Only this center's accounts
+- `--inactive` — Only deactivated accounts
+- `--limit` — Maximum rows
+
+### `exa auth activate`
+
+Re-activate a deactivated (or deleted) federated account.
+
+- `--provider, -p` — The center the account belongs to
+
+### `exa auth deactivate`
+
+Deactivate a federated account now — refused everywhere within seconds, even with a valid token.
+
+- `--provider, -p` — The center the account belongs to
+- `--reason` — Recorded in the audit trail
+
 ### `exa auth decide`
 
 Ask the platform's authorizer — tenant, local policy, the center's PDP — about an action.

@@ -62,6 +62,7 @@ from routers import (
     rollback,
     scaffold,
     scaling,
+    scim,
     seanerbus,
     search,
     secrets,
@@ -217,6 +218,8 @@ app.include_router(collab.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 # Organisation SSO (ADR 0120): providers/login/callback are unauthenticated by nature.
 app.include_router(sso.router, prefix="/api")
+# SCIM 2.0 provisioning (ADR 0132): authenticated by each center's own SCIM bearer, not a session.
+app.include_router(scim.router, prefix="/api")
 
 # Auth-protected API routes
 app.include_router(config.router, prefix="/api")

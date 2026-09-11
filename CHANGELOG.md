@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a deprovisioned account stops working before its token expires (SCIM 2.0, ADR 0132)
+
+- **Account directory, enforced everywhere.** Every verified IdP token now also passes the
+  federated account directory (`examlops.iam.directory`), on the control plane, the dashboard, the
+  CLI and every service using `examlops.iam`. A deactivated or deleted account is refused at once,
+  even with a still-valid token. Its dashboard sessions end, and a fresh IdP login cannot override
+  it. Deletion leaves a tombstone, so just-in-time sign-in never resurrects the account.
+- **SCIM 2.0 provisioning** at `/api/scim/v2` (RFC 7643/7644). It covers `/Users` create, read,
+  filter, paging, replace, patch in both Entra ID's and Okta's dialects, and delete, plus the discovery
+  documents. Each center authenticates with its own bearer (`provisioning.token_ref`) and is confined to
+  its own accounts. `provisioning.mode: scim` admits only accounts the center provisioned.
+- **`exa auth accounts | deactivate | activate`** give operators an inventory and an audited kill
+  switch. `EXAMLOPS_IAM_ACCOUNT_CACHE_TTL` (10 s) bounds cross-process staleness.
+- The public-tree privacy guard exempts URL templates such as `/Users/{id}` from its macOS
+  home-path check, and nothing else. Its new test shows a real home directory still fails.
+- Tests: `test_iam_directory_scim.py` (22), dashboard `test_scim_router.py` (5), control-plane
+  and CLI deprovisioning cases, and an AuthGate message for `account_disabled`.
+
 ### Fixed — a reindex whose scheduler job died no longer reads `submitted` forever (ADR 0043 clause 4)
 
 - On Slurm and Flux a `--scheduler` reindex is fire-and-forget: the job settles its own row. A job

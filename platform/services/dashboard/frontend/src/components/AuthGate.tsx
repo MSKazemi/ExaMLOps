@@ -14,6 +14,7 @@ interface SsoProvider {
 // audit log has the detail.
 const SSO_ERRORS: Record<string, string> = {
   no_role: 'You signed in, but your organisation grants you no ExaMLOps role. Ask your administrator.',
+  account_disabled: 'Your ExaMLOps account has been deactivated or removed by your organisation.',
   state_mismatch: 'The sign-in could not be verified. Please try again.',
   session_expired: 'The sign-in took too long. Please try again.',
   login_rejected: 'Your organisation\'s sign-in response was rejected.',

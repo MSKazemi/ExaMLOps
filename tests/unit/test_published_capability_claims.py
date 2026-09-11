@@ -91,6 +91,18 @@ _VIEWER_WRITABLE = {
 }
 
 
+# Mutating routes authenticated by a credential OTHER than a dashboard session, so neither a
+# capability nor a role applies. Each is guarded by its own check; the reason says which.
+_OTHER_CREDENTIAL = {
+    # ADR 0132 SCIM: the center's IdP authenticates with its own per-provider SCIM bearer
+    # (`examlops.iam.scim.authenticate`, provisioning.token_ref) and is confined to its own accounts.
+    ("scim.py", "create_user"),
+    ("scim.py", "replace_user"),
+    ("scim.py", "patch_user"),
+    ("scim.py", "delete_user"),
+}
+
+
 def _guard_helpers(tree: ast.Module, src: str) -> set[str]:
     """Module-level functions that themselves perform a capability/role check."""
     names = set()
@@ -136,7 +148,7 @@ def test_every_mutating_dashboard_route_is_guarded() -> None:
     routes = _mutating_routes()
     assert routes, "found no mutating routes — the scan itself is broken"
     unguarded = {(f, n) for f, n, ok in routes if not ok}
-    surprises = sorted(unguarded - _VIEWER_WRITABLE)
+    surprises = sorted(unguarded - _VIEWER_WRITABLE - _OTHER_CREDENTIAL)
     assert not surprises, (
         "mutating dashboard routes with no capability or admin guard: "
         f"{surprises}. Guard them, or add them to _VIEWER_WRITABLE with the reason."
@@ -149,7 +161,8 @@ def test_viewer_writable_allowlist_has_no_stale_entries() -> None:
     routes = _mutating_routes()
     unguarded = {(f, n) for f, n, ok in routes if not ok}
     known = {(f, n) for f, n, _ in routes}
-    stale = sorted(e for e in _VIEWER_WRITABLE if e in known and e not in unguarded)
-    assert not stale, f"these are guarded now and should leave _VIEWER_WRITABLE: {stale}"
-    gone = sorted(e for e in _VIEWER_WRITABLE if e not in known)
+    listed = _VIEWER_WRITABLE | _OTHER_CREDENTIAL
+    stale = sorted(e for e in listed if e in known and e not in unguarded)
+    assert not stale, f"these are guarded now and should leave the allow-lists: {stale}"
+    gone = sorted(e for e in listed if e not in known)
     assert not gone, f"_VIEWER_WRITABLE names routes that no longer exist: {gone}"

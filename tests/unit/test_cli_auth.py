@@ -143,3 +143,21 @@ def test_verify_rejects_a_token_from_an_untrusted_issuer(env, tmp_path):
     finally:
         stranger.stop()
     assert res.exit_code == 1 and "not a trusted" in json.loads(res.stdout)["error"]
+
+
+def test_accounts_deactivate_and_activate(env):
+    """ADR 0132: an operator can cut a federated account off at once, and undo it."""
+    idp, _ = env
+    token = idp.mint(groups=["examlops-operators"])
+    iam.verify_access_token(token)  # first sight records the account (JIT)
+    listed = _json("auth", "accounts", "--provider", "jsc")
+    assert listed["total"] == 1 and listed["accounts"][0]["username"] == "alice"
+    off = _json("auth", "deactivate", "alice", "--provider", "jsc", "--reason", "left")
+    assert off["active"] is False
+    assert _json("auth", "accounts", "--inactive")["total"] == 1
+    with pytest.raises(iam.AuthenticationError, match="deactivated"):
+        iam.verify_access_token(token)
+    assert _json("auth", "activate", "alice", "--provider", "jsc")["active"] is True
+    assert iam.verify_access_token(token).subject == "u-123"
+    missing = runner.invoke(app, ["auth", "deactivate", "nobody", "--provider", "jsc"])
+    assert missing.exit_code != 0

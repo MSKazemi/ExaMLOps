@@ -244,3 +244,17 @@ def test_federation_off_adds_nothing_to_health(tmp_path, monkeypatch):
     with TestClient(cp.app) as client:
         health = client.get("/health").json()
     assert "identity_federation" not in health["startup_checks"]
+
+
+def test_a_deactivated_account_is_refused_with_a_still_valid_token(centers, tmp_path, monkeypatch):
+    """ADR 0132: the account directory is consulted on every verified token, here as elsewhere."""
+    a, b, _ = centers
+    cp = _load(monkeypatch, tmp_path, _trust(tmp_path, a, b))
+    client = TestClient(cp.app)
+    token = a.mint(groups=["mlops-ops"])
+    assert client.get("/approvals", headers=_bearer(token)).status_code == 200  # JIT-recorded
+    from examlops.iam import directory
+
+    directory.deactivate(directory.find("jsc", subject="u-123"), actor="ops", reason="left")
+    refused = client.get("/approvals", headers=_bearer(token))
+    assert refused.status_code == 401 and "deactivated" in refused.json()["detail"]

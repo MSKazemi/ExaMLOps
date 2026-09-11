@@ -131,6 +131,7 @@ already runs. Guide: [Identity federation](../guides/identity-federation.md).
 | `EXAMLOPS_IAM_HTTP_TIMEOUT` | `5` | Timeout (s) for calls to an IdP (discovery, JWKS, token, introspection). The PDP has its own `timeout_s` in the trust file. |
 | `EXAMLOPS_IAM_STEP_UP` | unset | `enforce` ⇒ local password sessions must have authenticated within `EXAMLOPS_IAM_STEP_UP_MAX_AGE` for step-up actions (model promotion, secret reveal). Federated users are governed by their center's `step_up` entry instead. |
 | `EXAMLOPS_IAM_STEP_UP_MAX_AGE` | `900` | Seconds a local password login stays "recent" for step-up actions. |
+| `EXAMLOPS_IAM_ACCOUNT_CACHE_TTL` | `10` | Seconds a federated account's status (active / deactivated / deprovisioned, ADR 0132) is cached per process. A deactivation over SCIM or `exa auth deactivate` takes effect at once in the process that received it and within this many seconds everywhere else. |
 | `EXAMLOPS_AUTH_ISSUER` | unset | CLI: the IdP `exa auth login` uses when no `--provider`/`--issuer` is given (config key `auth_issuer`, per context). |
 | `EXAMLOPS_AUTH_CLIENT_ID` | unset (`exa-cli`) | CLI: the public OAuth client id registered for `exa` at that IdP (config key `auth_client_id`). |
 | `DASHBOARD_LOCAL_LOGIN` | `true` | `false` ⇒ the shared viewer/admin passwords stop working and organisation SSO is the only way into the dashboard. |

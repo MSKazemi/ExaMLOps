@@ -15,7 +15,9 @@ PRIVATE_ROOTS = {"design", "memory", "memories", "paper", "plans", "reviews"}
 PRIVATE_FILES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
 PERSONAL_HOME = re.compile(
     r"(?:/home/(?!agent(?:/|\b)|jovyan(?:/|\b)|me(?:/|\b))[^/\s]+(?:/|\b)|"
-    r"/Users/[^/\s]+(?:/|\b)|[A-Za-z]:\\Users\\[^\\\s]+(?:\\|\b))"
+    # `(?!\{)`: a macOS account name cannot start with `{`, so `/Users/{id}` is a URL template
+    # (SCIM's standard resource path, RFC 7644), never a home directory. Nothing else is exempt.
+    r"/Users/(?!\{)[^/\s]+(?:/|\b)|[A-Za-z]:\\Users\\[^\\\s]+(?:\\|\b))"
 )
 EMAIL = re.compile(r"[\w.+-]+@([\w.-]+\.[A-Za-z]{2,})")
 PERSONAL_EMAIL_DOMAINS = {"gmail.com", "hotmail.com", "icloud.com", "outlook.com", "yahoo.com"}
@@ -36,6 +38,14 @@ def _public_paths() -> list[Path]:
         text=True,
     ).stdout
     return [Path(line) for line in output.splitlines()]
+
+
+def test_home_path_pattern_exempts_url_templates_and_nothing_else():
+    """SCIM's `/Users/{id}` is a route template; `/Users/alice/` is still a leaked home path."""
+    for home in ("/Users/alice/Library", "see /Users/alice", "C:\\Users\\alice\\x"):
+        assert PERSONAL_HOME.search(home), home
+    for template in ('"/Users/{account_id}"', "/api/scim/v2/Users/{id}", "{base}/Users/{acc.id}"):
+        assert not PERSONAL_HOME.search(template), template
 
 
 def test_private_assistant_material_is_not_publicly_tracked():

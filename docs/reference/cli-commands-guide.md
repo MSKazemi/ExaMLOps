@@ -938,6 +938,9 @@ inspect the platform's trust file (`EXAMLOPS_IAM_CONFIG`). Guide:
 | `exa auth validate` | Validate a trust file; exit 1 on any error. `--file`, `--check-discovery` (fetch each issuer's discovery document) | CI gate before deploying an identity-config change | `exa auth validate --file identity-providers.yaml --check-discovery` |
 | `exa auth verify` | Verify a token against the trust file and show the principal it maps to (role, tenant, matched rules); exit 1 if rejected. `--token-file` (`-` = stdin), `--provider` for opaque tokens | Debug a center's claim mapping during onboarding | `exa auth token \| exa auth verify --token-file -` |
 | `exa auth decide <action>` | Run the full authorization decision — tenant isolation, platform policy, the center's AuthZEN/OPA PDP — for an action and resource; exit 1 on deny. `--resource-type/--resource-id/--tenant/--project`, `--token-file` | Test a center's policy before users hit it | `exa auth decide model.promote --resource-type model --resource-id JPCP` |
+| `exa auth accounts` | The federated account directory (ADR 0132): every account that signed in (JIT) or was provisioned over SCIM, active or not, with source and last-seen. `--provider`, `--inactive`, `--limit` | See who a center has access for, and who was removed | `exa auth accounts --provider jsc --inactive` |
+| `exa auth deactivate <user>` | **[mutation]** Deactivate a federated account now (username, email, subject or id; `--provider` required, `--reason` audited). Refused on every service within seconds — even with a still-valid token — and its dashboard sessions end | Cut someone off without waiting for the center or for token expiry | `exa auth deactivate alice --provider jsc --reason "left the project"` |
+| `exa auth activate <user>` | **[mutation]** Re-activate a deactivated or deleted account (audited) | Undo a deactivation | `exa auth activate alice --provider jsc` |
 
 ### `exa approvals` — sysadmin approval gate for model changes
 

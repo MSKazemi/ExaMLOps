@@ -150,6 +150,16 @@ describe('AuthGate', () => {
     expect(blob).toMatchObject({ token: '', role: 'operator', via: 'sso', idp: 'jsc' })
   })
 
+  it('says plainly when the organisation deactivated the account (ADR 0132)', async () => {
+    window.history.replaceState(null, '', '/?sso_error=account_disabled')
+    render(
+      <AuthGate>
+        <div>protected</div>
+      </AuthGate>,
+    )
+    expect(await screen.findByText(/deactivated or removed by your organisation/i)).toBeInTheDocument()
+  })
+
   it('explains why an SSO attempt came back without a session', async () => {
     window.history.replaceState(null, '', '/?sso_error=no_role')
     render(

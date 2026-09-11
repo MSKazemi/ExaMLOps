@@ -224,7 +224,8 @@ def _idp_bearer_claims(token: str) -> dict:
 
 
 def _still_trusted(claims: dict) -> dict:
-    """A federated session dies the moment its center leaves the trust file (ADR 0120).
+    """A federated session dies when its center leaves the trust file (ADR 0120) or the center
+    deactivates or deprovisions the account (ADR 0132).
 
     Removing a provider from ``identity-providers.yaml`` is how an operator cuts a center off; its
     users' existing sessions must not outlive that decision by the session TTL.
@@ -233,12 +234,26 @@ def _still_trusted(claims: dict) -> dict:
         return claims
     from iam_gate import provider_for  # noqa: PLC0415 — iam_gate imports capabilities → auth
 
-    if provider_for(claims) is None:
+    provider = provider_for(claims)
+    if provider is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "your identity provider is no longer trusted by this platform",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # ADR 0132: deprovisioning ends existing sessions too, not just new sign-ins (cached check).
+    from iam_gate import principal_from_session  # noqa: PLC0415
+
+    principal = principal_from_session(claims)
+    if principal is not None:
+        from examlops import iam  # type: ignore  # noqa: PLC0415
+
+        try:
+            iam.tokens.check_account(provider, principal, "enforce")
+        except iam.AuthenticationError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, exc.reason, headers={"WWW-Authenticate": "Bearer"}
+            ) from exc
     return claims
 
 

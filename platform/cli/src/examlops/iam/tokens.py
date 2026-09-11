@@ -327,18 +327,48 @@ def introspect(token: str, config: IamConfig | None = None, *, provider_hint: st
     return provider, data
 
 
+def check_account(
+    provider: ProviderConfig, principal: Principal, accounts: str = "enforce"
+) -> None:
+    """Apply the account directory (ADR 0132) to a verified principal; raise if it is refused.
+
+    ``accounts``: ``enforce`` (every service: verdict + JIT record), ``readonly`` (inspection
+    tools: verdict only, no writes) or ``off``.
+    """
+    if accounts == "off":
+        return
+    from examlops.iam import directory
+
+    try:
+        directory.check(principal, provider.provisioning.mode, record=accounts == "enforce")
+    except directory.AccountDenied as exc:
+        raise AuthenticationError(exc.reason) from exc
+
+
 def verify_access_token(
-    token: str, config: IamConfig | None = None, *, provider_hint: str | None = None
+    token: str,
+    config: IamConfig | None = None,
+    *,
+    provider_hint: str | None = None,
+    accounts: str = "enforce",
 ) -> Principal:
-    """Verify a bearer access token (JWT or opaque) and return the federated :class:`Principal`."""
+    """Verify a bearer access token (JWT or opaque) and return the federated :class:`Principal`.
+
+    The token proves who the IdP says the caller is; the account directory then decides whether
+    that account may still act here — deactivated, deleted or (strict ``scim`` provisioning)
+    unprovisioned accounts are refused even with a valid token.
+    """
     token = token.strip()
     if not token:
         raise AuthenticationError("empty bearer token")
     if looks_like_jwt(token):
         provider, claims = verify_jwt(token, config)
-        return principal_from_claims(provider, claims, "jwt")
-    provider, claims = introspect(token, config, provider_hint=provider_hint)
-    return principal_from_claims(provider, claims, "opaque")
+        principal = principal_from_claims(provider, claims, "jwt")
+    else:
+        provider, claims = introspect(token, config, provider_hint=provider_hint)
+        principal = principal_from_claims(provider, claims, "opaque")
+    check_account(provider, principal, accounts)
+    return principal
 
 
 def verify_bearer(

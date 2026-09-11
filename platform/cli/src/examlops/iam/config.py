@@ -151,6 +151,20 @@ class ClientConfig:
 
 
 @dataclass(frozen=True)
+class ProvisioningConfig:
+    """How a center manages its users' accounts here (ADR 0132).
+
+    ``mode``: ``jit`` (accounts appear on first sign-in; the center can still deactivate or delete
+    them over SCIM) or ``scim`` (strict — only accounts the center pushed may sign in).
+    ``token_ref``: the bearer the center's SCIM client presents at ``/api/scim/v2``; unset ⇒ SCIM
+    is closed for this provider.
+    """
+
+    mode: str = "jit"
+    token_ref: str | None = None
+
+
+@dataclass(frozen=True)
 class IntrospectionConfig:
     """RFC 7662 introspection for centers that issue opaque (non-JWT) access tokens."""
 
@@ -186,6 +200,7 @@ class ProviderConfig:
     introspection: IntrospectionConfig | None = None
     clients: dict[str, ClientConfig] = field(default_factory=dict)
     step_up: StepUpConfig = field(default_factory=StepUpConfig)
+    provisioning: ProvisioningConfig = field(default_factory=ProvisioningConfig)
     authorization_mode: str = "local"
     pdp: PdpConfig | None = None
     allow_insecure_http: bool = False
@@ -251,6 +266,7 @@ _PROVIDER_KEYS = {
     "assurance_claim",
     "role_assurance",
     "authorization",
+    "provisioning",
     "allow_insecure_http",
 }
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -507,6 +523,28 @@ def _parse_provider(raw: Any, idx: int, errors: list[str]) -> ProviderConfig | N
         max_age_s=int(step.get("max_age_s", 900)),
     )
 
+    prov = raw.get("provisioning") or {}
+    if not isinstance(prov, dict):
+        errors.append(f"{where}.provisioning: must be a mapping")
+        prov = {}
+    unknown_prov = set(prov) - {"mode", "token_ref"}
+    if unknown_prov:
+        errors.append(f"{where}.provisioning: unknown keys {sorted(unknown_prov)}")
+    prov_mode = prov.get("mode", "jit")
+    if prov_mode not in ("jit", "scim"):
+        errors.append(f"{where}.provisioning.mode: {prov_mode!r} is not one of ['jit', 'scim']")
+    token_ref = prov.get("token_ref")
+    if token_ref is not None and not (
+        isinstance(token_ref, str) and token_ref.startswith(("env:", "secret:"))
+    ):
+        errors.append(f"{where}.provisioning.token_ref: must be an env: or secret: reference")
+    if prov_mode == "scim" and not token_ref:
+        errors.append(
+            f"{where}.provisioning: mode 'scim' needs token_ref — without a SCIM client nobody "
+            "could ever be provisioned, so every user of this center would be refused"
+        )
+    provisioning = ProvisioningConfig(mode=prov_mode, token_ref=token_ref)
+
     authz = raw.get("authorization") or {}
     mode = authz.get("mode", "local")
     if mode not in _AUTHZ_MODES:
@@ -548,6 +586,7 @@ def _parse_provider(raw: Any, idx: int, errors: list[str]) -> ProviderConfig | N
         introspection=introspection,
         clients=clients,
         step_up=step_up,
+        provisioning=provisioning,
         assurance_claim=str(raw.get("assurance_claim", "eduperson_assurance")),
         role_assurance=role_assurance,
         authorization_mode=mode,

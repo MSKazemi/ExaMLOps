@@ -239,6 +239,13 @@ def callback(
     except iam.AuthenticationError as exc:
         _audit(f"sso:{p.name}", "sso_login_failed", {"reason": exc.reason[:200]})
         return _fail("login_rejected")
+    try:
+        # ADR 0132: the center may have deactivated or deprovisioned this account (SCIM, or an
+        # operator) — a fresh IdP login does not override that.
+        iam.tokens.check_account(p, principal, "enforce")
+    except iam.AuthenticationError as exc:
+        _audit(principal.actor, "sso_login_denied", {"reason": exc.reason[:200]}, principal.tenant)
+        return _fail("account_disabled")
     if principal.role is None:
         _audit(principal.actor, "sso_login_denied", {"reason": "no_role"}, principal.tenant)
         return _fail("no_role")

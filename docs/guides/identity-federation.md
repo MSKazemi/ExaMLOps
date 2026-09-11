@@ -261,10 +261,55 @@ EXAMLOPS_IAM_LIVE_KEYCLOAK_ADMIN_PASSWORD=<the password above> \
   .venv/bin/pytest tests/integration/test_iam_keycloak_live.py -v
 ```
 
-## 9. What is not covered yet
+## 9. Provisioning and deprovisioning (SCIM 2.0)
 
-- **SCIM provisioning.** Deprovisioning happens at the IdP: disabling a user there stops new logins
-  at once, and existing access tokens expire at their end-of-life (keep them short).
+A valid access token outlives the decision to remove someone: until it expires, a person the center
+has just removed would keep access. So ExaMLOps keeps an **account directory** (ADR 0132), consulted
+on every verified token on every service (control plane, dashboard, CLI). An account that is
+**deactivated** or **deleted** is refused at once, even if its token is still valid, and its
+dashboard sessions end. Deletion leaves a tombstone: a later sign-in does not bring the account back.
+
+The center drives this through **SCIM 2.0** (RFC 7643/7644), which Entra ID, Okta, midPoint and
+Keycloak's SCIM extensions speak:
+
+```yaml
+    provisioning:
+      mode: jit                      # jit (default) | scim
+      token_ref: "env:JSC_SCIM_TOKEN" # the bearer the center's SCIM client presents
+```
+
+In the IdP's provisioning settings, set the **tenant URL** to `https://<dashboard>/api/scim/v2` and
+the **secret token** to that bearer. Every SCIM call is confined to its own center: one center can
+never read, create or deactivate another's accounts. Supported: `/Users` create, read, filter
+(`userName`, `externalId`, `id`, `emails` with `eq`), paging, replace, patch (Entra ID's and
+Okta's forms), delete, plus `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`. Roles still
+come from the group claims in the center's tokens, so there is one source of truth for authorization.
+
+| `mode` | Who may sign in |
+|---|---|
+| `jit` | anyone the center's IdP authenticates. Accounts are recorded on first sign-in, and the center (or an operator) can still deactivate or delete them |
+| `scim` | only accounts the center provisioned over SCIM (the "assigned users only" model of Entra ID and Okta). Anyone else is refused |
+
+A provisioned account is linked to the person the first time they sign in, matched on username,
+email or `externalId`. An account already bound to another person is never taken over, so a
+username the center reuses starts clean.
+
+Operators can act without waiting for the center:
+
+```bash
+exa auth accounts --provider jsc            # who has access here, who was removed, last seen
+exa auth deactivate alice --provider jsc --reason "left the project"   # refused within seconds
+exa auth activate alice --provider jsc
+```
+
+A deactivation takes effect immediately in the process that received it, and within
+`EXAMLOPS_IAM_ACCOUNT_CACHE_TTL` (default 10 s) on every other service sharing the platform
+datastore. Each change is written to the audit chain (`iam_account_provisioned`, `_updated`,
+`_deactivated`, `_activated`, `_deleted`).
+
+## 10. What is not covered yet
+
+- **SCIM groups.** Roles come from token claims; SCIM `/Groups` is not provisioned.
 - **Acting as the user towards the control plane** from the dashboard and agents (RFC 8693 token
   exchange). Those calls still use a service credential and record the user in the audit event.
 - **MCP over HTTP.** It remains loopback-only and unauthenticated. Put it behind an authenticated

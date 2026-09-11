@@ -99,6 +99,21 @@ authenticated caller, in one of three ways (ADR 0120):
 | `POST /api/auth/sso/logout` | clears the session; returns `{"end_session_url": …}` for RP-initiated logout at the IdP |
 | `GET /api/auth/me` | now also returns `sub`, `name`, `idp`, `auth_method` (`password`/`sso`/`idp-bearer`) and `acr` |
 
+### SCIM 2.0 provisioning (ADR 0132)
+
+`/api/scim/v2` is the provisioning endpoint for the centers' IdPs, not a dashboard-session API.
+Each call authenticates with the center's own SCIM bearer (`provisioning.token_ref` in its trust
+entry) and is confined to that center's accounts. Responses are `application/scim+json`, and errors
+follow RFC 7644 §3.12.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/scim/v2/ServiceProviderConfig` · `/ResourceTypes` · `/Schemas` | discovery |
+| `GET /api/scim/v2/Users?filter=userName eq "x"&startIndex=1&count=100` | list / find (`eq` on `userName`, `externalId`, `id`, `emails`) |
+| `POST /api/scim/v2/Users` | provision (`409 uniqueness` if it exists; a deleted account is revived) |
+| `GET` · `PUT` · `PATCH` `/api/scim/v2/Users/{id}` | read, replace, update (`active: false` deactivates) |
+| `DELETE /api/scim/v2/Users/{id}` | deprovision (tombstoned: refused forever, `404` afterwards) |
+
 A step-up action the session does not satisfy answers `401` with
 `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="…", max_age=N`
 (RFC 9470). Guide: [Identity federation](../guides/identity-federation.md).

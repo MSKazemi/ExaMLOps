@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 446,
+ "total_commands": 449,
  "total_groups": 67,
  "panels": [
   {
@@ -2329,6 +2329,27 @@
     "providers"
    ],
    "commands": [
+    {
+     "cmd": "exa auth accounts",
+     "group": "auth",
+     "help": "The federated account directory: who signed in or was provisioned, and who was removed.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth activate",
+     "group": "auth",
+     "help": "Re-activate a deactivated (or deleted) federated account.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth deactivate",
+     "group": "auth",
+     "help": "Deactivate a federated account now — refused everywhere within seconds, even with a valid token.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
     {
      "cmd": "exa auth decide",
      "group": "auth",
