@@ -38,6 +38,10 @@ REDIRECT = "http://localhost:18099/api/auth/sso/callback"
 def center(tmp_path, monkeypatch):
     idp, pdp = FakeIdP(), FakePdp()
     monkeypatch.setenv("JSC_DASH_SECRET", "dash-secret")
+    # Every fake IdP signs the same subject, and sign-in records it in the account directory
+    # (ADR 0132). A shared datastore lets one test's deactivation lock another worker's user out
+    # under `pytest -n auto`, so each test gets its own.
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
 
     def write(**extra):
         entry = {
