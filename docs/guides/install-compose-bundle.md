@@ -108,7 +108,9 @@ Ceph RGW, an institutional object store or a cloud bucket, edit `.env` before th
 
 1. Remove `minio` from `COMPOSE_PROFILES`, which leaves it empty. The bundled MinIO then never
    starts, and nothing else depends on it.
-2. Set `EXAMLOPS_S3_ENDPOINT`, and `EXAMLOPS_S3_REGION` if your store uses one.
+2. Set `EXAMLOPS_S3_ENDPOINT`, and `EXAMLOPS_S3_REGION` if your store uses one. Keep
+   `EXAMLOPS_S3_ADDRESSING_STYLE=path` for MinIO, Ceph RGW and most on-premise stores; use
+   `virtual` for AWS S3 buckets that need virtual-hosted addressing.
 3. Set `EXAMLOPS_S3_ACCESS_KEY` and `EXAMLOPS_S3_SECRET_KEY` to an account that can create and
    write the three buckets.
 4. Set `EXAMLOPS_S3_SERVING_ACCESS_KEY` and `EXAMLOPS_S3_SERVING_SECRET_KEY` to a key that can
@@ -118,7 +120,9 @@ Ceph RGW, an institutional object store or a cloud bucket, edit `.env` before th
    `EXAMLOPS_S3_ARTIFACT_BUCKET`, `EXAMLOPS_PROJECTS_BUCKET` and `DASHBOARD_MINIO_BUCKET`.
 
 The one-shot `s3-init` service creates any bucket that is missing on every start, whichever
-store you use. MLflow, the dashboard, Ray Serve and the backup sidecar all reach the store
+store you use. It runs in the platform's own backup image, so an install on your own store
+pulls no MinIO image at all. If a bucket name belongs to another account, or the key lacks
+access, it stops the start with a message naming the setting to change. MLflow, the dashboard, Ray Serve and the backup sidecar all reach the store
 through `EXAMLOPS_S3_ENDPOINT`.
 
 ## Turn on monitoring

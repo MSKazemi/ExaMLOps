@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — an install bundle on your own S3 store no longer needs any MinIO image
+
+- **Bucket creation (`s3-init`) runs in the platform's own `examlops-backup` image (boto3)**
+  instead of MinIO's `mc`. When MinIO removed its images from Docker Hub (2026-09-11), every bundle
+  broke, including those on their own store. Now only the optional `minio` profile uses MinIO
+  images. `s3-init` creates missing buckets, leaves existing ones alone, and stops with a message
+  naming the setting to change when a bucket name belongs to another account or the key lacks
+  access. A new `EXAMLOPS_S3_ADDRESSING_STYLE` (`path` by default, `virtual` for AWS S3) covers
+  stores that need virtual-hosted addressing.
+
 ### Added — Prometheus-backed SLOs: the `prometheus` SLI source (ADR 0023, now Accepted)
 
 - `exa slo ingest` evaluates a `prometheus` spec's PromQL ratio (its `--query`, or the recorded

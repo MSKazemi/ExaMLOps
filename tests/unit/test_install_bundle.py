@@ -254,6 +254,19 @@ def test_the_object_store_is_replaceable():
                 )
 
 
+def test_no_service_that_always_runs_depends_on_a_minio_image():
+    """MinIO removed minio/minio and minio/mc from Docker Hub on 2026-09-11, which broke every
+    bundle — bring-your-own-S3 installs too, because bucket creation used `mc`. Only the optional
+    `minio` profile may use MinIO images; bucket creation runs in the platform's own image."""
+    services = _services()
+    for name, svc in services.items():
+        if svc.get("profiles") == ["minio"]:
+            continue
+        assert "minio/" not in svc["image"], f"{name} needs a MinIO image outside the minio profile"
+    match = APP_IMAGE.match(services["s3-init"]["image"])
+    assert match and match["name"] in _released_images(), services["s3-init"]["image"]
+
+
 def test_bucket_names_are_settings():
     """Bucket names are global on public clouds, so none may be fixed in the compose file."""
     text = COMPOSE.read_text()
