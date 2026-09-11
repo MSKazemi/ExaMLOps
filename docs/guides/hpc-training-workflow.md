@@ -1,4 +1,18 @@
+---
+description: "How to train an ML model on a Slurm or Flux HPC cluster with ExaMLOps: pick the scheduler and transport, request resources, run exa pipeline run, and let the flow submit the job, fetch the model, log it to MLflow and promote it for Ray Serve."
+---
+
 # HPC Training Workflow — run a Prefect training flow on a real Slurm/Flux cluster
+
+!!! abstract "In short"
+    Set `EXAMLOPS_HPC_SCHEDULER=slurm` (or `flux`) and a transport — `local` when you run on the
+    login node, `ssh` from anywhere else — optionally request resources with the `EXAMLOPS_HPC_*`
+    variables, and run `exa pipeline run --model <MODEL> --dataset <DATASET>`. The Prefect training
+    flow writes a portable `run.sh`, submits it with `sbatch` or `flux batch`, waits for the job,
+    fetches the trained model back, logs it to MLflow and, if it passes the model's lifecycle
+    threshold, sets the `@Production` alias; `exa serve reload` then rolls it into Ray Serve. For
+    a governed setup, register the cluster with `exa hpc connect`, have a sysadmin approve it with
+    `exa hpc approve`, and target it by name with `--cluster`.
 
 This guide takes you end-to-end from "the platform trains inline in mock mode" to
 "the Prefect `training_flow` submits a real batch job to a Slurm or Flux cluster, waits
@@ -168,7 +182,7 @@ name. `--cluster` refuses any cluster that a sysadmin has not **approved** (`ACT
 resolves the same env for you. See **[hpc-fleet.md](hpc-fleet.md)** for the full flow.
 
 ```bash
-exa hpc connect <REMOTE_HOST> --name hpc --user <DEPLOY_USER>    # → clusters.yaml + PENDING row
+exa hpc connect <REMOTE_HOST> --name lxp --user <DEPLOY_USER>    # → clusters.yaml + PENDING row
 exa hpc approve lxp                                   # sysadmin gate → ACTIVE
 exa hpc preflight lxp                                 # exits 1 if the cluster can't take the job
 exa pipeline run --model JPCP --dataset PM100Dataset --cluster lxp

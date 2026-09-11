@@ -29,6 +29,7 @@ Key facts:
 - [Who decides](https://mskazemi.com/ExaMLOps/explore/decisions/): every human approval gate and the audit trail
 - [Follow a cluster job](https://mskazemi.com/ExaMLOps/explore/hpc/): how training lands on Slurm or Flux
 - [HPC fleet](https://mskazemi.com/ExaMLOps/guides/hpc-fleet/): discover, admit and place work on clusters
+- [Train on a Slurm or Flux cluster](https://mskazemi.com/ExaMLOps/guides/hpc-training-workflow/): step-by-step — scheduler + transport, resources, `exa pipeline run`, MLflow logging, promotion and Ray Serve reload
 
 ## Reference
 
