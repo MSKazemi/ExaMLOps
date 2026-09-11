@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-09-11
+
 ### Fixed — each lineage run now has one start and one end (ADR 0004, now Accepted)
 
 - **Training runs.** Each training run is now one lineage run, identified by its Prefect flow run
