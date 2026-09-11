@@ -265,6 +265,7 @@ def record_sample(
     *,
     tenant: str = "default",
     source: str = "exa-slo",
+    watermark: str | None = None,
 ) -> bool:
     """Record one SLI interval and audit the moment an SLO **breaks**. Returns True if it just did.
 
@@ -286,7 +287,7 @@ def record_sample(
     from examlops.data.governance import record_slo_sample
 
     before = _is_breached(model, name, tenant)
-    record_slo_sample(model, name, good, total, tenant=tenant)
+    record_slo_sample(model, name, good, total, tenant=tenant, watermark=watermark)
     after = _is_breached(model, name, tenant)
     if after and not before:
         st = slo_status(model, name, tenant=tenant)[0]
@@ -351,7 +352,32 @@ def _window_start(window: str) -> str | None:
     return start.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _c1_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+#: What an event-sourced ingester returns: ``(good, total, watermark)`` for the events it has
+#: not counted before, or a string saying why it could not count any.
+Increment = tuple[float, float, str] | str
+
+
+def _after(spec: dict[str, Any], tenant: str, table: str) -> int | None:
+    """The id of the last ``table`` event an earlier ingest of this SLO counted, or None.
+
+    ADR 0023 clause 3. `slo_status` **sums** an SLO's samples, so an ingest that re-recorded its
+    whole window every run counted the same events once per run: 120 real gateway calls read as
+    620 after six daily ingests, and a fresh outage was diluted by recounting a good month (SLI
+    0.948 against a true 0.817). Each ingest now counts only events past this mark. A mark from a
+    different table (the spec's source was changed) is no mark.
+    """
+    from examlops.data.governance import slo_last_watermark
+
+    mark = slo_last_watermark(spec["model"], spec["name"], tenant=tenant)
+    prefix, _, value = (mark or "").partition(":")
+    return int(value) if prefix == table and value.isdigit() else None
+
+
+def _up_to_date(what: str, mark: int | None) -> str:
+    return f"up to date — no {what} since the last ingest (watermark id {mark})"
+
+
+def _c1_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
     """Good/total for a gateway latency or error SLO (ADR 0023 clause 3, the C1 GenAI source).
 
     ``--query latency_ms<=800`` — the share of **successful** calls answered within 800 ms (a
@@ -375,17 +401,22 @@ def _c1_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, f
     since = _window_start(spec.get("window") or "30d")
     if since is None:
         return f"window '{spec.get('window')}' is not of the form <n>m|h|d|w (e.g. 30d)"
-    good, total = gateway_call_sli(model, since, latency_ms_max=latency_max)
+    mark = _after(spec, tenant, "gateway_calls")
+    good, total, last = gateway_call_sli(
+        model, since, latency_ms_max=latency_max, after_id=mark or 0
+    )
     if total == 0:
+        if mark is not None:
+            return _up_to_date("measured gateway calls", mark)
         return (
             f"no measured gateway calls for {model} in the last {spec.get('window') or '30d'}"
             + (" that succeeded" if latency_max is not None else "")
             + " — calls recorded before latency was measured carry none"
         )
-    return (float(good), float(total))
+    return (float(good), float(total), f"gateway_calls:{last}")
 
 
-def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
     """Good/total for a drift SLO, from recorded drift **verdicts** (ADR 0023 clause 3, c5).
 
     One recorded ``drift_events`` row is one evaluation the real detectors already made, so
@@ -401,7 +432,12 @@ def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, f
     verdict — concept, label and feature drift.
     """
     kind = (spec.get("sli_query") or "").strip() or None
+    mark = _after(spec, tenant, "drift_events")
     events = platform_db.list_drift_events(model=model, drift_kind=kind, last_n=_DRIFT_WINDOW)
+    if mark is not None:
+        events = [e for e in events if int(e.get("id") or 0) > mark]
+        if not events:
+            return _up_to_date("drift verdicts", mark)
     if not events:
         return (
             f"no drift_events rows for {model}"
@@ -411,7 +447,7 @@ def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, f
         )
     total = len(events)
     good = sum(1 for e in events if str(e.get("severity", "")).upper() == "OK")
-    return (float(good), float(total))
+    return (float(good), float(total), f"drift_events:{max(int(e['id']) for e in events)}")
 
 
 def _c8_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
@@ -443,7 +479,7 @@ def _c8_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, f
     return (float(good), float(len(measured)))
 
 
-def _c2_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+def _c2_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
     """Good/total for an eval-quality SLO, or a string saying why it could not be derived.
 
     An `eval_suite_results` row is already a proportion over a known sample size, which is the
@@ -467,17 +503,27 @@ def _c2_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, f
         return f"no eval_suite_results rows for metric '{metric}'" + (
             f" in suite '{suite}'" if suite else ""
         )
-    latest = rows[0]
-    n = int(latest.get("sample_size") or 0)
-    if n <= 0:
-        return f"the newest '{metric}' result records no sample_size, so it is not a proportion"
-    score = float(latest["score"])
-    if not 0.0 <= score <= 1.0:
-        return (
-            f"'{metric}' is {score}, which is not a ratio — an SLI must be good/total, so a "
-            "unit-bearing metric (latency, tokens, cost) cannot back an SLO directly"
-        )
-    return (round(score * n), float(n))
+    mark = _after(spec, tenant, "eval_suite_results")
+    if mark is None:
+        fresh = rows[:1]  # a first ingest starts from the newest result, not the whole history
+    else:
+        fresh = [r for r in rows if int(r.get("id") or 0) > mark]
+        if not fresh:
+            return _up_to_date(f"'{metric}' results", mark)
+    good = total = 0.0
+    for row in fresh:
+        n = int(row.get("sample_size") or 0)
+        if n <= 0:
+            return f"the newest '{metric}' result records no sample_size, so it is not a proportion"
+        score = float(row["score"])
+        if not 0.0 <= score <= 1.0:
+            return (
+                f"'{metric}' is {score}, which is not a ratio — an SLI must be good/total, so a "
+                "unit-bearing metric (latency, tokens, cost) cannot back an SLO directly"
+            )
+        good += round(score * n)
+        total += n
+    return (good, total, f"eval_suite_results:{max(int(r['id']) for r in fresh)}")
 
 
 def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
@@ -498,6 +544,7 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
         if source in UNSUPPORTED_SOURCES:
             out.append({**row, "ingested": False, "reason": UNSUPPORTED_SOURCES[source]})
             continue
+        result: tuple[float, float, str] | tuple[float, float] | str
         if source == "c1":
             result = _c1_samples(model, spec, tenant)
         elif source == "c2":
@@ -512,11 +559,22 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
                 f"{sorted({*SUPPORTED_SOURCES, *UNSUPPORTED_SOURCES})}"
             )
         if isinstance(result, str):
-            out.append({**row, "ingested": False, "reason": result})
+            done = result.startswith("up to date")
+            out.append({**row, "ingested": False, "up_to_date": done, "reason": result})
             continue
-        good, total = result
+        # Event sources return a watermark so the next ingest counts only newer events; c8 is a
+        # point-in-time measurement (how many declared attributes are within threshold *now*), so
+        # each ingest is one legitimate sample of it and carries none.
+        good, total = result[0], result[1]
+        watermark = result[2] if len(result) == 3 else None
         breached = record_sample(
-            model, spec["name"], good, total, tenant=tenant, source="exa-slo-ingest"
+            model,
+            spec["name"],
+            good,
+            total,
+            tenant=tenant,
+            source="exa-slo-ingest",
+            watermark=watermark,
         )
         out.append({**row, "ingested": True, "good": good, "total": total, "breached": breached})
     return out

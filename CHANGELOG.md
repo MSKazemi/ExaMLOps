@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — `exa slo ingest` counted the same events on every run (ADR 0023 clause 3)
+
+- An SLO's status sums its samples, and every ingester (`c1`, `c2`, `c5`) recorded its whole
+  window as a new sample on each run. A daily ingest counted each event once per day. Six ingests
+  turned 120 real gateway calls into 620, and a fresh outage was diluted by recounting a good
+  month: the SLI read 0.948 against a true 0.817.
+- Each sample now carries a watermark (`slo_samples.watermark`, an additive column), and an
+  ingest counts only events past it. A run with nothing new records nothing and reports
+  `up to date`. `c8`, a point-in-time fairness measurement, is sampled on every ingest by design.
+
 ### Fixed — KServe manifests name what would run, and the API would accept them (ADR 0142 · USAR I0)
 
 - `exa serve manifest` and the `kserve` LLM launcher rendered manifests the KServe API would reject:

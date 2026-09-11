@@ -146,9 +146,10 @@ def record_gateway_call(
 # Not in `__all__`: the facade contract is that every name there is `platform_db`'s own, and this
 # is read only by `examlops.slo` (ADR 0023 clause 3, the `c1` source).
 def gateway_call_sli(
-    model: str, since: str, *, latency_ms_max: float | None = None
-) -> tuple[int, int]:
-    """``(good, total)`` over a model's **measured** gateway calls since ``since`` (UTC).
+    model: str, since: str, *, latency_ms_max: float | None = None, after_id: int = 0
+) -> tuple[int, int, int]:
+    """``(good, total, last_id)`` over a model's **measured** gateway calls since ``since``
+    (UTC) and with ``id > after_id`` — the incremental ingester's watermark.
 
     Only rows that carry a measurement count — rows written before latency was recorded have
     ``latency_ms`` NULL and are *unmeasured*, not fast. With ``latency_ms_max`` it is a latency
@@ -159,18 +160,19 @@ def gateway_call_sli(
     with get_db() as conn:
         if latency_ms_max is None:
             row = conn.execute(
-                "SELECT SUM(CASE WHEN error = 0 THEN 1 ELSE 0 END), COUNT(*) FROM gateway_calls "
-                "WHERE model = ? AND ts >= ? AND latency_ms IS NOT NULL",
-                (model, since),
+                "SELECT SUM(CASE WHEN error = 0 THEN 1 ELSE 0 END), COUNT(*), MAX(id) "
+                "FROM gateway_calls "
+                "WHERE model = ? AND ts >= ? AND id > ? AND latency_ms IS NOT NULL",
+                (model, since, after_id),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT SUM(CASE WHEN latency_ms <= ? THEN 1 ELSE 0 END), COUNT(*) "
+                "SELECT SUM(CASE WHEN latency_ms <= ? THEN 1 ELSE 0 END), COUNT(*), MAX(id) "
                 "FROM gateway_calls "
-                "WHERE model = ? AND ts >= ? AND latency_ms IS NOT NULL AND error = 0",
-                (latency_ms_max, model, since),
+                "WHERE model = ? AND ts >= ? AND id > ? AND latency_ms IS NOT NULL AND error = 0",
+                (latency_ms_max, model, since, after_id),
             ).fetchone()
-    return int(row[0] or 0), int(row[1] or 0)
+    return int(row[0] or 0), int(row[1] or 0), int(row[2] or after_id)
 
 
 def set_gateway_config(

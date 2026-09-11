@@ -235,15 +235,40 @@ def record_fairness_sample(
 
 
 def record_slo_sample(
-    model: str, name: str, good: float, total: float, *, tenant: str = "default"
+    model: str,
+    name: str,
+    good: float,
+    total: float,
+    *,
+    tenant: str = "default",
+    watermark: str | None = None,
 ) -> None:
-    """Append one SLI good/total measurement interval (R4)."""
+    """Append one SLI good/total measurement interval (R4).
+
+    ``watermark`` is the high-water mark of the events this interval counted (``<table>:<id>``),
+    set by the ingesters so the next ingest counts only newer events.
+    """
     init_db()
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO slo_samples (model, tenant, name, good, total) VALUES (?,?,?,?,?)",
-            (model, tenant, name, good, total),
+            "INSERT INTO slo_samples (model, tenant, name, good, total, watermark) "
+            "VALUES (?,?,?,?,?,?)",
+            (model, tenant, name, good, total, watermark),
         )
+
+
+# Not in `__all__` (the facade contract: every name there is `platform_db`'s own); read only by
+# `examlops.slo`'s incremental ingesters.
+def slo_last_watermark(model: str, name: str, *, tenant: str = "default") -> str | None:
+    """The newest ingest watermark recorded for an SLO, or None if none was ever recorded."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT watermark FROM slo_samples WHERE model=? AND tenant=? AND name=? "
+            "AND watermark IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (model, tenant, name),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def revoke_relation(subject: str, relation: str, obj: str) -> int:

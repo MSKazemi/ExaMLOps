@@ -120,7 +120,8 @@ def test_calls_outside_the_window_do_not_count():
         )
     _spec("p-latency", "latency_ms<=800", window="7d")
 
-    assert (_ingest("p-latency")["good"], _ingest("p-latency")["total"]) == (1.0, 1.0)
+    row = _ingest("p-latency")
+    assert (row["good"], row["total"]) == (1.0, 1.0)
 
 
 @pytest.mark.parametrize(

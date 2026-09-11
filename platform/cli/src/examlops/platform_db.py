@@ -1741,6 +1741,12 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "latency_ms": "REAL",
         "error": "INTEGER",
     },
+    # ADR 0023 clause 3: the high-water mark of the events an `exa slo ingest` counted
+    # (`<table>:<id>`), so the next ingest counts only newer events. Without it every ingest
+    # re-recorded its whole window and the summed SLI counted the same events again and again.
+    "slo_samples": {
+        "watermark": "TEXT",
+    },
     # A6 reindex orchestration (ADR 0043 clause 4): where the job ran and how long it took.
     # `cost_usd` is deliberately absent — a monetary figure needs device-hours this path does not
     # know, and an invented one is worse than none (the rule the C1 carbon facet already follows).

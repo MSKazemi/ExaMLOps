@@ -61,6 +61,18 @@ exa slo record JPCP latency-p99 995 1000    # or push one interval by hand
 Until `ingest` existed every SLI arrived by hand, so an SLO measured whatever someone remembered
 to type — while the spec's `sli_source` was stored and read by nothing.
 
+**Each event is counted once, however often you ingest.** An SLO's status sums its samples, and
+the ingesters used to record their whole window as a new sample on every run. A daily ingest
+therefore counted the same events once per day, and a fresh outage was diluted by recounting a
+good month: 120 real calls read as 620, and the SLI read 0.948 against a true 0.817.
+
+The event sources (`c1`, `c2`, `c5`) now record a watermark with each sample and count only
+events past it. Run `exa slo ingest` as often as you like: a run with nothing new records nothing
+and reports `up to date`. The first ingest of a `c2` spec starts from the newest result rather
+than the whole history. `c8` is different: it measures the current state (how many declared
+attributes are within threshold now), so each ingest is one sample of it, and the SLI weights
+those samples by how often you ingest.
+
 **`c2` (eval quality) is ingested today.** An `eval_suite_results` row is already a proportion over
 a known sample size, which is exactly the shape an SLI needs; `sli_query` picks the metric —
 `pass_rate`, or `agent-safety:answer_rate` to pin one suite. A metric that is not a ratio is
