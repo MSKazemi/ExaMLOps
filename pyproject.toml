@@ -22,7 +22,7 @@ dependencies = [
     # PR #4). .github/dependabot.yml ignores setuptools>=80 for the same reason; lift both
     # together once the locked vllm admits setuptools>=80.
     "setuptools>=65,<80",
-    "mlflow==3.11.1",
+    "mlflow==3.16.0",
     "scikit-learn>=1.9.0",
     "pandas>=2.0.0",
     "joblib>=1.6.0",

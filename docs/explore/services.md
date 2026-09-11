@@ -218,7 +218,7 @@ Hold models, artifacts, datasets and platform state.
 ### MLflow tracking server + model registry
 
 **Port:** 15000  
-**Built on:** ghcr.io/mlflow/mlflow:v3.11.1 + psycopg2 + boto3 (Dockerfile.mlflow)
+**Built on:** ghcr.io/mlflow/mlflow:v3.16.0 + psycopg2 + boto3 (Dockerfile.mlflow)
 
 **What it does**
 

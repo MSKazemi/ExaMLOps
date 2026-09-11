@@ -1,4 +1,4 @@
-mlflow==3.11.1
+mlflow==3.16.0
 ray[serve]==2.55.0
 # <0.137: ray 2.55.0 @serve.ingress cloudpickles the FastAPI app; fastapi>=0.137 adds an
 # unpicklable _thread.lock and breaks serve startup at import. 0.136.x is verified-compatible.
