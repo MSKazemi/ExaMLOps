@@ -62,6 +62,26 @@ def encoder_id(name: str, version: str, dim: int, metric: str, normalization: st
     return f"{name}-{version}-" + hashlib.sha256(payload.encode()).hexdigest()[:12]
 
 
+ENCODER_REGISTRIES = ("local", "mlflow")
+
+
+def encoder_registry() -> str:
+    """Where encoders are recorded: ``EXAMLOPS_ENCODER_REGISTRY`` (default ``local``).
+
+    ``mlflow`` makes the MLflow encoder registry the record (ADR 0043 clause 1, see
+    :mod:`examlops.embeddings.mlflow_registry`) with ``platform.db`` as its index. An unknown
+    value is an error: a typo must not quietly keep the registry of record somewhere else.
+    """
+    import os
+
+    name = (os.getenv("EXAMLOPS_ENCODER_REGISTRY") or "local").strip().lower()
+    if name not in ENCODER_REGISTRIES:
+        raise ValueError(
+            f"EXAMLOPS_ENCODER_REGISTRY={name!r} is not one of {', '.join(ENCODER_REGISTRIES)}"
+        )
+    return name
+
+
 def register_encoder(
     name: str,
     version: str,
@@ -69,11 +89,107 @@ def register_encoder(
     *,
     metric: str = "cosine",
     normalization: str = "l2",
+    actor: str | None = None,
 ) -> str:
-    """Register an encoder and return its ``encoder_id`` (R1)."""
+    """Register an encoder and return its ``encoder_id`` (R1). Idempotent.
+
+    Under the MLflow registry the encoder is published there **first** and indexed in
+    ``platform.db`` only afterwards, so a failed publish registers nothing and the two never
+    disagree. Re-registering an encoder that is only local publishes it.
+    """
     eid = encoder_id(name, version, dim, metric, normalization)
+    if encoder_registry() == "mlflow":
+        from examlops.embeddings import mlflow_registry
+
+        card = {
+            "encoder_id": eid,
+            "name": name,
+            "version": version,
+            "dim": int(dim),
+            "metric": metric,
+            "normalization": normalization,
+        }
+        mlflow_registry.publish(card, actor=actor)
     platform_db.register_encoder_row(eid, name, version, dim, metric, normalization)
     return eid
+
+
+def get_encoder(enc_id: str) -> dict[str, Any] | None:
+    """An encoder's record — from the local index, or (MLflow registry) pulled from MLflow.
+
+    An encoder published by another instance that shares this MLflow is indexed here on first
+    use, so a reindex or a guard never refuses an encoder the registry of record knows.
+    """
+    row = platform_db.get_encoder(enc_id)
+    if row is not None or encoder_registry() != "mlflow":
+        return row
+    from examlops.embeddings import mlflow_registry
+
+    card = mlflow_registry.fetch(enc_id)
+    if card is None:
+        return None
+    platform_db.register_encoder_row(
+        enc_id, card["name"], card["version"], card["dim"], card["metric"], card["normalization"]
+    )
+    return platform_db.get_encoder(enc_id)
+
+
+def list_encoders() -> list[dict[str, Any]]:
+    """Every registered encoder, newest first — from the registry of record.
+
+    Under MLflow the listing is MLflow's, and any encoder missing from the local index is added
+    to it. Each row carries ``registry`` (``local`` / ``mlflow``) so a listing says where it came
+    from.
+    """
+    if encoder_registry() != "mlflow":
+        return [{**r, "registry": "local"} for r in platform_db.list_encoders()]
+    from examlops.embeddings import mlflow_registry
+
+    rows: list[dict[str, Any]] = []
+    for card in mlflow_registry.fetch_all():
+        if platform_db.get_encoder(card["encoder_id"]) is None:
+            platform_db.register_encoder_row(
+                card["encoder_id"],
+                card["name"],
+                card["version"],
+                card["dim"],
+                card["metric"],
+                card["normalization"],
+            )
+        rows.append({**card, "registry": "mlflow"})
+    return sorted(rows, key=lambda r: r.get("created_at") or 0, reverse=True)
+
+
+def migrate_encoders(*, dry_run: bool = False, actor: str | None = None) -> dict[str, Any]:
+    """Publish every locally registered encoder to the MLflow registry (additive, idempotent).
+
+    Encoder ids are content-addressed, so an encoder already in MLflow is **skipped** — it is the
+    same record by construction. Runs regardless of ``EXAMLOPS_ENCODER_REGISTRY`` so a deployment
+    can publish before switching over; it needs ``MLFLOW_TRACKING_URI``.
+    """
+    from examlops.embeddings import mlflow_registry
+
+    published: list[str] = []
+    skipped: list[str] = []
+    for row in platform_db.list_encoders():
+        eid = row["encoder_id"]
+        if mlflow_registry.fetch(eid) is not None:
+            skipped.append(eid)
+            continue
+        if not dry_run:
+            mlflow_registry.publish(
+                {
+                    "encoder_id": eid,
+                    "name": row["name"],
+                    "version": row["version"],
+                    "dim": int(row["dim"]),
+                    "metric": row["metric"],
+                    "normalization": row["normalization"],
+                },
+                actor=actor,
+            )
+        published.append(eid)
+    return {"dry_run": dry_run, "published": published, "skipped": skipped}
 
 
 def guard_compatible(a_encoder_id: str, b_encoder_id: str) -> None:
@@ -263,7 +379,7 @@ def reindex(
     here and is recorded ``inline-fallback`` (the rule asset closures follow). ``_resume_job_id``
     is how the job continues the row this call opened.
     """
-    if platform_db.get_encoder(new_encoder_id) is None:
+    if get_encoder(new_encoder_id) is None:
         raise ValueError(f"unknown encoder {new_encoder_id!r} — register it first")
     current = platform_db.get_collection(collection, tenant) or {}
     from_encoder = current.get("active_encoder_id")
@@ -485,6 +601,10 @@ __all__ = [
     "ReindexResult",
     "encoder_id",
     "register_encoder",
+    "encoder_registry",
+    "get_encoder",
+    "list_encoders",
+    "migrate_encoders",
     "guard_compatible",
     "set_collection_encoder",
     "reindex",

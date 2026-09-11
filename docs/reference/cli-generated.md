@@ -1041,11 +1041,24 @@ Embedding lifecycle — encoders + blue-green reindex (B6)
 
 ### `exa embedding list`
 
-List registered encoders.
+List registered encoders — from the registry of record (local, or MLflow).
+
+### `exa embedding migrate`
+
+Publish every locally registered encoder to the MLflow encoder registry (ADR 0043 cl. 1).
+
+Additive and idempotent: encoder ids are content-addressed, so one already in MLflow is
+skipped as the same record. Works before switching `EXAMLOPS_ENCODER_REGISTRY=mlflow`, so a
+deployment can publish first and switch after. Needs `MLFLOW_TRACKING_URI`.
+
+- `--dry-run` — List what would be published
 
 ### `exa embedding register`
 
 Register a versioned encoder → encoder_id (R1).
+
+With `EXAMLOPS_ENCODER_REGISTRY=mlflow` the encoder is published to the MLflow encoder
+registry first (ADR 0043 clause 1); re-registering a local-only encoder publishes it.
 
 - `--dim` — Embedding dimension
 - `--metric` — cosine | dot | l2

@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 449,
+ "total_commands": 450,
  "total_groups": 67,
  "panels": [
   {
@@ -796,14 +796,21 @@
     {
      "cmd": "exa embedding list",
      "group": "embedding",
-     "help": "List registered encoders.",
+     "help": "List registered encoders — from the registry of record (local, or MLflow).",
+     "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
+     "guide": "guides/embedding-lifecycle.md"
+    },
+    {
+     "cmd": "exa embedding migrate",
+     "group": "embedding",
+     "help": "Publish every locally registered encoder to the MLflow encoder registry (ADR 0043 cl. 1). Additive and idempotent: encoder ids are content-addressed, so one already in MLflow is skipped as the same record. Works before switching `EXAMLOPS_ENCODER_REGISTRY=mlflow`, so a deployment can publish first and switch after. Needs `MLFLOW_TRACKING_URI`.",
      "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
      "guide": "guides/embedding-lifecycle.md"
     },
     {
      "cmd": "exa embedding register",
      "group": "embedding",
-     "help": "Register a versioned encoder → encoder_id (R1).",
+     "help": "Register a versioned encoder → encoder_id (R1). With `EXAMLOPS_ENCODER_REGISTRY=mlflow` the encoder is published to the MLflow encoder registry first (ADR 0043 clause 1); re-registering a local-only encoder publishes it.",
      "anchor": "exa-embedding-embedding-lifecycle-encoders-blue-green-reindex-b6",
      "guide": "guides/embedding-lifecycle.md"
     },

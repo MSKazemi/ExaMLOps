@@ -22,6 +22,32 @@ exa embedding list
 The `encoder_id` is **content-addressed** over name/version/dim/metric/normalization, so the
 same encoder always resolves to the same id and any change produces a new one.
 
+### Keeping the registry in MLflow
+
+```bash
+export EXAMLOPS_ENCODER_REGISTRY=mlflow          # the registry of record is MLflow
+exa embedding migrate --dry-run                  # what already-registered encoders would publish
+exa embedding migrate                            # publish them (additive; already there = skipped)
+exa embedding register e5-large v2 --dim 1024    # published to MLflow first, then indexed here
+```
+
+Each encoder becomes one run in the MLflow experiment `examlops-encoders`
+(`EXAMLOPS_ENCODER_EXPERIMENT`), named by its `encoder_id`. Its **`encoder.json` artifact** is the
+encoder's card, with the same fields as run params, so encoders sit next to the models that use
+them, with MLflow's UI and access control. `platform.db` keeps an index that the compatibility
+guard and reindex read, so they never wait on MLflow.
+
+| Rule | Why |
+|---|---|
+| MLflow is written **first**; the local index only after | A failed publish registers nothing, so the two never disagree |
+| An encoder only MLflow knows is pulled into the index on first use | An instance sharing the MLflow can reindex to an encoder another instance registered |
+| A record whose fields don't hash to its `encoder_id` is **refused** | An encoder claiming one embedding space and describing another would defeat the guard |
+| A run that didn't finish (a publish that failed half-way) is never read | Only complete records count |
+| `EXAMLOPS_ENCODER_REGISTRY` with an unknown value is an **error** | A typo must not quietly keep the registry of record somewhere else |
+
+`local` (the default) keeps everything in `platform.db` and needs no MLflow, the right choice for
+offline development. `exa embedding list` shows which registry each encoder came from.
+
 ## Compatibility guard — no silent cross-encoder compares
 
 ```python

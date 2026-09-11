@@ -25,7 +25,8 @@ _EXAMPLES = (
     "  exa embedding list\n\n"
     "  exa embedding set-encoder docs <encoder-id>\n\n"
     "  exa embedding reindex docs <new-encoder-id> --corpus-size 10000 --recall 0.97\n\n"
-    "  exa embedding status docs"
+    "  exa embedding status docs\n\n"
+    "  EXAMLOPS_ENCODER_REGISTRY=mlflow exa embedding migrate --dry-run"
 )
 
 
@@ -41,10 +42,20 @@ def register(
     metric: str = typer.Option("cosine", "--metric", help="cosine | dot | l2"),
     normalization: str = typer.Option("l2", "--norm", help="Normalization (l2/none)"),
 ) -> None:
-    """Register a versioned encoder → encoder_id (R1)."""
-    from examlops.embeddings import register_encoder
+    """Register a versioned encoder → encoder_id (R1).
 
-    eid = register_encoder(name, version, dim, metric=metric, normalization=normalization)
+    With `EXAMLOPS_ENCODER_REGISTRY=mlflow` the encoder is published to the MLflow encoder
+    registry first (ADR 0043 clause 1); re-registering a local-only encoder publishes it.
+    """
+    from examlops.embeddings import register_encoder
+    from examlops.embeddings.mlflow_registry import EncoderRegistryError
+
+    try:
+        eid = register_encoder(
+            name, version, dim, metric=metric, normalization=normalization, actor=_actor()
+        )
+    except (ValueError, EncoderRegistryError) as exc:
+        _output.error(str(exc))
     if _output.json_mode:
         _output.print_json({"encoder_id": eid, "name": name, "version": version, "dim": dim})
         return
@@ -53,10 +64,14 @@ def register(
 
 @app.command("list")
 def list_cmd() -> None:
-    """List registered encoders."""
-    from examlops.data.data_assets import list_encoders
+    """List registered encoders — from the registry of record (local, or MLflow)."""
+    from examlops.embeddings import list_encoders
+    from examlops.embeddings.mlflow_registry import EncoderRegistryError
 
-    encoders = list_encoders()
+    try:
+        encoders = list_encoders()
+    except (ValueError, EncoderRegistryError) as exc:
+        _output.error(str(exc))
     if _output.json_mode:
         _output.print_json(encoders)
         return
@@ -67,7 +82,7 @@ def list_cmd() -> None:
         return
     _output.print_table(
         "Encoders",
-        ["Encoder ID", "Name", "Version", "Dim", "Metric", "Norm"],
+        ["Encoder ID", "Name", "Version", "Dim", "Metric", "Norm", "Registry"],
         [
             [
                 e["encoder_id"],
@@ -76,6 +91,7 @@ def list_cmd() -> None:
                 str(e["dim"]),
                 e["metric"],
                 e["normalization"],
+                e.get("registry", "local"),
             ]
             for e in encoders
         ],
@@ -89,8 +105,7 @@ def set_encoder(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Bootstrap a collection's active encoder (R2)."""
-    from examlops.data.data_assets import get_encoder
-    from examlops.embeddings import set_collection_encoder
+    from examlops.embeddings import get_encoder, set_collection_encoder
 
     if get_encoder(encoder_id) is None:
         _output.error(f"Unknown encoder {encoder_id} — register it first.")
@@ -203,3 +218,30 @@ def status(
                 for j in result["jobs"]
             ],
         )
+
+
+@app.command("migrate")
+def migrate(
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would be published"),
+) -> None:
+    """Publish every locally registered encoder to the MLflow encoder registry (ADR 0043 cl. 1).
+
+    Additive and idempotent: encoder ids are content-addressed, so one already in MLflow is
+    skipped as the same record. Works before switching `EXAMLOPS_ENCODER_REGISTRY=mlflow`, so a
+    deployment can publish first and switch after. Needs `MLFLOW_TRACKING_URI`.
+    """
+    from examlops.embeddings import migrate_encoders
+    from examlops.embeddings.mlflow_registry import EncoderRegistryError
+
+    try:
+        report = migrate_encoders(dry_run=dry_run, actor=_actor())
+    except EncoderRegistryError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(report)
+        return
+    verb = "Would publish" if dry_run else "Published"
+    _output.ok(
+        f"{verb} {len(report['published'])} encoder(s) to MLflow; "
+        f"{len(report['skipped'])} already there."
+    )

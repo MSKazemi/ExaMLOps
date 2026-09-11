@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the encoder registry can live in MLflow (ADR 0043 clause 1, now Accepted)
+
+- `EXAMLOPS_ENCODER_REGISTRY=mlflow` makes MLflow the encoder registry of record. Each encoder is
+  one run in the `examlops-encoders` experiment whose `encoder.json` artifact is its card (name,
+  version, dim, metric, normalization). `platform.db` keeps the index the compatibility guard reads.
+- Registration writes MLflow first, so a failed publish registers nothing. An encoder that only
+  MLflow knows (published by another instance) is indexed on first use. A record whose fields do
+  not hash to its content-addressed id, or a publish that did not finish, is never served. An
+  unknown registry value is an error, not a quiet fallback.
+- `exa embedding migrate [--dry-run]` publishes existing encoders (additive; already-published ones
+  are skipped). `exa embedding list` shows each encoder's registry. `local` stays the default and
+  needs no MLflow.
+
 ### Added — a deprovisioned account stops working before its token expires (SCIM 2.0, ADR 0132)
 
 - **Account directory, enforced everywhere.** Every verified IdP token now also passes the
