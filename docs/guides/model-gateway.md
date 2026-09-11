@@ -35,7 +35,7 @@ still answers from a configured local backend.
 `exa serve challenger judge` use — holds an echo route under `EXAMLOPS_GATEWAY_DEFAULT_MODEL`
 (`default`) plus one route per endpoint registered with
 [`exa serve llm start`](vlm-serving.md), named after the endpoint. So a model served by
-vLLM on a GPU node, a Compose service or a Slurm allocation (once its address is recorded)
+vLLM on a GPU node, a Compose service or a Slurm or Flux allocation (once its address is recorded)
 is reachable with keys, budgets, guardrails, caching and cost applied:
 
 ```bash

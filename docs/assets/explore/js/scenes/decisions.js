@@ -44,7 +44,7 @@ XM.register("decisions", {
     { id: "g-traffic", x: 560, y: 350, label: "Traffic split", icon: "%", kind: "gate", line: "human", labelSide: "above",
       info: { title: "Traffic split", sub: "Production / Canary / Staging weights",
         tasks: ["Weights are stored in traffic_rules and read by the model router", "Changes ask for confirmation unless --yes"],
-        cli: ["exa serve traffic JPCP --production 90 --canary 10"],
+        cli: ["exa serve traffic jpcp --production 90 --canary 10"],
         links: [{ text: "Follow a prediction", href: "explore/prediction.md" }] } },
     { id: "g-auto", x: 560, y: 470, label: "Autopilot switch", icon: "⏻", kind: "gate", line: "human", labelSide: "above",
       info: { title: "Autopilot kill-switch and autonomy", sub: "Disabled by default",

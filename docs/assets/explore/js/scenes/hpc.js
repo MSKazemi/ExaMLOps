@@ -17,7 +17,7 @@ XM.register("hpc", {
       info: { title: "Discover a scheduler", sub: "Read-only", tasks: ["Probes Slurm, Flux or NVIDIA GPUs over SSH or locally", "Prints capabilities and a suggested configuration; saves nothing", "exa hpc nodes --save stores a node inventory used by placement"],
         cli: ["exa hpc detect login.example.org", "exa hpc nodes --host login.example.org --save --cluster cluster-a", "exa hpc gpus"] } },
     { id: "connect", x: 300, y: 250, label: "Connect", sub: "registers as PENDING", line: "hpc",
-      info: { title: "Register a cluster", tasks: ["Probes the host and records a fingerprint of the SSH client key given with --key", "Writes the connection to clusters.yaml and the cluster as PENDING", "Audits cluster_connect_requested"],
+      info: { title: "Register a cluster", tasks: ["Probes the host and records a short fingerprint of the SSH client key given with --key, when its .pub file is present", "Writes the connection to clusters.yaml and the cluster as PENDING", "Audits cluster_connect_requested"],
         cli: ["exa hpc connect login.example.org --name cluster-a --user me --key ~/.ssh/id_ed25519"] } },
     { id: "registry", x: 300, y: 400, w: 190, label: "Cluster registry", sub: "PENDING · ACTIVE · REJECTED", kind: "store", line: "hpc",
       info: { title: "Cluster registry", sub: "clusters.yaml (connection) + hpc_clusters (governance state)",
@@ -28,7 +28,7 @@ XM.register("hpc", {
         cli: ["exa hpc approve cluster-a", "exa hpc reject cluster-a --reason \"…\""] } },
 
     { id: "place", x: 560, y: 400, label: "Place", sub: "choose_cluster", line: "hpc",
-      info: { title: "Placement", tasks: ["Keeps ACTIVE clusters that can fit the request (GPUs, nodes)", "Scores them by headroom: idle GPUs first, then idle nodes", "The scoring function is a swappable provider"], cli: ["exa hpc place --gpus 2"] } },
+      info: { title: "Placement", tasks: ["Keeps ACTIVE clusters large enough for the request (total GPUs and nodes, busy or not)", "Scores them by headroom: idle GPUs first, then idle nodes", "The scoring function is a swappable provider"], cli: ["exa hpc place --gpus 2"] } },
     { id: "preflight", x: 560, y: 250, label: "Preflight", sub: "exa hpc preflight", line: "hpc",
       info: { title: "Preflight", tasks: ["Requires an ACTIVE cluster", "Runs discovery checks over SSH; exits 1 on any failure", "A separate step: run it before, or as a CI gate"], cli: ["exa hpc preflight cluster-a --gpus 2"] } },
     { id: "run", x: 760, y: 400, label: "Pipeline run", sub: "--cluster name | auto", line: "control",
@@ -39,11 +39,11 @@ XM.register("hpc", {
     { id: "cluster", x: 760, y: 100, label: "HPC cluster", sub: "login + compute nodes", kind: "external", line: "hpc" },
 
     { id: "jobs", x: 1080, y: 250, label: "Job record", sub: "hpc_jobs", kind: "store", line: "observe",
-      info: { title: "Job record", tasks: ["Job id, scheduler, flow run, model, dataset, nodes, GPUs and CPUs", "State, start, end and exit code as the job runs", "The MLflow run is tagged with the HPC job id"], cli: ["exa hpc jobs", "exa hpc queue --cluster cluster-a"] } },
+      info: { title: "Job record", tasks: ["Job id, scheduler, flow run, model, dataset, nodes, GPUs and CPUs", "State, start, end and exit code, recorded when the job ends", "The MLflow run is tagged with the HPC job id"], cli: ["exa hpc jobs", "exa hpc queue --cluster cluster-a"] } },
     { id: "capacity", x: 1080, y: 400, label: "Capacity and cost", sub: "GPU-hours · $", line: "observe",
-      info: { title: "Capacity and cost", tasks: ["Utilisation from the node inventory", "GPU-hours summed from job records, priced per GPU-hour", "exa models cost --record reads scheduler accounting for each model version"], cli: ["exa hpc capacity", "exa models cost jpcp --record"] } },
+      info: { title: "Capacity and cost", tasks: ["Utilisation from the node inventory", "GPU-hours summed from job records, priced per GPU-hour", "exa models cost --record reads scheduler accounting for the latest registered version"], cli: ["exa hpc capacity", "exa models cost jpcp --record"] } },
     { id: "carbon", x: 1290, y: 400, label: "Carbon", sub: "kWh · CO₂e", line: "observe",
-      info: { title: "Carbon accounting", tasks: ["Converts GPU- and CPU-hours to energy and emissions with a swappable provider (grid intensity, PUE, TDP)", "Records the estimate with the provider that produced it"], cli: ["exa finops carbon record JPCP --gpu-hours 12", "exa finops carbon providers"], links: [{ text: "FinOps providers", href: "guides/finops-providers.md" }] } },
+      info: { title: "Carbon accounting", tasks: ["Converts the GPU- and CPU-hours you supply to energy and emissions with a swappable provider (grid intensity, PUE, TDP)", "Records the estimate with the provider that produced it"], cli: ["exa finops carbon record JPCP --gpu-hours 12", "exa finops carbon providers"], links: [{ text: "FinOps providers", href: "guides/finops-providers.md" }] } },
     { id: "prom", x: 1080, y: 550, label: "Fleet metrics", sub: "Prometheus targets", line: "observe",
       info: { title: "Fleet metrics", tasks: ["Writes Prometheus file-discovery targets: node and GPU exporters from saved node inventories, vLLM from the LLM endpoint registry", "Prometheus re-reads its targets directory every 30 s; re-run the command to refresh it"], cli: ["exa hpc prometheus-sd --out platform/infra/docker-compose/targets/fleet.json"] } }
   ],

@@ -12,8 +12,8 @@ Large language models run on the same platform as the rest of ExaMLOps, with one
 in front of them: the **model gateway**. A request through it can be checked against a
 virtual key and its budget, is scanned by a guardrail, can be answered from a cache, and is
 routed to a model server and costed. The model servers themselves are vLLM processes that
-`exa serve llm` starts on Compose or a Slurm allocation, or registers when someone else runs
-them; for Kubernetes it prepares and validates a KServe manifest that you apply.
+`exa serve llm` starts on Compose or a Slurm or Flux allocation, or registers when someone else
+runs them; for Kubernetes it prepares and validates a KServe manifest that you apply.
 
 The gateway is a library that runs inside the calling process. There is no separate gateway
 service to deploy; whatever calls it — an `exa` command or your own code — applies the same
@@ -57,8 +57,8 @@ answer step reports "(no answer)" instead.
 <div class="xm-player" data-scene="llmserve" markdown>
 <ol class="xm-steps">
 <li data-focus="op,start,engine" data-run="op-start,engine-start" data-actor="Operator" data-line="human"><strong>An operator starts an endpoint.</strong> <code>exa serve llm start qwen</code> previews with <code>--dry-run</code>, asks for confirmation and writes an audit event. The model's <code>engine:</code> block, overridden by flags such as <code>--tp</code> and <code>--max-model-len</code>, is rendered into <code>vllm serve</code> flags by one function that the Compose service, the Slurm job and the KServe manifest all use. A vision model must set <code>--max-images</code>.</li>
-<li data-focus="ext,compose,kserve,hpcjob" data-run="start-ext,start-compose,start-kserve,start-hpc" data-actor="Launcher" data-line="hpc"><strong>One of four launchers takes it.</strong> <code>external</code> (the default) registers a server someone else runs. <code>compose</code> starts the GPU <code>vllm</code> service. <code>kserve</code> builds a Kubernetes manifest and checks it with a server-side dry run, but never applies it — you apply it with <code>kubectl</code>. <code>slurm</code> and <code>flux</code> submit a batch job through the scheduler the launcher is named after; the job script uses Slurm's <code>srun</code> and <code>scontrol</code>, so today the server only starts under Slurm.</li>
-<li data-focus="vllm" data-run="ext-vllm,compose-vllm,kserve-vllm,hpc-vllm" data-actor="Launcher" data-line="hpc"><strong>A vLLM server comes up.</strong> On a Slurm allocation, Apptainer runs the vLLM image; across several nodes a Ray cluster forms, and <code>--tp</code> and <code>--pp</code> set tensor parallelism inside a node and pipeline parallelism across nodes. The job is recorded in the HPC job table as a serving job, so <code>exa hpc jobs</code> lists it.</li>
+<li data-focus="ext,compose,kserve,hpcjob" data-run="start-ext,start-compose,start-kserve,start-hpc" data-actor="Launcher" data-line="hpc"><strong>One of four launchers takes it.</strong> <code>external</code> (the default) registers a server someone else runs. <code>compose</code> starts the GPU <code>vllm</code> service. <code>kserve</code> builds a Kubernetes manifest and checks it with a server-side dry run, but never applies it — you apply it with <code>kubectl</code>. <code>slurm</code> and <code>flux</code> submit a batch job through the scheduler the launcher is named after; the same job script detects whether it runs under Slurm or Flux and places each step through it.</li>
+<li data-focus="vllm" data-run="ext-vllm,compose-vllm,kserve-vllm,hpc-vllm" data-actor="Launcher" data-line="hpc"><strong>A vLLM server comes up.</strong> On an HPC allocation, Apptainer runs the vLLM image; across several nodes a Ray cluster forms, and <code>--tp</code> and <code>--pp</code> set tensor parallelism inside a node and pipeline parallelism across nodes. The job is recorded in the HPC job table as a serving job, so <code>exa hpc jobs</code> lists it.</li>
 <li data-focus="registry" data-run="start-registry" data-actor="Registry" data-line="control"><strong>The endpoint is recorded.</strong> The registry keeps its address, state, launcher, job id, project, modality and engine block. An external endpoint is READY at once; Compose and HPC endpoints start as STARTING while the model loads, and a KServe endpoint starts as PENDING.</li>
 <li data-focus="hpcjob,epfile,registry" data-run="hpc-epfile;epfile-registry" data-actor="HPC job" data-line="hpc"><strong>An HPC job publishes its own address.</strong> The job writes its URL to an endpoint file as soon as its head node is known; starting and stopping the endpoint remove any file a previous job left. <code>exa serve llm health</code>, <code>status</code> and <code>chat</code> read that file, or fetch it over SSH, and record the address; a gateway request picks it up only when the file is visible on the machine it runs on. The work directory must be on a filesystem the compute nodes share with the login node.</li>
 <li data-focus="vllm,health,registry" data-run="vllm-health;health-registry" data-actor="Operator" data-line="observe"><strong>A health probe marks it ready.</strong> <code>exa serve llm health qwen</code> probes <code>/health</code>, lists the models the server serves, and records READY or FAILED; it exits 1 when the endpoint is not ready, so it works as a deploy gate.</li>
@@ -70,7 +70,7 @@ answer step reports "(no answer)" instead.
 
 | | External | Compose | Slurm / Flux | KServe |
 |---|---|---|---|---|
-| Starts | Nothing — registers a URL | The `vllm` service (GPU profile) | A batch job: Apptainer, Ray across nodes (the script needs Slurm's `srun`) | Nothing — builds and dry-runs an `LLMInferenceService` |
+| Starts | Nothing — registers a URL | The `vllm` service (GPU profile) | A batch job: Apptainer, Ray across nodes | Nothing — builds and dry-runs an `LLMInferenceService` |
 | Address | The `--base-url` you give | `http://localhost:18011` | Published by the job, read on first use | `EXAMLOPS_KSERVE_GATEWAY_URL` |
 | State after start | READY | STARTING | STARTING | PENDING |
 | `exa serve llm stop` | Marks it STOPPED; nothing is killed | `docker compose stop vllm` | Cancels the job (`scancel` / `flux cancel`) | Refuses: delete it with `kubectl` |
@@ -96,8 +96,8 @@ answer step reports "(no answer)" instead.
     are in-process fallbacks — the cache does not persist between processes, and the token-hash
     embedding matches shared words rather than meaning. The SGLang engine is a stub until a GPU
     host exists, and no real GPU has run this path yet: it is tested against a stub vLLM server
-    over real sockets. The HPC job script is Slurm-only, and KServe endpoints are never applied
-    for you.
+    over real sockets. The Flux launch path is tested by running the rendered job script under
+    stand-in Slurm and Flux commands, not yet on a Flux instance with GPUs, and KServe endpoints are never applied for you.
 
 ## Try it
 

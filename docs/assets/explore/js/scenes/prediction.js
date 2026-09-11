@@ -25,7 +25,7 @@ XM.register("prediction", {
     { id: "transformer", x: 860, y: 160, label: "Feature transformer", sub: "batch ≤ 32 · 50 ms", line: "data",
       info: { title: "Feature transformer", tasks: ["Batches validation: up to 32 requests or 50 ms", "Checks the embedding has 384 values", "Keeps job, user and node counts as metadata", "Routes every request on its own after the batch"] } },
     { id: "router", x: 1050, y: 160, label: "Model router", sub: "traffic split", line: "data",
-      info: { title: "Model router", tasks: ["Reads the model's traffic split (cached 30 s)", "Applies the split to traffic addressed to the default alias (what bus jobs send): picks one by weighted random choice; a request pinned to another alias gets that alias", "Retries transport errors twice"], cli: ["exa serve traffic JPCP --production 90 --canary 10"] } },
+      info: { title: "Model router", tasks: ["Reads the model's traffic split (cached 30 s)", "Applies the split to every request for the model, whatever alias it names: picks one by weighted random choice", "Looks rules up under the lower-case model name", "Retries transport errors twice"], cli: ["exa serve traffic jpcp --production 90 --canary 10"] } },
     { id: "ray", x: 1240, y: 160, label: "Ray Serve", sub: "model alias → predict", line: "data",
       info: { title: "Ray Serve multi-model server", sub: "POST /predict/{model}",
         tasks: ["Finds the alias in its in-memory hot set; a cold alias is loaded once from MLflow", "Runs predict on 4 workers with a 30 s limit (504 on timeout)", "Optionally mirrors the request to a shadow alias without slowing the answer"],
@@ -43,7 +43,7 @@ XM.register("prediction", {
     { id: "prom", x: 860, y: 440, label: "Prometheus", sub: "request · latency metrics", line: "observe",
       info: { title: "Serving metrics", tasks: ["Requests by model, alias and status", "Latency histogram by model and alias", "Loaded version and hot-set size"], links: [{ text: "Follow the signals", href: "explore/signals.md" }] } },
     { id: "rules", x: 1050, y: 440, label: "Traffic rules", sub: "weights per model", kind: "store", line: "data",
-      info: { title: "Traffic rules", sub: "traffic_rules in the platform datastore", tasks: ["Production / Canary / Staging weights, summing to 100"], cli: ["exa serve traffic JPCP --production 90 --canary 10"] } },
+      info: { title: "Traffic rules", sub: "traffic_rules in the platform datastore", tasks: ["Production / Canary / Staging weights, summing to 100"], cli: ["exa serve traffic jpcp --production 90 --canary 10"] } },
     { id: "mlflow", x: 1240, y: 440, label: "MLflow registry", sub: "aliases · versions", line: "control",
       info: { title: "MLflow registry", tasks: ["Source of the hot set at start-up", "Polled every 60 s; a moved alias is hot-reloaded"], links: [{ text: "MLflow", href: "components/mlflow.md" }] } }
   ],

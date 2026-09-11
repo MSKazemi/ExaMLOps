@@ -26,10 +26,10 @@ what comes next on each line, and the timeline lists every milestone, shipped or
 
 ## How honest is the design record?
 
-Plans live in 115 architecture decision records. A tool checks every **Accepted** record
+Plans live in 129 architecture decision records (as of 11 September 2026). A tool checks every **Accepted** record
 against the code — its commands against the live CLI, its modules and paths against the tree —
-and the build fails if an accepted record names something that does not exist. Today 61 are
-Accepted, 33 Proposed and 21 **Partially implemented**: built, with the unbuilt clause named in
+and the build fails if an accepted record names something that does not exist. 69 are
+Accepted, 40 Proposed and 20 **Partially implemented**: built, with the unbuilt clause named in
 the record itself. Several of the "partly built" items below come from those records.
 
 ## Every milestone
@@ -98,7 +98,7 @@ track.
 - **Programmable MLOps and autopilot.** Extend the platform through a typed SDK, provider registry and policy-as-code, and run a self-driving autopilot with a kill switch and approval hooks.
 - **Next-Gen 40 wave 1 (13 features).** Dataset versioning, lineage, data contracts, prompt registry, secrets, relationship RBAC, model signing/BOM, inference engines, eval suites and gates, model gateway and KServe manifests (A1, A2, A5, B1, B2, C1, C2, C3, D3, D6, D7, E1, E2).
 - **RAG and guardrails.** Vector store, semantic cache, retrieval-augmented generation with citations and guardrails for injection/PII (B3, B4, B5, D8).
-- **Quality and governance depth.** AgentOps analytics, concept drift, model-quality SLOs, shadow and champion-challenger, fairness, EU AI Act tooling, NIST AI RMF controls and an immutable audit trail (C4-C8, D1, D2, D4).
+- **Quality and governance depth.** AgentOps analytics, concept drift, model-quality SLOs, shadow and champion-challenger, fairness, EU AI Act tooling, NIST AI RMF controls and a tamper-evident audit trail (C4-C8, D1, D2, D4).
 - **Features, reproducibility, GPU.** Feature store, asset-centric pipelines, reproducibility bundles, Croissant/model cards, GPU sharing, autoscaling policies and fine-tuning adapter registry (A3, A4, A6, A8, B7, E3, E5).
 - **Next-Gen 40 infra waves.** Policy-as-code engine, distributed and federated training, embedding lifecycle, structured output, KV-aware inference gateway and heterogeneous/hybrid HPC-cloud placement (D5, E6, B6, B8, E4, E7, E8).
 - **Synthetic data generation.** Generate synthetic datasets with fidelity and privacy checks; synthetic-only models are refused at promotion. Completes 40/40 first implementations.
@@ -111,7 +111,7 @@ track.
 - **Live grid carbon intensity.** Carbon accounting can use a live grid carbon-intensity feed instead of a static factor.
 - **Grouped CLI help.** exa --help groups commands into 12 MLOps-lifecycle panels.
 
-**Enterprise depth** — July to September 2026, 15 milestones
+**Enterprise depth** — July to September 2026, 22 milestones
 
 - **Self-documenting CLI groups.** Every command group shows common tasks and where to learn more; every command and dashboard action has a documented use case and example.
 - **Next-gen Skipper agent.** Supervisor with specialist skills, docs-grounded answers, layered write-safety tiers, self-instrumentation, monitoring memory and per-project memory scoping.
@@ -127,7 +127,14 @@ track.
 - **CI-built releases with rollback.** Releases are built once in CI, deployed by digest, recorded in the audit chain, and can be rolled back even when the pipeline is red.
 - **Governed autonomy prerequisites.** Autonomous behaviours publish blast-radius contracts, can be set per behaviour to autonomous/review/disabled, interrupted mid-run, and telemetry is anchored into the audit chain.
 - **API contract guard.** Control-plane API changes become reviewable diffs; accidental interface changes fail CI.
-- **CLI Console in dashboard.** Run any exa command from the dashboard through generated forms, with read/admin/destructive tiers and full audit.
+- **MLflow prompt registry backend.** Prompts can live in the MLflow prompt registry as well as the built-in store; exa prompt migrate moves them.
+- **Dedicated compliance page.** A standalone EU AI Act Compliance page: a live technical file that names how sufficient its evidence is.
+- **Dashboard asset views.** A read-only Build → Assets page shows data and model assets as a graph with their freshness.
+- **Encoder registry in MLflow.** The embedding-encoder registry can live in MLflow; exa embedding migrate moves it.
+- **Standard fairness engine.** Fairness metrics are computed with Fairlearn when it is installed, each prediction scored against its own label.
+- **Signed release archives.** Releases sign their checksum file with Sigstore and publish SLSA provenance as a release asset.
+- **Insufficient-evidence reporting.** Compliance packs name the evidence they cannot vouch for instead of omitting it.
+- **Carbon-aware placement benchmark.** A carbon-aware placement policy is evaluated against simple baselines and re-tested before it may be used (exa finops carbon policy).
 
 ### Under construction
 
@@ -141,26 +148,19 @@ track.
 - **Hosted lineage server** (partly built). Ship an optional lineage-server profile to browse the provenance graph; events are already emitted.
 - **Standard data-contract engine + CI step** (partly built). Adopt a standard validation engine and a blocking CI data-validation step; contracts already gate training.
 - **Eval gate in CI and dashboard** (partly built). A blocking CI job before any alias move and a dashboard page showing the gate report.
-- **MLflow prompt registry backend** (partly built). Store prompts in the MLflow prompt registry in addition to the built-in store.
 - **External secrets manager** (partly built). Run an external secrets manager and inject secrets into every service at startup.
-- **Dedicated compliance page** (partly built). A standalone dashboard Compliance page (compliance currently lives inside the Governance console).
 - **Online feature store for serving** (partly built). An online feature store and serving that reads feature views directly, removing train/serve skew; plus scheduled materialization.
-- **Hybrid search and ANN indexes** (partly built). Hybrid dense+sparse search, configurable ANN indexes, and ingestion from features and drift snapshots.
-- **More SLO sources** (partly built). SLIs from gateway latency/errors, a serving availability probe and live Prometheus evaluation.
+- **Hybrid search and ANN indexes** (partly built). Ingestion of per-inference embeddings from drift snapshots; hybrid dense+sparse search, configurable ANN indexes and feature-store ingestion are built.
+- **More SLO sources** (partly built). A serving availability probe and live Prometheus evaluation; SLIs from gateway latency and errors are built.
 - **Champion-challenger naming alignment** (partly built). Shadow mirroring and challenger scoring have shipped; remaining work aligns the scoreboard naming with the design before formal acceptance.
-- **Standard fairness engine** (partly built). Optionally adopt a standard fairness library instead of the built-in metric implementation.
 - **Standard guardrail engines** (partly built). Integrate established PII and policy guardrail engines alongside the built-in detectors.
 - **Autoscaling actuation** (partly built). Apply scaling decisions automatically (including scale-to-zero with cold-start activation); decisions are computed today but applied by an operator.
 - **Constrained decoding and reasoning budgets** (partly built). Constrain generation to a schema at decode time and enforce and account reasoning-token budgets in the gateway and FinOps.
-- **Dashboard asset views** (partly built). Browse data/model assets and their staleness in the dashboard.
 - **One-command reproduction** (partly built). Rebuild code, data and environment and re-run training automatically from a reproducibility bundle; today the bundle is verified and the rebuild steps are listed.
-- **Encoder registry in MLflow** (partly built). Keep the embedding-encoder registry as MLflow artifacts.
 - **Real fine-tuning jobs** (partly built). Run actual PEFT/LoRA fine-tuning on the scheduler with measured eval scores, and serve multiple adapters through the engine; the adapter registry and promotion gate exist, but fine-tuning itself does not train yet.
 - **Distributed training from pipeline run** (partly built). Launch distributed training directly from the standard pipeline run command.
 - **Live KServe activation** (partly built). Deploy models to KServe on Kubernetes; manifests are generated today.
 - **Keyless signing and transparency log** (partly built). Keyless Sigstore signing with a public transparency log for models and audit checkpoints; key-based signing and a WORM anchor exist.
-- **Insufficient-evidence reporting** (partly built). Compliance packs name their own evidence gaps instead of omitting them.
-- **Carbon-aware placement benchmark** (partly built). Benchmark any multi-objective carbon placement policy against a simple baseline and define a retirement criterion before shipping it built-in.
 - **LLM serving topology as policy** (partly built). Prefill/decode topology and routing as runtime policy, paired TTFT/TPOT SLOs, and engine/accelerator-family parity checks.
 - **Dry-run everywhere** (partly built). Extend dry-run, confirmation and audit to the remaining mutating commands.
 - **GPU LLM serving** (partly built). Originally deferred GPU feature #1; vLLM server mode shipped, GPU quantization and throughput targets pending.
@@ -171,7 +171,7 @@ track.
 **Enterprise scale** — High availability, identity, fleet observability and one versioned API.
 
 - **HA and horizontal scale-out** (partly built). Survive a host loss and scale out: HA Postgres/object storage on Kubernetes, live event broker fan-out, Redis coordination, worker fleets, serving autoscaling and model sharding, agent replicas, bulk HPC polling. Shipped: Helm chart with rolling upgrades, event outbox/relay, admission queue, coordination seam, non-blocking HPC wait, SSE resume, capacity aggregation.
-- **Identity, tenancy and governance** (partly built). Single sign-on (OIDC/SAML/SCIM), per-user identity in every audit record, cloud KMS, keyless signing, dedicated authorization service and hard per-tenant isolation. Shipped: OIDC token validation, key rotation, WORM audit anchor, OpenFGA model export, cross-tenant conformance test.
+- **Identity, tenancy and governance** (partly built). SAML, per-user identity in every audit record, cloud KMS, keyless signing of models and audit checkpoints and hard per-tenant isolation. Shipped: OIDC sign-in with step-up, device login for the CLI, SCIM 2.0 provisioning, delegation to the site's policy engine, OIDC token validation, key rotation, WORM audit anchor, OpenFGA model export, cross-tenant conformance test.
 - **Fleet observability and reporting** (partly built). Node and GPU telemetry across thousands of nodes, long-term HA metrics, scheduled reports and a customer-facing SLA report. Shipped: Prometheus SD from the fleet registry, collector/remote-write config, cardinality guard, alert routing with heartbeat, report generation, SLO burn-rate engine, telemetry retention prune.
 - **Cohesion, contract and UI scale** (partly built). One versioned API across domains, typed settings, fleet-scale tables in the UI, full localization and load/chaos test tiers. Shipped: per-domain data modules, SDK decoupling, surface contract tests, env validation, result envelope, keyset pagination primitive, agent circuit breaker, API contract guard.
 - **Futuristic differentiation** (partly built). Fleet digital twin with spatial view, predictive autopilot, carbon+cost bursting, 3D fleet/NOC wall, governed NL fleet copilot, cross-institution exchange, compliance-as-product. Shipped: what-if simulation, drift forecasting and root-cause classifier, carbon/cost placement providers, heatmap tile API, fleet_simulate agent tool, signed exchange packages, Annex IV/V generation.
@@ -189,14 +189,14 @@ track.
 - **Pipeline-as-code DSL** (deferred). Define pipelines in a typed DSL compiled to an intermediate representation.
 - **GitOps reconcile and webhooks** (deferred). Reconcile platform state from Git and emit outbound event webhooks.
 - **Full-screen terminal UI** (deferred). A Textual-based exa tui live dashboard.
-- **Per-project JupyterHub spawn** (deferred). Launch a JupyterHub notebook server scoped to a project.
+- **Per-project JupyterHub spawn** (partly built). The dashboard starts a project's JupyterHub named server; exa workbench start does not start one yet.
 - **Project label on serving metrics** (deferred). Break down serving metrics per project in Prometheus.
 - **Automatic memory distillation** (deferred). Automatically distill procedures and reflect on episodes in the background; review queue in the dashboard.
-- **Dashboard SSO and tenant switcher** (planned). OIDC sign-in, tenant switcher, service accounts with scoped tokens, and step-up for governed actions.
+- **Dashboard SSO and tenant switcher** (partly built). A tenant switcher and service accounts with scoped tokens; OIDC sign-in with step-up for governed actions is built.
 - **Dashboard E2E and visual tests** (planned). End-to-end browser journeys, visual regression, bundle budgets and preview deploys in CI.
 - **Dashboard self-observability** (planned). Self-hosted JS error tracking, browser tracing, web-vitals and synthetic monitoring.
-- **Signed release archives** (planned). Sign release archives in CI.
 - **Explained placement decisions** (planned). Show why a cluster was chosen (exa hpc place --explain).
+- **CLI Console in dashboard** (planned). Run any exa command from the dashboard through generated forms, with read/admin/destructive tiers and full audit.
 
 </div>
 

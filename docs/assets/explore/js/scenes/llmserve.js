@@ -26,7 +26,7 @@ XM.register("llmserve", {
     { id: "kserve", x: 560, y: 300, label: "KServe", sub: "manifest + server dry run", line: "hpc",
       info: { title: "KServe", tasks: ["Builds an LLMInferenceService manifest with the same vllm flags", "Validates it with a server-side dry run; never applies it", "Apply and delete it with kubectl"], links: [{ text: "Kubernetes serving", href: "guides/kubernetes-serving.md" }] } },
     { id: "hpcjob", x: 560, y: 390, label: "Slurm or Flux job", sub: "Apptainer · Ray · TP/PP", line: "hpc",
-      info: { title: "HPC allocation", tasks: ["--launcher slurm submits with sbatch (asking for --gpus per node), --launcher flux with flux batch", "The job script uses srun and scontrol, so the server starts only under Slurm today", "Apptainer runs the vLLM image; several nodes form a Ray cluster; --tp and --pp set the parallelism", "Recorded in hpc_jobs as a serving job; exa serve llm stop cancels it"],
+      info: { title: "HPC allocation", tasks: ["--launcher slurm submits with sbatch (asking for --gpus per node), --launcher flux with flux batch", "One job script for both: it detects Slurm or Flux and places each step with srun or flux run", "Apptainer runs the vLLM image; several nodes form a Ray cluster; --tp and --pp set the parallelism", "Recorded in hpc_jobs as a serving job; exa serve llm stop cancels it"],
         cli: ["exa hpc jobs"] } },
 
     { id: "vllm", x: 800, y: 255, label: "vLLM server", sub: "/health · /metrics", kind: "external", line: "hpc",

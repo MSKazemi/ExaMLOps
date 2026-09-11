@@ -20,7 +20,7 @@ human action the platform has.
 <li data-focus="op,g-approve" data-run="op-approve" data-actor="Operator" data-line="human"><strong>An operator approves or rejects it.</strong> From the CLI (<code>exa approvals approve JPCP</code>) or the dashboard's Approvals page. Either can carry a reason; the dashboard asks for one on rejection.</li>
 <li data-focus="g-approve,cp" data-run="approve-cp" data-actor="Control plane" data-line="control"><strong>Approval starts the training flow.</strong> The control plane dispatches the training deployment for that model. Approvals nobody answers expire after 72 hours, so a stale change cannot be approved weeks later.</li>
 <li data-focus="op,g-promote,mlflow" data-run="op-promote;promote-mlflow" data-actor="Operator" data-line="human"><strong>Promotion waits for a metric.</strong> <code>exa pipeline promote jpcp --if-rmse-lt 5.0</code> moves the alias only if the condition holds. Evaluation and judge-calibration gates can block it too; <code>--force</code> overrides a failing gate and is recorded.</li>
-<li data-focus="op,g-traffic,ray" data-run="op-traffic;traffic-ray" data-actor="Operator" data-line="human"><strong>Traffic moves in steps.</strong> <code>exa serve traffic JPCP --production 90 --canary 10</code> sets the weights the model router reads, so a new version takes a slice of traffic before it takes all of it.</li>
+<li data-focus="op,g-traffic,ray" data-run="op-traffic;traffic-ray" data-actor="Operator" data-line="human"><strong>Traffic moves in steps.</strong> <code>exa serve traffic jpcp --production 90 --canary 10</code> sets the weights the model router reads, so a new version takes a slice of traffic before it takes all of it.</li>
 <li data-focus="op,g-auto,auto" data-run="op-auto;auto-auto" data-actor="Operator" data-line="human"><strong>The autopilot acts only when switched on.</strong> Its kill-switch is off by default. <code>exa autopilot enable</code> lets it act and <code>exa autopilot disable</code> stops it; each <code>exa autopilot run</code> — from your own scheduler — runs one drift → retrain → promote cycle.</li>
 <li data-focus="auto,audit" data-run="auto-notice" data-actor="Autopilot" data-line="control"><strong>Autonomy levels decide whether it acts or asks.</strong> Each behaviour is AUTONOMOUS, REVIEW or DISABLED. Under REVIEW, or when a policy rule says <code>require_approval</code>, the autopilot does not act: it writes a <code>human_approval_required</code> event to the audit trail and an operator follows up with the normal commands.</li>
 <li data-focus="sysadmin,g-cluster,fleet" data-run="sysadmin-cluster;cluster-fleet" data-actor="Sysadmin" data-line="human"><strong>A cluster is approved before any job lands on it.</strong> <code>exa hpc connect</code> registers a cluster as PENDING. Placement refuses it until a sysadmin runs <code>exa hpc approve</code>.</li>
@@ -39,16 +39,12 @@ human action the platform has.
 
 | Role | Who it is | What it can do |
 |---|---|---|
-| Dashboard viewer | Signed in with the viewer password | Read everything, run read-only commands in the CLI console, acknowledge alerts, ask the copilot |
+| Dashboard viewer | Signed in with the viewer password | Read everything, acknowledge alerts, ask the copilot |
 | Dashboard admin | Signed in with the admin password | Every governed action: approve, promote, trigger retrains, change traffic, manage secrets, connections and projects |
 | CLI operator | Whoever runs `exa`; recorded as `EXAMLOPS_ACTOR` or the login user | Anything the configured credentials allow; the control plane checks its token's read/write scope |
 | Project owner, editor, viewer | Relations on a project, checked when multi-tenancy is on | Owner ⊇ editor ⊇ viewer; relations on a project apply to everything inside it |
 | Sysadmin | By convention, the operator responsible for the HPC fleet (the dashboard requires the admin role) | Registers, approves and rejects clusters |
 | Skipper user | Anyone chatting with the agent | Approves or denies each write the agent proposes |
-
-The dashboard's CLI console sorts every command into four
-tiers: read (any signed-in user), admin, destructive (admin, and the command path must be typed
-back to confirm) and CLI-only (never run from a browser).
 
 ## Every human action
 
@@ -57,7 +53,7 @@ back to confirm) and CLI-only (never run from a browser).
 | Action | How | Gate |
 |---|---|---|
 | Record a dataset revision | `exa data snapshot FData --backend minio --path ./data/FData` | Admin |
-| Prune old telemetry | `exa data retention-prune --days 90 --dry-run` | Admin; typed confirmation in the console |
+| Prune old telemetry | `exa data retention-prune --days 90 --dry-run` | None in the CLI; preview with `--dry-run` |
 | Keep a synthetic dataset the quality gate rejected | `exa data synth generate … --force` | Override, recorded |
 | Feed back delayed ground-truth labels | `exa eval feedback ingest …` | Admin |
 | Restore platform state from a backup | `exa backup restore <path>` | Confirmation |
@@ -79,7 +75,7 @@ back to confirm) and CLI-only (never run from a browser).
 | Promote when a metric passes | `exa pipeline promote jpcp --if-rmse-lt 5.0` | Metric, evaluation and calibration gates |
 | Override a failing promotion gate | `exa pipeline promote … --force` | Override, recorded |
 | Set or remove a version alias | Dashboard Models page | Admin |
-| Change the traffic split | `exa serve traffic JPCP --production 90 --canary 10` | Confirmation |
+| Change the traffic split | `exa serve traffic jpcp --production 90 --canary 10` | Confirmation |
 | Start an A/B test or shadow traffic | Dashboard Traffic page · `exa serve ab …`, `exa serve shadow …` | Admin |
 | Propose promoting a challenger | `exa serve challenger promote JPCP` (the alias then moves with `exa pipeline promote`) | Significance policy, no SLO regression |
 | Roll an alias back | `exa models rollback run JPCP --dry-run` | Confirmation |
@@ -116,7 +112,7 @@ back to confirm) and CLI-only (never run from a browser).
 | Classify a system's EU AI Act risk tier | `exa compliance classify JPCP --risk-tier … --purpose …` | Promotion blocked until classified |
 | Record a sampled audit review | `exa audit review --sample 20 --notes "…"` | Recorded review |
 | Review every autonomous action | `exa audit autonomy --last 30d` | Admin |
-| Set, rotate or re-encrypt secrets | `exa secrets set …` · `exa secrets rotate …` · `exa secrets rewrap --dry-run` | Admin; typed confirmation in the console for rotate and rewrap |
+| Set, rotate or re-encrypt secrets | `exa secrets set …` · `exa secrets rotate …` · `exa secrets rewrap --dry-run` | None in the CLI; `rewrap --dry-run` previews |
 | Sign or verify a model artifact | `exa models sign jpcp 18 --path …` · `exa models verify …` | Verify before load |
 | Issue or revoke a gateway key | `exa gateway key issue …` · `exa gateway key revoke …` | Admin |
 | Create or delete a named connection | `exa connection create …` · dashboard Connections | Admin; delete asks for confirmation |

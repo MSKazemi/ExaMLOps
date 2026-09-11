@@ -7,11 +7,13 @@ hide:
 
 # Services and their jobs
 
-ExaMLOps runs as 30 cooperating services, stores and external dependencies. Twenty of them are
-Docker Compose services: `make stack-up` starts the core ten, `make monitoring-up` six
+ExaMLOps runs as more than 30 cooperating services, stores and external dependencies. Twenty of
+them are Docker Compose services in the development stack: `make stack-up` starts the core ten, `make monitoring-up` six
 observability services, `make jupyter-up` JupyterHub and `make seanerbus-up` the bus bridge; the
 backup sidecar and vLLM are opt-in profiles (`docker compose --profile backup|vllm up`). The rest
-are processes, stores and external systems they work with. This page lists
+are processes, stores and external systems they work with, including the dataplane service (its own
+image, not yet in any compose file) and the reference identity stack (its own compose file,
+upstream Keycloak and OPA images). This page lists
 each one: what it does, where it listens, who it talks to and how to operate it. The
 [system map](index.md) shows how they connect; the tours show them at work.
 
@@ -99,7 +101,7 @@ Answer predictions.
 
 **Keeps:** traffic_rules (platform-db)
 
-**Operate:** `starts with ray-serving; exa serve traffic JPCP --production 90 --canary 10`
+**Operate:** `starts with ray-serving; exa serve traffic jpcp --production 90 --canary 10`
 
 **Guide:** [interfaces](../guides/interfaces.md)
 
@@ -132,14 +134,14 @@ Decide when to retrain and run the training flow.
 
 **What it does**
 
-- Accepts POST /retrain (bearer token, 20/min rate limit, X-Idempotency-Key) and creates a Prefect flow run behind a circuit breaker (opens after 5 failures, 30s reset)
+- Accepts POST /retrain (bearer token, or an identity-federation token checked against the site's trust file and, when configured, its policy engine; 20/min rate limit, X-Idempotency-Key) and creates a Prefect flow run behind a circuit breaker (opens after 5 failures, 30s reset)
 - Runs the sysadmin approval gate: CI POST /api/changes -> pending_approvals -> POST /approve|/reject/{model} (approve starts retrain); expires stale approvals after 72h
 - Receives ModelZoo GitLab/GitHub webhooks and polls the upstream repo every 300s under a leader lease, marking models stale
 - Serves model meta/README/images, /status (pings Prefect, MLflow, Ray, dashboard) and /metrics for Prometheus
 - Relays the transactional event outbox every 1s on a background thread
 - Enforces admission queue caps (4 global / 2 per tenant by default)
 
-**Talks to:** Prefect server (orchestrator) (HTTP (Prefect API)); MLflow tracking server + model registry (HTTP); Ray Serve MultiModelServer (HTTP); Dashboard (FastAPI BFF + React SPA) (HTTP); Shared platform datastore (platform.db) (SQL); Event outbox relay (NovaFabric backbone) (in-process); Grafana Tempo (OTLP gRPC)
+**Talks to:** Prefect server (orchestrator) (HTTP (Prefect API)); MLflow tracking server + model registry (HTTP); Ray Serve MultiModelServer (HTTP); Dashboard (FastAPI BFF + React SPA) (HTTP); Shared platform datastore (platform.db) (SQL); Event outbox relay (NovaFabric backbone) (in-process); Grafana Tempo (OTLP gRPC); the site's identity provider and policy engine when identity federation is configured (HTTPS)
 
 **Keeps:** pending_approvals, modelzoo_events, model_freshness, control_plane_commands, admission_queue and event_outbox — in the shared platform.db in the dev stack (`PLATFORM_DB=/state/platform.db`); a standalone deployment uses `$CONTROL_PLANE_DB`, default `/data/approvals.db`
 
@@ -177,8 +179,8 @@ Decide when to retrain and run the training flow.
 - Registers the training deployments and serves them in-process: one wrapper deployment for all models by default, or one per enabled model YAML (cron, work pool, concurrency limit) with `--registry`
 - Runs training_flow: data_extraction -> data_contract_gate -> slurm_submit -> slurm_wait -> result_fetch -> evaluate -> log_mlflow -> promote
 - Submits training to the selected scheduler adapter (EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux) and records hpc_jobs rows
-- Walks lifecycle rules (Staging/Canary/Production thresholds), sets MLflow aliases and moves the previous Production to Archived
-- POSTs /reload/{model} to Ray Serve right after promotion (webhook path)
+- Walks lifecycle rules (Staging/Canary/Production thresholds), sets MLflow aliases and moves the previous Production to Archived; an alias past Staging must also pass the model's eval gate when one is configured
+- POSTs /reload/{model} to Ray Serve when the Production alias moves (webhook path)
 - Routes runs to per-project MLflow experiments (project/<name>)
 
 **Talks to:** Prefect server (orchestrator) (HTTP (Prefect API)); MLflow tracking server + model registry (HTTP); MinIO object store (S3); HPC scheduler adapters (mock / Slurm / Flux) (in-process Python); Ray Serve MultiModelServer (HTTP); Shared platform datastore (platform.db) (SQL)
@@ -319,7 +321,7 @@ Hold models, artifacts, datasets and platform state.
 
 - Backs up platform.db (which also holds the control plane's state in the dev stack) and a standalone approvals DB when present (SQLite tier)
 - Dumps Postgres databases mlflow and prefect
-- Mirrors MinIO buckets (MLflow artifacts + project storage)
+- Mirrors MinIO buckets (MLflow artifacts, project storage and the dataset bucket)
 - Runs every EXAMLOPS_BACKUP_INTERVAL (default 3600s) and prunes to keep=14
 - Replicates off-site when EXAMLOPS_BACKUP_S3_URI is set; skips unavailable tiers without crashing
 
@@ -370,6 +372,24 @@ Connect external systems and deliver events.
 
 **Guide:** [seanerbus architecture](../guides/seanerbus-architecture.md)
 
+### Dataplane service
+
+**Port:** 8010 in the container (18010 on the host by convention)  
+**Built on:** FastAPI + uvicorn (platform/services/dataplane/Dockerfile); ADR 0130
+
+**What it does**
+
+- Registers data sources and pulls them on demand or on each source's schedule, committing immutable snapshots
+- Serves the same operations over HTTP: sources, connectors, test, preview, pull, pulls and snapshots, plus /health, /ready and /metrics
+- Authenticates with a static `DATAPLANE_TOKEN` and, when a trust file is configured, federated data-center tokens (ADR 0120)
+- Never returns a credential; source definitions that carry one are refused
+
+**Talks to:** the external systems it pulls from; MinIO object store (S3); Shared platform datastore (platform.db) (SQL)
+
+**Operate:** `exa dataplane sources list ; exa dataplane pull <source> --remote ; exa dataplane snapshots <source>` (without `--remote` the commands run in-process, no service needed)
+
+**Guide:** [dataplane](../guides/dataplane.md)
+
 ### Event outbox relay (NovaFabric backbone)
 
 **Port:** internal only  
@@ -401,12 +421,13 @@ The ways people and agents operate the platform.
 
 **What it does**
 
-- Serves the React SPA and ~58 API routers (MLOps, facility, LLMOps, FinOps, governance, projects, connections, workbenches)
+- Serves the React SPA and about 60 API routers (MLOps, facility, LLMOps, FinOps, governance, compliance, assets, projects, connections, workbenches)
 - Aggregates upstream status in a BFF and streams typed realtime events over SSE (GET /api/v1/stream)
 - Starts/stops/restarts containers and tails logs through the scoped Docker socket proxy
-- Runs every `exa` command except the CLI-only ones from the CLI Console, in an isolated subprocess (POST /api/v1/cli/runs)
 - Proxies copilot questions to Skipper's OpenAI-compatible bridge (POST /api/v1/copilot/ask, propose-only)
-- Starts JupyterHub named servers for project workbenches; enforces JWT viewer/admin auth and audits most mutations (approvals are recorded by the control plane instead)
+- Starts JupyterHub named servers for project workbenches
+- Signs people in with a local viewer/admin login or with the organisation's identity provider (OIDC with PKCE and step-up), and accepts SCIM 2.0 provisioning at /api/scim/v2
+- Audits most mutations (approvals are recorded by the control plane instead)
 
 **Talks to:** Control plane API (HTTP); MLflow tracking server + model registry (HTTP (/ajax-api)); Prefect server (orchestrator) (HTTP); Ray Serve MultiModelServer (HTTP); Prometheus (HTTP (PromQL)); Grafana (HTTP/iframe); Loki (HTTP); MinIO object store (S3); Skipper agent server (web UI + OpenAI-compatible bridge) (HTTP (OpenAI-compatible)); Scoped Docker socket proxy (Docker API over TCP 2375); JupyterHub (+ spawned JupyterLab) (HTTP (Hub API)); SeanerBUS bridge (HTTP); PostgreSQL (MLflow + Prefect metadata) (PostgreSQL (asyncpg)); Shared platform datastore (platform.db) (SQL)
 
@@ -440,7 +461,7 @@ The ways people and agents operate the platform.
 
 - Serves POST /v1/chat/completions (SSE when stream=true) used by `exa ask` and the dashboard copilot
 - Serves a chat web UI at /, a WebSocket chat at /ws/chat/{thread_id}, thread history and memory admin APIs
-- Calls platform tools: registry, inference, metrics, training, approvals, modelzoo, services, pipelines, docs, knowledge, platform_ops, finops and the shared MCP tool registry (the default supervisor takes its read tools from it; the single-agent fallback uses it unless `AGENT_USE_MCP_TOOLS=false`)
+- Calls platform tools: registry, inference, metrics, training, approvals, modelzoo, services, pipelines, docs, knowledge, platform_ops, finops, baselines and the shared MCP tool registry (the default supervisor takes its read tools from it; the single-agent fallback uses it unless `AGENT_USE_MCP_TOOLS=false`)
 - Gates mutating tools with a LangGraph interrupt() HITL step and signed, expiring action IDs
 - Keeps short-term conversation checkpoints and long-term memory (sqlite-vec store with local embeddings)
 - Picks the LLM backend in order Azure OpenAI -> Claude API -> Ollama
@@ -478,7 +499,7 @@ The ways people and agents operate the platform.
 
 **What it does**
 
-- Exposes the examlops.mcp tool registry (status, models, drift, traffic, SLO, FinOps, gateway, HPC, projects) to MCP clients
+- Exposes the examlops.mcp tool registry (status, models, drift, traffic, SLO, FinOps, gateway, HPC, projects, dataplane) to MCP clients — only the tools of the modules the site enables
 - Publishes resources (examlops://status, models, audit/recent, model/{name}) and prompts (diagnose_drift, promote_safely, platform_triage)
 - Registers mutating tools (e.g. trigger_retrain, set_traffic_split, hpc_approve_cluster) only with --allow-writes / EXAMLOPS_MCP_ALLOW_WRITES
 - Refuses to bind HTTP to a non-loopback host (no built-in auth)
@@ -489,6 +510,22 @@ The ways people and agents operate the platform.
 **Operate:** `exa mcp serve [--transport http --port 8765] [--allow-writes] ; exa mcp tools`
 
 **Guide:** [agent](../guides/agent.md)
+
+### Identity provider and policy engine (reference stack)
+
+**Port:** 18180 (Keycloak), 18181 (OPA), both bound to loopback  
+**Built on:** platform/infra/iam/docker-compose.iam.yml — Keycloak in development mode and Open Policy Agent; ADR 0120
+
+**What it does**
+
+- Stands in for a data center's own identity provider in labs, or for sites whose directory is LDAP or Active Directory only
+- Issues tokens for the dashboard (code + PKCE) and the `exa` CLI (device grant), with groups mapped to admins, operators and viewers
+- Answers authorization questions from the platform's policy engine client
+- A site that already runs an OIDC provider points the platform's trust file at it instead and does not run this stack
+
+**Operate:** `KC_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16) docker compose -f platform/infra/iam/docker-compose.iam.yml up -d ; exa auth login --issuer http://localhost:18180/realms/examlops --client-id exa-cli`
+
+**Guide:** [identity federation](../guides/identity-federation.md)
 
 ### JupyterHub (+ spawned JupyterLab)
 
@@ -532,7 +569,7 @@ Metrics, alerts, logs and traces.
 ### Prometheus
 
 **Port:** 19090  
-**Built on:** prom/prometheus:v2.51.0 (Dockerfile.prometheus); profile monitoring; 7d retention
+**Built on:** prom/prometheus:v2.55.1, digest-pinned (Dockerfile.prometheus); profile monitoring; 7d retention
 
 **What it does**
 
@@ -570,7 +607,7 @@ Metrics, alerts, logs and traces.
 ### Grafana
 
 **Port:** 13000  
-**Built on:** grafana/grafana:10.4.0 (Dockerfile.grafana); bound to 127.0.0.1 by default; profile monitoring
+**Built on:** grafana/grafana:10.4.19, digest-pinned (Dockerfile.grafana); bound to 127.0.0.1 by default; profile monitoring
 
 **What it does**
 

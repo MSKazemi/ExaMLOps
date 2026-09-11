@@ -20,7 +20,7 @@ inference, and that record is what drift detection reads later.
 <li data-focus="bridge,ingress" data-run="bridge-ingress" data-actor="Bridge" data-line="data"><strong>The job enters the inference pipeline.</strong> The bridge posts it to <code>/infer-pipeline/infer</code> on Ray Serve over one shared HTTP client: 5 s to connect, 10 s to read, no retry at this hop.</li>
 <li data-focus="ingress,transformer" data-run="ingress-transformer" data-actor="Ingress" data-line="data"><strong>The ingress validates the payload.</strong> An embedding and a node count are required. A malformed request gets a 422 here — a schema error, which is not treated as a model failure.</li>
 <li data-focus="transformer,router" data-run="transformer-router" data-actor="Feature transformer" data-line="data"><strong>The feature transformer checks the embedding.</strong> It batches up to 32 requests or 50 ms to validate them together, confirms each embedding has 384 values, and keeps job and user IDs as metadata. After validation, every request is routed on its own.</li>
-<li data-focus="router,rules" data-run="rules-router" data-actor="Model router" data-line="data"><strong>The model router applies the traffic split.</strong> It reads the model's Production / Canary weights from the traffic rules, cached for 30 seconds. The split applies to traffic addressed to the model's default alias (Production), which is what bus jobs send: when a split names two or more aliases, the router picks one by weighted random choice. A request pinned to any other alias, such as <code>Staging</code>, gets that alias. Rules are matched case-insensitively, so a split set for <code>JPCP</code> applies to <code>jpcp</code>.</li>
+<li data-focus="router,rules" data-run="rules-router" data-actor="Model router" data-line="data"><strong>The model router applies the traffic split.</strong> It reads the model's Production / Canary weights from the traffic rules, cached for 30 seconds. When a split names two or more aliases, the router picks one by weighted random choice for every request to the model, whatever alias the request names. Rules are looked up under the model's lower-case registry name, so set a split with that name: <code>exa serve traffic jpcp …</code>; a split saved as <code>JPCP</code> is never applied.</li>
 <li data-focus="router,ray,mlflow" data-run="router-ray" data-actor="Ray Serve" data-line="data"><strong>Ray Serve answers from its hot set.</strong> The alias resolves to a model already in memory, loaded from MLflow at start-up. Prediction runs on a pool of 4 workers with a 30 second limit.</li>
 <li data-focus="client,bus,bridge,ingress,transformer,router,ray" data-run="~router-ray;~transformer-router;~ingress-transformer;~bridge-ingress;~bus-bridge;~client-bus" data-actor="Reply" data-line="data"><strong>The answer returns the same way.</strong> Model name, alias, version, MLflow run and prediction travel back to the client. On any error the reply carries an error message and a prediction of 0.0, so clients must check the message.</li>
 <li data-focus="bridge,db" data-run="bridge-db" data-actor="Bridge" data-line="observe"><strong>The bridge records the inference.</strong> In one background-thread hop, off its event loop: a drift snapshot of the prediction, the embedding's norm, mean and standard deviation, and an "inference served" event on the hash-chained audit trail.</li>
@@ -48,14 +48,15 @@ inference, and that record is what drift detection reads later.
 |---|---|---|
 | 422 validation error | The payload does not match the model's schema | No |
 | 5xx marked `inference_failed`, or an empty prediction | The model failed while predicting | Yes |
-| Any other error | Model not found, pipeline unreachable, transport failure | No |
+| The model server could not be reached after the router's retries | Answered `inference_failed` (HTTP 500) | Yes |
+| The bridge could not reach the inference pipeline | A transport error before any reply | No |
 
 ## Try it
 
 ```bash
 exa serve check                                   # Ray Serve health and the loaded hot set
 exa serve infer-check                             # one end-to-end request through the pipeline
-exa serve traffic JPCP --production 90 --canary 10
+exa serve traffic jpcp --production 90 --canary 10
 exa drift status                                  # prediction drift, from the bridge's snapshots
 exa drift input status                            # input-embedding drift
 ```

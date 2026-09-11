@@ -1,12 +1,12 @@
 {
- "note": "Public roadmap: shipped milestones from the changelog and release history, planned items from the design record. Compiled 2026-09-10.",
+ "note": "Public roadmap: shipped milestones from the changelog and release history, planned items from the design record. Compiled 2026-09-10, updated 2026-09-11.",
  "counts": {
-  "shipped": 71,
-  "planned": 52,
-  "adrs": 115,
-  "accepted": 61,
-  "proposed": 33,
-  "partial": 21
+  "shipped": 78,
+  "planned": 45,
+  "adrs": 129,
+  "accepted": 69,
+  "proposed": 40,
+  "partial": 20
  },
  "shipped": [
   {
@@ -344,7 +344,7 @@
      "title": "Quality and governance depth",
      "when": "2026-07-16",
      "area": "governance",
-     "text": "AgentOps analytics, concept drift, model-quality SLOs, shadow and champion-challenger, fairness, EU AI Act tooling, NIST AI RMF controls and an immutable audit trail (C4-C8, D1, D2, D4)."
+     "text": "AgentOps analytics, concept drift, model-quality SLOs, shadow and champion-challenger, fairness, EU AI Act tooling, NIST AI RMF controls and a tamper-evident audit trail (C4-C8, D1, D2, D4)."
     },
     {
      "id": "P40-W4-6",
@@ -528,11 +528,60 @@
      "text": "Control-plane API changes become reviewable diffs; accidental interface changes fail CI."
     },
     {
-     "id": "P47",
-     "title": "CLI Console in dashboard",
-     "when": "2026-09-10",
+     "id": "NG-B1",
+     "title": "MLflow prompt registry backend",
+     "when": "2026-09-11",
+     "area": "llmops",
+     "text": "Prompts can live in the MLflow prompt registry as well as the built-in store; exa prompt migrate moves them."
+    },
+    {
+     "id": "NG-D1",
+     "title": "Dedicated compliance page",
+     "when": "2026-09-11",
+     "area": "governance",
+     "text": "A standalone EU AI Act Compliance page: a live technical file that names how sufficient its evidence is."
+    },
+    {
+     "id": "NG-A4",
+     "title": "Dashboard asset views",
+     "when": "2026-09-11",
      "area": "dashboard",
-     "text": "Run any exa command from the dashboard through generated forms, with read/admin/destructive tiers and full audit."
+     "text": "A read-only Build → Assets page shows data and model assets as a graph with their freshness."
+    },
+    {
+     "id": "NG-B6",
+     "title": "Encoder registry in MLflow",
+     "when": "2026-09-11",
+     "area": "llmops",
+     "text": "The embedding-encoder registry can live in MLflow; exa embedding migrate moves it."
+    },
+    {
+     "id": "NG-C8",
+     "title": "Standard fairness engine",
+     "when": "2026-09-10",
+     "area": "governance",
+     "text": "Fairness metrics are computed with Fairlearn when it is installed, each prediction scored against its own label."
+    },
+    {
+     "id": "CICD-SIGN",
+     "title": "Signed release archives",
+     "when": "2026-09-11",
+     "area": "platform",
+     "text": "Releases sign their checksum file with Sigstore and publish SLSA provenance as a release asset."
+    },
+    {
+     "id": "ADR-0110",
+     "title": "Insufficient-evidence reporting",
+     "when": "2026-09-10",
+     "area": "governance",
+     "text": "Compliance packs name the evidence they cannot vouch for instead of omitting it."
+    },
+    {
+     "id": "ADR-0112",
+     "title": "Carbon-aware placement benchmark",
+     "when": "2026-09-10",
+     "area": "hpc",
+     "text": "A carbon-aware placement policy is evaluated against simple baselines and re-tested before it may be used (exa finops carbon policy)."
     }
    ]
   }
@@ -584,25 +633,11 @@
      "text": "A blocking CI job before any alias move and a dashboard page showing the gate report."
     },
     {
-     "id": "NG-B1",
-     "title": "MLflow prompt registry backend",
-     "status": "partial",
-     "area": "llmops",
-     "text": "Store prompts in the MLflow prompt registry in addition to the built-in store."
-    },
-    {
      "id": "NG-D7",
      "title": "External secrets manager",
      "status": "partial",
      "area": "governance",
      "text": "Run an external secrets manager and inject secrets into every service at startup."
-    },
-    {
-     "id": "NG-D1",
-     "title": "Dedicated compliance page",
-     "status": "partial",
-     "area": "governance",
-     "text": "A standalone dashboard Compliance page (compliance currently lives inside the Governance console)."
     },
     {
      "id": "NG-A3",
@@ -616,14 +651,14 @@
      "title": "Hybrid search and ANN indexes",
      "status": "partial",
      "area": "llmops",
-     "text": "Hybrid dense+sparse search, configurable ANN indexes, and ingestion from features and drift snapshots."
+     "text": "Ingestion of per-inference embeddings from drift snapshots; hybrid dense+sparse search, configurable ANN indexes and feature-store ingestion are built."
     },
     {
      "id": "NG-C6",
      "title": "More SLO sources",
      "status": "partial",
      "area": "monitoring",
-     "text": "SLIs from gateway latency/errors, a serving availability probe and live Prometheus evaluation."
+     "text": "A serving availability probe and live Prometheus evaluation; SLIs from gateway latency and errors are built."
     },
     {
      "id": "NG-C7",
@@ -631,13 +666,6 @@
      "status": "partial",
      "area": "serving",
      "text": "Shadow mirroring and challenger scoring have shipped; remaining work aligns the scoreboard naming with the design before formal acceptance."
-    },
-    {
-     "id": "NG-C8",
-     "title": "Standard fairness engine",
-     "status": "partial",
-     "area": "governance",
-     "text": "Optionally adopt a standard fairness library instead of the built-in metric implementation."
     },
     {
      "id": "NG-D8",
@@ -661,25 +689,11 @@
      "text": "Constrain generation to a schema at decode time and enforce and account reasoning-token budgets in the gateway and FinOps."
     },
     {
-     "id": "NG-A4",
-     "title": "Dashboard asset views",
-     "status": "partial",
-     "area": "dashboard",
-     "text": "Browse data/model assets and their staleness in the dashboard."
-    },
-    {
      "id": "NG-A8",
      "title": "One-command reproduction",
      "status": "partial",
      "area": "training",
      "text": "Rebuild code, data and environment and re-run training automatically from a reproducibility bundle; today the bundle is verified and the rebuild steps are listed."
-    },
-    {
-     "id": "NG-B6",
-     "title": "Encoder registry in MLflow",
-     "status": "partial",
-     "area": "llmops",
-     "text": "Keep the embedding-encoder registry as MLflow artifacts."
     },
     {
      "id": "NG-B7",
@@ -708,20 +722,6 @@
      "status": "partial",
      "area": "governance",
      "text": "Keyless Sigstore signing with a public transparency log for models and audit checkpoints; key-based signing and a WORM anchor exist."
-    },
-    {
-     "id": "ADR-0110",
-     "title": "Insufficient-evidence reporting",
-     "status": "partial",
-     "area": "governance",
-     "text": "Compliance packs name their own evidence gaps instead of omitting them."
-    },
-    {
-     "id": "ADR-0112",
-     "title": "Carbon-aware placement benchmark",
-     "status": "partial",
-     "area": "hpc",
-     "text": "Benchmark any multi-objective carbon placement policy against a simple baseline and define a retirement criterion before shipping it built-in."
     },
     {
      "id": "ADR-0117",
@@ -783,7 +783,7 @@
      "title": "Identity, tenancy and governance",
      "status": "partial",
      "area": "governance",
-     "text": "Single sign-on (OIDC/SAML/SCIM), per-user identity in every audit record, cloud KMS, keyless signing, dedicated authorization service and hard per-tenant isolation. Shipped: OIDC token validation, key rotation, WORM audit anchor, OpenFGA model export, cross-tenant conformance test."
+     "text": "SAML, per-user identity in every audit record, cloud KMS, keyless signing of models and audit checkpoints and hard per-tenant isolation. Shipped: OIDC sign-in with step-up, device login for the CLI, SCIM 2.0 provisioning, delegation to the site's policy engine, OIDC token validation, key rotation, WORM audit anchor, OpenFGA model export, cross-tenant conformance test."
     },
     {
      "id": "ER-3",
@@ -877,9 +877,9 @@
     {
      "id": "PROJ-JUPYTER",
      "title": "Per-project JupyterHub spawn",
-     "status": "deferred",
+     "status": "partial",
      "area": "platform",
-     "text": "Launch a JupyterHub notebook server scoped to a project."
+     "text": "The dashboard starts a project's JupyterHub named server; exa workbench start does not start one yet."
     },
     {
      "id": "PROJ-PROMLABEL",
@@ -898,9 +898,9 @@
     {
      "id": "DASH-SSO",
      "title": "Dashboard SSO and tenant switcher",
-     "status": "planned",
+     "status": "partial",
      "area": "dashboard",
-     "text": "OIDC sign-in, tenant switcher, service accounts with scoped tokens, and step-up for governed actions."
+     "text": "A tenant switcher and service accounts with scoped tokens; OIDC sign-in with step-up for governed actions is built."
     },
     {
      "id": "DASH-QA",
@@ -917,18 +917,18 @@
      "text": "Self-hosted JS error tracking, browser tracing, web-vitals and synthetic monitoring."
     },
     {
-     "id": "CICD-SIGN",
-     "title": "Signed release archives",
-     "status": "planned",
-     "area": "platform",
-     "text": "Sign release archives in CI."
-    },
-    {
      "id": "ADR-0077",
      "title": "Explained placement decisions",
      "status": "planned",
      "area": "hpc",
      "text": "Show why a cluster was chosen (exa hpc place --explain)."
+    },
+    {
+     "id": "P47",
+     "title": "CLI Console in dashboard",
+     "status": "planned",
+     "area": "dashboard",
+     "text": "Run any exa command from the dashboard through generated forms, with read/admin/destructive tiers and full audit."
     }
    ]
   }

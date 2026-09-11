@@ -59,7 +59,7 @@ exa pipeline run --model JPCP --dataset PM100Dataset --dummy
   lineage, diffing, and signed artifacts.
 - **Serving** — Ray Serve multi-model routing with version-selectable inference, traffic
   splits and champion–challenger.
-- **GenAI / LLMOps** — an OpenAI-compatible gateway, prompt registry, RAG, vector store,
+- **GenAI / LLMOps** — a model gateway, prompt registry, RAG, vector store,
   guardrails, and evaluation with [calibrated judges](guides/judge-calibration.md).
 - **Observability** — Prometheus, Grafana, Loki, Tempo tracing, drift detection (output
   *and* input-embedding), and a closed-loop autopilot.
