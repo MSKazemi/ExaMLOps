@@ -5,6 +5,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — dependencies: training and serving move together; typer 0.27
+
+- **New guard: models are served with the library versions they were trained with.**
+  `tests/unit/test_training_serving_versions_agree.py` fails when mlflow is not one version
+  across `uv.lock`, the three workspace manifests, the Ray Serve requirements, and the MLflow
+  server and notebook images, or when the serving image's xgboost differs from the training lock.
+  Dependabot PR #16 would have trained on xgboost 3.4.1 and served on 3.2.0. It also fails when
+  ray differs between the workspace, the serving image and the notebook image; PR #6 moved only the
+  serving image to 2.58, and Ray Client refuses a cluster of another version. Dependabot now leaves
+  mlflow, xgboost and ray to a deliberate upgrade made everywhere at once.
+- **typer 0.27 compatibility.** typer now vendors click as `typer._click`, so a Typer command is
+  no longer a `click.Command`. `exa`'s help group, `exa docs` and `exa explain` now type these
+  objects as `Any`, build contexts with the command's own `context_class`, and the
+  did-you-mean fallback catches either `UsageError`. The code type-checks and passes under typer
+  0.25 and 0.27.
+- **Dependency updates** (from Dependabot #3, #5, #16, each checked against a `main` baseline):
+  the agent and dashboard service requirements (32 updates, including pytest-asyncio 1.x,
+  cryptography 50, fastapi 0.141 in the dashboard); psycopg[binary] ≥ 3.3.5 in the `postgres` and
+  `vector` extras; scikit-learn 1.9, joblib 1.6, boto3, typer 0.27.2, prometheus-client 0.26,
+  pycapnp, pytest 9.1, pytest-asyncio 1.4, ruff 0.16.6, mypy 2.3.1 and pandas-stubs in the
+  workspace lock.
+
+### Fixed — CI/CD follow-ups found on the first runs of the new gate
+
+- `FORCE_COLOR=1` made rich print ANSI escapes into captured output. That broke 23 unit tests
+  and the wheel smoke test's `exa --version` comparison. It is gone, and a guard refuses forced
+  colour in any workflow.
+- The unit job checks out full history with tags, so `test_release_notes_are_extractable` has
+  tags to read. It had never run on GitHub, because an earlier step always failed first.
+- CI concurrency is one group per branch. A started run on `main` is never cancelled, and at most
+  one newer push waits; the newest run covers every earlier commit. A per-commit group was tried
+  the same day and queued 27 runs behind the runner pool.
+- Dependabot covers every Dockerfile's base image (docker ecosystem, Friday), so digest-pinned
+  images are re-pinned when their tag is republished with patched layers. Python, Node, Postgres,
+  Grafana, Prometheus, JupyterHub and MLflow-server majors are held back, each with a stated
+  reason.
+- Dependabot ecosystems run on separate weekdays. Firing all four at once opened 13 PRs whose
+  roughly 140 jobs used up the runner pool.
+- GitHub Pages is enabled (Source: GitHub Actions, HTTPS enforced) and the site is served at
+  https://mskazemi.com/ExaMLOps/. Dependabot alerts and security updates are on, which the
+  `dependency review` job needs.
+
 ### Fixed — fairness slice metrics pair each prediction with its own label; Fairlearn computes them (ADR 0025 — ADR 0025 now Accepted)
 
 - **Accuracy and MAE were wrong whenever labels lag predictions.** They summed over labelled
