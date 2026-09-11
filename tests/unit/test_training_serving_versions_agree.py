@@ -6,7 +6,8 @@ together, and Dependabot updates each manifest on its own: PR #16 (2026-09-10) m
 mlflow 3.15.2 and xgboost 3.4.1 while the serving image kept 3.11.1 and 3.2.0 — a model trained
 after that merge would be pickled by one xgboost and loaded by an older one, with every unit test
 green. `.github/dependabot.yml` now leaves both packages to a deliberate, all-at-once upgrade;
-this is what makes a half-done upgrade fail instead of ship.
+this is what makes a half-done upgrade fail instead of ship. The rule is general: every package
+the serving image pins with `==` must be the version the training lock holds.
 """
 
 from __future__ import annotations
@@ -63,11 +64,21 @@ def test_ray_is_one_version_for_every_client_and_the_cluster() -> None:
     assert len(set(found.values())) == 1, f"ray versions disagree: {found}"
 
 
-def test_xgboost_serves_the_version_it_was_trained_with() -> None:
-    served = _exact_pins("xgboost", SERVING_REQS)
-    assert served, "serving/ray_serving/requirements.txt no longer pins xgboost exactly"
-    trained = _locked("xgboost")
-    assert served == [trained], (
-        f"training locks xgboost {trained} but serving pins {served}: a model saved by the newer "
-        "one is not guaranteed to load in the older one"
+def test_every_exact_serving_pin_is_the_training_version() -> None:
+    """Whatever the serving image pins with `==`, it pins because a model's behaviour depends on
+    it — so it must be the version uv.lock trained that model with: xgboost and scikit-learn (the
+    pickle format), pandas (the transforms), mlflow and ray (checked across images above)."""
+    pins = re.findall(
+        r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?==([\w.]+)", SERVING_REQS.read_text(), re.M
     )
+    assert len(pins) >= 5, f"expected the serving image to pin its model libraries, found {pins}"
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    locked: dict[str, set[str]] = {}
+    for p in lock["package"]:
+        locked.setdefault(p["name"].lower(), set()).add(p["version"])
+    skew = [
+        f"{name}: serving pins {version}, training locks {sorted(locked[key])}"
+        for name, version in pins
+        if (key := name.lower().replace("_", "-")) in locked and locked[key] != {version}
+    ]
+    assert not skew, "the serving image and the training lock disagree:\n  " + "\n  ".join(skew)

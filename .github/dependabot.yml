@@ -53,7 +53,6 @@ updates:
     directories:
       - "/platform/services/agent"
       - "/platform/services/dashboard/backend"
-      - "/serving/ray_serving"
       - "/platform/ci"
     schedule:
       interval: "weekly"
@@ -64,15 +63,37 @@ updates:
     groups:
       service-minor-patch:
         update-types: ["minor", "patch"]
+
+  # The Ray Serve image: its own entry, because what it may not take differs from the services.
+  - package-ecosystem: "pip"
+    directory: "/serving/ray_serving"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      serving-minor-patch:
+        update-types: ["minor", "patch"]
     ignore:
-      # serving/ray_serving pins the versions models are SERVED with; they move only together
-      # with the training lock — see the uv entry above and
-      # tests/unit/test_training_serving_versions_agree.py.
+      # Every `==` pin here is the version a model was trained with (uv.lock) and moves only
+      # together with it — tests/unit/test_training_serving_versions_agree.py. Dependabot moves
+      # one manifest at a time (PRs #6, #25, #26), so these are upgraded by hand, in both places.
       - dependency-name: "mlflow"
       # xgboost: same rule as mlflow directly above.
       - dependency-name: "xgboost"
-      # ray: must equal the workspace's ray — see the uv entry above.
+      # ray: same rule; Ray Client also needs the cluster's exact version.
       - dependency-name: "ray"
+      # pandas: same rule — a pandas major changes copy and string-dtype semantics under the
+      # same feature transforms (PR #25 proposed pandas 3 here while training locks 2.x).
+      - dependency-name: "pandas"
+      # scikit-learn: same rule — the pickle format of every sklearn model.
+      - dependency-name: "scikit-learn"
+      # ray 2.55's @serve.ingress cannot pickle a fastapi>=0.137 app (see requirements.txt);
+      # lift with the ray pin. PR #27 proposed fastapi 0.141 here.
+      - dependency-name: "fastapi"
+        versions: [">=0.137"]
 
   # Dashboard frontend.
   - package-ecosystem: "npm"

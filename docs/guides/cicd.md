@@ -998,12 +998,14 @@ pulled within that time. Each `ignore` rule records why it exists and what would
 removed, and the guard test fails an ignore without that comment. The four ecosystems run on
 different weekdays, so their pull requests don't all compete for runners at once.
 
-mlflow, xgboost and ray are excluded from Dependabot on purpose. A model must be served with the
-versions it was trained with. Training uses `uv.lock`, serving uses
-`serving/ray_serving/requirements.txt`, and mlflow and ray are also pinned in the tracking-server
-and notebook images. Ray Client also refuses a cluster of another Ray version. Dependabot updates
-each manifest separately, which would split them. Upgrade them by hand, in every place in one
-change. `tests/unit/test_training_serving_versions_agree.py` fails on any mismatch.
+A model must be served with the library versions it was trained with. Training uses `uv.lock`;
+serving uses `serving/ray_serving/requirements.txt`. **Every package the serving image pins with
+`==` must be the version in the lock:** mlflow, ray, xgboost, scikit-learn (the pickle format) and
+pandas (the transforms). mlflow and ray are also pinned in the tracking-server and notebook
+images, and Ray Client refuses a cluster of another Ray version. Dependabot updates each manifest
+separately, which would split them, so the serving image has its own Dependabot entry that
+ignores those packages. Upgrade them by hand, in every place in one change.
+`tests/unit/test_training_serving_versions_agree.py` fails on any mismatch.
 
 ### Documentation site
 
