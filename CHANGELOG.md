@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-11
+
 ### Added — every release is verified as published, before PyPI (ADR 0129)
 
 - New `.github/workflows/release-verify.yml`, called by `release.yml` as the `published` job after
