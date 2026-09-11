@@ -1,0 +1,12 @@
+{
+  "project": "kserve/kserve",
+  "version": "v0.20.0",
+  "released": "2026-08-06",
+  "tag_object": "1fb781055dd1567164358233e1125142ca6ef1fe",
+  "support_window_weeks": 16,
+  "sources": {
+    "InferenceService.v1beta1.json.gz": "config/crd/full/serving.kserve.io_inferenceservices.yaml",
+    "LLMInferenceService.v1alpha2.json.gz": "config/crd/full/llmisvc/serving.kserve.io_llminferenceservices.yaml"
+  },
+  "transform": "spec.versions[name].schema.openAPIV3Schema; every 'description' key removed; JSON with sorted keys; gzip -9"
+}

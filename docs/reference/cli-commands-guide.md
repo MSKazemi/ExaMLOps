@@ -368,7 +368,7 @@ Manage the multi-model Ray Serve deployment: what is hot-loaded, how traffic is 
 | `exa serve infer-check` | Smoke-tests the inference pipeline end-to-end with a valid synthetic HPC job. | Verify `Ingress → FeatureTransformer → ModelRouter` wiring. | `exa serve infer-check` |
 | `exa serve benchmark` | Benchmarks Ray Serve with the dummy client and reports latency stats (`-n/--requests`). | Quick latency baseline / regression spot-check. | `exa serve benchmark -n 200` |
 | `exa serve backend` | Shows the active serving backend (`ray-compose` default or `kserve-k8s`). | Confirm which serving substrate is in effect (E1 seam). | `exa serve backend` |
-| `exa serve manifest MODEL` | Generates a schema-valid KServe `InferenceService` manifest from the registry (E1). | Deploy a model to Kubernetes/KServe instead of Ray. | `exa serve manifest JPCP --alias Production --canary 10 --out jpcp.yaml` |
+| `exa serve manifest MODEL` | Renders a KServe `InferenceService` (classical model) or `LLMInferenceService` (LLM) for a resolved model version, checked against the pinned KServe schema; nothing is applied. | Prepare a model for Kubernetes/KServe, or review what would run there. | `exa serve manifest JPCP --canary 10 --out jpcp.yaml` · offline: `exa serve manifest JPCP --version 17 --artifact-uri s3://mlflow-artifacts/1/models/m-1/artifacts` |
 
 #### LLM & VLM endpoints (`exa serve llm`)
 

@@ -1105,7 +1105,7 @@
     {
      "cmd": "exa serve manifest",
      "group": "serve",
-     "help": "Generate a schema-valid KServe InferenceService manifest from the model registry (E1).",
+     "help": "Render a KServe manifest for a resolved model version, checked against the pinned schema. The alias is resolved to a concrete version and its artifact URI before rendering, so the manifest names exactly what would run. Nothing is applied to a cluster.",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },

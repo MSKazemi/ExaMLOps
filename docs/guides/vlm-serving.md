@@ -164,11 +164,11 @@ EXAMLOPS_SERVING_BACKEND=kserve-k8s exa serve manifest qwen-vl --alias Productio
 exa serve llm start qwen-vl --launcher kserve
 ```
 
-Emits an `LLMInferenceService` whose `args` come from the same `to_vllm_args` renderer and
-validates it with `kubectl apply --dry-run=server` — the CI check that the YAML→manifest
-mapping is right. It never applies the manifest: apply it (and later delete it) with
-`kubectl`. `EXAMLOPS_KSERVE_LIVE_APPLY=1` only changes the recorded state from PENDING to
-STARTING.
+Emits a `serving.kserve.io/v1alpha2` `LLMInferenceService` — `spec.model.uri` set to
+`hf://<hf-model>`, and `args` from the same `to_vllm_args` renderer — validates it against the
+KServe schema the platform pins, and, when `kubectl` and a cluster are reachable, with
+`kubectl apply --dry-run=server`. It never applies the manifest, and the endpoint stays
+`PENDING`: apply it (and later delete it) with `kubectl`.
 
 ## Multimodal safety — read this before serving a VLM
 

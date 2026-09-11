@@ -5,6 +5,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — KServe manifests name what would run, and the API would accept them (ADR 0142 · USAR I0)
+
+- `exa serve manifest` and the `kserve` LLM launcher rendered manifests the KServe API would reject:
+  an `LLMInferenceService` with a `spec.predictor` block the resource does not have, a
+  `storageUri` of `mlflow://models/<name>@<alias>` no KServe pod can load, and an
+  `InferenceService` without the `modelFormat` KServe selects a runtime by. A hand-written check
+  passed them all.
+- Manifests are now rendered for a **resolved** model version: the alias is looked up in the MLflow
+  registry first and the manifest carries the version's artifact URI, plus labels for model,
+  version, alias and project and an `examlops.io/artifact-digest` annotation (`unsigned` when the
+  version has no signature). Registry references are refused. `--version` + `--artifact-uri` render
+  without the registry. `EXAMLOPS_MLFLOW_ARTIFACTS_DESTINATION` maps MLflow-proxied
+  `mlflow-artifacts:/` locations onto real storage.
+- Classical models render as KServe **Standard**-mode `InferenceService`s. Each has a `modelFormat` and
+  an explicit `runtime`, taken from a table checked against KServe v0.20.0. `pytorch` is pinned to
+  Triton and never auto-selects the unmaintained TorchServe. `protocolVersion: v2` appears only for
+  runtimes that speak it. LLMs render as `serving.kserve.io/v1alpha2` `LLMInferenceService`s:
+  `spec.model.uri`/`name`, the llm-d router defaults and the shared vLLM argument renderer.
+- `--canary N` uses KServe's Standard-mode `spec.canary` entry, with `--canary-alias` choosing the
+  canary version. The old `canaryTrafficPercent` field does nothing in Standard mode.
+- Every manifest is validated against KServe v0.20.0's own CRD schemas, now vendored in the package,
+  with unknown fields rejected as in `kubectl --validate=strict`. A test fails when that pin leaves
+  KServe's support window (2026-11-26).
+- `EXAMLOPS_KSERVE_LIVE_APPLY` is removed. It relabelled an endpoint `STARTING` without applying
+  anything. A `kserve` endpoint now stays `PENDING`, because nothing is deployed.
+
+### Changed — an agent principal is never auto-confirmed (ADR 0147 · USAR I0)
+
+- `-o json` and `--yes` still skip confirmation prompts for people and their scripts. A process
+  marked `EXAMLOPS_PRINCIPAL_KIND=agent` is refused with `plan_required` instead: for an agent an
+  output format is not consent. Nothing sets the variable yet, so existing automation is unchanged.
+  Commands that skip `confirm()` through their own `--yes` option are not covered yet.
+
+### Changed — GenAI telemetry: the opt-in emits the current conventions (ADR 0148 · USAR I0)
+
+- Under `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`, spans now carry
+  `gen_ai.provider.name` (not `gen_ai.system`), the registry's operation names (`text_completion`,
+  `chat`, `invoke_agent`, `execute_tool`, `invoke_workflow`) and `"<operation> <model>"` span names.
+  Previously the opt-in changed only how captured content was shaped.
+- The names are checked against the OpenTelemetry `semantic-conventions-genai` registry at a pinned
+  commit, and `examlops.semconv.version` reports `genai@<commit>`.
+- Without the opt-in nothing changes. The module docstring no longer calls 1.27.0 "the last
+  incubating release before stabilization": the GenAI conventions have not stabilised.
+
 ### Added — gateway latency and error SLOs: the `c1` SLI source (ADR 0023 clause 3)
 
 - Every model-gateway call now records `latency_ms` (what the caller waited, guardrail scanning

@@ -224,6 +224,7 @@ nav:
           - Policy-as-code: guides/policy-as-code.md
           - Guardrails: guides/guardrails.md
       - Serving & training:
+          - "Serving overview: models, LLMs, agents": guides/serving-overview.md
           - Kubernetes serving: guides/kubernetes-serving.md
           - LLM serving engines: guides/llm-serving-engines.md
           - LLM & VLM serving (vLLM): guides/vlm-serving.md

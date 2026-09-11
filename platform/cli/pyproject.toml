@@ -192,4 +192,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # D2 NIST AI RMF catalogue (and any other in-package data files) must ship in wheels.
-examlops = ["governance/*.yaml"]
+examlops = [
+    "governance/*.yaml",
+    # ADR 0142 d4: the pinned KServe CRD schemas every KServe render is validated against.
+    "serving/substrates/kserve_crds/*/*",
+]

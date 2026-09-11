@@ -70,7 +70,7 @@ def test_opt_in_is_one_token_of_a_comma_separated_list(monkeypatch):
     monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "http/dup, gen_ai_latest_experimental")
     assert genai.semconv_opt_in() == frozenset({"http/dup", "gen_ai_latest_experimental"})
     assert genai.latest_experimental_enabled() is True
-    assert genai.semconv_version() == "latest-experimental"
+    assert genai.semconv_version() == f"genai@{genai.LATEST_REVISION}"
 
 
 def test_an_unrelated_opt_in_does_not_switch_conventions(monkeypatch):
@@ -129,7 +129,7 @@ def test_the_span_reports_which_conventions_it_emitted(monkeypatch, spans):
     monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
     with genai.genai_span("model", system="vllm", model="m"):
         pass
-    assert _one(spans).attributes["examlops.semconv.version"] == "latest-experimental"
+    assert _one(spans).attributes["examlops.semconv.version"] == f"genai@{genai.LATEST_REVISION}"
 
 
 # ── Clause 4: carbon ──────────────────────────────────────────────────────────

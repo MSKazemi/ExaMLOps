@@ -461,16 +461,19 @@ def _record_serve_job(job_id: str, scheduler: str, spec: EndpointSpec) -> None:
 
 
 class KServeLauncher:
-    """Deploy through the E1 ``KServeK8s`` backend (LLMInferenceService).
+    """Render an ``LLMInferenceService`` for the endpoint and validate it — nothing is applied.
 
-    Live apply stays behind ``EXAMLOPS_KSERVE_LIVE_APPLY`` (ADR 0096 R-B1); without it the
-    manifest is generated and server-dry-run validated, which is still useful — it is the
-    CI gate that proves the YAML→manifest mapping is correct with no cluster in sight.
+    The manifest is checked offline against the pinned KServe schema and, when ``kubectl`` and
+    a cluster are reachable, with a server-side dry run. The endpoint is recorded ``PENDING``
+    because nothing was deployed: the plan-gated, audited apply is USAR I3 (ADR 0142 d6). The
+    ``EXAMLOPS_KSERVE_LIVE_APPLY`` flag that used to relabel this state ``STARTING`` without
+    applying anything is gone.
     """
 
     name = "kserve"
 
     def start(self, spec: EndpointSpec) -> EndpointHandle:
+        from examlops.serving.substrates.resolve import RenderError, ResolvedRef, storage_uri
         from examlops.serving_backends import _kubectl_apply, registry_to_kserve, validate_manifest
 
         model_yaml = {
@@ -478,21 +481,32 @@ class KServeLauncher:
             "task_type": "text-generation",
             "engine": _engine_block(spec.config),
         }
-        manifest = registry_to_kserve(model_yaml, "Production")
+        weights = spec.hf_model_id if ":" in spec.hf_model_id else f"hf://{spec.hf_model_id}"
+        try:
+            ref = ResolvedRef(
+                model=spec.model.lower(),
+                # An HF id carries no revision here, so the object says so instead of a number.
+                version="unpinned",
+                alias=None,
+                artifact_uri=storage_uri(weights),
+                project=spec.project or "default",
+            )
+            manifest = registry_to_kserve(model_yaml, ref)
+        except RenderError as exc:
+            raise LauncherError(f"cannot render KServe manifest for {spec.model}: {exc}") from exc
         errors = validate_manifest(manifest)
         if errors:
             raise LauncherError(f"invalid KServe manifest for {spec.model}: {errors}")
-        # Apply the manifest built from *this spec*. Routing through KServeK8s.deploy()
+        # Validate the manifest built from *this spec*. Routing through KServeK8s.deploy()
         # would re-read `<model>.yaml` from the registry dir and ignore what the caller
         # just configured — and fail outright for an endpoint that has no pack YAML yet.
-        applied = _kubectl_apply(manifest)
-        live = os.getenv("EXAMLOPS_KSERVE_LIVE_APPLY", "").lower() in ("1", "true", "yes", "on")
+        checked = _kubectl_apply(manifest)
         return EndpointHandle(
             model=spec.model,
             launcher=self.name,
-            state="STARTING" if live else "PENDING",
+            state="PENDING",
             base_url=os.getenv("EXAMLOPS_KSERVE_GATEWAY_URL"),
-            detail={"applied": applied, "live_apply": live, "manifest": manifest},
+            detail={"applied": False, "validation": checked, "manifest": manifest},
         )
 
     def stop(self, model: str) -> dict[str, Any]:

@@ -3199,10 +3199,16 @@ Stop an endpoint (and deregister it).
 
 ### `exa serve manifest`
 
-Generate a schema-valid KServe InferenceService manifest from the model registry (E1).
+Render a KServe manifest for a resolved model version, checked against the pinned schema.
+
+The alias is resolved to a concrete version and its artifact URI before rendering, so the
+manifest names exactly what would run. Nothing is applied to a cluster.
 
 - `--alias` — MLflow alias to serve
-- `--canary` — Canary traffic percent (0..100)
+- `--version` — Serve this registered version instead of resolving --alias
+- `--artifact-uri` — Render offline from this storage URI (s3://, oci://, hf://…); requires --version
+- `--canary` — Canary traffic percent (0..100) for the --canary-alias version
+- `--canary-alias` — MLflow alias of the canary
 - `--out` — Write manifest YAML to this file
 - `--registry-dir` — Dir of per-model YAML (default: RAY_MODELS_DIR)
 

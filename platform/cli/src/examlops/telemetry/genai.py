@@ -13,8 +13,16 @@ Design goals (spec §2):
   is truthy, and always through a redaction hook (R5/R6).
 * Derived ``examlops.cost.usd`` from token usage, feeding FinOps (R7).
 
-Pinned semconv version — attribute names track OpenTelemetry GenAI semconv
-``1.27.0`` (the last incubating release before stabilization); see ``SEMCONV_VERSION``.
+Which conventions are emitted (ADR 0115, ADR 0148 d2) — two sets, never both:
+
+* **default** — the OpenTelemetry GenAI semconv ``1.27.0`` shape this instrumentation first
+  pinned (``gen_ai.system``, operation names ``model``/``agent``/``tool``); see
+  ``SEMCONV_VERSION``. 1.27.0 was an ordinary Development-status release: the GenAI conventions
+  have not been declared stable, and every span shape in them is still Development.
+* **opt-in** (``OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental``) — the current names,
+  checked against the GenAI registry of ``open-telemetry/semantic-conventions-genai`` at
+  ``LATEST_REVISION`` (the repository has no tagged release): ``gen_ai.provider.name`` and the
+  registry's operation names (``text_completion``, ``chat``, ``invoke_agent``, ``execute_tool`` …).
 """
 
 from __future__ import annotations
@@ -26,6 +34,8 @@ from contextlib import contextmanager
 from typing import Any
 
 SEMCONV_VERSION = "1.27.0"
+# The semantic-conventions-genai commit the opt-in names were checked against (2026-09-10).
+LATEST_REVISION = "0c8759497519"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 # Semconv stability opt-in (ADR 0006 clause 5). The GenAI area does **not** use the
@@ -36,7 +46,19 @@ _TRUTHY = {"1", "true", "yes", "on"}
 LATEST_EXPERIMENTAL = "gen_ai_latest_experimental"
 
 # gen_ai.operation.name → OTel span kind mapping for the three ExaMLOps span roles.
-_SPAN_KINDS = {"model", "agent", "workflow", "tool", "chat", "embeddings"}
+_SPAN_KINDS = {"model", "agent", "workflow", "tool", "chat", "embeddings", "retrieval"}
+
+# Under the opt-in, each ExaMLOps span role emits the registry's operation name. ``model`` is a
+# prompt-in/text-out engine call (``InferenceEngine.generate``), i.e. ``text_completion``.
+_LATEST_OPERATION = {
+    "model": "text_completion",
+    "chat": "chat",
+    "embeddings": "embeddings",
+    "agent": "invoke_agent",
+    "tool": "execute_tool",
+    "workflow": "invoke_workflow",
+    "retrieval": "retrieval",
+}
 
 # Fallback per-1K-token USD rates when a model isn't in the rate table. Self-hosted
 # models resolve to 0.0 (cost is GPU-seconds, tracked separately by FinOps/carbon).
@@ -93,11 +115,11 @@ def latest_experimental_enabled() -> bool:
 def semconv_version() -> str:
     """Which convention set this process is emitting (reported on every span).
 
-    Deliberately the string ``latest-experimental`` rather than a version number under the
-    opt-in: the conventions are still Development, so naming a specific release we have not
-    conformance-tested against would be a claim, not a label.
+    Under the opt-in this names the conventions repository revision the emitted names were
+    checked against (``genai@<commit>``) — not a release number, because the conventions have
+    none, and not a bare "latest", because what we emit is pinned and tested, not whatever is newest.
     """
-    return "latest-experimental" if latest_experimental_enabled() else SEMCONV_VERSION
+    return f"genai@{LATEST_REVISION}" if latest_experimental_enabled() else SEMCONV_VERSION
 
 
 def _as_messages(role: str, text: str) -> str:
@@ -173,7 +195,7 @@ def genai_span(
     from opentelemetry import trace
 
     tracer = trace.get_tracer("examlops.genai", SEMCONV_VERSION)
-    with tracer.start_as_current_span(f"gen_ai.{kind} {model}") as span:
+    with tracer.start_as_current_span(_span_name(kind, model)) as span:
         _apply_base_attributes(
             span,
             kind,
@@ -215,7 +237,7 @@ def start_span(
     from opentelemetry import trace
 
     tracer = trace.get_tracer("examlops.genai", SEMCONV_VERSION)
-    span = tracer.start_span(f"gen_ai.{kind} {model}")
+    span = tracer.start_span(_span_name(kind, model))
     _apply_base_attributes(
         span,
         kind,
@@ -233,6 +255,19 @@ def _normalize_kind(kind: str) -> str:
     return kind if kind in _SPAN_KINDS else "model"
 
 
+def operation_name(kind: str) -> str:
+    """The ``gen_ai.operation.name`` this process emits for an ExaMLOps span role."""
+    kind = _normalize_kind(kind)
+    return _LATEST_OPERATION[kind] if latest_experimental_enabled() else kind
+
+
+def _span_name(kind: str, model: str) -> str:
+    # The current conventions name a span "{gen_ai.operation.name} {model or agent name}".
+    if latest_experimental_enabled():
+        return f"{operation_name(kind)} {model}"
+    return f"gen_ai.{kind} {model}"
+
+
 def _apply_base_attributes(
     span: Any,
     kind: str,
@@ -245,8 +280,12 @@ def _apply_base_attributes(
     version: str | None,
 ) -> None:
     """The attributes every GenAI span carries — one definition for both span shapes."""
-    span.set_attribute("gen_ai.operation.name", kind)
-    span.set_attribute("gen_ai.system", system)
+    span.set_attribute("gen_ai.operation.name", operation_name(kind))
+    if latest_experimental_enabled():
+        # Renamed from gen_ai.system in the current conventions; one name or the other, not both.
+        span.set_attribute("gen_ai.provider.name", system)
+    else:
+        span.set_attribute("gen_ai.system", system)
     span.set_attribute("gen_ai.request.model", model)
     # ExaMLOps extras (R3): join keys for eval/feedback/drift + A2 lineage.
     span.set_attribute("examlops.tenant", tenant)

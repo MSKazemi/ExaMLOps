@@ -77,6 +77,7 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_SECRETS_KEYS` | unset | Secrets KEK keyring, `key_id:fernet_key,…`. |
 | `EXAMLOPS_SECRETS_ACTIVE_KEY` | first key | Which key new writes are encrypted with. Rotate online with `exa secrets rewrap`; `DASHBOARD_SECRET_KEY` is a decrypt-only legacy fallback. |
 | `EXAMLOPS_ACTOR` | `$USER` | Actor stamped into every audit event. Set it in CI and in scripts, or the log records whichever account the runner happens to use. |
+| `EXAMLOPS_PRINCIPAL_KIND` | `human` | Set to `agent` by an agent runtime for the `exa` processes it drives. An agent is never auto-confirmed: with `-o json` or `--yes` a command that asks for confirmation is refused with `plan_required` instead of proceeding. Any other value (or unset) means a human, whose scripts behave as before. |
 | `EXAMLOPS_AUDIT_WORM_PATH` | unset | External append-only WORM anchor for audit checkpoints — a local file in dev, an S3 Object-Lock path or Rekor log in production. Verify with `exa audit verify-worm`. |
 | `EXAMLOPS_OIDC_ISSUER` | unset | OIDC issuer for RS256 access-token validation. Unset ⇒ SSO off (single-tenant). See also `EXAMLOPS_OIDC_AUDIENCE` / `_JWKS` / `_TENANT_CLAIM` / `_SUBJECT_CLAIM`. |
 | `CONTROL_PLANE_ALLOWED_HOSTS` | `*` | Comma-separated allow-list for the control plane's Host header. `*` is a development default. |
@@ -308,7 +309,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_OPENLINEAGE_URL` | unset (no-op) | **A2** OpenLineage — Marquez endpoint; unset ⇒ `emit_lineage` skips HTTP but still dual-writes `platform_db`. |
 | `OTEL_SDK_DISABLED` | `true` | **C1** master tracing switch; `false` enables OTLP export of GenAI spans. |
 | `EXAMLOPS_GENAI_CAPTURE_CONTENT` | unset (off) | **C1** capture prompt/completion content on spans (redactor-gated, D8). |
-| `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | **C1** OpenTelemetry's comma-separated convention opt-in. Listing `gen_ai_latest_experimental` switches captured content from `gen_ai.prompt`/`gen_ai.completion` to the structured `gen_ai.input.messages`/`gen_ai.output.messages`. Absent it, the pinned 1.27.0 attributes keep being emitted. |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | **C1** OpenTelemetry's comma-separated convention opt-in. Listing `gen_ai_latest_experimental` switches GenAI spans wholesale to the current conventions: `gen_ai.provider.name` instead of `gen_ai.system`, the registry's operation names (`text_completion`, `chat`, `invoke_agent`, `execute_tool`, …), span names `"<operation> <model>"`, and structured `gen_ai.input.messages`/`gen_ai.output.messages` for captured content. Spans then report `examlops.semconv.version = genai@<commit>`, the conventions revision the names were checked against. Absent it, the pinned 1.27.0 attributes keep being emitted unchanged. |
 | `EXAMLOPS_VAULT_ADDR` / `EXAMLOPS_SECRETS_KEY` | unset | **D7** secrets — OpenBao address; else Fernet-local store keyed by `EXAMLOPS_SECRETS_KEY` (or `DASHBOARD_SECRET_KEY`). |
 | `EXAMLOPS_VAULT_STRICT` | unset (fall back) | When truthy, a configured-but-unreachable OpenBao/Vault **fails the read** instead of silently downgrading to the local store or an environment variable. Set it wherever Vault is the system of record. |
 | `EXAMLOPS_SECRET_TENANTS` | unset | **D7** per-tenant secret path-prefix scoping. |
@@ -798,7 +799,6 @@ appear in a log or a CI summary until you switch it on.
 | `EXAMLOPS_SLO_GATE_ENABLED` | off | Make `exa slo` failures block a promotion instead of reporting. |
 | `EXAMLOPS_FAIRNESS_GATE_ENABLED` | off | Make subgroup-fairness failures block. |
 | `EXAMLOPS_SYNTHETIC_ONLY_GATE` | off | Refuse to train on anything but synthetic data — for a use case that may not touch real records yet. |
-| `EXAMLOPS_KSERVE_LIVE_APPLY` | off | Actually apply generated KServe manifests to the cluster. Off ⇒ the manifest is produced and the endpoint stays `PENDING`. |
 
 Accepted truthy values are `1`, `true`, `yes`, `on` (case-insensitive); anything else is off.
 
@@ -830,6 +830,7 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 | `EXAMLOPS_LLM_LAUNCHER` | `external` | Default launcher for `exa serve llm` — one of `external`, `compose`, `slurm`, `flux`, `kserve` (`slurm` and `flux` are the same HPC launcher under two scheduler names). `--launcher` overrides it. |
 | `EXAMLOPS_LLM_COST_PROVIDER` | from `finops.yaml` | Provider for LLM token cost. |
 | `EXAMLOPS_KSERVE_GATEWAY_URL` | unset | Gateway the generated KServe endpoint is reachable on; recorded on the endpoint. |
+| `EXAMLOPS_MLFLOW_ARTIFACTS_DESTINATION` | unset | The MLflow tracking server's `--artifacts-destination` (e.g. `s3://mlflow-artifacts`). A KServe manifest must point at storage a pod can read, so a version whose artifacts are reported as `mlflow-artifacts:/…` is mapped onto this location; unset ⇒ such a version is refused and you pass `--artifact-uri` instead. |
 | `FEATURE_STORE_DIR` | `.feature_store` beside the platform datastore | On-disk feature store root. |
 | `MLFLOW_SQLITE_DB` | `./mlflow.db` | MLflow's own SQLite file, when it is not on Postgres — the backup sqlite tier looks for it here. |
 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO credentials. Compose passes these to JupyterHub as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. **Change both before exposing the stack.** |

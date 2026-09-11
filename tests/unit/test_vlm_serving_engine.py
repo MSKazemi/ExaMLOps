@@ -242,15 +242,16 @@ def test_gwtv6_argv_renders_parallelism_and_media_flags():
 
 def test_gwtv6_kserve_manifest_uses_the_same_renderer():
     """The k8s path must not re-transcribe flags — that is how substrates drift apart."""
-    from examlops.serving_backends import registry_to_kserve
+    from examlops.serving_backends import ResolvedRef, registry_to_kserve
 
     block = {
         "engine": "vllm",
         "tensor_parallel_size": 4,
         "multimodal": {"modality": "vision", "limit_mm_per_prompt": {"image": 2}},
     }
-    manifest = registry_to_kserve({"name": "qwen-vl", "engine": block}, "Production")
-    manifest_args = manifest["spec"]["predictor"]["model"]["args"]
+    ref = ResolvedRef("qwen-vl", "1", "Production", "hf://Qwen/Qwen2.5-VL-7B-Instruct")
+    manifest = registry_to_kserve({"name": "qwen-vl", "engine": block}, ref)
+    manifest_args = manifest["spec"]["template"]["containers"][0]["args"]
     assert manifest_args == engines.to_vllm_args(engines.EngineConfig.from_dict(block))
     # The media guard specifically must survive into the k8s manifest.
     assert "--limit-mm-per-prompt.image" in manifest_args

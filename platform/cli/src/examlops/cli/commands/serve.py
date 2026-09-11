@@ -325,8 +325,9 @@ def _render_traffic_list() -> None:
 
 _EXAMPLES_MANIFEST = (
     "Examples:\n\n"
-    "  exa serve manifest JPCP --alias Production\n\n"
-    "  exa serve manifest JPCP --alias Canary --canary 10 --out ./k8s/jpcp.yaml\n\n"
+    "  exa serve manifest JPCP\n\n"
+    "  exa serve manifest JPCP --canary 10 --canary-alias Canary --out ./k8s/jpcp.yaml\n\n"
+    "  exa serve manifest JPCP --version 17 --artifact-uri s3://mlflow-artifacts/1/models/m-1/artifacts\n\n"
     "  exa --json serve manifest JPCP"
 )
 
@@ -335,17 +336,33 @@ _EXAMPLES_MANIFEST = (
 def manifest(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
     alias: str = typer.Option("Production", "--alias", help="MLflow alias to serve"),
-    canary: int | None = typer.Option(None, "--canary", help="Canary traffic percent (0..100)"),
+    version: str | None = typer.Option(
+        None, "--version", help="Serve this registered version instead of resolving --alias"
+    ),
+    artifact_uri: str | None = typer.Option(
+        None,
+        "--artifact-uri",
+        help="Render offline from this storage URI (s3://, oci://, hf://…); requires --version",
+    ),
+    canary: int | None = typer.Option(
+        None, "--canary", help="Canary traffic percent (0..100) for the --canary-alias version"
+    ),
+    canary_alias: str = typer.Option("Canary", "--canary-alias", help="MLflow alias of the canary"),
     out: str | None = typer.Option(None, "--out", help="Write manifest YAML to this file"),
     registry_dir: str | None = typer.Option(
         None, "--registry-dir", help="Dir of per-model YAML (default: RAY_MODELS_DIR)"
     ),
 ) -> None:
-    """Generate a schema-valid KServe InferenceService manifest from the model registry (E1)."""
+    """Render a KServe manifest for a resolved model version, checked against the pinned schema.
+
+    The alias is resolved to a concrete version and its artifact URI before rendering, so the
+    manifest names exactly what would run. Nothing is applied to a cluster.
+    """
     from pathlib import Path
 
     import yaml
 
+    from examlops.serving.substrates.resolve import RenderError, resolve_ref
     from examlops.serving_backends import registry_to_kserve, validate_manifest
     from examlops.usecase import models_dir
 
@@ -354,7 +371,25 @@ def manifest(
     if not yaml_path.is_file():
         _output.error(f"Model YAML not found: {yaml_path}")
     model_yaml = yaml.safe_load(yaml_path.read_text())
-    m = registry_to_kserve(model_yaml, alias, canary_pct=canary)
+    project = str(model_yaml.get("project") or "default")
+    offline_hint = "pass --version and --artifact-uri to render without the registry"
+    if canary is not None and artifact_uri is not None:
+        _output.error(
+            "--canary resolves both versions from the registry; it cannot be combined with "
+            "--artifact-uri"
+        )
+    try:
+        stable = resolve_ref(
+            model, alias=alias, version=version, artifact_uri=artifact_uri, project=project
+        )
+        canary_ref = None
+        if canary is not None:
+            canary_ref = resolve_ref(model, alias=canary_alias, project=project)
+        m = registry_to_kserve(model_yaml, stable, canary=canary_ref, canary_pct=canary)
+    except RenderError as exc:
+        _output.error(f"Cannot render a manifest for {model}: {exc}")
+    except Exception as exc:  # noqa: BLE001 - registry unreachable, unknown alias, …
+        _output.error(f"Could not resolve {model} in the MLflow registry: {exc}", hint=offline_hint)
     errors = validate_manifest(m)
     if errors:
         _output.error(f"Generated manifest failed validation: {errors}")

@@ -106,11 +106,17 @@ def test_gwtv7_hpc_resolve_endpoint_reads_the_file_the_job_writes(tmp_path):
     assert launcher.resolve_endpoint(spec) == "http://gpu-node-03:8000"
 
 
-def test_gwtv7_kserve_stays_dry_run_without_the_opt_in(monkeypatch):
-    monkeypatch.delenv("EXAMLOPS_KSERVE_LIVE_APPLY", raising=False)
-    handle = le.KServeLauncher().start(le.EndpointSpec(model="qwen", hf_model_id="hf"))
-    assert handle.detail["live_apply"] is False
+def test_gwtv7_kserve_renders_and_validates_but_never_claims_a_deploy(monkeypatch):
+    # The retired EXAMLOPS_KSERVE_LIVE_APPLY flag used to relabel this PENDING→STARTING without
+    # applying anything (ADR 0142 d6). Setting it must change nothing now.
+    monkeypatch.setenv("EXAMLOPS_KSERVE_LIVE_APPLY", "1")
+    handle = le.KServeLauncher().start(le.EndpointSpec(model="qwen", hf_model_id="Qwen/Qwen2.5-7B"))
     assert handle.state == "PENDING"
+    assert handle.detail["applied"] is False
+    manifest = handle.detail["manifest"]
+    assert manifest["apiVersion"] == "serving.kserve.io/v1alpha2"
+    assert manifest["spec"]["model"]["uri"] == "hf://Qwen/Qwen2.5-7B"
+    assert "predictor" not in manifest["spec"]
 
 
 # ── GWT-V8: registry ──────────────────────────────────────────────────────────

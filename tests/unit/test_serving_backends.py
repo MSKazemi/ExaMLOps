@@ -2,7 +2,8 @@
 """E1 — Kubernetes-native serving (ADR 0015, spec E1).
 
 GWT-2 manifest generation + validation · GWT-3 canary rollout · GWT-5 backend selection ·
-GWT-6 verify-before-load refuse · LLM manifest variant.
+GWT-6 verify-before-load refuse · LLM manifest variant. Since USAR I0 (ADR 0142) manifests are
+rendered from a resolved version and validated against the pinned KServe schema.
 """
 
 from __future__ import annotations
@@ -46,45 +47,60 @@ def test_backend_selectable_via_env(monkeypatch):
     assert isinstance(sb.select_backend(), sb.ServingBackend)
 
 
-# ── GWT-2: manifest generation + validation ──────────────────────────────────
+# ── GWT-2: manifest generation + validation (ADR 0142: resolved, schema-checked) ──
+
+_REF = sb.ResolvedRef("jpcp", "17", "Production", "s3://mlflow-artifacts/1/models/m-a/artifacts")
 
 
 def test_gwt2_inference_service_manifest():
-    m = sb.registry_to_kserve(_JPCP, "Production")
+    m = sb.registry_to_kserve(_JPCP, _REF)
     assert m["kind"] == "InferenceService"
     assert m["metadata"]["name"] == "jpcp"
-    assert m["spec"]["predictor"]["model"]["storageUri"] == "mlflow://models/jpcp@Production"
+    assert m["spec"]["predictor"]["model"]["storageUri"] == _REF.artifact_uri
+    assert m["spec"]["predictor"]["model"]["modelFormat"] == {"name": "sklearn"}
     assert sb.validate_manifest(m) == []
 
 
 def test_llm_manifest_variant_and_engine_args():
-    m = sb.registry_to_kserve(_LLM, "Production")
+    m = sb.registry_to_kserve(_LLM, _REF)
     assert m["kind"] == "LLMInferenceService"
-    args = m["spec"]["predictor"]["model"]["args"]
+    args = m["spec"]["template"]["containers"][0]["args"]
     assert "--dtype" in args and "float16" in args
     assert "--quantization" in args and "awq" in args
     assert sb.validate_manifest(m) == []
 
 
+def test_an_alias_string_can_no_longer_reach_a_manifest():
+    with pytest.raises(TypeError, match="ResolvedRef"):
+        sb.registry_to_kserve(_JPCP, "Production")
+
+
 def test_validate_catches_bad_manifest():
-    bad = {"apiVersion": "v1", "kind": "InferenceService", "metadata": {"name": "a b"}, "spec": {}}
+    bad = {
+        "apiVersion": "serving.kserve.io/v1beta1",
+        "kind": "InferenceService",
+        "metadata": {"name": "a b"},
+        "spec": {},
+    }
     errors = sb.validate_manifest(bad)
     assert any("predictor" in e for e in errors)
-    assert any("DNS-safe" in e for e in errors)
+    assert any("DNS-1035" in e for e in errors)
 
 
-# ── GWT-3: canary rollout ─────────────────────────────────────────────────────
+# ── GWT-3: canary rollout (Standard mode spec.canary[], KServe v0.20) ──────────
 
 
 def test_gwt3_canary_manifest():
-    m = sb.registry_to_kserve(_JPCP, "Canary", canary_pct=10)
-    assert m["spec"]["predictor"]["canaryTrafficPercent"] == 10
+    canary = sb.ResolvedRef("jpcp", "18", "Canary", "s3://mlflow-artifacts/1/models/m-b/artifacts")
+    m = sb.registry_to_kserve(_JPCP, _REF, canary=canary, canary_pct=10)
+    assert m["spec"]["canary"][0]["trafficPercent"] == 10
     assert sb.validate_manifest(m) == []
 
 
 def test_canary_out_of_range_flagged():
-    m = sb.registry_to_kserve(_JPCP, "Canary", canary_pct=150)
-    assert any("canaryTrafficPercent" in e for e in sb.validate_manifest(m))
+    canary = sb.ResolvedRef("jpcp", "18", "Canary", "s3://b/k")
+    with pytest.raises(sb.RenderError, match="0..100"):
+        sb.registry_to_kserve(_JPCP, _REF, canary=canary, canary_pct=150)
 
 
 # ── GWT-6: verify-before-load ────────────────────────────────────────────────
@@ -121,12 +137,22 @@ def test_compose_backend_deploy_shape():
     assert out["backend"] == "ray-compose"
 
 
+class _Client:
+    def get_model_version_by_alias(self, name, alias):  # pragma: no cover - version given
+        raise AssertionError("deploy passes an explicit version; no alias lookup expected")
+
+    def get_model_version_download_uri(self, name, version):
+        return f"s3://mlflow-artifacts/1/models/{name}-{version}/artifacts"
+
+
 def test_kserve_deploy_generates_manifest(tmp_path):
     reg = tmp_path / "models"
     reg.mkdir()
     import yaml
 
     (reg / "jpcp.yaml").write_text(yaml.safe_dump(_JPCP))
-    backend = sb.KServeK8s(registry_dir=str(reg))
+    backend = sb.KServeK8s(registry_dir=str(reg), client=_Client())
     out = backend.deploy("JPCP", "17", "Production")
     assert out["manifest"]["kind"] == "InferenceService"
+    assert out["manifest"]["metadata"]["labels"]["examlops.io/version"] == "17"
+    assert out["manifest"]["spec"]["predictor"]["model"]["storageUri"].endswith("jpcp-17/artifacts")

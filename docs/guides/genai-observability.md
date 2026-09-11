@@ -58,11 +58,26 @@ energy, and the Green-AI model has a CPU term for it.
 ### Which conventions get emitted
 
 The GenAI conventions are still Development upstream, so this instrumentation pins
-**1.27.0** and honours OpenTelemetry's opt-in rather than chasing renames. Setting
-`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` moves captured content onto the
-structured `gen_ai.input.messages` / `gen_ai.output.messages` attributes; without it the
-flat `gen_ai.prompt` / `gen_ai.completion` attributes keep being emitted. Every span reports
-which set it used in `examlops.semconv.version`.
+**1.27.0** and honours OpenTelemetry's opt-in rather than chasing renames. Without the opt-in
+the 1.27.0 shape is emitted unchanged: `gen_ai.system`, operation names `model` / `agent` /
+`tool`, and flat `gen_ai.prompt` / `gen_ai.completion` for captured content.
+
+Setting `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` switches every GenAI span to
+the current conventions at once:
+
+| | Default (1.27.0) | Opt-in (current) |
+|---|---|---|
+| Provider | `gen_ai.system` | `gen_ai.provider.name` |
+| Engine call (`generate`) | `gen_ai.operation.name=model` | `text_completion` |
+| Chat / embeddings | `chat` / `embeddings` | `chat` / `embeddings` |
+| Agent / tool / workflow | `agent` / `tool` / `workflow` | `invoke_agent` / `execute_tool` / `invoke_workflow` |
+| Span name | `gen_ai.<kind> <model>` | `<operation> <model>` |
+| Captured content | `gen_ai.prompt` / `gen_ai.completion` | `gen_ai.input.messages` / `gen_ai.output.messages` |
+
+The opt-in names are checked against the GenAI attribute registry of the OpenTelemetry
+`semantic-conventions-genai` repository at a pinned commit, because that repository has no tagged
+release. Every span reports which set it used in `examlops.semconv.version`: `1.27.0`, or
+`genai@<commit>` under the opt-in.
 
 Note the GenAI area has **no** `<area>/dup` dual-emit token — unlike the HTTP conventions,
 OTel defines one value that *replaces* the pinned set. Content is therefore emitted under

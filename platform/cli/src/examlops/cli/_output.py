@@ -239,8 +239,34 @@ def print_record(data: dict[str, Any]) -> None:
 # ── Interaction helpers ───────────────────────────────────────────────────────
 
 
+def principal_kind() -> str:
+    """Who drives this invocation — ``"agent"`` or ``"human"`` (ADR 0147 d2).
+
+    An agent runtime marks its workers with ``EXAMLOPS_PRINCIPAL_KIND=agent``; anything else is a
+    human. Stated limit: an agent that shells out with a human's environment is indistinguishable
+    from that human — this marks agents that identify themselves, it does not detect the rest.
+    """
+    import os
+
+    return (
+        "agent" if os.getenv("EXAMLOPS_PRINCIPAL_KIND", "").strip().lower() == "agent" else "human"
+    )
+
+
 def confirm(prompt: str, default: bool = False) -> bool:
-    """Prompt for confirmation — returns True immediately when --yes or --json."""
+    """Prompt for confirmation — auto-yes under ``--yes`` or structured output, for humans only.
+
+    ``-o json`` is an output format, not consent. For a human's script it has always meant "don't
+    prompt", and still does. An **agent** principal never gets implicit consent: it is refused
+    with a structured ``plan_required`` error, because the consent an agent needs is an approved
+    plan (plan/apply, ADR 0147 d2 — USAR I9), not a flag it can set on itself.
+    """
+    if principal_kind() == "agent":
+        error(
+            f"plan_required: refusing to auto-confirm for an agent principal — {prompt}",
+            hint="agent mutations need an approved plan (plan/apply, ADR 0147); a human can run "
+            "this command, or unset EXAMLOPS_PRINCIPAL_KIND for a human-driven script",
+        )
     if yes_mode or json_mode:
         return True
     return typer.confirm(prompt, default=default)

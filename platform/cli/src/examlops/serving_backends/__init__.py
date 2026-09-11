@@ -1,11 +1,15 @@
-"""E1 — Kubernetes-native serving behind a ServingBackend seam (ADR 0015).
+"""E1 — Kubernetes-native serving behind a ServingBackend seam (ADR 0015, refined by ADR 0142).
 
 `exa serve` operations go through a :class:`ServingBackend` interface with two
 implementations: **RayServeCompose** (default, current behaviour unchanged) and
-**KServeK8s**, selected by ``EXAMLOPS_SERVING_BACKEND``. KServe manifests
-(``InferenceService`` / ``LLMInferenceService``) are generated from the per-model YAML
-registry + MLflow alias — no change to model definitions — and the K8s loader runs D3
-verify-before-load. K8s is optional: with no cluster, the Compose path keeps working (R10).
+**KServeK8s**, selected by ``EXAMLOPS_SERVING_BACKEND``. KServe objects are rendered by
+:mod:`examlops.serving.substrates.kserve` from the per-model YAML **and a resolved, immutable
+model version** (:mod:`examlops.serving.substrates.resolve`), and validated offline against the
+pinned KServe CRD schemas (:mod:`examlops.serving.substrates.k8s_schema`). Applying stops at a
+``kubectl --dry-run=server`` check: nothing is applied to a cluster yet (ADR 0142 d6, I3).
+K8s is optional: with no cluster, the Compose path keeps working (R10).
+
+This seam and :mod:`examlops.llm_endpoints` merge into one ``Substrate`` seam in USAR I1.
 """
 
 from __future__ import annotations
@@ -14,8 +18,19 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-_API_VERSION = "serving.kserve.io/v1beta1"
-_LLM_API_VERSION = "serving.kserve.io/v1alpha1"
+from examlops.serving.substrates import k8s_schema, kserve
+from examlops.serving.substrates.resolve import RenderError, ResolvedRef, resolve_ref
+
+__all__ = [
+    "KServeK8s",
+    "RayServeCompose",
+    "RenderError",
+    "ResolvedRef",
+    "ServingBackend",
+    "registry_to_kserve",
+    "select_backend",
+    "validate_manifest",
+]
 
 
 @runtime_checkable
@@ -27,94 +42,34 @@ class ServingBackend(Protocol):
     def status(self, model: str) -> dict[str, Any]: ...
 
 
-# ── Manifest generation (pure, schema-shaped) ─────────────────────────────────
-
-
-def _is_llm(model_yaml: dict[str, Any]) -> bool:
-    task = str(model_yaml.get("task_type", "")).lower()
-    engine = (model_yaml.get("engine") or {}).get("engine")
-    return "llm" in task or "generation" in task or engine in ("vllm", "sglang")
+# ── Manifest generation ───────────────────────────────────────────────────────
 
 
 def registry_to_kserve(
-    model_yaml: dict[str, Any], alias: str, *, canary_pct: int | None = None
+    model_yaml: dict[str, Any],
+    resolved: ResolvedRef,
+    *,
+    canary: ResolvedRef | None = None,
+    canary_pct: int | None = None,
 ) -> dict[str, Any]:
-    """Generate a KServe InferenceService (or LLMInferenceService) from a model's YAML (R3).
+    """Render a model's YAML as a KServe ``InferenceService`` or ``LLMInferenceService``.
 
-    The manifest is structurally schema-valid (validated by :func:`validate_manifest`, and
-    by ``kubectl --dry-run``/kubeconform in CI). ``canary_pct`` sets a canaryTrafficPercent
-    on the predictor for a rollout (R4/GWT-3).
+    ``resolved`` is the immutable version to serve (:func:`resolve_ref`). An alias string is
+    refused: rendering one produced ``mlflow://`` URIs no KServe pod can load, naming a version
+    that moves while the cluster object does not (ADR 0142 d3).
     """
-    name = str(model_yaml["name"]).lower()
-    llm = _is_llm(model_yaml)
-    storage_uri = f"mlflow://models/{name}@{alias}"
-
-    predictor: dict[str, Any] = {"model": {"storageUri": storage_uri, "protocolVersion": "v2"}}
-    if llm:
-        engine = model_yaml.get("engine") or {}
-        predictor = {
-            "model": {
-                "storageUri": storage_uri,
-                "modelFormat": {"name": engine.get("engine", "vllm")},
-                "args": _llm_args(engine),
-            }
-        }
-    if canary_pct is not None:
-        predictor["canaryTrafficPercent"] = int(canary_pct)
-
-    manifest = {
-        "apiVersion": _LLM_API_VERSION if llm else _API_VERSION,
-        "kind": "LLMInferenceService" if llm else "InferenceService",
-        "metadata": {
-            "name": name,
-            "labels": {
-                "examlops.io/model": name,
-                "examlops.io/alias": alias,
-                "app.kubernetes.io/managed-by": "examlops",
-            },
-        },
-        "spec": {"predictor": predictor},
-    }
-    return manifest
-
-
-def _llm_args(engine: dict[str, Any]) -> list[str]:
-    """Render the vLLM argv for a KServe manifest — via the one shared renderer (R-V6).
-
-    Delegating to ``engines.to_vllm_args`` is what keeps Kubernetes and HPC honest: the
-    same ``engine:`` block produces the same flags on both, including the multimodal media
-    limits, so a VLM cannot end up with its SSRF/DoS guards on one substrate and not the
-    other. This used to emit four hand-transcribed flags and silently ignored the rest.
-    """
-    from examlops.engines.config import EngineConfig, to_vllm_args
-
-    return to_vllm_args(EngineConfig.from_dict(engine))
+    if not isinstance(resolved, ResolvedRef):
+        raise TypeError(
+            "registry_to_kserve needs a ResolvedRef (resolve the alias first with "
+            "examlops.serving.substrates.resolve.resolve_ref), not "
+            f"{type(resolved).__name__} {resolved!r}"
+        )
+    return kserve.render(model_yaml, resolved, canary=canary, canary_pct=canary_pct)
 
 
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
-    """Structural validation (the kubeconform/kubectl-dry-run seam) — returns errors (R6)."""
-    errors: list[str] = []
-    for key in ("apiVersion", "kind", "metadata", "spec"):
-        if key not in manifest:
-            errors.append(f"missing top-level '{key}'")
-    kind = manifest.get("kind")
-    if kind not in ("InferenceService", "LLMInferenceService"):
-        errors.append(f"unexpected kind '{kind}'")
-    meta = manifest.get("metadata", {})
-    if not meta.get("name"):
-        errors.append("metadata.name is required")
-    if not isinstance(meta.get("name", ""), str) or " " in meta.get("name", ""):
-        errors.append("metadata.name must be a DNS-safe string")
-    predictor = manifest.get("spec", {}).get("predictor")
-    if not predictor or "model" not in predictor:
-        errors.append("spec.predictor.model is required")
-    else:
-        if not predictor["model"].get("storageUri"):
-            errors.append("spec.predictor.model.storageUri is required")
-    pct = predictor.get("canaryTrafficPercent") if predictor else None
-    if pct is not None and not (0 <= int(pct) <= 100):
-        errors.append("canaryTrafficPercent must be 0..100")
-    return errors
+    """Structural errors against the pinned KServe CRD schema (empty = valid) — ADR 0142 d4."""
+    return k8s_schema.validate(manifest)
 
 
 # ── Backends ──────────────────────────────────────────────────────────────────
@@ -137,38 +92,54 @@ class RayServeCompose:
 
 
 class KServeK8s:
-    """KServe backend — generates + validates manifests and (in a cluster) applies them.
+    """KServe backend — resolves, renders and validates manifests; applies only as a dry run.
 
-    D3 verify-before-load is invoked by the loader before serving (R9). With no cluster,
-    ``apply`` degrades to returning the validated manifest so generation stays exercisable.
+    :meth:`verify_before_load` is the D3 hook for a future loader; no rendered manifest invokes
+    it yet (the verify-before-load init container is USAR I3, spec-usar-1 R-SUB-20).
     """
 
     name = "kserve-k8s"
 
-    def __init__(self, registry_dir: str | None = None) -> None:
+    def __init__(self, registry_dir: str | None = None, client: Any = None) -> None:
         from examlops.usecase import models_dir
 
         # Per-model YAML lives in the active use-case pack (ADR 0094), resolved from the env.
         self.registry_dir = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
+        self._client = client  # MLflow client; None ⇒ mlflow.MlflowClient() at resolve time
 
     def _load_yaml(self, model: str) -> dict[str, Any]:
         import yaml
 
         path = Path(self.registry_dir) / f"{model.lower()}.yaml"
-        return yaml.safe_load(path.read_text())
+        loaded: dict[str, Any] = yaml.safe_load(path.read_text())
+        return loaded
 
-    def deploy(self, model: str, version: str, alias: str) -> dict[str, Any]:
-        manifest = registry_to_kserve(self._load_yaml(model), alias)
+    def _resolve(self, model: str, model_yaml: dict[str, Any], **kw: Any) -> ResolvedRef:
+        project = str(model_yaml.get("project") or "default")
+        return resolve_ref(model, project=project, client=self._client, **kw)
+
+    def _checked(self, manifest: dict[str, Any], what: str) -> dict[str, Any]:
         errors = validate_manifest(manifest)
         if errors:
-            raise ValueError(f"invalid KServe manifest for {model}: {errors}")
+            raise ValueError(f"invalid {what}: {errors}")
+        return manifest
+
+    def deploy(self, model: str, version: str, alias: str) -> dict[str, Any]:
+        model_yaml = self._load_yaml(model)
+        ref = self._resolve(model, model_yaml, alias=alias, version=version)
+        manifest = self._checked(
+            registry_to_kserve(model_yaml, ref), f"KServe manifest for {model}"
+        )
         return {"backend": self.name, "manifest": manifest, "applied": _kubectl_apply(manifest)}
 
     def rollout(self, model: str, alias: str, canary_pct: int) -> dict[str, Any]:
-        manifest = registry_to_kserve(self._load_yaml(model), alias, canary_pct=canary_pct)
-        errors = validate_manifest(manifest)
-        if errors:
-            raise ValueError(f"invalid canary manifest for {model}: {errors}")
+        model_yaml = self._load_yaml(model)
+        stable = self._resolve(model, model_yaml, alias="Production")
+        canary = self._resolve(model, model_yaml, alias=alias)
+        manifest = self._checked(
+            registry_to_kserve(model_yaml, stable, canary=canary, canary_pct=canary_pct),
+            f"canary manifest for {model}",
+        )
         return {"backend": self.name, "manifest": manifest, "applied": _kubectl_apply(manifest)}
 
     def status(self, model: str) -> dict[str, Any]:
@@ -193,7 +164,10 @@ class KServeK8s:
 
 
 def _kubectl_apply(manifest: dict[str, Any]) -> str:  # pragma: no cover - needs a cluster
-    """Apply a manifest via kubectl if a cluster is reachable; else report dry-run only."""
+    """Validate ``manifest`` with a *server-side dry run* when a cluster is reachable.
+
+    Nothing is ever applied here: the real apply (plan-gated, audited) is USAR I3.
+    """
     import json
     import shutil
     import subprocess
@@ -220,4 +194,5 @@ def select_backend(name: str | None = None) -> ServingBackend:
     """Select the serving backend from the arg or ``EXAMLOPS_SERVING_BACKEND`` (default compose)."""
     chosen = (name or os.getenv("EXAMLOPS_SERVING_BACKEND") or "ray-compose").lower()
     cls = _BACKENDS.get(chosen, RayServeCompose)
-    return cls()
+    backend: ServingBackend = cls()
+    return backend

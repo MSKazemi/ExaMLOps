@@ -3,12 +3,14 @@
 One OpenAI-compatible gateway sits in front of every LLM backend — Anthropic, Ollama,
 self-hosted vLLM/SGLang (E2) — with **weighted routing + failover**, per-tenant/project
 **virtual keys** (allow-list + budget), per-call **C1 span + FinOps cost**, and a B3
-semantic-cache hook. All LLM callers (Skipper, the C2 judge, RAG, served LLMs) go through
-the gateway client.
+semantic-cache hook. `exa gateway chat`, RAG (`exa rag query`) and the challenger judge
+(`exa challenger`) go through the gateway client. **Skipper does not yet:** it builds its model
+client directly from its own configuration, so gateway keys, budgets, guardrails and per-call cost
+do not apply to its calls. `exa serve llm chat` also talks to an endpoint directly, by design.
 
-Design: ADR 0010 · spec `design/vision/specs/B2-model-gateway.md`. The production gateway
-is **LiteLLM**; `examlops.gateway` is the client + policy layer, and works standalone
-(backends are callables) so routing/governance/cost logic runs with no external service.
+Design: ADR 0010 · spec `design/vision/specs/B2-model-gateway.md`. `examlops.gateway` is an
+in-process client + policy layer; no standalone gateway service ships with the stack. It works
+standalone (backends are callables), so routing/governance/cost logic runs with no external service.
 
 ## Routing & failover
 
