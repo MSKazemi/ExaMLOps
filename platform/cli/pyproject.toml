@@ -39,7 +39,7 @@ dependencies = [
     # arrive transitively through typer; typer 0.27 declares no click dependency at all, so a
     # clean `pip install examlops` produced an `exa` that died on `import click` before printing
     # anything. Declared here because this package imports it, transitive or not.
-    "click>=8.1",
+    "click>=8.5.0",
     "pyyaml>=6.0",
     "tomli-w>=1.0",
     "prometheus-client>=0.20",

@@ -19,7 +19,7 @@ dependencies = [
     # package inside the ray-serving image does not upgrade the FastAPI that ray 2.55.0's
     # @serve.ingress must cloudpickle. fastapi>=0.137 has an unpicklable _thread.lock and
     # crash-loops the serve container ("cannot pickle '_thread.lock' object"). 0.136.x works.
-    "fastapi>=0.100.0,<0.137",
+    "fastapi>=0.141.1,<0.142",
 ]
 
 [tool.setuptools.packages.find]
