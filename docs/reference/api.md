@@ -243,8 +243,6 @@ Model-detail-2.0 tabs for one model (case-insensitive `name`). Requires `viewer`
 — `cost` (runs/gpu_hours/cost_usd), `drift` (samples/mean_prediction/latest), `traffic`
 (configured/rules/updated_at), and the embedded `promotion` gate.
 
-REPLACE the section from `### `GET /api/v1/mlops/promotion/{name}` (MLOps console, F9)` up to (not incl.) the next `---` line WITH:
-
 ### `GET /api/v1/mlops/promotion/{name}` (MLOps console, F9)
 
 Guided-promotion gate for one model. Requires `viewer`.
