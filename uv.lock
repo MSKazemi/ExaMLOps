@@ -1544,7 +1544,7 @@ wheels = [
 
 [[package]]
 name = "examlops"
-version = "0.56.0"
+version = "0.57.0"
 source = { editable = "platform/cli" }
 dependencies = [
     { name = "click" },
@@ -1686,7 +1686,7 @@ provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm"
 
 [[package]]
 name = "examlops-pipelines"
-version = "0.56.0"
+version = "0.57.0"
 source = { editable = "pipelines" }
 dependencies = [
     { name = "fastapi" },
@@ -1713,7 +1713,7 @@ requires-dist = [
 
 [[package]]
 name = "examlops-serving"
-version = "0.56.0"
+version = "0.57.0"
 source = { editable = "serving" }
 dependencies = [
     { name = "examlops-pipelines" },
@@ -1734,7 +1734,7 @@ requires-dist = [
 
 [[package]]
 name = "examlops-workspace"
-version = "0.56.0"
+version = "0.57.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },

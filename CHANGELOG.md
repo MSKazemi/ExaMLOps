@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-09-11
+
 ### Fixed — the install bundle pulls MinIO from quay.io; MinIO left Docker Hub
 
 - MinIO removed `minio/minio` and `minio/mc` from Docker Hub on 2026-09-11. Every published
