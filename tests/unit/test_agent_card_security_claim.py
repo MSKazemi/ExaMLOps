@@ -9,6 +9,12 @@ issuer JWKS", which is a claim made to peers about a check that never runs.
 The second test is the one that matters: it is wired to the actual caller count, so the day someone
 enforces OIDC it fails and asks for the stronger wording back, rather than leaving the card
 permanently understated.
+
+Scope (ADR 0120, 2026-09-10): the card describes the **MCP/A2A surface** (`exa mcp serve`), so only
+verifier callers inside `examlops/mcp/` count. The control plane and dashboard now verify IdP tokens
+through `examlops.iam`, but that does not make the MCP HTTP transport authenticated — it still has no
+auth and refuses to bind beyond loopback — and a card that borrowed the control plane's enforcement
+would make exactly the false claim this guard exists to stop.
 """
 
 import os
@@ -48,9 +54,9 @@ def _verifier_callers() -> list[str]:
             "verify_bearer",
             "-e",
             "oidc.verify_token",
-            str(REPO / "platform"),
-            str(REPO / "pipelines"),
-            str(REPO / "serving"),
+            "-e",
+            "verify_access_token",
+            str(SRC / "examlops" / "mcp"),
         ],
         capture_output=True,
         text=True,
@@ -70,7 +76,9 @@ def _verifier_callers() -> list[str]:
         code = ln.split(":", 2)[2] if ln.count(":") >= 2 else ln
         if code.strip().startswith(("#", '"', "'")):
             continue
-        if re.search(r"(verify_bearer|verify_token)\s*\(|import[^\n]*verify_bearer", code):
+        if re.search(
+            r"(verify_bearer|verify_token|verify_access_token)\s*\(|import[^\n]*verify_", code
+        ):
             keep.append(ln)
     return keep
 

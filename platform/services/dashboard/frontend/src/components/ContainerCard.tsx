@@ -1,10 +1,11 @@
 import { useState } from "react"
 import { LogPanel } from "./LogPanel"
 import type { ContainerInfo } from "../lib/containers"
+import type { Role } from "../lib/auth"
 
 interface Props {
   container: ContainerInfo
-  role: "viewer" | "admin"
+  role: Role
   url?: string
   description?: string
   onAction?: (name: string, action: "start" | "stop" | "restart") => void

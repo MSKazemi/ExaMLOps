@@ -206,6 +206,7 @@ nav:
           - Champion-challenger: guides/shadow-champion-challenger.md
           - Fairness: guides/fairness.md
       - Governance & security:
+          - Identity federation (ADR 0120): guides/identity-federation.md
           - RBAC & multi-tenancy: guides/rbac-multi-tenancy.md
           - Secrets: guides/secrets.md
           - Supply-chain security: guides/supply-chain-security.md

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     dashboard_admin_password: str = Field(...)
     dashboard_jwt_secret: str = Field(...)
     dashboard_jwt_ttl_hours: int = 12
+    # ── Organisation SSO (ADR 0120; trust file in EXAMLOPS_IAM_CONFIG) ──
+    # Local break-glass passwords. Turn off once the data center's SSO works.
+    dashboard_local_login: bool = True
+    # Secure + `__Host-` session cookie. Browsers accept it over https:// and http://localhost only;
+    # set false for a deployment reached over plain http://<host> (e.g. an isolated lab network).
+    dashboard_session_cookie_secure: bool = True
+    # SSO session lifetime (hours); the IdP's own session governs re-authentication beyond it.
+    dashboard_sso_session_hours: int = 8
 
     # ── GitLab ModelZoo integration ──
     gitlab_url: str = "https://gitlab.com"

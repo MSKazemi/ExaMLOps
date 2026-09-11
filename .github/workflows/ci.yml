@@ -377,7 +377,7 @@ jobs:
         run: |
           uv venv --clear .venv
           uv pip install fastapi "uvicorn[standard]" prometheus_client pyyaml
-          uv pip install -e platform/cli
+          uv pip install -e "platform/cli[oidc]"  # PyJWT — examlops.iam token verification (ADR 0120)
           uv pip install pytest pytest-asyncio httpx
 
       - name: Control plane tests

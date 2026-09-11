@@ -113,11 +113,11 @@ def _security_schemes() -> dict[str, Any]:
     if issuer:
         scheme: dict[str, Any] = {
             "type": "openIdConnect",
-            # Do not claim verification this platform does not perform. `examlops.oidc`
-            # implements RS256/JWKS validation, but nothing calls `verify_bearer` — no
-            # server currently checks an IdP token, so the card must say what the token
-            # is *for*, not that it is checked. Restore the stronger wording the day a
-            # request path actually calls the verifier.
+            # Do not claim verification this surface does not perform. The control plane
+            # and dashboard verify IdP tokens (`examlops.iam`, ADR 0120), but the MCP HTTP
+            # transport this card describes has no authentication (loopback-only), so the
+            # card must say what the token is *for*, not that it is checked. Restore the
+            # stronger wording the day `examlops/mcp` actually calls the verifier.
             "description": (
                 "IdP-issued OIDC access token, expected by the configured issuer. "
                 "NOTE: token verification is not yet enforced by this deployment."

@@ -12,7 +12,7 @@ tenant's resources unless it is a cross-tenant admin.
 from __future__ import annotations
 
 from auth import require_role
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 
 # ── capability catalogue ──────────────────────────────────────────────────────
 
@@ -48,17 +48,27 @@ PLATFORM_MANAGE = (
     "platform.manage"  # Platform Ops — cost/provider/knob writes via examlops.platform_admin
 )
 
-# Actions that additionally require step-up/MFA (F15 R6 / F16). **Nothing enforces this yet, and
-# nothing consumes it either** — the stated justification (the UI prompts, the audit trail records
-# it) is not true today: no component reads `requiresStepUp`, no request path calls
-# `requires_step_up`, and no audit event carries a step-up field. It is a placeholder for the
-# OIDC/OpenFGA migration, kept because the *set* is the decision worth recording — which actions
-# are high-risk enough to warrant a second factor. Keep it honest: do not describe it as enforced
-# anywhere, and keep it identical to the frontend's `STEP_UP` (guarded).
+# Actions that additionally require step-up/MFA (F15 R6 / F16, RFC 9470). Enforced by
+# `iam_gate.enforce` on every `require_capability` check **when the deployment opts in**: a
+# federated user's center has a `step_up` section in the trust file (ADR 0120), or
+# `EXAMLOPS_IAM_STEP_UP=enforce` for local password sessions. Opted in, the BFF answers 401
+# `insufficient_user_authentication` with `acr_values`/`max_age` and the SPA re-authenticates; not
+# opted in, these are permitted on the capability check alone. Keep identical to the frontend's
+# `STEP_UP` (guarded).
 STEP_UP_CAPABILITIES: frozenset[str] = frozenset({MODEL_PROMOTE, SECRET_REVEAL})
 
 _VIEWER_CAPS: frozenset[str] = frozenset({VIEW, SEARCH})
-_ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
+# `operator` (ADR 0120): runs the model lifecycle, holds none of the platform's keys.
+_OPERATOR_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
+    {
+        MODEL_PROMOTE,
+        APPROVAL_DECIDE,
+        RETRAIN_TRIGGER,
+        DRIFT_BASELINE,
+        TRAFFIC_MANAGE,
+    }
+)
+_ADMIN_CAPS: frozenset[str] = _OPERATOR_CAPS | frozenset(
     {
         MODEL_PROMOTE,
         APPROVAL_DECIDE,
@@ -88,6 +98,7 @@ _ADMIN_CAPS: frozenset[str] = _VIEWER_CAPS | frozenset(
 
 _CAPS_BY_ROLE: dict[str, frozenset[str]] = {
     "viewer": _VIEWER_CAPS,
+    "operator": _OPERATOR_CAPS,
     "admin": _ADMIN_CAPS,
 }
 
@@ -106,16 +117,17 @@ def deny_reason(role: str, capability: str) -> str:
     """Human explanation for a denied capability (F15 R3 — never a silent dead control)."""
     if can(role, capability):
         return ""
-    if capability in _ADMIN_CAPS and role == "viewer":
+    if capability in _OPERATOR_CAPS and role == "viewer":
+        return "Requires the operator or admin role."
+    if capability in _ADMIN_CAPS and role in {"viewer", "operator"}:
         return "Requires the admin role."
     return f"Your role ('{role}') does not permit '{capability}'."
 
 
 def requires_step_up(capability: str) -> bool:
-    """Whether a capability is *designated* as needing step-up/MFA (F15 R6).
+    """Whether a capability needs step-up/MFA when the deployment opts in (F15 R6, RFC 9470).
 
-    A designation, not a gate: the BFF permits these actions today on the capability check alone.
-    Say "designated", never "required", until a request path actually calls this.
+    `iam_gate.enforce` is the request-path caller; see `STEP_UP_CAPABILITIES` for when it bites.
     """
     return capability in STEP_UP_CAPABILITIES
 
@@ -134,6 +146,7 @@ def principal_from_claims(claims: dict) -> dict:
         "sub": claims.get("sub", role or "anonymous"),
         "role": role,
         "tenant": claims.get("tenant", "default"),
+        "idp": claims.get("idp"),
         "capabilities": capabilities_for(role),
     }
 
@@ -142,15 +155,25 @@ def principal_from_claims(claims: dict) -> dict:
 
 
 def require_capability(capability: str):
-    """FastAPI dependency: 403 unless the caller's role holds ``capability`` (F15 R2)."""
+    """FastAPI dependency: 403 unless the caller's role holds ``capability`` (F15 R2).
 
-    def _dep(claims: dict = Depends(require_role("viewer"))) -> dict:
+    Then, via `iam_gate.enforce` (ADR 0120): RFC 9470 step-up for designated capabilities, and for
+    a federated user the data center's own PDP, which may veto what the role allows.
+    """
+
+    def _dep(
+        claims: dict = Depends(require_role("viewer")),
+        request: Request = None,  # type: ignore[assignment]  # injected; None when called directly
+    ) -> dict:
         role = claims.get("role", "")
         if not can(role, capability):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=deny_reason(role, capability),
             )
+        from iam_gate import enforce  # noqa: PLC0415 — keeps this module import-light
+
+        enforce(capability, claims, request)
         return claims
 
     return _dep
@@ -163,12 +186,14 @@ def tenant_visible(principal: dict, resource_tenant: str | None) -> bool:
     """Whether ``principal`` may see a resource in ``resource_tenant`` (default-deny).
 
     Same-tenant is always visible; a resource with no tenant is treated as ``"default"``. A
-    cross-tenant **admin** may see other tenants (the multi-tenant-admin case, F15 R4).
+    cross-tenant **admin** may see other tenants (the multi-tenant-admin case, F15 R4) — but only a
+    *platform* admin: an admin whose identity comes from a data center's IdP administers that
+    center's tenant and no other (ADR 0120 — a center's admin is not an admin of another center).
     """
     rt = resource_tenant or "default"
     if principal.get("tenant") == rt:
         return True
-    return principal.get("role") == "admin"
+    return principal.get("role") == "admin" and not principal.get("idp")
 
 
 def assert_tenant_access(principal: dict, resource_tenant: str | None) -> None:

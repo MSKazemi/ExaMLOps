@@ -81,6 +81,7 @@ _MUTATING_VERBS = {"post", "put", "patch", "delete"}
 _VIEWER_WRITABLE = {
     ("auth.py", "login"),  # pre-auth by definition
     ("auth.py", "logout"),
+    ("sso.py", "logout"),  # ADR 0120: clears the caller's own SSO session cookie — nothing else
     ("alerts.py", "ack"),  # operational acknowledgement, recorded with the actor
     ("collab.py", "add_comment"),  # F22 collaboration is a viewer affordance
     ("collab.py", "create_snapshot"),

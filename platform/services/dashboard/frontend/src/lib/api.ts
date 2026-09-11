@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { clearAuth, getToken, type Role } from './auth'
+import { clearAuth, CSRF_HEADERS, getAuth, getToken, ssoLoginUrl, type Role } from './auth'
 import { ApiError, parseProblem } from './errors'
 import {
   listContainers,
@@ -35,20 +35,53 @@ export interface ModelInfo {
   status: string
 }
 
+/**
+ * What to do with a 401/403 (ADR 0120). Returns true when the browser is being navigated away.
+ *
+ * - RFC 9470 step-up (`insufficient_user_authentication`): an SSO session goes back through its
+ *   IdP with `step_up`; a password session re-logs in (which resets its auth time).
+ * - SSO session, plain 401 (expired, or its center left the trust file): re-authenticate at the
+ *   IdP — usually silent, because the IdP still has its own session.
+ * - SSO session, 403: an authorization answer (role, capability, the center's PDP), not a broken
+ *   session — surfaced as an error, never a logout (which would loop straight back in).
+ * - Password session: log out and reload, as before.
+ */
+export function handleAuthFailure(res: Response): boolean {
+  const blob = getAuth()
+  const stepUp = (res.headers.get('WWW-Authenticate') ?? '').includes('insufficient_user_authentication')
+  if (blob?.via === 'sso' && blob.idp) {
+    if (res.status === 401) {
+      clearAuth()
+      window.location.assign(ssoLoginUrl(blob.idp, { stepUp }))
+      return true
+    }
+    return false
+  }
+  clearAuth()
+  window.location.reload()
+  return true
+}
+
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken()
   const res = await fetch(path, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...CSRF_HEADERS,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
   })
   if (res.status === 401 || res.status === 403) {
-    clearAuth()
-    window.location.reload()
-    throw new ApiError(res.status, { title: res.status === 403 ? 'Forbidden' : 'Unauthorized' })
+    if (handleAuthFailure(res)) {
+      throw new ApiError(res.status, { title: res.status === 403 ? 'Forbidden' : 'Unauthorized' })
+    }
+    let body: unknown = null
+    try {
+      body = await res.json()
+    } catch { /* non-JSON error body */ }
+    throw new ApiError(res.status, parseProblem(res.status, body))
   }
   if (!res.ok) {
     let body: unknown = null

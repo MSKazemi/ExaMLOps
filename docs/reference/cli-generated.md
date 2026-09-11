@@ -288,6 +288,65 @@ Verify every telemetry anchor against its side table (ADR 0110 decision 5). Exit
 
 Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4).
 
+## `exa auth`
+
+Sign in with your data center's identity provider; inspect federation & authorization
+
+### `exa auth decide`
+
+Ask the platform's authorizer — tenant, local policy, the center's PDP — about an action.
+
+- `--resource-type` — Resource type
+- `--resource-id` — Resource id
+- `--tenant` — Resource tenant (default: yours)
+- `--project` — Resource project
+- `--token-file` — File holding the token ('-' = stdin; default: your session)
+
+### `exa auth login`
+
+Sign in with your organisation (Device Authorization Grant, RFC 8628).
+
+- `--provider, -p` — A center named in the platform's trust configuration
+- `--issuer` — OIDC issuer URL (instead of --provider)
+- `--client-id` — Public OAuth client id of the CLI
+- `--oidc-agent` — Delegate to an oidc-agent account (tokens never stored here)
+
+### `exa auth logout`
+
+Forget this context's session (and revoke its refresh token where the IdP supports it).
+
+### `exa auth providers`
+
+List the identity providers (data centers) this platform trusts.
+
+### `exa auth status`
+
+Show whether this config context is signed in, to which IdP, and until when.
+
+### `exa auth token`
+
+Print a current access token (refreshed if needed) for scripts and curl.
+
+- `--header` — Print as an Authorization header
+
+### `exa auth validate`
+
+Validate a trust file; exit 1 on any error (a CI gate for identity config).
+
+- `--file, -f` — Trust file path (default: $EXAMLOPS_IAM_CONFIG)
+- `--check-discovery` — Also fetch each issuer's discovery document
+
+### `exa auth verify`
+
+Verify a token against the trust file and show the principal it maps to.
+
+- `--token-file` — File holding the token ('-' = stdin; default: your session)
+- `--provider` — Provider for an opaque token
+
+### `exa auth whoami`
+
+Who the platform sees: your verified principal (role, tenant, groups) when it can check.
+
 ## `exa autopilot`
 
 Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)

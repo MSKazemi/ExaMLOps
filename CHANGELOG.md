@@ -5,6 +5,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Identity federation: sign in with your data center (ADR 0120)
+
+ExaMLOps now federates with the identity provider and authorization system the hosting data
+center already runs, instead of relying on shared passwords and static tokens.
+
+- **Trust file** (`EXAMLOPS_IAM_CONFIG`, example in `platform/infra/iam/`): one entry per center,
+  with issuer, audience, keys, group→role rules, tenant binding, clients, step-up policy and PDP.
+  Validation is strict and fails closed. `exa auth validate` works as a CI gate, and the file is
+  re-read on change.
+- **One token verifier for every service** (`examlops.iam`), following RFC 9068, 8725, 9700 and
+  7662. It checks exact issuers against a trusted list, uses only asymmetric algorithms, requires
+  the audience, refetches JWKS on rotation (rate-limited), verifies discovery `issuer`, and
+  introspects opaque tokens only at their own center. Identity is `<provider>:<sub>`, and the tenant
+  is bound to the issuer. `examlops.oidc` now uses this verifier.
+- **Roles from what centers already manage.** Keycloak groups and roles, LDAP DNs, AARC-G069
+  entitlements (Helmholtz ID, EGI Check-in) and OAuth scopes all map to roles. Rules can be scoped
+  to projects, and a role can be capped by identity assurance. A user who maps to no role is
+  refused (403) and never falls back to viewer.
+- **New `operator` role** between viewer and admin. It covers retrain, promote, approvals, drift
+  baselines and traffic, but not secrets, config or service control.
+- **Delegated authorization.** Tenant isolation always applies first, then the platform's policy,
+  then the center's own PDP via **OpenID AuthZEN 1.0** or **OPA**. Any deny wins, a PDP outage
+  denies, only permits are cached, and every deny is audited as `authz_denied`.
+- **Dashboard SSO as a backend-for-frontend (RFC 10017).** It uses Authorization Code + PKCE
+  S256, `state`/`nonce` and the RFC 9207 `iss` check. The session lives in an `HttpOnly; Secure;
+  SameSite=Strict` `__Host-` cookie, cookie writes need a same-origin proof, and no token reaches
+  JavaScript. API clients can also send IdP bearer tokens. Removing a center from the trust file ends its
+  sessions. The login page shows "Sign in with <center>", and `DASHBOARD_LOCAL_LOGIN=false`
+  retires the shared passwords.
+- **Control plane** accepts federated tokens alongside static credentials. `viewer` maps to `read`
+  and `operator`/`admin` to `write`, and the center's PDP can veto any route. An invalid trust file
+  is reported in `/health`.
+- **`exa auth`** — `login` (device grant RFC 8628, suitable for headless HPC login nodes, or
+  `--oidc-agent`), `status`, `whoami`, `token`, `logout` (RFC 7009 revocation), `providers`,
+  `validate`, `verify`, `decide`. After login, every `exa` call runs as the user.
+- **Step-up (RFC 9470)** for model promotion and secret reveal, opt-in per center (`step_up`) or
+  via `EXAMLOPS_IAM_STEP_UP=enforce`.
+- **Reference broker for LDAP-only sites.** Keycloak 26.7.3 (realm with dashboard and CLI clients)
+  plus OPA 1.20.2 with an example policy (`platform/infra/iam/docker-compose.iam.yml`).
+- **Dependencies:** PyJWT ≥ 2.13 (dashboard 2.13.0). The control-plane image and CI jobs now
+  install the `oidc` extra.
+- Tests: `test_iam_core.py` (57), `test_cli_auth.py` (6), control plane
+  `test_identity_federation.py` (10), dashboard `test_sso_federation.py` (14), frontend AuthGate (7) and
+  auth-failure (4). A live suite against real Keycloak and OPA,
+  `tests/integration/test_iam_keycloak_live.py` (5), is opt-in.
+- Guide: `docs/guides/identity-federation.md`.
+
 ### Security — MLflow 3.16: fixes an unauthenticated SSRF (critical) and a pickle-safety bypass
 
 - **mlflow 3.11.1 → 3.16.0 in all six places at once**: `uv.lock`, the three workspace

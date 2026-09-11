@@ -206,6 +206,9 @@ services:
       # No insecure default: unset/placeholder tokens fail closed (write endpoints 503).
       # Set CONTROL_PLANE_TOKEN in .env to enable POST /retrain (item 0.8 / QW6).
       CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      # Identity federation (ADR 0120): the trust file listing the data centers' IdPs, as a path
+      # INSIDE the container — conventionally /state/config/identity-providers.yaml. Unset ⇒ off.
+      EXAMLOPS_IAM_CONFIG: ${EXAMLOPS_IAM_CONFIG:-}
       # Allowed-hosts scoping (item 0.8): "*"=dev; set a comma-separated allow-list in prod.
       CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-*}
       PREFECT_API_URL: http://orchestrator:4200/api
@@ -501,6 +504,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
       DASHBOARD_VIEWER_PASSWORD: ${DASHBOARD_VIEWER_PASSWORD:?must be set in .env}
       DASHBOARD_ADMIN_PASSWORD:  ${DASHBOARD_ADMIN_PASSWORD:?must be set in .env}
+      # Organisation SSO (ADR 0120) — see docs/guides/identity-federation.md.
+      EXAMLOPS_IAM_CONFIG: ${EXAMLOPS_IAM_CONFIG:-}
+      DASHBOARD_LOCAL_LOGIN: ${DASHBOARD_LOCAL_LOGIN:-true}
+      DASHBOARD_SESSION_COOKIE_SECURE: ${DASHBOARD_SESSION_COOKIE_SECURE:-true}
+      DASHBOARD_SSO_SESSION_HOURS: ${DASHBOARD_SSO_SESSION_HOURS:-8}
       DASHBOARD_JWT_SECRET:      ${DASHBOARD_JWT_SECRET:?must be set in .env}
       DASHBOARD_JWT_TTL_HOURS:   ${DASHBOARD_JWT_TTL_HOURS:-12}
       DASHBOARD_SECRET_KEY:      ${DASHBOARD_SECRET_KEY:?must be set in .env}

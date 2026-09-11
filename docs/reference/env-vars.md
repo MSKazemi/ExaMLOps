@@ -114,6 +114,30 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_POSTGRES_POOL_MIN` / `EXAMLOPS_POSTGRES_POOL_MAX` | `1` / `10` | Pool size per `(dsn, schema)` per process. `EXAMLOPS_POSTGRES_POOL=0` opts out of pooling entirely. |
 | `EXAMLOPS_OIDC_JWKS` | unset | JWKS for RS256 validation — a URL, or inline JSON. |
 | `EXAMLOPS_OIDC_TENANT_CLAIM` / `EXAMLOPS_OIDC_SUBJECT_CLAIM` | provider defaults | Which claim carries the tenant / the subject. |
+| `EXAMLOPS_OIDC_DEFAULT_ROLE` | unset | Legacy single-issuer mode only: the platform role (`viewer`/`operator`/`admin`) a valid token gets when none of its groups map to one. Unset ⇒ such a user is authenticated but not authorized. |
+
+---
+
+## Identity federation & delegated authorization (ADR 0120)
+
+ExaMLOps federates with the identity provider and authorization service the hosting data center
+already runs. Guide: [Identity federation](../guides/identity-federation.md).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_IAM_CONFIG` | unset | Path to the **trust file** (`identity-providers.yaml`): one entry per trusted center — issuer, audience, keys, claim→role mapping, tenant binding, the center's PDP. Unset ⇒ the legacy `EXAMLOPS_OIDC_*` single issuer, or federation off. Re-read when it changes on disk. Must be set on the dashboard **and** the control plane. |
+| `EXAMLOPS_IAM_JWKS_TTL` | `3600` | Seconds a center's discovery document and JWKS stay cached. |
+| `EXAMLOPS_IAM_JWKS_MIN_REFRESH` | `60` | Minimum seconds between forced JWKS refetches on an unknown `kid` — picks up key rotation without letting random-`kid` tokens hammer the IdP. |
+| `EXAMLOPS_IAM_HTTP_TIMEOUT` | `5` | Timeout (s) for calls to an IdP (discovery, JWKS, token, introspection). The PDP has its own `timeout_s` in the trust file. |
+| `EXAMLOPS_IAM_STEP_UP` | unset | `enforce` ⇒ local password sessions must have authenticated within `EXAMLOPS_IAM_STEP_UP_MAX_AGE` for step-up actions (model promotion, secret reveal). Federated users are governed by their center's `step_up` entry instead. |
+| `EXAMLOPS_IAM_STEP_UP_MAX_AGE` | `900` | Seconds a local password login stays "recent" for step-up actions. |
+| `EXAMLOPS_AUTH_ISSUER` | unset | CLI: the IdP `exa auth login` uses when no `--provider`/`--issuer` is given (config key `auth_issuer`, per context). |
+| `EXAMLOPS_AUTH_CLIENT_ID` | unset (`exa-cli`) | CLI: the public OAuth client id registered for `exa` at that IdP (config key `auth_client_id`). |
+| `DASHBOARD_LOCAL_LOGIN` | `true` | `false` ⇒ the shared viewer/admin passwords stop working and organisation SSO is the only way into the dashboard. |
+| `DASHBOARD_SESSION_COOKIE_SECURE` | `true` | SSO session cookie is `Secure` + `__Host-` prefixed. Browsers accept that over HTTPS and `http://localhost` only; set `false` for a deployment reached over plain `http://<host>`. |
+| `DASHBOARD_SSO_SESSION_HOURS` | `8` | Lifetime of a dashboard session created by SSO. |
+
+---
 
 ---
 

@@ -71,8 +71,8 @@ Failure modes:
 | HTTP | When |
 |---|---|
 | 400 | Unknown `model_name` or unsupported `dataset_name` |
-| 401 | Missing `Authorization` header |
-| 403 | Wrong bearer token |
+| 401 | Missing `Authorization` header, or a token from a data-center IdP that failed verification (`WWW-Authenticate: Bearer error="invalid_token"`) |
+| 403 | Wrong bearer token; a verified IdP user whose groups map to no role; or the center's PDP denied the call |
 | 503 | No usable credentials are configured, or `CONTROL_PLANE_CREDENTIALS_JSON` is malformed |
 | 502 | Prefect API unreachable / 5xx |
 
@@ -177,6 +177,21 @@ tenant's flow run.
 structured JSON is malformed or reuses the legacy secret, authentication fails closed for every
 credential. `/health`, readiness/liveness, metrics, `/models`, and model metadata/assets remain
 public; `/status`, approval, flow-status, and ModelZoo operational reads require `read`.
+
+### Federated users (ADR 0120)
+
+With a trust file (`EXAMLOPS_IAM_CONFIG`), the control plane also accepts **access tokens from a
+trusted data-center IdP** alongside the static credentials above, which are checked first: a
+bearer that matches no static secret and is a JWT (or an opaque token named with the
+`X-ExaMLOps-IdP: <provider>` header) is verified against that center's keys and audience. The
+principal is `<provider>:<sub>`, the tenant is the one the trust file binds to that issuer, and the
+role the center's groups map to decides the scopes: `viewer` → `read`, `operator`/`admin` →
+`read` + `write`. When the center's entry sets `authorization.mode: both`, every scoped route also
+asks the center's AuthZEN/OPA PDP about `api.read`/`api.write` on the route path, and a PDP outage
+denies. Federation alone is a complete configuration (no `CONTROL_PLANE_TOKEN` needed); an invalid
+trust file refuses every federated token and shows as `identity_federation: fail: …` in `/health`
+startup checks. Users get a token with `exa auth login`; see
+[Identity federation](identity-federation.md).
 
 ## Wiring with the dataplane simulator
 

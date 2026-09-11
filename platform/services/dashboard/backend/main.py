@@ -67,6 +67,7 @@ from routers import (
     selfobs,
     shadow,
     slo,
+    sso,
     traffic,
     workbenches,
 )
@@ -213,6 +214,8 @@ app.include_router(collab.router, prefix="/api")
 
 # Auth: login is unauthenticated; me/logout require viewer.
 app.include_router(auth.router, prefix="/api")
+# Organisation SSO (ADR 0120): providers/login/callback are unauthenticated by nature.
+app.include_router(sso.router, prefix="/api")
 
 # Auth-protected API routes
 app.include_router(config.router, prefix="/api")

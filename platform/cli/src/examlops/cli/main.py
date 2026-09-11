@@ -19,6 +19,7 @@ from examlops.cli.commands import (
     approvals,
     ask_cmd,
     assets_cmd,
+    auth_cmd,
     autopilot_cmd,
     autoscale_cmd,
     backup_cmd,
@@ -149,7 +150,16 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
         "Governance & Security",
-        ["approvals", "audit", "secrets", "compliance", "governance", "policy", "providers"],
+        [
+            "auth",
+            "approvals",
+            "audit",
+            "secrets",
+            "compliance",
+            "governance",
+            "policy",
+            "providers",
+        ],
     ),
     ("Projects & Workspaces", ["project", "namespace", "connection", "workbench"]),
     (
@@ -420,6 +430,11 @@ app.add_typer(
 )
 app.add_typer(
     secrets_cmd.app, name="secrets", help="Secrets management, rotation, and leak scanning"
+)
+app.add_typer(
+    auth_cmd.app,
+    name="auth",
+    help="Sign in with your data center's identity provider; inspect federation & authorization",
 )
 app.add_typer(hpc_cmd.app, name="hpc", help="HPC fleet — discover schedulers, nodes, and GPUs")
 hpc_cmd.app.add_typer(

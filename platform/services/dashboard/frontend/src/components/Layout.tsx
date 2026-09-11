@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { ChevronDown, Zap, LogOut, Sun, Moon, MoonStar, Menu, X } from 'lucide-react'
 import uniboLogo from '@/assets/unibo.png'
 import seanergysLogo from '@/assets/seanergys.jpg'
-import { clearAuth, getRole } from '@/lib/auth'
+import { getRole, signOut } from '@/lib/auth'
 import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
 import { useApprovalsCount } from '@/lib/api'
@@ -89,8 +89,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     })
 
   const handleSignOut = () => {
-    clearAuth()
-    window.location.reload()
+    void signOut() // ends an SSO session at the BFF (and the IdP) too — ADR 0120
   }
 
   // Rendered for both the Home link, section items, and utility links (one consistent row).

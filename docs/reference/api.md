@@ -79,9 +79,29 @@ Hot-reload: re-scan MLflow for `@Production` models and refresh in-place.
 
 ## Dashboard API (port 8099)
 
-All routes except `/api/health` require `Authorization: Bearer <token>`.
+All routes except `/api/health`, `POST /api/auth/login` and the SSO routes below require an
+authenticated caller, in one of three ways (ADR 0120):
 
-Default token: `changeme` (set `DASHBOARD_TOKEN` to override).
+- the **SSO session cookie** set by the organisation sign-in (`__Host-examlops_session`, HttpOnly).
+  A cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` must also prove same-origin
+  (`Sec-Fetch-Site: same-origin`, a matching `Origin`, or the header `X-ExaMLOps-CSRF: 1`);
+- `Authorization: Bearer <session token>` from `POST /api/auth/login` (local break-glass passwords,
+  unless `DASHBOARD_LOCAL_LOGIN=false`);
+- `Authorization: Bearer <access token>` issued by a data center's IdP listed in the trust file.
+
+### Organisation sign-in (ADR 0120)
+
+| Route | Purpose |
+|---|---|
+| `GET /api/auth/sso/providers` | `{"providers": [{name, display_name, login_url, step_up}], "local_login": bool}` — unauthenticated, for the login page |
+| `GET /api/auth/sso/{provider}/login?return_to=/path&step_up=true` | 302 to the center's IdP (authorization code + PKCE S256); `step_up` asks for the provider's `acr_values` with `max_age=0` |
+| `GET /api/auth/sso/callback` | the registered redirect URI: checks `state` and RFC 9207 `iss`, exchanges the code, verifies the ID token, sets the session cookie, 302 to `return_to`; failures 302 to `/?sso_error=<reason>` |
+| `POST /api/auth/sso/logout` | clears the session; returns `{"end_session_url": …}` for RP-initiated logout at the IdP |
+| `GET /api/auth/me` | now also returns `sub`, `name`, `idp`, `auth_method` (`password`/`sso`/`idp-bearer`) and `acr` |
+
+A step-up action the session does not satisfy answers `401` with
+`WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="…", max_age=N`
+(RFC 9470). Guide: [Identity federation](../guides/identity-federation.md).
 
 ### `GET /api/health`
 

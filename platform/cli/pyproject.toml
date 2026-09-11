@@ -77,11 +77,11 @@ analysis = [
 finops = [
     "simpleeval>=1.0",
 ]
-# OIDC SSO access-token validation (examlops.oidc, Phase 2 item 2.1). PyJWT is
-# imported lazily inside oidc.py, so the core CLI works without it; installing
-# this extra enables RS256 token verification against a configured JWKS.
+# Identity federation (examlops.iam, ADR 0120 — and the examlops.oidc shim over it): verifying
+# data-center IdP tokens, `exa auth login`, the dashboard's SSO and the control plane's federated
+# bearer path. PyJWT is imported lazily, so the core CLI works without it.
 oidc = [
-    "pyjwt>=2.10",
+    "pyjwt>=2.13",
 ]
 # Whole-platform backup — object-store (MinIO/S3) tier + off-site replication
 # (examlops.backup.objects_tier / remote). boto3 is lazily imported; the control-plane

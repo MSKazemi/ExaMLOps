@@ -40,9 +40,14 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
     ("agent_token", "agent_token", "AGENT_API_KEY", "", True),
+    # Organisation sign-in (ADR 0120): the IdP `exa auth login` uses when no --provider/--issuer is
+    # given, and the CLI's public OAuth client id there. Per context, so each site keeps its own.
+    ("auth_issuer", "auth_issuer", "EXAMLOPS_AUTH_ISSUER", "", False),
+    ("auth_client_id", "auth_client_id", "EXAMLOPS_AUTH_CLIENT_ID", "", False),
 ]
 
 _URL_KEYS = {
+    "auth_issuer",
     "control_plane",
     "ray_serve",
     "mlflow",
@@ -68,6 +73,8 @@ class Config:
     control_plane_token: str = ""
     dashboard_token: str = ""
     agent_token: str = ""
+    auth_issuer: str = ""
+    auth_client_id: str = ""
 
 
 def _read_raw() -> dict:
@@ -106,7 +113,22 @@ def load_config() -> Config:
     values: dict[str, str] = {}
     for field, toml_key, env_key, default, _ in _FIELDS:
         values[field] = os.getenv(env_key) or data.get(toml_key) or default
+    if not values["control_plane_token"] or not values["dashboard_token"]:
+        # Signed in with `exa auth login` (ADR 0120)? Then calls carry the user's own identity.
+        # An explicitly configured static token always wins; no session means no change.
+        session_token = _session_token()
+        values["control_plane_token"] = values["control_plane_token"] or session_token
+        values["dashboard_token"] = values["dashboard_token"] or session_token
     return Config(**values)
+
+
+def _session_token() -> str:
+    try:
+        from examlops.iam.session import current_access_token
+
+        return current_access_token()
+    except Exception:  # noqa: BLE001 — a broken session must never break an unrelated command
+        return ""
 
 
 def resolve_with_provenance() -> list[dict]:

@@ -207,7 +207,12 @@ def test_control_plane_defaults_do_not_claim_unsafe_horizontal_scaling():
 def test_control_plane_image_contains_the_shared_postgres_backend():
     dockerfile = (REPO / "platform" / "services" / "control_plane" / "Dockerfile").read_text()
     assert "COPY platform/cli /app/platform/cli" in dockerfile
-    assert "platform/cli[coordination,postgres]" in dockerfile
+    m = re.search(r"platform/cli\[([^\]]+)\]", dockerfile)
+    assert m, "the control-plane image must install the platform package with its extras"
+    extras = {e.strip() for e in m.group(1).split(",")}
+    # coordination + postgres: shared state; oidc: PyJWT, without which the control plane cannot
+    # verify a data center's IdP tokens (ADR 0120) and every federated caller would be refused.
+    assert {"coordination", "postgres", "oidc"} <= extras, extras
 
 
 @needs_helm

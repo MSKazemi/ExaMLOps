@@ -1,18 +1,16 @@
-"""OIDC/OAuth2 access-token validation + identity propagation (Phase 2 item 2.1).
+"""Single-issuer OIDC token validation — compatibility surface (Phase 2 item 2.1).
 
-Enterprise SSO: instead of the shared control-plane token / HS256 dashboard secret, accept
-IdP-issued **RS256** access tokens, verify them against the issuer's JWKS, and derive a real
-per-user **subject** + **tenant** to thread into `EXAMLOPS_ACTOR` and the audit trail. This is the
-verification core; a route dependency (control plane / dashboard / Skipper) calls
-:func:`verify_bearer` on the ``Authorization: Bearer …`` header and gets back an :class:`Identity`.
-
-Configured entirely by env, so it's off by default (single-tenant/dev keeps working) and turns on
-when an issuer is set — degrade-gracefully, same as every other seam. JWKS can be a URL (fetched +
-cached by PyJWT) or inline JSON (air-gapped / tests).
+Superseded by :mod:`examlops.iam` (ADR 0120), which federates with *several* data-center identity
+providers, maps their groups/entitlements to platform roles, binds each issuer to its tenant and
+delegates authorization to the center's PDP. This module keeps the original single-issuer API
+(``EXAMLOPS_OIDC_ISSUER`` / ``_AUDIENCE`` / ``_JWKS`` / ``_TENANT_CLAIM`` / ``_SUBJECT_CLAIM``) and
+now verifies through the same code path as every service, so there is exactly one token verifier
+in the platform.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass, field
@@ -42,49 +40,9 @@ class Identity:
         return f"{self.tenant}/{self.subject}" if self.tenant != "default" else self.subject
 
 
-def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
-
-
 def is_enabled() -> bool:
     """True when an OIDC issuer is configured (``EXAMLOPS_OIDC_ISSUER``)."""
-    return bool(_env("EXAMLOPS_OIDC_ISSUER"))
-
-
-def _tenant_claim() -> str:
-    return _env("EXAMLOPS_OIDC_TENANT_CLAIM", "tenant") or "tenant"
-
-
-def _subject_claim() -> str:
-    return _env("EXAMLOPS_OIDC_SUBJECT_CLAIM", "sub") or "sub"
-
-
-def _load_jwks(jwks: dict | str | None):
-    """Return a PyJWT key resolver from inline JWKS/dict or the configured JWKS URL."""
-    import jwt
-
-    if jwks is None:
-        jwks = _env("EXAMLOPS_OIDC_JWKS")
-    if not jwks:
-        raise OidcNotConfigured("no JWKS: set EXAMLOPS_OIDC_JWKS (URL or inline JSON)")
-    if isinstance(jwks, str) and jwks.startswith(("http://", "https://")):
-        return jwt.PyJWKClient(jwks)
-    data = json.loads(jwks) if isinstance(jwks, str) else jwks
-    return jwt.PyJWKSet.from_dict(data)
-
-
-def _signing_key(token: str, keyset):
-    import jwt
-
-    if isinstance(keyset, jwt.PyJWKClient):
-        return keyset.get_signing_key_from_jwt(token).key
-    # PyJWKSet: match on the token's kid.
-    header = jwt.get_unverified_header(token)
-    kid = header.get("kid")
-    for k in keyset.keys:
-        if kid is None or k.key_id == kid:
-            return k.key
-    raise OidcError(f"no JWKS key matches token kid={kid}")
+    return bool(os.getenv("EXAMLOPS_OIDC_ISSUER", "").strip())
 
 
 def verify_token(token: str, *, jwks: dict | str | None = None) -> Identity:
@@ -94,31 +52,30 @@ def verify_token(token: str, *, jwks: dict | str | None = None) -> Identity:
     subject + tenant claims. Raises :class:`OidcError` on any failure — never returns a partial or
     unverified identity.
     """
-    import jwt
+    from examlops.iam.config import IamConfig, _legacy_env_config
+    from examlops.iam.tokens import AuthenticationError, verify_jwt
 
-    if not is_enabled():
+    cfg = _legacy_env_config()
+    if cfg is None:
         raise OidcNotConfigured("OIDC disabled — set EXAMLOPS_OIDC_ISSUER to enable SSO")
-    issuer = _env("EXAMLOPS_OIDC_ISSUER")
-    audience = _env("EXAMLOPS_OIDC_AUDIENCE") or None
+    provider = cfg.providers[0]
+    if jwks is not None:
+        if isinstance(jwks, str) and jwks.startswith(("http://", "https://")):
+            provider = dataclasses.replace(provider, jwks=None, jwks_uri=jwks, discovery=False)
+        else:
+            data = json.loads(jwks) if isinstance(jwks, str) else jwks
+            provider = dataclasses.replace(provider, jwks=data, jwks_uri=None, discovery=False)
+    elif provider.jwks is None and provider.jwks_uri is None:
+        raise OidcNotConfigured("no JWKS: set EXAMLOPS_OIDC_JWKS (URL or inline JSON)")
     try:
-        key = _signing_key(token, _load_jwks(jwks))
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=["RS256"],
-            audience=audience,
-            issuer=issuer,
-            options={"require": ["exp", "iss"], "verify_aud": audience is not None},
-        )
-    except OidcError:
-        raise
-    except jwt.PyJWTError as exc:
-        raise OidcError(f"token verification failed: {exc}") from exc
+        _, claims = verify_jwt(token, IamConfig((provider,), "env"))
+    except AuthenticationError as exc:
+        raise OidcError(f"token verification failed: {exc.reason}") from exc
 
-    subject = claims.get(_subject_claim())
+    subject = claims.get(provider.subject_claim)
     if not subject:
-        raise OidcError(f"token missing subject claim '{_subject_claim()}'")
-    tenant = str(claims.get(_tenant_claim()) or "default")
+        raise OidcError(f"token missing subject claim '{provider.subject_claim}'")
+    tenant = str(claims.get(provider.tenant_claim or "tenant") or "default")
     scope = claims.get("scope") or claims.get("scp") or ""
     scopes = tuple(scope.split()) if isinstance(scope, str) else tuple(scope)
     return Identity(subject=str(subject), tenant=tenant, scopes=scopes, claims=claims)

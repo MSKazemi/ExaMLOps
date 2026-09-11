@@ -895,6 +895,27 @@ Assembles and renders a consolidated report from recorded platform data. PDF out
 
 Commands for running the platform under real-world governance: the sysadmin approval gate for model changes, a tamper-evident hash-chained audit trail, encrypted secrets management with leak scanning, EU AI Act and NIST AI RMF compliance evidence, declarative policy-as-code, and pluggable calculation providers. Read-only commands (`audit verify`, `secrets scan`, `secrets list`, `policy list`, `providers list`, all `report`/`status`/`framework`/`crosswalk` views) are safe to run anywhere. Mutating or outward-facing commands are marked **[mutation]** below — inspect them with `--help` first and prefer `--dry-run` where available.
 
+### `exa auth` — sign in with your data center's identity provider
+
+ExaMLOps federates with the identity provider (and, optionally, the authorization service) the
+hosting data center already runs — it keeps no user store of its own. `login` runs the OAuth 2.0
+device flow, so it works on a headless HPC login node; once signed in, every `exa` call to the
+control plane or dashboard carries **your** identity instead of a shared token. The other commands
+inspect the platform's trust file (`EXAMLOPS_IAM_CONFIG`). Guide:
+[Identity federation](../guides/identity-federation.md).
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa auth login` | Device Authorization Grant (RFC 8628): shows a code to approve in any browser, then stores the session (0600) for this config context. `--provider` (a center in the trust file), `--issuer` + `--client-id` (any OIDC IdP), or `--oidc-agent <account>` (tokens minted by oidc-agent, none stored) | Sign in from a login node with your organisation account | `exa auth login --provider jsc` |
+| `exa auth status` | Whether this context is signed in, to which IdP, token validity, refreshability | Check before a scripted run | `exa --json auth status` |
+| `exa auth whoami` | Your principal as the platform sees it — verified against the trust file when present: role, tenant, projects, groups, the rules that fired | "Why can't I promote?" — see your mapped role | `exa auth whoami` |
+| `exa auth token` | Print a current access token (refreshed if needed); `--header` for an `Authorization:` line | Call the control plane from curl or a script as yourself | `curl -H "$(exa auth token --header)" http://localhost:18002/approvals` |
+| `exa auth logout` | **[mutation]** Forget this context's session; revokes the refresh token at the IdP when it supports RFC 7009 | Leave a shared login node clean | `exa auth logout` |
+| `exa auth providers` | List the trusted identity providers — issuer, tenant binding, authorization mode (local/external/both), PDP, clients | See which centers can sign users in | `exa auth providers` |
+| `exa auth validate` | Validate a trust file; exit 1 on any error. `--file`, `--check-discovery` (fetch each issuer's discovery document) | CI gate before deploying an identity-config change | `exa auth validate --file identity-providers.yaml --check-discovery` |
+| `exa auth verify` | Verify a token against the trust file and show the principal it maps to (role, tenant, matched rules); exit 1 if rejected. `--token-file` (`-` = stdin), `--provider` for opaque tokens | Debug a center's claim mapping during onboarding | `exa auth token \| exa auth verify --token-file -` |
+| `exa auth decide <action>` | Run the full authorization decision — tenant isolation, platform policy, the center's AuthZEN/OPA PDP — for an action and resource; exit 1 on deny. `--resource-type/--resource-id/--tenant/--project`, `--token-file` | Test a center's policy before users hit it | `exa auth decide model.promote --resource-type model --resource-id JPCP` |
+
 ### `exa approvals` — sysadmin approval gate for model changes
 
 A model change requested via CI/webhook lands as a PENDING approval; a human approves (fires Prefect training immediately) or rejects it. Every decision is recorded in the audit trail.

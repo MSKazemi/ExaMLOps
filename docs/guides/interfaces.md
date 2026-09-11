@@ -6,13 +6,13 @@ A map of every user-facing interface in the platform — browser UIs, REST APIs,
 
 | Interface | URL | Auth |
 |---|---|---|
-| ExaMLOps Dashboard | http://localhost:18099 | viewer / admin password |
+| ExaMLOps Dashboard | http://localhost:18099 | organisation SSO ([identity federation](identity-federation.md)), or viewer / admin break-glass password |
 | MLflow UI | http://localhost:15000 | none |
 | Prefect UI | http://localhost:14200 | none |
 | Ray Serve API | http://localhost:18001 | none |
 | Ray Dashboard | http://localhost:18265 | none |
 | MinIO Console | http://localhost:19001 | minioadmin / minioadmin |
-| Control Plane API | http://localhost:18002 | bearer token |
+| Control Plane API | http://localhost:18002 | bearer token, or your IdP token via `exa auth login` |
 | JupyterHub | http://localhost:18888 | native username/password |
 | Grafana | http://localhost:13000 | monitoring profile |
 | Prometheus | http://localhost:19090 | monitoring profile |

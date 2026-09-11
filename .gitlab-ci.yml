@@ -626,8 +626,9 @@ test:control-plane:
     # app.py imports examlops.admission / .coordination / .data.events at module level, so
     # every test that touches the app errored with `ModuleNotFoundError: No module named
     # 'examlops'` — 120 of them on pipeline #3241 (28 failed / 9 passed / 93 errors). With the
-    # package installed the suite is 130 passed locally.
-    - uv pip install -e platform/cli
+    # package installed the suite is 130 passed locally. `[oidc]` brings PyJWT: the service
+    # verifies data-center IdP tokens through examlops.iam (ADR 0120) and so do its tests.
+    - uv pip install -e "platform/cli[oidc]"
   script:
     - .venv/bin/pytest platform/services/control_plane/tests -v --tb=short
         --junit-xml=reports/control-plane-unit.xml

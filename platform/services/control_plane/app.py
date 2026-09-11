@@ -61,7 +61,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, TypeVar
 
@@ -226,6 +226,9 @@ class RequestContext:
     tenant: str
     scopes: frozenset[str]
     is_legacy: bool = False
+    # The verified `examlops.iam.Principal` when the caller authenticated with a token from a
+    # trusted data-center IdP (ADR 0120); None for static credentials.
+    identity: Any = field(default=None, compare=False, repr=False)
 
 
 def _parse_credentials(raw: str) -> tuple[dict[str, RequestContext], str | None]:
@@ -276,9 +279,26 @@ if (
     _credential_config_error = "legacy and structured bearer credentials must be distinct"
 
 
+def _iam_status() -> str:
+    """Identity federation (ADR 0120): ``off`` | ``ok`` | ``fail: <why>`` — never raises.
+
+    The trust file is re-read when it changes on disk, so onboarding a data center's IdP does not
+    need a restart. An invalid trust file is ``fail`` and federated tokens are refused (fail
+    closed); static credentials keep working.
+    """
+    try:
+        from examlops.iam import IamConfigError, load_config
+    except ImportError:
+        return "off"
+    try:
+        return "ok" if load_config().enabled else "off"
+    except IamConfigError as exc:
+        return f"fail: {exc}"
+
+
 def _auth_is_usable() -> bool:
     return _credential_config_error is None and (
-        bool(_structured_credentials) or _token_is_usable()
+        bool(_structured_credentials) or _token_is_usable() or _iam_status() == "ok"
     )
 
 
@@ -722,6 +742,18 @@ def _run_startup_checks() -> None:
         checks["token"] = "missing"
         logger.error("Startup check FAILED — no control-plane bearer credential is configured")
 
+    # Reported only when federation is configured: "off" is a valid deployment, and every value
+    # in this dict other than "ok" turns /health degraded.
+    iam_state = _iam_status()
+    if iam_state != "off":
+        checks["identity_federation"] = iam_state
+    if iam_state.startswith("fail"):
+        logger.error(
+            "Startup check FAILED — identity federation trust file is invalid; "
+            "federated tokens are refused: %s",
+            iam_state,
+        )
+
     try:
         coordinator = _get_coordinator()
         probe_key = f"control-plane:startup:{_instance_id}"
@@ -925,8 +957,53 @@ if _allowed_hosts and _allowed_hosts != ["*"]:
 # ─── Auth & rate limiting ─────────────────────────────────────────────────────
 
 
-def _request_context(authorization: str | None = Header(default=None)) -> RequestContext:
-    """Authenticate one configured bearer credential and return its trusted identity context."""
+def _federated_context(supplied: str, provider_hint: str | None) -> RequestContext | None:
+    """Authenticate a data-center IdP token (ADR 0120), or ``None`` if it is not one.
+
+    Only a JWT — or an opaque token addressed to a named provider (``X-ExaMLOps-IdP``) — is
+    offered to the verifier, so a mistyped static token keeps its 403 instead of becoming a
+    confusing federation error. A token that *is* federated but fails verification is a 401
+    (RFC 6750 ``invalid_token``); a valid token whose IdP grants no ExaMLOps role is a 403.
+    Tenant comes from the issuer's binding in the trust file, never from the request.
+    """
+    if _iam_status() != "ok":
+        return None
+    from examlops import iam
+
+    if not (iam.looks_like_jwt(supplied) or provider_hint):
+        return None
+    try:
+        principal = iam.verify_access_token(supplied, provider_hint=provider_hint)
+    except iam.AuthenticationError as exc:
+        logger.warning("Federated token rejected: %s", exc.reason)
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            f"Invalid bearer token: {exc.reason}",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        ) from exc
+    if principal.role is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Authenticated as {principal.actor}, but your identity provider grants no ExaMLOps role",
+        )
+    scopes = {"read", "write"} if principal.has_role("operator") else {"read"}
+    return RequestContext(
+        principal=principal.id,
+        tenant=principal.tenant,
+        scopes=frozenset(scopes),
+        identity=principal,
+    )
+
+
+def _request_context(
+    authorization: str | None = Header(default=None),
+    request: Request = None,  # type: ignore[assignment]  # injected by FastAPI; None when called directly
+) -> RequestContext:
+    """Authenticate one configured bearer credential and return its trusted identity context.
+
+    Static credentials (``CONTROL_PLANE_TOKEN`` / ``CONTROL_PLANE_CREDENTIALS_JSON``) are checked
+    first; otherwise a token from a trusted data-center IdP is verified (ADR 0120).
+    """
     if _credential_config_error is not None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -949,14 +1026,39 @@ def _request_context(authorization: str | None = Header(default=None)) -> Reques
     if _token_is_usable() and _hmac.compare_digest(supplied, CONTROL_PLANE_TOKEN):
         matched = RequestContext("legacy", "default", frozenset({"read", "write"}), is_legacy=True)
     if matched is None:
+        # `X-ExaMLOps-IdP` names the provider for an opaque token. Read from the request rather
+        # than declared as a parameter so it stays out of every route's API contract.
+        hint = request.headers.get("x-examlops-idp") if isinstance(request, Request) else None
+        matched = _federated_context(supplied, hint)
+    if matched is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid bearer token")
     return matched
 
 
-def _require_scope(required: str) -> Callable[[RequestContext], RequestContext]:
-    def dependency(context: RequestContext = Depends(_request_context)) -> RequestContext:
+def _require_scope(required: str) -> Callable[..., RequestContext]:
+    def dependency(
+        request: Request, context: RequestContext = Depends(_request_context)
+    ) -> RequestContext:
         if required not in context.scopes:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Missing {required!r} scope")
+        if context.identity is not None:
+            # Federated caller: the data center's own PDP may veto (ADR 0120 — tenant isolation,
+            # then platform policy, then the center's AuthZEN/OPA decision, deny-overrides).
+            from examlops import iam
+
+            decision = iam.authorize(
+                context.identity,
+                f"api.{required}",
+                {
+                    "type": "control_plane",
+                    "id": request.url.path,
+                    "method": request.method,
+                    "tenant": context.tenant,
+                },
+                local_allowed=True,
+            )
+            if not decision.allowed:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, f"Denied: {decision.reason}")
         return context
 
     return dependency

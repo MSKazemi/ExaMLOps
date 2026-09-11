@@ -1,0 +1,96 @@
+# ExaMLOps trust file — which data centers' identity providers the platform federates with.
+#
+# Point EXAMLOPS_IAM_CONFIG at a copy of this file on the dashboard AND the control plane.
+# Validate before deploying:   exa auth validate --file identity-providers.yaml --check-discovery
+# Guide: docs/guides/identity-federation.md   ·   Decision: ADR 0120
+#
+# One entry per center. Each center is its own tenant unless it says otherwise, and no center can
+# ever assert another center's tenant. Secrets are never written here — only references to them:
+#   env:NAME          an environment variable of the service
+#   secret:<path>     the platform secret store (exa secrets set <path> …)
+
+version: 1
+providers:
+
+  # ── A center whose users sign in through Helmholtz ID (AARC-G069 entitlements) ─────────────
+  - name: jsc
+    display_name: "Jülich Supercomputing Centre"
+    issuer: https://login.helmholtz.de/oauth2
+    audience: examlops                      # the audience the IdP puts in tokens for ExaMLOps
+    tenant: jsc                             # everything these users touch lives in tenant "jsc"
+    group_claims: [entitlements, eduperson_entitlement]
+    role_rules:                             # ordered; the strongest matching role wins
+      # The #authority suffix is optional: rules match the URN with or without it,
+      # and the bare group path ("examlops:admins") as well.
+      - {value: "urn:geant:helmholtz.de:group:examlops:admins", role: admin}
+      - {value: "urn:geant:helmholtz.de:group:examlops:operators", role: operator}
+      - {match: glob, value: "urn:geant:helmholtz.de:group:examlops*", role: viewer}
+      # A project lead: operator on one project only, viewer elsewhere via the rule above.
+      - {value: "urn:geant:helmholtz.de:group:examlops:jpcp-leads", role: operator, projects: [jpcp]}
+    # No match ⇒ authenticated but NOT authorized (403). Uncomment to let every user of the
+    # center read: default_role: viewer
+    role_assurance:                         # admins must have verified-identity assurance
+      admin: ["https://refeds.org/assurance/IAP/medium"]
+    step_up:                                # promote / reveal-secret need a recent MFA login
+      acr_values: ["https://refeds.org/profile/mfa"]
+      max_age_s: 900
+    clients:
+      dashboard:                            # confidential client registered for the dashboard BFF
+        client_id: examlops-dashboard
+        client_secret_ref: "env:JSC_DASHBOARD_CLIENT_SECRET"
+      cli:                                  # public client with the device grant enabled
+        client_id: exa-cli
+
+  # ── A center running Keycloak with its own policy decision point (OpenID AuthZEN 1.0) ───────
+  - name: cineca
+    display_name: "CINECA"
+    issuer: https://sso.example-cineca.it/realms/hpc
+    audience: examlops
+    tenant: cineca
+    group_claims: [groups, realm_access.roles]
+    role_rules:
+      - {value: "mlops-admins", role: admin}       # Keycloak group names (full path or leaf)
+      - {value: "mlops-engineers", role: operator}
+      - {value: "hpc-users", role: viewer}
+    authorization:
+      mode: both                            # the platform's policy AND the center's must allow
+      pdp:
+        type: authzen                       # POST <url>/access/v1/evaluation
+        url: https://pdp.example-cineca.it
+        token_ref: "env:CINECA_PDP_TOKEN"   # bearer the PDP expects from ExaMLOps (optional)
+        timeout_s: 2
+        on_error: deny                      # PDP down ⇒ deny (fail closed). "local" = fall back.
+        cache_ttl_s: 30                     # permits only; denies are never cached
+    clients:
+      dashboard: {client_id: examlops, client_secret_ref: "secret:iam/cineca/dashboard"}
+      cli: {client_id: exa-cli}
+
+  # ── An LDAP/AD-only site: Keycloak brokers the directory (platform/infra/iam/keycloak) ─────
+  #    and an Open Policy Agent holds the site's rules (platform/infra/iam/opa/examlops.rego).
+  - name: lab
+    display_name: "Lab (Keycloak broker over LDAP)"
+    issuer: http://localhost:18180/realms/examlops   # loopback may be plain HTTP; nothing else may
+    audience: examlops
+    tenant: lab
+    group_claims: [groups]
+    # default rules apply: examlops-admins / examlops-operators / examlops-viewers
+    authorization:
+      mode: both
+      pdp: {type: opa, url: "http://localhost:18181", opa_path: "examlops/decision", on_error: deny}
+    clients:
+      dashboard: {client_id: examlops-dashboard, client_secret_ref: "env:LAB_DASHBOARD_CLIENT_SECRET"}
+      cli: {client_id: exa-cli}
+
+  # ── A center that issues opaque (non-JWT) access tokens: RFC 7662 introspection ─────────────
+  # - name: legacy-center
+  #   issuer: https://idp.legacy.example.org
+  #   audience: examlops
+  #   introspection: {client_id: examlops-rs, client_secret_ref: "env:LEGACY_RS_SECRET"}
+  #   # With several introspection providers, API clients name theirs: X-ExaMLOps-IdP: legacy-center
+
+  # ── Several tenants behind one IdP: take the tenant from a claim, bounded by an allow-list ──
+  # - name: consortium
+  #   issuer: https://aai.consortium.example.eu/realms/research
+  #   audience: examlops
+  #   tenant_claim: org                     # e.g. "org": "unibo"
+  #   tenants_allowed: [unibo, polimi, fzj] # a token naming any other tenant is refused

@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 421,
- "total_groups": 65,
+ "total_commands": 430,
+ "total_groups": 66,
  "panels": [
   {
    "title": "Getting Started",
@@ -2206,6 +2206,7 @@
    "slug": "governance-security",
    "blurb": "Approve changes, audit actions, manage secrets and policy.",
    "groups": [
+    "auth",
     "approvals",
     "audit",
     "secrets",
@@ -2215,6 +2216,69 @@
     "providers"
    ],
    "commands": [
+    {
+     "cmd": "exa auth decide",
+     "group": "auth",
+     "help": "Ask the platform's authorizer — tenant, local policy, the center's PDP — about an action.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth login",
+     "group": "auth",
+     "help": "Sign in with your organisation (Device Authorization Grant, RFC 8628).",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth logout",
+     "group": "auth",
+     "help": "Forget this context's session (and revoke its refresh token where the IdP supports it).",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth providers",
+     "group": "auth",
+     "help": "List the identity providers (data centers) this platform trusts.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth status",
+     "group": "auth",
+     "help": "Show whether this config context is signed in, to which IdP, and until when.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth token",
+     "group": "auth",
+     "help": "Print a current access token (refreshed if needed) for scripts and curl.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth validate",
+     "group": "auth",
+     "help": "Validate a trust file; exit 1 on any error (a CI gate for identity config).",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth verify",
+     "group": "auth",
+     "help": "Verify a token against the trust file and show the principal it maps to.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
+    {
+     "cmd": "exa auth whoami",
+     "group": "auth",
+     "help": "Who the platform sees: your verified principal (role, tenant, groups) when it can check.",
+     "anchor": "exa-auth-sign-in-with-your-data-centers-identity-provider",
+     "guide": null
+    },
     {
      "cmd": "exa approvals approve",
      "group": "approvals",

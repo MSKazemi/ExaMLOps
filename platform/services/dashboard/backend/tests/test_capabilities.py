@@ -26,8 +26,33 @@ def test_unknown_role_denied_by_default():
 
 
 def test_deny_reason_explains():
-    assert cap.deny_reason("viewer", cap.MODEL_PROMOTE) == "Requires the admin role."
+    # ADR 0120 added `operator`: promotion is a lifecycle action an operator holds.
+    assert cap.deny_reason("viewer", cap.MODEL_PROMOTE) == "Requires the operator or admin role."
+    assert cap.deny_reason("viewer", cap.CONFIG_WRITE) == "Requires the admin role."
+    assert cap.deny_reason("operator", cap.SECRET_REVEAL) == "Requires the admin role."
     assert cap.deny_reason("admin", cap.MODEL_PROMOTE) == ""  # allowed → no reason
+
+
+def test_operator_runs_the_lifecycle_without_the_platform_keys():
+    """ADR 0120: operator ⊂ admin, and holds none of secrets/config/service control."""
+    op = set(cap.capabilities_for("operator"))
+    assert set(cap.capabilities_for("viewer")) < op < set(cap.capabilities_for("admin"))
+    assert {cap.MODEL_PROMOTE, cap.RETRAIN_TRIGGER, cap.APPROVAL_DECIDE} <= op
+    assert not op & {
+        cap.SECRET_REVEAL,
+        cap.SECRETS_MANAGE,
+        cap.CONFIG_WRITE,
+        cap.SERVICE_CONTROL,
+    }
+
+
+def test_federated_admin_is_confined_to_its_center():
+    """A platform admin may cross tenants; a data center's admin may not (ADR 0120)."""
+    platform_admin = {"role": "admin", "tenant": "default"}
+    center_admin = {"role": "admin", "tenant": "jsc", "idp": "jsc"}
+    assert cap.tenant_visible(platform_admin, "cineca")
+    assert cap.tenant_visible(center_admin, "jsc")
+    assert not cap.tenant_visible(center_admin, "cineca")
 
 
 def test_step_up_flagged_for_governed_actions():

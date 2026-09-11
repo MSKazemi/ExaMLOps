@@ -29,12 +29,12 @@ export const CAP = {
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
 
-// Actions *designated* as needing step-up/MFA (F15 R6 / F16). A designation, not a gate: this
-// previously claimed the BFF withheld them pending a second factor, which it does not — the BFF
-// permits them on the capability check alone, nothing here calls `requiresStepUp`, and no audit
-// event records a second factor. It is a placeholder for the OIDC/OpenFGA migration and must read
-// as one, because a reader deciding whether a promote is protected by MFA would otherwise be told
-// it is. Kept identical to the backend's `STEP_UP_CAPABILITIES`, which a test pins across the
+// Actions that require step-up/MFA before the BFF permits them — when the deployment opts in
+// (ADR 0120, RFC 9470): the user's data center has a `step_up` entry in the trust file, or
+// `EXAMLOPS_IAM_STEP_UP=enforce` for local password sessions. Opted in, the BFF answers 401
+// `insufficient_user_authentication` and `lib/api.ts` sends the user back through SSO with the
+// requested `acr_values`/`max_age`; not opted in, the BFF permits them on the capability check
+// alone. Kept identical to the backend's `STEP_UP_CAPABILITIES`, which a test pins across the
 // language boundary.
 const STEP_UP: ReadonlySet<string> = new Set([CAP.MODEL_PROMOTE, CAP.SECRET_REVEAL])
 
