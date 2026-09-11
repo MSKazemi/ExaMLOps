@@ -31,6 +31,14 @@ uses SQLite for local development; production can select the shared Postgres sto
 
 ## POST /retrain
 
+!!! warning "Known issue: dispatch has no matching deployment"
+    `exa pipeline deploy` registers `examlops_scheduled_training/examlops-nightly`, a wrapper that
+    retrains every model and accepts only `is_dummy`. It does not create
+    `examlops_scheduled_training/nightly`, and no deployment it creates accepts the model and
+    dataset a retrain passes. Until a per-model dispatch deployment ships, `POST /retrain` — and
+    every path that calls it — fails at dispatch with Prefect's 404. The response below shows
+    the shape once a matching deployment exists.
+
 ```bash
 curl -X POST http://localhost:18002/retrain \
   -H "Authorization: Bearer $CONTROL_PLANE_TOKEN" \
@@ -324,7 +332,7 @@ Postgres state backend:
 | `CONTROL_PLANE_TOKEN` | unset | Legacy `legacy/default` bearer credential with `read` + `write`; optional when the structured map is configured |
 | `CONTROL_PLANE_CREDENTIALS_JSON` | unset | Token-keyed JSON map of `principal`, `tenant`, and `scopes`; malformed input fails all bearer authentication closed |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`) |
+| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`). Known issue: `exa pipeline deploy` does not create this deployment, and none it creates accepts a retrain's `model_name` / `dataset_cls_name` — see [POST /retrain](#post-retrain) |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
 | `EXAMLOPS_DB_BACKEND` | `sqlite` | Control-plane state engine: `sqlite` for local development or `postgres` for shared production state |
 | `EXAMLOPS_POSTGRES_DSN` | unset | Required when the state backend is `postgres` |

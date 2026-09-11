@@ -382,7 +382,7 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |
 | `AWS_SECRET_ACCESS_KEY` | `minioadmin` | MinIO secret key |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server API endpoint |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Prefect deployment slug used by `POST /retrain` |
+| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Prefect deployment slug used by `POST /retrain`. `exa pipeline deploy` does not create a deployment under this name that accepts a retrain's parameters (known issue; see the control-plane guide) |
 
 ---
 
