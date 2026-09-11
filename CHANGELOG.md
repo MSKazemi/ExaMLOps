@@ -185,6 +185,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   now call `dbconn.platform_db_path()` (`PLATFORM_DB` → `<EXAMLOPS_DATA_DIR>/platform.db` → the
   legacy compose location), and a test holds it equal to `examlops.platform_db`'s resolution and
   fails if any module names the path again. Hard-coded deployment references in runtime code: 52 → 11.
+- **Release assets are signed and carry their SLSA provenance.** `SHA256SUMS` is signed with cosign
+  keyless (`SHA256SUMS.sigstore.json`), so one `cosign verify-blob` plus `sha256sum -c` verifies
+  every asset; the wheel/sdist provenance attestation is also published as
+  `examlops-X.Y.Z.intoto.jsonl` (its DSSE envelope, checked against a real Sigstore v0.3 bundle).
+  Both are what OpenSSF Scorecard's Signed-Releases check looks for; the first published score was
+  5.3/10 with that check at -1 for want of a release.
 - **The release publishes a single-node install bundle** — `examlops-compose-X.Y.Z.tar.gz`, the
   pull-only compose stack pinned to that release by a `VERSION` file, alongside the other assets.
   The install guides no longer say the images or the control-plane tier cannot be published, and

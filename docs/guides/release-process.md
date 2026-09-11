@@ -23,7 +23,8 @@ nothing is uploaded by hand.
 | SBOM of the Python install | GitHub Release | `examlops-X.Y.Z.cdx.json` (CycloneDX 1.6 — the wheel and every dependency it resolved) |
 | Image references by digest | GitHub Release | `images-X.Y.Z.txt` — `name:X.Y.Z@sha256:…` per image |
 | Vulnerability reports | GitHub Release | `trivy-reports-X.Y.Z.tar.gz` — HIGH + CRITICAL per image |
-| Checksums | GitHub Release | `SHA256SUMS` over every asset |
+| Checksums | GitHub Release | `SHA256SUMS` over every asset, and `SHA256SUMS.sigstore.json` — its cosign keyless signature |
+| SLSA provenance | GitHub Release | `examlops-X.Y.Z.intoto.jsonl` — the signed in-toto provenance of the wheel and sdist |
 
 Stable releases also move the `X.Y` and `latest` image tags; a pre-release (`vX.Y.Z-rc.1`) moves
 neither. The Helm chart's `appVersion` is the release version, so the chart deploys exactly the
@@ -73,9 +74,12 @@ cosign verify ghcr.io/mskazemi/charts/examlops:X.Y.Z \
 **PyPI files** carry PEP 740 attestations produced by Trusted Publishing; PyPI shows them on the
 file's page, and `gh attestation verify` above covers the same wheel from the GitHub side.
 
-**Release assets** — check the downloaded files against the published checksums:
+**Release assets** — verify the checksum file's signature once, then every file against it:
 
 ```bash
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/MSKazemi/ExaMLOps/\.github/workflows/release\.yml@refs/(tags/v.*|heads/main)$'
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 

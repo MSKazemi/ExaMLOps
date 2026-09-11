@@ -145,9 +145,21 @@ jobs:
             -o "sbom/examlops-${VERSION}.cdx.json" "$RUNNER_TEMP/sbom-env/bin/python"
 
       - name: Attest build provenance
+        id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
+
+      # The same signed SLSA provenance, as a release asset next to the files it describes: the
+      # bundle's DSSE envelope is the in-toto statement, one per line in the .intoto.jsonl form.
+      - name: Export the provenance as <name>.intoto.jsonl
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p provenance
+          jq -ce '.dsseEnvelope' "$BUNDLE" > "provenance/examlops-${VERSION}.intoto.jsonl"
 
       - name: Attest the SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -165,6 +177,12 @@ jobs:
         with:
           name: sbom-python
           path: sbom/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provenance-python
+          path: provenance/
           if-no-files-found: error
 
   images:
@@ -413,6 +431,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write # create the release and upload its assets
+      id-token: write # cosign keyless signature over SHA256SUMS
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -434,7 +453,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p assets
-          cp artifacts/python-dist/* artifacts/sbom-python/* artifacts/helm-chart/* assets/
+          cp artifacts/python-dist/* artifacts/sbom-python/* artifacts/provenance-python/* artifacts/helm-chart/* assets/
           # Pull-only single-node install (docs/guides/install-compose-bundle.md): images pinned to
           # this release by the VERSION file that `install.sh init` reads.
           bundle="examlops-compose-${VERSION}"
@@ -449,6 +468,12 @@ jobs:
           (cd assets && sha256sum -- * > SHA256SUMS)
           cat "assets/images-${VERSION}.txt"
           cat assets/SHA256SUMS
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # One signature over the checksums covers every asset: verify it, then `sha256sum -c`.
+      - name: Sign SHA256SUMS (cosign keyless)
+        run: cosign sign-blob --yes --bundle assets/SHA256SUMS.sigstore.json assets/SHA256SUMS
 
       # Created only if absent: the owner's release loop may already have created this release
       # by hand with the same CHANGELOG text (it mirrors it to the private repo). Assets are then

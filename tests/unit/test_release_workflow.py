@@ -191,3 +191,18 @@ def test_the_compose_bundle_ships_every_file_it_needs():
     for name in listed.group(1).split(","):
         assert (install / name).is_file(), f"bundle file missing: {name}"
     assert "VERSION" in run, "install.sh init reads the release version from VERSION"
+
+
+def test_release_assets_carry_a_signature_and_slsa_provenance():
+    """One cosign signature over SHA256SUMS covers every asset; the provenance ships beside them.
+
+    Also what OpenSSF Scorecard's Signed-Releases check looks for (*.sigstore.json, *.intoto.jsonl).
+    """
+    release = "\n".join(s.get("run", "") for s in JOBS["github-release"]["steps"])
+    assert "cosign sign-blob" in release and "SHA256SUMS.sigstore.json" in release
+    # SHA256SUMS is written before it is signed, so the signature is not among the summed files.
+    assert release.index("sha256sum -- *") < release.index("cosign sign-blob")
+    assert JOBS["github-release"]["permissions"].get("id-token") == "write"
+    dist = "\n".join(s.get("run", "") for s in JOBS["python-dist"]["steps"])
+    assert ".intoto.jsonl" in dist and "dsseEnvelope" in dist
+    assert "provenance-python" in release
