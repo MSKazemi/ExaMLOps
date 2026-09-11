@@ -81,7 +81,9 @@ on_host() {
 echo "[vllm-serve] scheduler=${SCHED}"
 
 # ── address discovery ─────────────────────────────────────────────────────────
-HEAD_NODE=$(job_hosts | head -n1)
+# `sed -n 1p`, not `head -n1`: head exits after one line and the host lister, still writing, dies of
+# SIGPIPE, which `set -o pipefail` + `set -e` turn into the job exiting 141. sed reads all input.
+HEAD_NODE=$(job_hosts | sed -n 1p)
 # `|| true`: under `set -o pipefail` a name getent cannot resolve (exit 2) would end the job
 # here, and the fallback on the next line — which exists for exactly that case — never ran.
 HEAD_IP=$(getent hosts "${HEAD_NODE}" | awk '{print $1}' | head -n1 || true)

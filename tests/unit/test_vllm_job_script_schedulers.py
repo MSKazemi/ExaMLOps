@@ -173,3 +173,25 @@ def test_the_endpoint_is_published_under_flux(tmp_path, cluster):
 
     endpoint = tmp_path / "qwen.endpoint"
     assert proc.returncode == 0 and endpoint.read_text().startswith("http://")
+
+
+# ── a long hostlist must not end the job ─────────────────────────────────────
+
+
+def test_a_hostlist_longer_than_a_pipe_buffer_does_not_end_the_job(tmp_path, cluster):
+    """`job_hosts | head -n1` under `set -o pipefail`: `head` exits after the first line, the
+    host lister is killed by SIGPIPE writing the rest, and `set -e` ends the job with 141 —
+    intermittently for two hosts, always once the list outgrows the 64 KiB pipe buffer. 8000 names
+    (~112 KB) make it deterministic and stay under the kernel's 128 KiB limit for one variable."""
+    hosts = " ".join(f"gpu-node-{i:04d}" for i in range(8000))
+    assert 65536 < len(hosts) < 131072
+    proc, calls = _run(
+        tmp_path,
+        cluster,
+        nodes=1,
+        env={"SLURM_JOB_NODELIST": "gpu-node-[0000-7999]", "FAKE_HOSTS": hosts},
+    )
+
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[-400:])
+    assert "(head=gpu-node-0000)" in proc.stdout
+    assert any("vllm serve" in c for c in calls)

@@ -7,6 +7,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [0.56.0] - 2026-09-11
 
+### Fixed — the vLLM job script could end a multi-node HPC job at startup with exit 141
+
+- `HEAD_NODE=$(job_hosts | head -n1)` ran under `set -o pipefail`: `head` exits after the first
+  line, the host lister (`scontrol show hostnames` / `flux hostlist`) is killed by SIGPIPE while
+  still writing, and `set -e` ended the job with 141 before the server started. It happened
+  intermittently with two hosts and always once an allocation's hostlist outgrew the 64 KiB pipe
+  buffer. The pattern dates from v0.48.0. The head node is now taken with `sed -n 1p`, which reads
+  all of its input. A regression test runs the rendered script with an 8000-host list.
+
 ### Documented — the control plane can stay unready after a first Helm install (charts v0.54.0 through v0.56.0)
 
 - **The race:** on a first install against an empty Postgres, every tier creates the platform
