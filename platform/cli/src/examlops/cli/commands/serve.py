@@ -88,6 +88,9 @@ def check() -> None:
                 hint="Start it with: exa stack up --service ray-serving",
             )
             return
+    if _output.json_mode:
+        _output.print_json({"ok": True, "message": "Ray Serve is healthy", "health": health})
+        return
     _output.ok("Ray Serve is healthy")
     _output.print_record(health)
 
@@ -113,6 +116,9 @@ def infer_check() -> None:
                 hint="Check: exa serve check  then  exa serve reload",
             )
             return
+    if _output.json_mode:
+        _output.print_json({"ok": True, "message": "Inference smoke test passed", "result": result})
+        return
     _output.ok("Inference smoke test passed")
     _output.print_record(result)
 

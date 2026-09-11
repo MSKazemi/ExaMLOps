@@ -133,3 +133,16 @@ async def test_proxy_passes_upstream_5xx_through(client, monkeypatch):
     token = await _login(client, ADMIN_PW)
     r = await client.get("/api/proxy/mlflow/bad", headers=_hdr(token))
     assert r.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_proxy_turns_an_upstream_auth_refusal_into_a_bad_gateway(client, monkeypatch):
+    # An upstream 401/403 is about the dashboard's service credential, not the browser session;
+    # forwarded as-is it logs the user out (the SPA treats 401/403 as session expiry).
+    for upstream in (401, 403):
+        fake = _FakeAsyncClient(status=upstream)
+        monkeypatch.setattr("routers.proxy.httpx.AsyncClient", lambda fake=fake: fake)
+        token = await _login(client, ADMIN_PW)
+        r = await client.get("/api/proxy/mlflow/x", headers=_hdr(token))
+        assert r.status_code == 502
+        assert r.headers["x-upstream-status"] == str(upstream)

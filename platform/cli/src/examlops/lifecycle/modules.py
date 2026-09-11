@@ -116,6 +116,7 @@ CATALOG: tuple[Module, ...] = (
         cli=(
             "pipeline",
             "retrain",
+            "retrain-status",
             "scaffold",
             "reproduce",
             "data",

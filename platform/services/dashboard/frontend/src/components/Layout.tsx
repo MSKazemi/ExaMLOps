@@ -8,7 +8,7 @@ import { getRole, signOut } from '@/lib/auth'
 import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
 import { useApprovalsCount } from '@/lib/api'
-import { isEnabled } from '@/lib/flags'
+import { flagFallback, useFlagDecisions } from '@/lib/serverflags'
 import { pageAllowed, useModules } from '@/lib/modules'
 import {
   HOME_ITEM,
@@ -19,6 +19,8 @@ import {
   type NavItem,
 } from '@/lib/nav'
 import { CommandPalette } from '@/components/CommandPalette'
+import { CliContextLink } from '@/components/cli/CliContextLink'
+import { CliFlagGate } from '@/components/cli/CliFlagGate'
 import { CopilotPanel } from '@/components/CopilotPanel'
 import { HelpDrawer } from '@/components/HelpDrawer'
 import { OnboardingTour } from '@/components/OnboardingTour'
@@ -53,6 +55,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation()
   const role = getRole()
   const { tenant } = useCapabilities()
+  const flagDecisions = useFlagDecisions().data?.flags
   // Pages of the modules this site switched off (ADR 0128) — decided by the server's site profile.
   const disabledPages = useModules().data?.disabled_pages
   const { theme, setTheme } = useTheme()
@@ -73,10 +76,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [mobileNavOpen])
 
-  // An item is shown when the role clears any admin gate and its feature flag (if any) is on.
+  // An item is shown when the role clears any admin gate and its feature flag (if any) is on —
+  // the server's decision when it has answered (F25 R2: an admin kill switch reaches the nav live),
+  // else the client default.
   const canSee = (item: NavItem) =>
     (!item.adminOnly || role === 'admin') &&
-    (!item.flag || isEnabled(item.flag as Parameters<typeof isEnabled>[0])) &&
+    (!item.flag || (flagDecisions?.[item.flag] ?? flagFallback(item.flag))) &&
     pageAllowed(item.path, disabledPages)
 
   const toggleSection = (id: string) =>
@@ -332,6 +337,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </div>
       <CopilotPanel />
       <HelpDrawer />
+      <CliFlagGate quiet>
+        <CliContextLink />
+      </CliFlagGate>
       <OnboardingTour />
     </div>
   )

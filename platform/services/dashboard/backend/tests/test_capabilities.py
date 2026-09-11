@@ -10,7 +10,9 @@ from tests.conftest import ADMIN_PW, VIEWER_PW
 
 def test_viewer_has_only_read_capabilities():
     caps = set(cap.capabilities_for("viewer"))
-    assert caps == {cap.VIEW, cap.SEARCH}
+    # `cli.run` is a read capability: it runs only `read`-tier `exa` commands (ADR 0119).
+    assert caps == {cap.VIEW, cap.SEARCH, cap.CLI_RUN}
+    assert not cap.can("viewer", cap.CLI_WRITE)
     assert not cap.can("viewer", cap.MODEL_PROMOTE)
 
 
@@ -34,7 +36,7 @@ def test_deny_reason_explains():
 
 
 def test_operator_runs_the_lifecycle_without_the_platform_keys():
-    """ADR 0120: operator ⊂ admin, and holds none of secrets/config/service control."""
+    """ADR 0120: operator ⊂ admin, and holds none of secrets/config/service control/CLI writes."""
     op = set(cap.capabilities_for("operator"))
     assert set(cap.capabilities_for("viewer")) < op < set(cap.capabilities_for("admin"))
     assert {cap.MODEL_PROMOTE, cap.RETRAIN_TRIGGER, cap.APPROVAL_DECIDE} <= op
@@ -43,6 +45,7 @@ def test_operator_runs_the_lifecycle_without_the_platform_keys():
         cap.SECRETS_MANAGE,
         cap.CONFIG_WRITE,
         cap.SERVICE_CONTROL,
+        cap.CLI_WRITE,
     }
 
 
@@ -116,7 +119,7 @@ async def test_me_returns_capabilities_for_viewer(client):
     assert r.status_code == 200
     body = r.json()
     assert body["tenant"] == "default"
-    assert set(body["capabilities"]) == {cap.VIEW, cap.SEARCH}
+    assert set(body["capabilities"]) == {cap.VIEW, cap.SEARCH, cap.CLI_RUN}
 
 
 @pytest.mark.asyncio

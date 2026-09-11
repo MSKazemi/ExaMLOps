@@ -9,6 +9,8 @@ import { AuthGate } from '@/components/AuthGate'
 import { Layout } from '@/components/Layout'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { NotFound } from '@/components/NotFound'
+import { CliFlagGate } from '@/components/cli/CliFlagGate'
+import { Table2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { shouldRetry } from '@/lib/errors'
 import { isEnabled } from '@/lib/flags'
@@ -64,6 +66,8 @@ const PlatformOps = lazy(() =>
 )
 const Events = lazy(() => import('@/pages/Events').then((m) => ({ default: m.Events })))
 const Traffic = lazy(() => import('@/pages/Traffic').then((m) => ({ default: m.Traffic })))
+const CliConsole = lazy(() => import('@/pages/CliConsole').then((m) => ({ default: m.CliConsole })))
+const Resources = lazy(() => import('@/pages/Resources').then((m) => ({ default: m.Resources })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -175,6 +179,8 @@ export default function App() {
                       <Route path="/govern/secrets" element={<Secrets />} />
                       <Route path="/govern/fairness" element={<Fairness />} />
                       {/* Platform */}
+                      <Route path="/platform/cli" element={<CliFlagGate><CliConsole /></CliFlagGate>} />
+                      <Route path="/platform/resources" element={<CliFlagGate title="Resources" icon={Table2}><Resources /></CliFlagGate>} />
                       <Route path="/platform/events" element={<Events />} />
                       <Route path="/platform/services" element={<Services />} />
                       <Route path="/platform/ops" element={<PlatformOps />} />

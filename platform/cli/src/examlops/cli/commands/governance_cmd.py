@@ -61,7 +61,13 @@ def validate() -> None:
 
     errors = validate_mapping()
     if _output.json_mode:
-        _output.print_json([{"control": e.control_id, "problem": e.problem} for e in errors])
+        # One document: the verdict and the problems together (it used to print the list and
+        # then an ok()/error() document after it).
+        problems = [{"control": e.control_id, "problem": e.problem} for e in errors]
+        _output.print_json({"ok": not errors, "errors": problems})
+        if errors:
+            raise typer.Exit(1)
+        return
     if errors:
         for e in errors:
             _output.error(f"{e.control_id}: {e.problem}")
@@ -90,7 +96,7 @@ def report(
     )
     _output.print_table(
         "Control Coverage",
-        ["Control", "Function", "Status", "EU AI Act", "ISO 42001", "Missing"],
+        ["Control", "Function", "Status", "EU AI Act", "ISO 42001", "Missing", "Insufficient"],
         [
             [
                 c.control.id,
@@ -99,6 +105,8 @@ def report(
                 c.control.eu_ai_act or "—",
                 c.control.iso_42001 or "—",
                 ", ".join(c.missing_evidence) or "—",
+                # Present but failed its integrity check, so it does not count (ADR 0110).
+                ", ".join(c.insufficient_evidence) or "—",
             ]
             for c in rep.controls
         ],

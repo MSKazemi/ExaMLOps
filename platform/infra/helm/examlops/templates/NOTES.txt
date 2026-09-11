@@ -17,6 +17,12 @@ will not start (CreateContainerConfigError, not CrashLoop). The chart README has
 `kubectl create secret generic` line and the full key list. Check with:
   kubectl get secret {{ .Values.existingSecret }} -n {{ .Release.Namespace }}
 
+{{- if and (gt (int .Values.dashboard.replicaCount) 1) (not .Values.dashboard.cliState.existingClaim) }}
+WARNING — dashboard CLI Console state is per pod. With {{ .Values.dashboard.replicaCount }} replicas and no
+dashboard.cliState.existingClaim, the exa config.toml and the file workspace differ between
+pods: a config edit or an upload lands on one replica only. Point existingClaim at a
+ReadWriteMany PVC (run history is already shared through the platform datastore).
+{{ end }}
 State (managed OUT of this chart — see the chart README):
   Postgres : {{ .Values.postgres.host }} (recommend CloudNativePG, 3 instances)
   MinIO    : {{ .Values.minio.endpoint }} (recommend distributed mode, erasure-coded)

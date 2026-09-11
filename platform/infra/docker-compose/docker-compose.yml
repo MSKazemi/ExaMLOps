@@ -587,6 +587,11 @@ services:
       # dir on PYTHONPATH makes it importable. Without this, those write paths degrade to 503
       # ("… requires the examlops package (not available in this deployment)").
       PYTHONPATH: /repo/platform/cli/src
+      # CLI Console / Resources / Config (ADR 0119): the `config.toml` the dashboard's own `exa`
+      # runs use, and the workspace path arguments are contained in. On a named volume so config
+      # edits and uploaded/produced files survive a rebuild — and never land in the repo.
+      EXAMLOPS_CONFIG: /var/lib/examlops-dashboard/config.toml
+      EXAMLOPS_DASHBOARD_CLI_WORKSPACE: /var/lib/examlops-dashboard/cli-workspace
     ports:
       - "18099:8099"
     depends_on:
@@ -605,6 +610,7 @@ services:
       # container share one platform.db; K8s (Phase 1.1) replaces it with a least-priv PVC.
       - ${EXAMLOPS_HOST_REPO:-../../..}:/repo:rw
       - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+      - dashboard_cli_data:/var/lib/examlops-dashboard
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/api/health')\""]
       interval: 10s
@@ -831,6 +837,7 @@ volumes:
   control_plane_data:
   agent_data:
   backups_data:
+  dashboard_cli_data:
 
 networks:
   seanerbus-net:

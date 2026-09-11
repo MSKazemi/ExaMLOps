@@ -23,6 +23,16 @@ function MyFeature() {
 
 `useFlag(name)` prefers the **server decision** (`GET /api/v1/flags`) and falls back to the client-side
 default in `lib/flags.ts` if the decisions payload hasn't arrived — so the UI degrades gracefully.
+The sidebar does the same for any nav item with a `flag`, so an admin switching a flag off removes
+its page from the navigation without a reload.
+
+## Enforcing a flag on the backend (kill switches)
+
+Hiding a page does not stop anyone calling its API. A flag that must actually switch a capability
+off is enforced by the router as well, with `feature_flags.is_enabled(db, name, role=…, tenant=…,
+subject=…)`, the same evaluation the decisions endpoint uses. `cliConsole` is the example: when it
+is off, every `/api/v1/cli/*` endpoint except cancel answers *403*, so the dashboard runs no `exa`
+command, whatever the browser does. See [CLI Console](dashboard-cli-console.md#switching-the-console-off).
 
 ## Evaluation order (server-side)
 

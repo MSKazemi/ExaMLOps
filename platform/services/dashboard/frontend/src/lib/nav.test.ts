@@ -48,6 +48,8 @@ const KNOWN_ROUTES = new Set([
   '/govern/fairness',
   '/govern/secrets',
   // platform
+  '/platform/cli',
+  '/platform/resources',
   '/platform/projects',
   '/platform/ops',
   '/platform/events',
@@ -108,6 +110,8 @@ describe('nav config', () => {
     expect(byPath['/build/mlops'].flag).toBe('mlopsConsole')
     expect(byPath['/operate/facility'].flag).toBe('facilityConsole')
     expect(byPath['/platform/projects'].flag).toBe('projectsConsole')
+    expect(byPath['/platform/cli'].flag).toBe('cliConsole')
+    expect(byPath['/platform/resources'].flag).toBe('cliConsole')
   })
 })
 

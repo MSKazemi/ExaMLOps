@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { Config } from '../../pages/Config'
 import { setAuth } from '@/lib/auth'
 
@@ -13,7 +14,10 @@ const renderConfig = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <Config />
+      {/* The page links into the CLI Console, so it renders inside a router, as in the app. */}
+      <MemoryRouter>
+        <Config />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }

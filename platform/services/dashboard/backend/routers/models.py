@@ -22,6 +22,7 @@ from settings import settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage import ImageStorage
+from upstream import dashboard_status
 
 router = APIRouter(prefix="/models")
 
@@ -547,7 +548,7 @@ async def predict(
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Ray Serve unavailable: {exc}") from exc
     if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=r.text)
+        raise HTTPException(status_code=dashboard_status(r.status_code), detail=r.text)
     return r.json()
 
 

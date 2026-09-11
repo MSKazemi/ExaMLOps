@@ -25,6 +25,9 @@ export const CAP = {
   EVENTS_MANAGE: 'events.manage',
   TRAFFIC_MANAGE: 'traffic.manage',
   PLATFORM_MANAGE: 'platform.manage',
+  // ADR 0119 CLI Console: run `read`-tier exa commands / run commands that change state.
+  CLI_RUN: 'cli.run',
+  CLI_WRITE: 'cli.write',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]

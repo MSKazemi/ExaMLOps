@@ -99,8 +99,11 @@ async def test_list_hides_upstream_auth_error_body(client, monkeypatch):
 
     response = await client.get("/api/approvals", headers={"Authorization": f"Bearer {token}"})
 
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Control Plane returned an error"}
+    # Not 401: that would tell the browser *its* session is invalid, and the SPA signs the user
+    # out and reloads — every page load, for as long as the service token is wrong. The control
+    # plane refused the dashboard's credential, which is a bad gateway, and the message says so.
+    assert response.status_code == 502
+    assert "credential" in response.json()["detail"]
     assert "credential detail" not in response.text
 
 

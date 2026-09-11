@@ -264,6 +264,8 @@ nav:
           - Self-observability: guides/dashboard-self-observability.md
           - Alerting & incidents: guides/dashboard-alerts.md
       - Platform features:
+          - CLI Console (every exa command): guides/dashboard-cli-console.md
+          - Resources (tables with create/edit/delete): guides/dashboard-resources.md
           - Command palette & global search: guides/dashboard-command-palette.md
           - Data grid & bulk operations: guides/dashboard-data-grid.md
           - Visualization system: guides/dashboard-visualization.md

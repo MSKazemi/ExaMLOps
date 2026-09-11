@@ -99,15 +99,19 @@ def test_registered_plugin_subcommand_is_callable(monkeypatch):
     def hello():
         typer.echo("hello-from-plugin")
 
-    monkeypatch.setattr(
-        _plugins, "_entry_points", lambda: [_FakeEP("demo", "pkg:app", lambda: plugin_app)]
-    )
-    # Rebuild a fresh root app with the patched discovery so the plugin attaches.
     import importlib
 
     import examlops.cli.main as main_mod
 
+    with monkeypatch.context() as m:
+        m.setattr(
+            _plugins, "_entry_points", lambda: [_FakeEP("demo", "pkg:app", lambda: plugin_app)]
+        )
+        # Rebuild a fresh root app with the patched discovery so the plugin attaches.
+        importlib.reload(main_mod)
+        result = runner.invoke(main_mod.app, ["demo", "hello"])
+    # Rebuild it again without the fake plugin: a reloaded module outlives the patch, and every
+    # later test on this worker would otherwise see `exa demo hello`.
     importlib.reload(main_mod)
-    result = runner.invoke(main_mod.app, ["demo", "hello"])
     assert result.exit_code == 0, result.output
     assert "hello-from-plugin" in result.output

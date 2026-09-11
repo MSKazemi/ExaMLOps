@@ -103,6 +103,13 @@ dashboard:
   pdb:
     enabled: true
     minAvailable: 1
+  # CLI Console (ADR 0119): where the dashboard keeps the `config.toml` its own `exa` runs use
+  # and the file workspace path arguments are contained in (run history is already shared, in
+  # the platform datastore). With more than one replica this must be a ReadWriteMany claim —
+  # otherwise a config edit or an uploaded file is visible only to the pod that received it.
+  # Empty → a per-pod emptyDir (lost on restart).
+  cliState:
+    existingClaim: ""
 
 agent:
   # false = do not deploy the agent tier (the site runs without the `agent` module, ADR 0128).

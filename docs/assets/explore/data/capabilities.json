@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 450,
- "total_groups": 67,
+ "total_commands": 454,
+ "total_groups": 68,
  "panels": [
   {
    "title": "Getting Started",
@@ -60,6 +60,13 @@
      "guide": null
     },
     {
+     "cmd": "exa config delete-context",
+     "group": "config",
+     "help": "Delete a named context and all its values (clears it if it was active).",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
      "cmd": "exa config export",
      "group": "config",
      "help": "One-file YAML snapshot of ALL ExaMLOps configuration (generated, secrets redacted). Aggregates the CLI config (with provenance), contexts, the HPC cluster registry, object-store split (artifact vs dataset MinIO), per-model YAMLs, environment overlays, FinOps providers, and every platform env var — always derived live from the real sources, so it can never drift from reality.",
@@ -88,9 +95,16 @@
      "guide": null
     },
     {
+     "cmd": "exa config unset",
+     "group": "config",
+     "help": "Remove a config value so the next source applies (context → base → default).",
+     "anchor": "exa-config-cli-configuration",
+     "guide": null
+    },
+    {
      "cmd": "exa config use",
      "group": "config",
-     "help": "Switch the active context (environment).",
+     "help": "Switch the active context (environment), or return to the base config with --clear.",
      "anchor": "exa-config-cli-configuration",
      "guide": null
     },
@@ -110,6 +124,7 @@
    "groups": [
     "pipeline",
     "retrain",
+    "retrain-status",
     "scaffold",
     "finetune",
     "reproduce"
@@ -254,6 +269,13 @@
      "help": "Trigger a Prefect training run via the Control Plane.",
      "anchor": "exa-retrain-trigger-a-training-run-via-the-control-plane",
      "guide": "guides/control-plane.md"
+    },
+    {
+     "cmd": "exa retrain-status",
+     "group": "retrain-status",
+     "help": "Show the state of one retrain run (scheduled, running, completed, failed).",
+     "anchor": "training-pipelines",
+     "guide": null
     },
     {
      "cmd": "exa scaffold",
@@ -1197,6 +1219,13 @@
      "cmd": "exa production deploy",
      "group": "production",
      "help": "Plan/execute production deploys, or inspect deploy history/status.",
+     "anchor": "exa-production-production-deployment-verification",
+     "guide": null
+    },
+    {
+     "cmd": "exa production reload",
+     "group": "production",
+     "help": "Hot-reload the control plane's model registry and re-run its startup checks (no restart).",
      "anchor": "exa-production-production-deployment-verification",
      "guide": null
     },

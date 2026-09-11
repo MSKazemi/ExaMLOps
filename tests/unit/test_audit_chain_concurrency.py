@@ -205,3 +205,74 @@ def test_sqlite_conn_path_takes_no_extra_lock():
 
     _append_on(conn, "test", None, "unit_test", "t", None, "default")
     assert "BEGIN IMMEDIATE" not in conn.executed
+
+
+def test_chain_intact_when_callers_pass_an_idle_connection(db):
+    """The ``conn=`` path must not trust the caller to already hold the write lock.
+
+    ``append_audit_event`` documented that its caller must be inside a write transaction, and 24
+    dashboard mutation routes were not: the ``examlops.*`` helper committed the change on its own
+    connection, then the router opened a *fresh* connection only to audit it. That connection is
+    idle, so head-read and append ran unlocked and concurrent routes forked the chain —
+    reproduced live as five rows sharing one ``prev_hash``. ``get_db()`` hands out exactly such an
+    idle connection, so it is the faithful reproduction.
+    """
+    n_threads, per_thread = 8, 6
+    barrier = threading.Barrier(n_threads)
+    errors: list[BaseException] = []
+
+    def worker(tid: int) -> None:
+        try:
+            barrier.wait()
+            for i in range(per_thread):
+                with db.get_db() as conn:  # idle: nothing written on it yet
+                    db.write_audit_event("test", f"w{tid}", "idle_conn", f"t{tid}-{i}", conn=conn)
+        except BaseException as exc:  # noqa: BLE001 - surface in the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"writers raised: {errors}"
+    result = db.verify_audit_chain()
+    assert result["ok"] is True, result
+    assert result["count"] == n_threads * per_thread
+
+
+class _Abandon(Exception):
+    pass
+
+
+def test_a_caller_holding_its_own_write_keeps_atomicity(db):
+    """A caller already mid-transaction keeps its semantics: the audit rolls back with it."""
+    with pytest.raises(_Abandon):
+        with db.get_db() as conn:
+            db.write_audit_event("test", "a", "first", "t", conn=conn)  # opens the caller's txn
+            db.write_audit_event("test", "a", "second", "t", conn=conn)  # joins it
+            raise _Abandon  # get_db() does not commit on the way out → both roll back
+    assert db.verify_audit_chain()["count"] == 0
+
+
+def test_an_idle_connection_that_loses_the_lock_race_retries_instead_of_failing(db):
+    """The idle-connection lock is retried, as every other platform write is.
+
+    ``busy_timeout`` waits once; a saturated host can still outlast it — seen as
+    ``database is locked`` from the concurrent-writer test under the full parallel suite. Nothing
+    is open on an idle connection when ``BEGIN IMMEDIATE`` loses, so re-issuing it is safe.
+    Deterministic here: the holder releases after the waiter's first attempt has already failed.
+    """
+    db.init_db()
+    with db.get_db() as holder, db.get_db() as waiter:
+        holder.execute("BEGIN IMMEDIATE")  # another writer holds the lock
+        waiter.execute("PRAGMA busy_timeout=0")  # so the first attempt fails at once
+        release = threading.Timer(0.15, holder.commit)
+        release.start()
+        try:
+            db.write_audit_event("test", "w", "raced", "t", conn=waiter)
+            waiter.commit()
+        finally:
+            release.join()
+    assert db.verify_audit_chain()["count"] == 1

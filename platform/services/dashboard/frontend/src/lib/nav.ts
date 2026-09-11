@@ -44,6 +44,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  SquareTerminal,
+  Table2,
   Split,
   Target,
   Zap,
@@ -134,6 +136,10 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'Platform',
     icon: FolderKanban,
     items: [
+      // Every `exa` command, runnable from the dashboard (ADR 0119) — first so it is easy to find.
+      { path: '/platform/cli', label: 'CLI Console', icon: SquareTerminal, flag: 'cliConsole' },
+      // Everything `exa` manages, as tables with create/edit/delete (ADR 0119).
+      { path: '/platform/resources', label: 'Resources', icon: Table2, flag: 'cliConsole' },
       { path: '/platform/projects', label: 'Projects', icon: FolderKanban, flag: 'projectsConsole' },
       { path: '/platform/events', label: 'Events', icon: Radio },
       { path: '/platform/services', label: 'Services', icon: Server },

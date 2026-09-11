@@ -162,6 +162,91 @@ def test_copilot_is_wired_to_agent_and_dashboard_owns_api_routes():
     assert backends["/api/changes"] == "rel-examlops-control-plane"
 
 
+def _dashboard(*extra: str) -> dict:
+    result = _render("--set", "global.imageRegistry=ghcr.io/example/", *extra)
+    assert result.returncode == 0, result.stderr
+    return next(
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+        and doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"].endswith("-dashboard")
+    )
+
+
+@needs_helm
+def test_dashboard_cli_state_lives_on_a_writable_volume():
+    # The root filesystem is read-only; the CLI Console's config.toml and workspace must not be.
+    spec = _dashboard()["spec"]["template"]["spec"]
+    container = spec["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["EXAMLOPS_CONFIG"].startswith("/var/lib/examlops-dashboard/")
+    assert env["EXAMLOPS_DASHBOARD_CLI_WORKSPACE"].startswith("/var/lib/examlops-dashboard/")
+    mounts = {m["name"]: m["mountPath"] for m in container["volumeMounts"]}
+    assert mounts["cli-state"] == "/var/lib/examlops-dashboard"
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert "emptyDir" in volumes["cli-state"]  # default: per pod
+
+
+@needs_helm
+def test_dashboard_cli_state_can_be_shared_across_replicas():
+    spec = _dashboard("--set", "dashboard.cliState.existingClaim=cli-rwx")["spec"]["template"][
+        "spec"
+    ]
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["cli-state"]["persistentVolumeClaim"]["claimName"] == "cli-rwx"
+
+
+def test_notes_warning_is_gated_on_replicas_without_a_shared_claim():
+    # Runs with no cluster and no helm: the warning exists, and only more than one replica with no
+    # shared claim triggers it (the rendered half below needs `helm install --dry-run`).
+    notes = (CHART / "templates" / "NOTES.txt").read_text()
+    assert "CLI Console state is per pod" in notes
+    gate = next(
+        line for line in notes.splitlines() if "cliState.existingClaim" in line and "if" in line
+    )
+    assert "gt (int .Values.dashboard.replicaCount) 1" in gate
+    assert "not .Values.dashboard.cliState.existingClaim" in gate
+
+
+@needs_helm
+def test_notes_warn_when_replicas_do_not_share_cli_state():
+    shared = subprocess.run(
+        [
+            HELM,
+            "install",
+            "rel",
+            str(CHART),
+            "--dry-run",
+            "--set",
+            "global.imageRegistry=ghcr.io/example/",
+            "--set",
+            "dashboard.cliState.existingClaim=rwx",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    lone = subprocess.run(
+        [
+            HELM,
+            "install",
+            "rel",
+            str(CHART),
+            "--dry-run",
+            "--set",
+            "global.imageRegistry=ghcr.io/example/",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if any("cluster unreachable" in r.stderr for r in (shared, lone)):
+        # `helm template` never renders NOTES.txt and `helm install --dry-run` asks the current
+        # kube context for its version, so this half needs a cluster; the static test covers the rest.
+        pytest.skip("helm install --dry-run needs a reachable cluster to render NOTES.txt")
+    assert "CLI Console state is per pod" in lone.stdout
+    assert "CLI Console state is per pod" not in shared.stdout
+
+
 @needs_helm
 def test_ha_agent_uses_shared_checkpoint_backend_and_requires_api_key():
     result = _render("--set", "global.imageRegistry=ghcr.io/example/")

@@ -7,8 +7,10 @@ import { I18nProvider } from '@/hooks/I18nProvider'
 import { setAuth, clearAuth } from '@/lib/auth'
 import { Layout } from './Layout'
 
-function renderLayout(initialPath = '/') {
+function renderLayout(initialPath = '/', flags?: Record<string, boolean>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // Seed the server's flag decisions, as `GET /api/v1/flags` would deliver them (F25 R2).
+  if (flags) qc.setQueryData(['flags', 'decisions'], { flags })
   return render(
     <I18nProvider>
       <ThemeProvider>
@@ -80,5 +82,25 @@ describe('Layout — grouped shell (BL-013a)', () => {
 
     fireEvent.click(within(drawer!).getByRole('button', { name: 'Close navigation' }))
     expect(drawer).toHaveClass('hidden')
+  })
+})
+
+describe('Layout — server feature flags reach the nav (F25 R2)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setAuth({ token: 't', role: 'admin', expiresAt: new Date(Date.now() + 3600_000).toISOString() })
+  })
+
+  it('shows the CLI Console and Resources while cliConsole is on', () => {
+    renderLayout('/platform/flags', { cliConsole: true })
+    expect(screen.getByRole('link', { name: /CLI Console/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /^Resources$/ })).toBeInTheDocument()
+  })
+
+  it('hides both when an admin switches cliConsole off server-side', () => {
+    renderLayout('/platform/flags', { cliConsole: false })
+    expect(screen.queryByRole('link', { name: /CLI Console/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /^Resources$/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /^Flags$/ })).toBeInTheDocument() // the way back
   })
 })

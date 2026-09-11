@@ -6,7 +6,8 @@ Ray Serve, MinIO, Grafana/Prometheus, the HPC schedulers, the control plane, and
 `platform.db` operational store — surfaced as consoles, health checks, deep links, and a
 reverse proxy. Almost every write on the dashboard calls the **same `examlops.*` /
 `platform_db` code paths as the `exa` CLI**, so the UI never drifts from the CLI and there
-is a natural CLI equivalent for most actions.
+is a natural CLI equivalent for most actions — and **every** `exa` command (bar twelve that
+need a terminal) is runnable from the [CLI Console](#cli-console).
 
 - **URL:** http://localhost:18099 (remote `lxp-cpu01`: `<REMOTE_HOST>:18099`, or via `ssh lxp` port-forward)
 - **API docs (Swagger):** http://localhost:18099/api/docs (or `/docs`)
@@ -39,14 +40,15 @@ footer of utility links. URLs are lifecycle-scoped (e.g. `/build/models`,
 | **Serve** | LLMOps · Traffic · Gateway · Scaling · Next-Gen |
 | **Operate** | Drift · Alerts · Autopilot · SLOs · Admission · Facility · FinOps · Self-Obs |
 | **Govern** (admin) | Governance · Compliance · Audit · Approvals · Fairness · Secrets |
-| **Platform** | Projects · Events · Services · Providers · Config · SeanerBUS · Jupyter · Flags (admin) |
+| **Platform** | CLI Console · Resources · Projects · Events · Services · Providers · Config · SeanerBUS · Jupyter · Flags (admin) |
 | **Utility (footer)** | Documents · Preferences |
 
 Cross-cutting tools available on every page: the **Command Palette** (⌘K / Ctrl-K), the
 **Copilot** launcher (bottom-right), the **Help drawer** (`?`), theme toggle, and the
 per-entity **watchlist** star. Some consoles are feature-flagged (MLOps `mlopsConsole`,
-Facility `facilityConsole`, Projects `projectsConsole`) and only appear when their flag is
-on.
+Facility `facilityConsole`, Projects `projectsConsole`, CLI Console + Resources `cliConsole`)
+and only appear when their flag is on. `cliConsole` is also enforced by the backend: switched
+off, the dashboard runs no `exa` command at all.
 
 **Reaching Documents:** sidebar footer → **Documents**, or navigate to `/documents`. It
 renders the repo's README + `docs/` tree in-app.
@@ -400,6 +402,47 @@ metadata (path, updated) only.
 
 ---
 
+## CLI Console  <!-- (role: viewer / admin) -->
+
+Every `exa` command, runnable from the browser (ADR 0119) — the guarantee that nothing the CLI
+can do is missing from the dashboard. The list mirrors `exa --help`'s 12 lifecycle panels;
+each command gets a generated form, the equivalent terminal line, and its output rendered as a
+table or record. Full guide: [CLI Console](../guides/dashboard-cli-console.md).
+
+| Action | Use case | How (UI) | CLI equivalent |
+|---|---|---|---|
+| Find a command | You know what you want to do, not where the page is | Search the list, press **⌘K** and type, or click a console's bottom-right `exa …` pill | `exa explain <cmd>` |
+| Run a read command | Look something up that no console shows | Pick it, fill the form, **Run** | the command itself |
+| Run a write **(admin)** | Change state the curated consoles don't cover (e.g. `exa eval gate set`, `exa backup create`) | Same, as admin | the command itself |
+| Run a destructive command **(admin)** | Delete / restore / overwrite | Type the command path back in the confirmation box, then **Run** | the command itself |
+| Feed a file / collect output **(admin)** | Commands with `--docs`, `--items`, `--out` … | **Workspace** tab: upload; outputs appear under the run to download | local paths |
+| Re-open or cancel a run | Check an earlier result, stop a long run | **History** tab; **Cancel** on a running command | — |
+
+Viewers run read-tier commands only; a read whose arguments persist something (`--record`), name
+a file, or reach another host becomes an admin run, and the badge by the title says so. Eight
+commands stay terminal-only and show why (e.g. `exa chat`, `exa stack down`).
+
+---
+
+## Resources  <!-- (role: viewer / admin) -->
+
+Everything `exa` manages, as tables: 47 resources (projects, connections, workbenches, prompts,
+SLOs, traffic splits, A/B tests, budgets, the AI-system register, gateway keys, HPC clusters,
+secrets, backups…), each with **New**, row **View / Edit /
+Delete** and a **⋯** menu of every other action. Declared once in `examlops.cli.resources`, run
+through the CLI Console. Full guide: [Resources](../guides/dashboard-resources.md).
+
+| Action | Use case | How (UI) | CLI equivalent |
+|---|---|---|---|
+| Browse a resource | See all projects / keys / clusters… with filters | Pick it on the left (or ⌘K "Manage …"), set filters, **Apply** | its list command |
+| Create **(admin)** | Add a project, connection, SLO, key… | **New** → fill → **Create** | the create command |
+| View | Inspect one item | Row **eye** icon (loads immediately) | the show command |
+| Edit **(admin)** | Change quota, SLO target, secret value… | Row **pencil** → **Save** | the update command |
+| Delete **(admin)** | Remove an item | Row **bin** → type the command → **Delete** | the delete command |
+| Other actions | Members, storage, test, rotate, promote, retrain… | Row **⋯** menu | the action's command |
+
+---
+
 ## Projects  <!-- (role: viewer / admin) --> (flag: projectsConsole)
 
 The unified project/workspace list — per-project quota, resources, members, status. Click
@@ -473,16 +516,23 @@ Writes are capability-gated (`PROVIDERS_MANAGE`), not raw admin.
 
 ## Config  <!-- (role: viewer / admin) -->
 
-Service endpoints, credentials, thresholds, GitLab ModelZoo integration, ModelZoo webhook
-+ auto-retrain toggle, SeanerBUS bridge, Slurm adapter, and the current session API token.
-Collapsible sections. Viewers see everything read-only (secrets masked); admins edit.
+Two stores, on one page. The **dashboard's own settings** (service endpoints, credentials,
+thresholds, GitLab ModelZoo integration, ModelZoo webhook + auto-retrain, SeanerBUS bridge, Slurm
+adapter, session API token) live in the dashboard database. The **exa CLI configuration**
+section manages the `config.toml` that every `exa` run started from the dashboard uses (CLI
+Console, Resources): effective settings with their source, contexts, validation and export.
+Viewers see everything read-only (secrets masked); admins edit.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
-| View config | All service URLs + which secrets are set (values masked) | Confirm platform wiring | Sidebar → Config | `exa config` / `exa env` |
-| Edit endpoints/params **(admin)** | Change service URLs, thresholds, Slurm, SeanerBUS values | Point the dashboard at new endpoints | Config → edit fields → **Save** | `exa config set <key> <value>` |
-| Set/rotate credentials **(admin)** | Type a new secret (encrypted at rest; blank = unchanged; × = clear) | Store MinIO/Grafana/GitLab/control-plane secrets | Config → Credentials → type → **Save** | `exa config set <key> <value>` |
-| Configure GitLab ModelZoo **(admin)** | Set GitLab URL, project ID, access token | Enable model/dataset auto-discovery | Config → GitLab ModelZoo → **Save** | `exa config set gitlab …` |
+| View config | All service URLs + which secrets are set (values masked) | Confirm platform wiring | Sidebar → Config | — (dashboard settings) |
+| Edit endpoints/params **(admin)** | Change the dashboard's service URLs, thresholds, Slurm, SeanerBUS values | Point the dashboard at new endpoints | Config → edit fields → **Save** | — (dashboard settings, not the CLI's `config.toml`) |
+| Set/rotate credentials **(admin)** | Type a new secret (encrypted at rest; blank = unchanged; × = clear) | Store MinIO/Grafana/GitLab/control-plane secrets | Config → Credentials → type → **Save** | — (dashboard settings) |
+| See the CLI's effective settings | Every `exa` setting with its value (secrets masked) and source — env var, context, base config, default | Know which endpoint/token a dashboard-run command will use | Config → **exa CLI configuration** | `exa env` |
+| Edit / reset a CLI setting **(admin)** | Write a value into the base config or the selected context; Reset removes it so the next source applies. A value set by an environment variable is locked (it would win anyway) | Point `exa` runs at another control plane, rotate its token | Config → exa CLI configuration → pencil / reset | `exa config set <key> <value> [--context C]` · `exa config unset <key> [--context C]` |
+| Manage contexts **(admin)** | Create a context from its first override, activate one (or return to base), delete one after typing its name | Switch every dashboard-run command between environments | Config → exa CLI configuration → Contexts | `exa config set … --context C` · `exa config use C` / `--clear` · `exa config delete-context C` |
+| Validate / export the CLI config | Coherence checks, plus keys in the file that nothing reads and a dangling active context; export a redacted snapshot **(admin)** | Catch a misconfiguration before a run fails on it | **Validate** / **Export** | `exa env --validate` · `exa config export --out …` |
+| Configure GitLab ModelZoo **(admin)** | Set GitLab URL, project ID, access token | Enable model/dataset auto-discovery | Config → GitLab ModelZoo → **Save** | — (a dashboard setting; the CLI has no GitLab key — `exa config set` refuses unknown keys) |
 | ModelZoo webhook + auto-retrain **(admin)** | Copy the webhook URL; toggle auto-retrain on push to main | Wire CI-driven retraining | Config → ModelZoo Integration → **Save webhook config** | — |
 | Reload Ray Serve **(admin)** | Runtime reload without a config save | Apply a promotion immediately | Config → Quick Actions → **Reload Ray Serve** | `exa serve reload` |
 | Import .env **(admin)** | Upload a `.env`/`.env.dashboard` to populate config | Bulk-load config | Config → **Import .env** | — |
@@ -536,6 +586,7 @@ models, HPC jobs, audit events, and pages.
 | Navigate | Fuzzy-jump to any page | Skip the sidebar | Type a page name → Enter | — |
 | Copy an action's CLI | Copies the `exa` command for a matched action (viewer never sees admin-only entries) | Learn/script the CLI equivalent | Select an Action row → Enter | (varies by action) |
 | Federated search | Search models/jobs/audit/pages | Find an entity by name | Type a query → pick a result | — |
+| Find an `exa` command | Lists matching CLI commands (group **CLI**) and opens one in the CLI Console | Run any CLI command without knowing which console has it | Type part of a command (e.g. `gate set`) → pick a CLI row | the command itself |
 
 ### Copilot  <!-- (role: viewer / admin) -->
 

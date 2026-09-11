@@ -104,6 +104,18 @@ async def client(db_engine):
 
 
 @pytest.fixture(autouse=True)
+def _private_platform_db(tmp_path, monkeypatch):
+    """Give every dashboard test its own ``PLATFORM_DB`` file, as the platform's own suite does.
+
+    Without it a test that used only ``client`` — and did not ask for a ``platform_db`` fixture —
+    resolved the default path and read the repository's real ``platform.db``, the one a local stack
+    writes to: its result depended on whatever that stack had recorded, and a write would have
+    landed in it. A test's own fixture still wins (it sets the variable after this one).
+    """
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_postgres_state():
     """Give every dashboard test an empty platform datastore when running on Postgres.
 

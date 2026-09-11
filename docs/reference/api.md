@@ -353,6 +353,28 @@ unknown flag).
 
 ---
 
+### `/api/v1/cli/*` (CLI Console, ADR 0119)
+
+Runs the real `exa` CLI on the dashboard host, one isolated subprocess per run. Who may run a
+command is decided by that command's tier in `examlops.cli.surface`: `read` needs `cli.run`
+(viewer), `admin` needs `cli.write` (admin), and `destructive` also needs the command path typed
+back as `confirm`. Every endpoint except cancel also requires the `cliConsole` feature flag to be
+on, and answers **403** when it is off.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/cli/catalog` | Every leaf command (params, examples, panel, tier), plus `resources` and `resource_coverage`. Gzip-compressed when accepted. |
+| `POST /api/v1/cli/runs` | Body `{"command", "args"?, "format"?: "json"\|"text", "context"?, "confirm"?}` → **202** with the run. **429** when the runner is at capacity. |
+| `GET /api/v1/cli/runs?limit=` | Run history: the caller's own runs, or everyone's for admin. |
+| `GET /api/v1/cli/runs/{id}` | One run: `status` (`queued`/`running`/`succeeded`/`failed`/`timeout`/`cancelled`/`error`), `exit_code`, `stdout`, `stderr`, `parsed`, `files`. While `running`, `stdout`/`stderr` hold the output so far (from another replica, up to ~2 s behind). |
+| `POST /api/v1/cli/runs/{id}/cancel` | Stop a run. Works from any replica, and still works while the flag is off. |
+| `GET` / `POST /api/v1/cli/workspace`, `GET` / `DELETE /api/v1/cli/workspace/file?path=` | The admin CLI workspace: list, upload, download, delete. |
+
+Runs are stored in `dashboard_cli_runs`, so any replica answers for any run. Guide:
+[`dashboard-cli-console.md`](../guides/dashboard-cli-console.md).
+
+---
+
 ### Collaboration (F22)
 
 All viewer-gated, tenant-scoped (F15), sanitized (F16), and audited (`source=dashboard-collab`, D4).

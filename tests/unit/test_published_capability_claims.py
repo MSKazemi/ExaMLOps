@@ -88,6 +88,9 @@ _VIEWER_WRITABLE = {
     ("copilot.py", "ask"),  # F11 copilot is propose-only
     ("models.py", "predict"),  # inference: a POST because it carries a body, not a write
     ("selfobs.py", "ui_action"),  # F24 telemetry of the caller's own UI action
+    # ADR 0119: stopping a CLI run you started. A viewer can only see — so only cancel — its own
+    # runs (`_visible`), and those are `read`-tier by construction; admins may cancel any.
+    ("cli.py", "cancel_run"),
 }
 
 
