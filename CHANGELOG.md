@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — the control-plane and dashboard images run as non-root
+
+- **The control-plane and dashboard images run as non-root**, like the agent. They ran as root
+  while the Helm chart forced uid 10001 on them, so the image was never tested the way Kubernetes
+  runs it. All three now create an app user from build args `APP_UID`/`APP_GID` (default 10001, the
+  chart's `runAsUser`), own the directories they write (`/data`, the dashboard's CLI state), and
+  compose builds them with the host uid so a bind-mounted state directory stays writable. Verified
+  both ways per image: uid 10001 with a read-only root filesystem serves its health endpoint, and a
+  uid-1000 build writes its database into a host-owned `/state`. trivy's "image runs as root"
+  finding is gone for all three.
+
 ### Added — every docs page has its own search description
 
 - 117 of the 138 documentation pages had no `description:`, so each inherited the site-wide

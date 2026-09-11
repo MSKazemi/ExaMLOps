@@ -27,6 +27,19 @@ COPY README.md ./
 COPY mkdocs.yml ./
 COPY docs/ ./docs/
 
+# Non-root. The default uid 10001 is the chart's podSecurityContext.runAsUser; a development
+# compose that bind-mounts the host checkout and state builds with APP_UID/APP_GID = the host user.
+# /var/lib/examlops-dashboard is where the chart mounts the CLI Console's state; it must be the app
+# user's when an empty volume is mounted over it.
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "${APP_GID}" examlops \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --home-dir /var/lib/examlops \
+       --shell /usr/sbin/nologin examlops \
+    && mkdir -p /var/lib/examlops-dashboard \
+    && chown -R "${APP_UID}:${APP_GID}" /app /var/lib/examlops-dashboard
+USER ${APP_UID}:${APP_GID}
+
 WORKDIR /app/backend
 EXPOSE 8099
 CMD ["sh", "-c", "alembic upgrade head && opentelemetry-instrument uvicorn main:app --host 0.0.0.0 --port ${DASHBOARD_PORT:-8099}"]

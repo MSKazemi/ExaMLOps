@@ -250,6 +250,7 @@ Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config c
 | `EXAMLOPS_MCP_ALLOW_WRITES` | unset (read-only) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` registers mutating tools (e.g. `trigger_retrain`). Equivalent to `exa mcp serve --allow-writes`. |
 | `AGENT_URL` | `http://localhost:18004` | Skipper agent OpenAI-compatible bridge that `exa ask` calls. Also settable via `exa config set agent <url>`. |
 | `AGENT_API_KEY` | unset | Bearer token sent by `exa ask` when the agent bridge is token-gated. |
+| `EXAMLOPS_UID` / `EXAMLOPS_GID` | `1000` / `1000` | Dev compose only: the user and group the agent, control-plane and dashboard images are built to run as, so it can write the host-owned `/state` mount (`platform.db`). Set them to your host `id -u` / `id -g` if those are not 1000. Image builds without these (Helm, CI) run as `10001`. |
 | `EXAMLOPS_CONTEXT` | unset | Selects a named config context for the invocation (same effect as `exa -c <name>` / `exa config use <name>`, without persisting). Resolution order: env var → active context → config file → default. |
 
 The `exa` CLI also honours the standard endpoint/token vars (`CONTROL_PLANE_URL`, `MLFLOW_TRACKING_URI`, `RAY_SERVE_URL`, `PREFECT_API_URL`, `DASHBOARD_URL`, `CONTROL_PLANE_TOKEN`), which a config context or `~/.config/examlops/config.toml` can override. Inspect the effective values and their source with `exa env`.

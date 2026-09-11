@@ -198,6 +198,11 @@ services:
       # of the platform, and the Dockerfile builds without it). Point elsewhere for a site build.
       additional_contexts:
         modelzoo: ${EXAMLOPS_MODELZOO_BUILD_CONTEXT:-../../../modelzoo}
+      # Dev: the image's non-root user is the host user, so it can write the host-owned
+      # /state/platform.db bind mount (same reason as the agent below). Helm/prod keep 10001.
+      args:
+        APP_UID: ${EXAMLOPS_UID:-1000}
+        APP_GID: ${EXAMLOPS_GID:-1000}
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-control-plane:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-control-plane
     mem_limit: ${CONTROL_PLANE_MEM_LIMIT:-512m}
@@ -263,6 +268,12 @@ services:
       context: ../../..
       dockerfile: platform/services/agent/Dockerfile
       network: host
+      # Dev: build the image's user as the host user, so it can write both its own /data volume and
+      # the host-owned /state/platform.db bind mount. Helm/prod builds keep the Dockerfile default
+      # (10001). Without this the non-root agent failed with "attempt to write a readonly database".
+      args:
+        APP_UID: ${EXAMLOPS_UID:-1000}
+        APP_GID: ${EXAMLOPS_GID:-1000}
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-agent:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-agent
     mem_limit: ${AGENT_MEM_LIMIT:-2g}
@@ -485,6 +496,10 @@ services:
       context: ../../..
       dockerfile: platform/infra/docker-compose/Dockerfile.dashboard
       network: host
+      # Dev: run as the host user — it writes the /state bind mount and scaffolds into /repo.
+      args:
+        APP_UID: ${EXAMLOPS_UID:-1000}
+        APP_GID: ${EXAMLOPS_GID:-1000}
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-dashboard:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-dashboard
     mem_limit: ${DASHBOARD_MEM_LIMIT:-1g}

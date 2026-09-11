@@ -37,6 +37,20 @@ RUN pip install --upgrade pip \
        opentelemetry-instrumentation-fastapi==0.63b1 \
        opentelemetry-instrumentation-httpx==0.63b1
 
+# Non-root. The default uid 10001 is the chart's podSecurityContext.runAsUser, so the image runs
+# the same way under compose and Kubernetes; a development compose that bind-mounts a host state
+# directory builds with APP_UID/APP_GID = the host user. /data is the fallback datastore location
+# (`/data/approvals.db` when neither CONTROL_PLANE_DB nor PLATFORM_DB is set) and must be the app
+# user's, including when an empty named volume is mounted over it.
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "${APP_GID}" examlops \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --home-dir /var/lib/examlops \
+       --shell /usr/sbin/nologin examlops \
+    && mkdir -p /data \
+    && chown -R "${APP_UID}:${APP_GID}" /app /data
+USER ${APP_UID}:${APP_GID}
+
 EXPOSE 8002
 
 # opentelemetry-instrument auto-instruments FastAPI + httpx from env.
