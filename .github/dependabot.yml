@@ -36,6 +36,17 @@ updates:
       # (PR #4). Lift when the vllm release the lock resolves admits setuptools>=80.
       - dependency-name: "setuptools"
         versions: [">=80"]
+      # mlflow and xgboost must be ONE version where a model is trained (this lock), where it
+      # is served (serving/ray_serving/requirements.txt) and, for mlflow, in the tracking-server
+      # and notebook images. Dependabot moves each manifest alone — PR #16 would have trained on
+      # xgboost 3.4 and served on 3.2. Upgrade both by hand, everywhere at once;
+      # tests/unit/test_training_serving_versions_agree.py fails on any skew.
+      - dependency-name: "mlflow"
+      # xgboost: same rule as mlflow directly above.
+      - dependency-name: "xgboost"
+      # ray: Ray Client needs the cluster's exact version, and the fastapi<0.137 cap is tied to
+      # ray 2.55 — so ray moves in this lock, the serving and notebook images together (PR #6).
+      - dependency-name: "ray"
 
   # Services that keep their own pinned requirements.txt, and the docs toolchain.
   - package-ecosystem: "pip"
@@ -53,6 +64,15 @@ updates:
     groups:
       service-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # serving/ray_serving pins the versions models are SERVED with; they move only together
+      # with the training lock — see the uv entry above and
+      # tests/unit/test_training_serving_versions_agree.py.
+      - dependency-name: "mlflow"
+      # xgboost: same rule as mlflow directly above.
+      - dependency-name: "xgboost"
+      # ray: must equal the workspace's ray — see the uv entry above.
+      - dependency-name: "ray"
 
   # Dashboard frontend.
   - package-ecosystem: "npm"
