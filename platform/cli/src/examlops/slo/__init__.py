@@ -13,6 +13,7 @@ present, specs load from YAML; otherwise pass dict specs directly.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.parse
@@ -322,15 +323,12 @@ def record_sample(
 #: Named explicitly rather than silently recording nothing: a spec whose source yields no samples
 #: reads downstream as *unmeasured*, and "we have no ingester for this" and "the system is healthy"
 #: must not be the same observation.
-UNSUPPORTED_SOURCES = {
-    "prometheus": "needs a live Prometheus; use `exa slo generate` to emit recording rules "
-    "and let Prometheus evaluate them there",
-}
+UNSUPPORTED_SOURCES: dict[str, str] = {}
 
 #: Sources with an ingester. Named so an unrecognised value is reported as a **typo** rather than
 #: as "unknown source" — `c5` was in the ADR and not in this module, and the message a user got
 #: ("unknown sli_source 'c5'") said the source did not exist rather than that it was unbuilt.
-SUPPORTED_SOURCES = ("availability", "c1", "c2", "c5", "c8")
+SUPPORTED_SOURCES = ("availability", "c1", "c2", "c5", "c8", "prometheus")
 
 #: How many recorded drift verdicts one c5 ingest looks back over. Bounded so a long-lived
 #: model's SLI reflects its recent behaviour rather than its whole history — an SLO is a
@@ -477,6 +475,58 @@ def _availability_samples(
     return (1.0 if ok else 0.0, 1.0)
 
 
+def _prometheus_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+    """One sample of an SLO's PromQL ratio, read from Prometheus (ADR 0023 clause 3).
+
+    The spec's ``--query`` is, by the same contract `exa slo generate` uses, a PromQL expression
+    for the good-events **ratio**; without one, the recorded ``examlops:sli_ratio`` series. It is
+    evaluated as an instant query against ``PROMETHEUS_URL`` and recorded as ``good = ratio,
+    total = 1``. So the SLI this source builds is a **time-weighted** average of sampled ratios,
+    not an event-weighted count like `c1`/`c2`/`c5` — Prometheus hands back a ratio, and turning
+    it into counts would invent a denominator. Run the ingest on a schedule, as for availability.
+
+    Unlike the availability probe, a Prometheus that cannot be asked is **unmeasured**, never a
+    bad sample: a monitoring outage is not a service outage. The host comes from the
+    environment, never from the spec. A query that returns anything but exactly one series in
+    [0, 1] is refused rather than averaged or clipped.
+    """
+    query = (spec.get("sli_query") or "").strip() or (
+        f'examlops:sli_ratio{{model="{model}",slo="{spec["name"]}"}}'
+    )
+    base = (os.getenv("PROMETHEUS_URL") or "http://localhost:19090").rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        return f"PROMETHEUS_URL '{base}' is not an http(s) URL"
+    url = f"{base}/api/v1/query?{urllib.parse.urlencode({'query': query})}"
+    timeout = float(os.getenv("EXAMLOPS_SLO_PROBE_TIMEOUT", "5") or 5)
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(url, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - unreachable monitoring is unmeasured, not down
+        return f"Prometheus at {base} could not be queried ({exc}) — nothing recorded"
+    if body.get("status") != "success":
+        return f"Prometheus refused the query: {body.get('error') or body.get('status')}"
+    data = body.get("data") or {}
+    result = data.get("result")
+    value: Any
+    if data.get("resultType") == "scalar":
+        value = result
+    else:
+        series = result or []
+        if len(series) != 1:
+            return (
+                f"the query returned {len(series)} series; an SLI must be one ratio — aggregate "
+                "it (e.g. sum(rate(good[5m])) / sum(rate(total[5m])))"
+            )
+        value = series[0].get("value")
+    try:
+        ratio = float(value[1])
+    except (TypeError, ValueError, IndexError):
+        return f"the query returned no usable value ({value!r})"
+    if not 0.0 <= ratio <= 1.0:  # NaN fails both comparisons and lands here too
+        return f"the query returned {ratio}, which is not a ratio in [0, 1]"
+    return (ratio, 1.0)
+
+
 def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
     """Good/total for a drift SLO, from recorded drift **verdicts** (ADR 0023 clause 3, c5).
 
@@ -616,6 +666,8 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
             result = _c5_samples(model, spec, tenant)
         elif source == "c8":
             result = _c8_samples(model, spec, tenant)
+        elif source == "prometheus":
+            result = _prometheus_samples(model, spec, tenant)
         else:
             result = (
                 f"unrecognised sli_source '{source}' — expected one of "

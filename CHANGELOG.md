@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Prometheus-backed SLOs: the `prometheus` SLI source (ADR 0023, now Accepted)
+
+- `exa slo ingest` evaluates a `prometheus` spec's PromQL ratio (its `--query`, or the recorded
+  `examlops:sli_ratio` series) as an instant query against `PROMETHEUS_URL` and records one sample
+  of it. The SLI is therefore a time-weighted average of sampled ratios, not an event count.
+- Anything but exactly one series in [0, 1] is refused with the reason, never averaged or clipped.
+  An unreachable Prometheus is recorded as unmeasured, not as a bad sample. The host is never
+  taken from a spec.
+- Every SLI source now has an ingester, which completes ADR 0023.
+
 ## [0.57.0] - 2026-09-11
 
 ### Fixed — the install bundle pulls MinIO from quay.io; MinIO left Docker Hub

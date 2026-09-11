@@ -544,7 +544,7 @@ automatically.
 | `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. |
 | `DASHBOARD_AGENT_API_KEY` | unset | Dashboard BFF credential forwarded to the agent. Its value must appear under the `dashboard` principal (or another intentionally named dashboard principal) in `AGENT_API_KEYS_JSON`. The dashboard prefers this over legacy `AGENT_API_KEY`. |
 | `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
-| `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
+| `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool, and the one `exa slo ingest` queries for `prometheus`-source SLOs (ADR 0023) |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve endpoint for the `predict` / inference tools |
 | `AGENT_DB` | `./agent_memory.db` | SQLite file backing the LangGraph checkpointer — conversations persist here and are resumable by thread id (`/resume`) |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs/knowledge tools (`search_docs`, `read_doc`, `list_docs`) search and read |
@@ -811,7 +811,7 @@ appear in a log or a CI summary until you switch it on.
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SLO_GATE_ENABLED` | off | Make `exa slo` failures block a promotion instead of reporting. |
-| `EXAMLOPS_SLO_PROBE_TIMEOUT` | `5` | Seconds the `availability` SLI probe (`exa slo ingest`, ADR 0023) waits for the model's Open Inference Protocol readiness answer (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`) before counting it a bad sample. |
+| `EXAMLOPS_SLO_PROBE_TIMEOUT` | `5` | Seconds `exa slo ingest` waits on the network (ADR 0023): the `availability` probe's Open Inference Protocol readiness answer (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`; no answer is a bad sample), and a `prometheus` source's instant query to `PROMETHEUS_URL` (no answer is unmeasured). |
 | `EXAMLOPS_FAIRNESS_GATE_ENABLED` | off | Make subgroup-fairness failures block. |
 | `EXAMLOPS_SYNTHETIC_ONLY_GATE` | off | Refuse to train on anything but synthetic data — for a use case that may not touch real records yet. |
 

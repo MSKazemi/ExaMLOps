@@ -138,10 +138,31 @@ request forgery primitive. Redirects are not followed either. This is black-box 
 does the model answer. The share of *real* requests that succeeded is request-based
 availability, which lives in Prometheus.
 
-**The remaining source is reported as un-ingested, with the reason:** `prometheus` because Prometheus evaluates its own rules
-(use `exa slo generate`). This is not an oversight to tidy away: a source that silently records
-nothing is indistinguishable downstream from a healthy service nobody asked about, which is the
-trap the `measured` flag already exists to close.
+**`prometheus` reads the SLO's PromQL ratio back.** Each ingest evaluates the spec's `--query` (the
+good-events *ratio*, the same contract `exa slo generate` builds rules from; without one, the
+recorded `examlops:sli_ratio` series) as an instant query against `PROMETHEUS_URL`. It records one
+sample of the answer:
+
+```bash
+exa slo set JPCP p99-ok --target 0.99 --source prometheus \
+  --query 'sum(rate(http_requests_total{model="JPCP",code!~"5.."}[5m])) / sum(rate(http_requests_total{model="JPCP"}[5m]))'
+```
+
+- **The SLI is time-weighted.** Prometheus hands back a ratio, so each ingest records
+  `good = ratio, total = 1`. The SLI is the average of those samples, not an event-weighted count
+  like `c1`/`c2`/`c5`; turning a ratio into counts would invent a denominator. Run the ingest on a
+  schedule.
+- **Only one ratio is accepted.** A query that returns more than one series, none, NaN, or a value
+  outside [0, 1] is refused with the reason. It is never averaged or clipped. Aggregate it in the
+  query itself.
+- **A Prometheus that can't be reached is *unmeasured*.** This is the opposite rule to the
+  availability probe: a monitoring outage is not a service outage. The host comes from
+  `PROMETHEUS_URL`, never from the spec.
+
+**Every source now has an ingester.** An SLO whose ingest cannot produce a sample, for a missing
+query, no data or an unreachable Prometheus, reports why and records nothing, because silence
+would be indistinguishable downstream from a healthy service nobody asked about. That is the trap
+the `measured` flag exists to close.
 
 A **misspelled** source is reported differently again — `unrecognised sli_source '<x>' — expected
 one of [...]`. A typo and a deliberately-unbuilt source read identically until 2026-09-02, which
