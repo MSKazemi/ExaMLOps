@@ -169,7 +169,7 @@ dataplane-kafka = [
 # `_thread.lock`. This extra never touches Ray, but `uv.lock` resolves one version of fastapi for
 # the whole workspace, so an uncapped floor here would make the lock unsatisfiable.
 dataplane-service = [
-    "fastapi>=0.100.0,<0.137",
+    "fastapi>=0.136.3,<0.137",
     "uvicorn[standard]>=0.52",
     "prometheus-client>=0.20",
 ]
