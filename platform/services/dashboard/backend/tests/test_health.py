@@ -103,6 +103,7 @@ async def test_health_contains_all_services(client):
         "dashboard",
         "slurm",
         "seanerbus_sim",
+        "dataplane",
     }
 
 

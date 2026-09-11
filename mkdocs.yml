@@ -176,6 +176,8 @@ nav:
       - Backup, Restore & Disaster Recovery: guides/backup-restore.md
       - HPC Fleet (discover · connect · schedule): guides/hpc-fleet.md
       - HPC Training Workflow (run on a real cluster): guides/hpc-training-workflow.md
+  - Runbooks:
+      - Dataplane: runbooks/dataplane.md
   - Tutorials:
       - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
       - Set up a Project from the Dashboard: tutorials/dashboard-project-setup.md

@@ -56,6 +56,11 @@ scrape_configs:
       - targets: ['seanerbus-bridge:8003']
     metrics_path: /metrics
 
+  - job_name: dataplane
+    static_configs:
+      - targets: ['dataplane:8010']
+    metrics_path: /metrics
+
   # vLLM (Track V / ADR 0107) — TTFT, inter-token latency, queue depth, KV-cache usage.
   # The Compose service is a fixed target; endpoints launched on HPC land on whichever
   # node the scheduler allocated, so those are discovered from the endpoint registry via

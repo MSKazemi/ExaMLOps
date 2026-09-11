@@ -63,11 +63,29 @@ services:
         mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin} &&
         mc mb --ignore-existing local/mlflow-artifacts &&
         mc mb --ignore-existing local/$${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects} &&
-        echo '[minio-init] buckets mlflow-artifacts + project storage ready.'
+        mc mb --ignore-existing local/$${EXAMLOPS_DATA_BUCKET:-examlops-data} &&
+        echo '[minio-init] buckets mlflow-artifacts + project storage + dataplane data ready.' &&
+        D="$${EXAMLOPS_DATA_BUCKET:-examlops-data}" &&
+        RW='"s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket","s3:GetBucketLocation","s3:ListMultipartUploadParts","s3:AbortMultipartUpload"' &&
+        grant() {
+          if [ -n "$$2" ] && [ -n "$$3" ]; then
+            printf '%s' "{\"Version\":\"2012-10-17\",\"Statement\":[$$4]}" > "/tmp/$$1.json" &&
+            mc admin policy create local "$$1" "/tmp/$$1.json" &&
+            mc admin user add local "$$2" "$$3" &&
+            { mc admin policy attach local "$$1" --user "$$2" 2>/dev/null || true; } &&
+            echo "[minio-init] least-privilege credential $$1 ready.";
+          else
+            echo "[minio-init] no key for $$1: that service falls back to the root credential.";
+          fi;
+        } &&
+        grant dataplane-rw "$${MINIO_DATAPLANE_ACCESS_KEY}" "$${MINIO_DATAPLANE_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::$$D\",\"arn:aws:s3:::$$D/*\"]}"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
+      EXAMLOPS_DATA_BUCKET: ${EXAMLOPS_DATA_BUCKET:-examlops-data}
+      MINIO_DATAPLANE_ACCESS_KEY: ${MINIO_DATAPLANE_ACCESS_KEY:-}
+      MINIO_DATAPLANE_SECRET_KEY: ${MINIO_DATAPLANE_SECRET_KEY:-}
     restart: "no"
 
   mlflow:
@@ -260,6 +278,74 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Dataplane — pulls external data into versioned snapshots (ADR 0130) ────────
+  dataplane:
+    build:
+      context: ../../..
+      dockerfile: platform/services/dataplane/Dockerfile
+      network: host
+      # Dev: the image's non-root user is the host user, so it can write the host-owned
+      # /state/platform.db bind mount (same reason as control-plane/agent above). Helm/prod
+      # keep 10001.
+      args:
+        APP_UID: ${EXAMLOPS_UID:-1000}
+        APP_GID: ${EXAMLOPS_GID:-1000}
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-dataplane:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-dataplane
+    mem_limit: ${DATAPLANE_MEM_LIMIT:-2g}
+    environment:
+      DATAPLANE_PORT: "8010"
+      DATAPLANE_TOKEN: ${DATAPLANE_TOKEN:-}
+      EXAMLOPS_DATA_BUCKET: ${EXAMLOPS_DATA_BUCKET:-examlops-data}
+      EXAMLOPS_DATA_S3_ENDPOINT: ${EXAMLOPS_DATA_S3_ENDPOINT:-http://minio:9000}
+      # Its own least-privilege credential (plan P3.4 pattern), the same fallback shape as the
+      # dashboard's: read-write on EXAMLOPS_DATA_BUCKET only, root only until one is issued.
+      EXAMLOPS_DATA_S3_ACCESS_KEY: ${MINIO_DATAPLANE_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      EXAMLOPS_DATA_S3_SECRET_KEY: ${MINIO_DATAPLANE_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+      EXAMLOPS_DATAPLANE_ALLOWED_HOSTS: ${EXAMLOPS_DATAPLANE_ALLOWED_HOSTS:-}
+      # No cloud instance-metadata probe (169.254.169.254) from the S3 client: credentials come
+      # only from the env above, and the probe is an SSRF-shaped request this service never needs.
+      AWS_EC2_METADATA_DISABLED: "true"
+      EXAMLOPS_SECRETS_KEYS: ${EXAMLOPS_SECRETS_KEYS:-}
+      EXAMLOPS_SECRETS_ACTIVE_KEY: ${EXAMLOPS_SECRETS_ACTIVE_KEY:-}
+      # Named Connection secrets created from the dashboard were encrypted with this (legacy
+      # decrypt path, ADR 0011); without it the dataplane cannot read them.
+      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:-}
+      EXAMLOPS_COORDINATOR: ${EXAMLOPS_COORDINATOR:-db}
+      PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      # Also publish every audit event as audit.recorded (docs/guides/audit-trail.md).
+      EXAMLOPS_AUDIT_STREAM: ${EXAMLOPS_AUDIT_STREAM:-}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+      # Identity federation (ADR 0120): the trust file path inside the container, as the control
+      # plane has. Unset ⇒ off.
+      EXAMLOPS_IAM_CONFIG: ${EXAMLOPS_IAM_CONFIG:-}
+      TMPDIR: /stage
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+      OTEL_SERVICE_NAME: dataplane
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+      - dataplane_stage:/stage
+    ports:
+      # Loopback by default: with no DATAPLANE_TOKEN and no identity federation, reads are open
+      # (auth.py), which is only safe when nothing but this host can reach the port.
+      - "${DATAPLANE_BIND:-127.0.0.1}:18010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8010/ready')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   # Skipper agent — serves the OpenAI-compatible endpoint used by the dashboard Copilot.
   # `localhost` inside the dashboard container points back to that container, so the BFF
   # must use this service name instead.
@@ -332,6 +418,41 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  # ── Kafka (dev/test only, `--profile kafka`) — a single-node KRaft broker ───────────
+  # For exercising the dataplane's `kafka` connector (ADR 0130) and stream ingress (ADR 0131)
+  # against a real broker. Not a production deployment: one node, no replication, PLAINTEXT.
+  # Containers reach it as `kafka:9092`; the host as `localhost:19092` (+10000 rule).
+  kafka:
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    profiles: [kafka]
+    container_name: examlops-kafka
+    mem_limit: ${KAFKA_MEM_LIMIT:-1g}
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      # Topics are created on purpose, never by a typo in a consumer's config.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:19092:19092"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # ── Optional monitoring stack (start with: make monitoring-up) ─────────────
   # Run under the "monitoring" profile — not started by dev-up.
@@ -554,6 +675,8 @@ services:
       PUBLIC_SEANERBUS_BRIDGE_URL: http://${PUBLIC_HOST:-localhost}:18003
       LOKI_URL: http://loki:3100
       PUBLIC_LOKI_URL: http://${PUBLIC_HOST:-localhost}:13100
+      EXAMLOPS_DATAPLANE_URL: http://dataplane:8010
+      PUBLIC_DATAPLANE_URL: http://${PUBLIC_HOST:-localhost}:18010
       JUPYTERHUB_URL: http://jupyterhub:8000
       PUBLIC_JUPYTERHUB_URL: http://${PUBLIC_HOST:-localhost}:18888
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099
@@ -838,6 +961,8 @@ volumes:
   agent_data:
   backups_data:
   dashboard_cli_data:
+  dataplane_stage:
+  kafka_data:
 
 networks:
   seanerbus-net:

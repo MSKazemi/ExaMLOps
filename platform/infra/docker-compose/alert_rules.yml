@@ -277,6 +277,56 @@ groups:
           summary: "{{ $value }} approvals auto-expired in 1 h"
           description: "High auto-expiry volume — operators may not be reviewing approvals or APPROVAL_EXPIRY_HOURS is too short."
 
+  # ── Dataplane (ADR 0130) ────────────────────────────────────────────────────────
+  - name: examlops-dataplane
+    rules:
+      - alert: DataplaneDown
+        expr: up{job="dataplane"} == 0
+        for: 2m
+        labels: {severity: critical, service: dataplane}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanedown"
+          summary: "Dataplane service is down"
+          description: "No scrape of dataplane:8010 for 2 minutes; scheduled pulls are not running."
+      - alert: DataplaneSourceStale
+        # Stale = no successful pull for more than twice the source's own schedule (spec; final
+        # review I10 — it was a fixed 2 days, which never fires for a 15m source and pages for
+        # a weekly one). `dataplane_source_schedule_seconds` exists only for enabled sources with
+        # a parseable schedule (the service's `_freshness_collector`), so an on-demand or
+        # disabled source can never match. Both series carry the same labels, so default
+        # one-to-one matching pairs each source's freshness with its own schedule.
+        expr: dataplane_source_freshness_seconds > 2 * dataplane_source_schedule_seconds
+        for: 30m
+        labels: {severity: warning, service: dataplane}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanesourcestale"
+          summary: "Dataplane source {{ $labels.source }} is stale"
+          description: "No successful pull for {{ $value | humanizeDuration }}, more than twice its schedule; check `exa dataplane pulls --source {{ $labels.source }}`."
+      - alert: DataplanePullFailing
+        # No `absent()` arm needed here (fix round 1): every registered source always gets a
+        # `dataplane_source_up` series — the collector (examlops.dataplane.service.app
+        # `_freshness_collector`) now emits 0 for a source whose own catalog read raises, instead
+        # of skipping it. So absence of the whole series means "no such source", not "outage",
+        # and a catalog-wide outage is what DataplaneCatalogUnavailable below is for.
+        expr: dataplane_source_up == 0
+        for: 1h
+        labels: {severity: warning, service: dataplane}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanepullfailing"
+          summary: "Dataplane pulls of {{ $labels.source }} are failing"
+          description: "The latest pull failed; see `exa dataplane pulls --source {{ $labels.source }}`."
+      - alert: DataplaneCatalogUnavailable
+        # Always-present gauge (fix round 1): `dataplane_source_up` only has series for
+        # *registered* sources, so it cannot see a catalog that cannot be listed at all — an
+        # install with zero sources would otherwise look identical to one whose catalog is down.
+        expr: dataplane_catalog_up == 0
+        for: 10m
+        labels: {severity: warning, service: dataplane}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanecatalogunavailable"
+          summary: "Dataplane cannot read its source catalog"
+          description: "list_source_defs() has failed for 10 minutes — every per-source gauge (dataplane_source_up, freshness) is blind until the catalog recovers; see the dataplane service logs."
+
   # ── Platform-wide infrastructure ──────────────────────────────────────────────
   - name: examlops-platform
     rules:

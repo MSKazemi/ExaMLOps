@@ -97,6 +97,10 @@ connection's `endpoint` is `scheme://host[:port]` (`http://minio:9000`,
 `https://s3.example.org`) and is checked against the egress allow-list before anything is
 sent: a loopback, private or platform-internal host is refused unless allow-listed — a `files`
 source on the platform MinIO (`http://minio:9000`) needs `EXAMLOPS_DATAPLANE_ALLOWED_HOSTS=minio`.
+The `sql` and `kafka` connectors are checked the same way, on the connection URL's host and on
+every `bootstrap_servers` entry respectively — a `sql` connection to the platform Postgres
+(`postgresql+psycopg://…@postgres/mlflow`) needs `EXAMLOPS_DATAPLANE_ALLOWED_HOSTS=postgres`,
+and a `kafka` connection to a broker named `kafka` needs `EXAMLOPS_DATAPLANE_ALLOWED_HOSTS=kafka`.
 An `http://` endpoint is pinned to the address the check approved (so the request's `Host` is that
 IP — a name-based virtual host behind an ingress will not answer it); an `https://` one keeps its
 hostname for TLS. This check is weaker than the one on HTTP sources: it covers only the **first
@@ -106,7 +110,7 @@ network egress policy. The connection may carry a `region` (`eu-west-1`). A conn
 reads anonymously; a source never borrows the service's own AWS credentials. The region is
 otherwise `AWS_REGION`, then `AWS_DEFAULT_REGION` (else `us-east-1`, which MinIO ignores), so set
 one for an AWS bucket in another region. Buckets are never created — the store's bucket must
-already exist: create `EXAMLOPS_DATA_BUCKET` before the first pull.
+already exist (`minio-init` creates `EXAMLOPS_DATA_BUCKET` in Compose).
 
 The snapshot store itself is operator configuration: its endpoint is not egress-checked, and with
 no `EXAMLOPS_DATA_S3_ACCESS_KEY`/`AWS_ACCESS_KEY_ID` it uses the AWS default credential chain
@@ -315,10 +319,22 @@ on a sample. The pull's result, its audit record and the gate's report then show
   `mlflow` or `minio` is refused by default. For HTTP, REST and Zenodo sources the check is pinned
   to the resolved IP and repeated on every redirect, so DNS rebinding and redirects cannot bypass
   it. S3 endpoints are checked on the first hop only (see *Connect a source*); a network egress
-  policy on the dataplane container is the backstop for them.
-- **Local files are gated.** A `file://` source/sink is refused unless
+  policy on the dataplane container is the backstop for them. The `sql` connector checks the
+  connection URL's host before the engine is built; for `postgresql+psycopg` the checked address
+  is additionally pinned via libpq's `hostaddr`, so DNS cannot rebind between the check and the
+  connection while TLS still verifies the hostname — other dialects are checked but not pinned.
+  The `kafka` connector checks every `bootstrap_servers` entry before the Consumer is built; one
+  denied entry refuses the whole connection. Residual for both: a Postgres redirect-equivalent
+  does not exist, but a Kafka broker's own metadata can advertise other listener addresses that
+  librdkafka then connects to directly — those later hops are not re-checked, so a network egress
+  policy is the backstop there too.
+- **Local files are gated.** A `file://` source/sink, or a `sqlite:` URL on the `sql` connector
+  (which has no network host to check), is refused unless
   `EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES=1` — the dataplane service's own container should never
-  read platform state through a connector.
+  read platform state through a connector. A database reached over a unix socket takes the same
+  gate: write the socket as a host-less URL (`postgresql+psycopg://reader@/jobs`, libpq's default
+  socket directory). A query parameter that names a host or socket (`?host=`, `?unix_socket=`, …)
+  is always refused, because it would route the connection past the host the guard checked.
 - **Read-only database roles.** The `sql` connector sets a read-only transaction and a statement
   timeout where the dialect supports it (Postgres, MySQL/MariaDB, SQLite); the connection's own
   database role should still be least-privilege and read-only.
@@ -363,6 +379,9 @@ on a sample. The pull's result, its audit record and the gate's report then show
   `/health` reports the effective mode (`open`, `static`, `federated`, `static+federated`,
   `token-invalid`, `trust-file-invalid`, …), and the service logs it once at startup.
   `EXAMLOPS_DATAPLANE_TOKEN` is the client side, used by `exa dataplane pull --remote`.
+- **A dedicated object-store credential.** The compose deployment gives the dataplane service its
+  own least-privilege MinIO credential (`MINIO_DATAPLANE_ACCESS_KEY`/`_SECRET_KEY`), scoped to the
+  dataset bucket only — never the platform's root MinIO credential.
 
 ## The service
 
@@ -371,9 +390,8 @@ scheduler that fires each source on its own `--schedule`, and Prometheus metrics
 run unattended instead of only from an operator's `exa dataplane pull`.
 
 ```bash
-DATAPLANE_TOKEN=<a real secret> python platform/services/dataplane/main.py   # listens on :8010
-curl http://localhost:8010/health
-curl http://localhost:8010/metrics
+curl http://localhost:18010/health
+curl http://localhost:18010/metrics
 ```
 
 `/health` reports whether the catalog and snapshot store are reachable, which connectors have
@@ -386,8 +404,11 @@ failed this scrape), plus `dataplane_pull_total`/`dataplane_pull_duration_second
 label-free gauge, `dataplane_catalog_up`, is 1 if the whole source catalog answered this scrape
 and 0 if it did not — it exists because `dataplane_source_up` only has a series per already
 *registered* source, so it cannot tell a healthy install with zero sources from one whose catalog
-cannot be read at all. `dataplane_source_schedule_seconds` is a scheduled source's pull interval,
-published only for an enabled source whose schedule parses — alert when freshness passes twice it.
+cannot be read at all. `dataplane_source_schedule_seconds` is a scheduled source's pull interval.
+It is published only for an enabled source whose schedule parses, and `DataplaneSourceStale` fires
+when freshness passes twice that value. Alerts on these metrics (`DataplaneDown`, `DataplaneSourceStale`,
+`DataplanePullFailing`, `DataplaneCatalogUnavailable`), and how to act on each one, are in the
+[dataplane runbook](../runbooks/dataplane.md).
 
 `exa dataplane pull <source> --remote` is the CLI-side view of the same API — see
 [Pull and inspect](#pull-and-inspect) above.

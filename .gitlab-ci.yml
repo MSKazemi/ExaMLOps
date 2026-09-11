@@ -863,6 +863,7 @@ build:images:
           - orchestrator
           - ray-serving
           - control-plane
+          - dataplane
           - agent
           - prometheus
           - grafana

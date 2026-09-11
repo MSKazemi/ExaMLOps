@@ -147,6 +147,24 @@ _PROMQL_WORDS = {
 }
 
 
+# Metrics exempt from the absent()-arm requirement below, each for a documented reason the
+# regex-level guard cannot see on its own — not a blanket escape hatch. Extend it only with the
+# same care.
+#
+#   dataplane_catalog_up   published unconditionally, every scrape, with or without any source
+#                          registered (examlops.dataplane.service.app._freshness_collector's
+#                          `catalog_up` gauge) — the guard's own stated exception ("a metric that
+#                          is published unconditionally") applies directly.
+#   dataplane_source_up    every *registered* source always gets a series, including a 0 when
+#                          its own catalog read fails (same collector, fix round 1: the source
+#                          loop used to `continue` — skipping the series entirely — on a read
+#                          error, which is exactly the bug this guard exists to catch; it now
+#                          emits 0 instead). So the whole series being absent means "not a
+#                          registered source", not "outage" — a catalog-wide outage is what
+#                          `dataplane_catalog_up` (and `DataplaneCatalogUnavailable`) is for.
+_EXEMPT_METRICS = {"dataplane_catalog_up", "dataplane_source_up"}
+
+
 def test_every_equality_alert_can_still_see_an_absent_series():
     rules = yaml.safe_load(_RULES.read_text(encoding="utf-8"))
     checked, offenders = 0, []
@@ -164,8 +182,8 @@ def test_every_equality_alert_can_still_see_an_absent_series():
             names = set(re.findall(r"\b[a-z_][a-z0-9_:]*\b", bare)) - _PROMQL_WORDS
             # `up` is exempt: Prometheus synthesises it for every configured target, so it is
             # never missing while the target is configured. Absence there means "not scraped
-            # at all", which is a different alert's job.
-            metrics = names - {"up"}
+            # at all", which is a different alert's job. See `_EXEMPT_METRICS` for the others.
+            metrics = names - {"up"} - _EXEMPT_METRICS
             if not metrics:
                 continue
             checked += 1

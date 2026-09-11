@@ -241,8 +241,8 @@ Connectors read SQL databases, object storage and file URLs, Zenodo records, RES
 | `exa dataplane pulls` | Recent pulls and their outcomes | See why a refresh failed | `exa dataplane pulls --source pm100` |
 | `exa dataplane snapshots` | Committed snapshots of a source | Pick a revision to pin | `exa dataplane snapshots pm100` |
 | `exa dataplane manifest` | One snapshot's manifest | Audit what a run trained on | `exa dataplane manifest pm100` |
-| `exa dataplane prune` | Deletes old snapshots, keeping pinned ones. **Mutation.** | Reclaim storage | `exa dataplane prune pm100 --keep 5 --dry-run` |
-| `exa dataplane catalog-rebuild` | Re-indexes snapshots from the store. **Mutation.** | After a restore | `exa dataplane catalog-rebuild` |
+| `exa dataplane prune` | Deletes old snapshots, keeping pinned ones; refuses while a pull runs or when the catalog lost its revision rows (`--force` overrides). **Mutation.** | Reclaim storage | `exa dataplane prune pm100 --keep 5 --dry-run` |
+| `exa dataplane catalog-rebuild` | Rebuilds pull history and the revision index by walking the store; lists sources to re-register. **Mutation.** | After losing or restoring platform.db | `exa dataplane catalog-rebuild` |
 
 ### `exa feature` — serving feature store, zero train/serve skew (A3)
 

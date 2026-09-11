@@ -5,6 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the dataplane in the Compose stack: its own MinIO credential, alerts, runbook (ADR 0130)
+
+- A `dataplane` Compose service runs the dataplane on host port `18010`, bound to loopback unless
+  `DATAPLANE_BIND` says otherwise (`make dataplane-up`,
+  `make dataplane-down`, `make dataplane-logs`). `minio-init` now creates the dataset bucket
+  (`EXAMLOPS_DATA_BUCKET`, default `examlops-data`). When `MINIO_DATAPLANE_ACCESS_KEY` and
+  `MINIO_DATAPLANE_SECRET_KEY` are set, it also creates a least-privilege MinIO credential for the
+  service: read-write on that bucket and nothing else. Until they are set, the service falls back
+  to the root credential.
+- A single-node Kafka broker for development and testing: `docker compose --profile kafka up -d
+  kafka` (KRaft, `apache/kafka` 4.3.1 pinned by digest, no topic auto-creation). Containers reach
+  it as `kafka:9092`; the host reaches it on `localhost:19092`, which is bound to loopback only. It
+  is not a production deployment: one node, no replication, no authentication.
+- Prometheus scrapes the service (job `dataplane`), and four alert rules watch it:
+  `DataplaneDown`, `DataplaneSourceStale` (no successful pull for more than twice the source's own
+  schedule), `DataplanePullFailing` and `DataplaneCatalogUnavailable`. Each alert links to its
+  section of the new [dataplane runbook](docs/runbooks/dataplane.md).
+- The dashboard's service health (`/api/health`) now includes the dataplane
+  (`EXAMLOPS_DATAPLANE_URL`, `PUBLIC_DATAPLANE_URL`).
+
+### Security — the `sql` and `kafka` connectors now pass the dataplane egress check (ADR 0130)
+
+- The `sql` connector connected to whatever host its URL named, and the `kafka` connector to
+  whatever brokers it was given, so a source could reach the platform's own services or a private
+  address. Both now go through the same egress allow-list as the other connectors
+  (`EXAMLOPS_DATAPLANE_ALLOWED_HOSTS`): `sql` checks the connection URL's host, and `kafka` checks
+  every `bootstrap_servers` entry. One refused broker refuses the whole connection.
+- For `postgresql+psycopg`, the connection is pinned to the address the check approved (libpq
+  `hostaddr`), so DNS cannot change it in between. A query parameter that names a host, port or
+  socket (`host`, `hostaddr`, `port`, `service`, `unix_socket`) is refused. A URL with no network
+  host (`sqlite:`, a unix socket) needs `EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES=1`, as `file://`
+  sources do. A host that does not resolve is reported as a refused connection, not a raw DNS
+  error.
+- Once connected, a Kafka broker can advertise other addresses, and those are not re-checked; a
+  network egress policy on the dataplane container remains the backstop.
+
 ### Fixed — audit hash chain forked under concurrent dashboard writes
 
 - `examlops.data.audit._lock_chain_head` now takes an IMMEDIATE lock on an **idle** SQLite

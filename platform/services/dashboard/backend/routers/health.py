@@ -36,6 +36,7 @@ _SERVICES = {
         settings.public_seanerbus_bridge_url,
     ),
     "jupyterhub": (settings.jupyterhub_url, "/hub/api/", settings.public_jupyterhub_url),
+    "dataplane": (settings.dataplane_url, "/health", settings.public_dataplane_url),
 }
 
 

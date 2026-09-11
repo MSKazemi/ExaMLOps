@@ -57,18 +57,32 @@ def test_every_job_an_alert_selects_on_is_actually_scraped():
     )
 
 
+# Gauges that a `prometheus_client` Collector recomputes from durable stored state on every
+# scrape — not a flag the service sets once in memory and never revisits — so they cannot go
+# stale the way a self-reported liveness gauge does; a genuinely failed reading reads 0 for as
+# long as it stays the latest one, scrape after scrape.
+# `dataplane_source_up` (platform/cli/src/examlops/dataplane/service/app.py
+# `_freshness_collector`) queries the pull catalog fresh each time, including while the
+# dataplane service itself is perfectly healthy and only one source's last pull failed.
+# `dataplane_catalog_up` is the same collector's whole-catalog gauge: it queries
+# `list_source_defs()` fresh on every scrape and reads 0 for exactly as long as that call keeps
+# raising, never merely going stale.
+_RECOMPUTED_GAUGES = {"dataplane_source_up", "dataplane_catalog_up"}
+
+
 def test_no_alert_detects_downtime_with_a_self_reported_liveness_gauge():
     """A process cannot publish its own death.
 
     A gauge the service sets to 1 while it runs goes *stale*, not to 0, when the service dies —
     so `<service>_up == 0` matches nothing at exactly the moment it is needed. Down-detection
-    belongs to Prometheus's own `up`, which the scrape sets to 0 for us.
+    belongs to Prometheus's own `up`, which the scrape sets to 0 for us. Exempted: gauges a
+    Collector recomputes from durable state on every scrape (see `_RECOMPUTED_GAUGES`).
     """
     offenders = {}
     for a in _alerts():
         expr = str(a["expr"])
         for metric in re.findall(r"\b([a-z_][a-z0-9_]*_up)\s*==\s*0", expr):
-            if metric != "up":
+            if metric != "up" and metric not in _RECOMPUTED_GAUGES:
                 offenders[a["alert"]] = metric
     assert not offenders, (
         f"these alerts test a service-published liveness gauge for 0, which never happens: "

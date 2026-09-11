@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     jupyterhub_url: str = "http://localhost:18888"
     loki_url: str = "http://localhost:13100"
     seanerbus_bridge_status_url: str = "http://localhost:8003"
+    # ADR 0130 — the dataplane service. Aliased because compose sets EXAMLOPS_DATAPLANE_URL
+    # (the same variable name the `exa` CLI reads for its own `--remote` pulls), not the
+    # DATAPLANE_URL the default field-name mapping would otherwise expect.
+    dataplane_url: str = Field(
+        default="http://localhost:18010", validation_alias="EXAMLOPS_DATAPLANE_URL"
+    )
 
     # ── Browser-facing URLs ──
     public_mlflow_url: str = "http://localhost:15000"
@@ -34,6 +40,7 @@ class Settings(BaseSettings):
     public_jupyterhub_url: str = "http://localhost:18888"
     public_loki_url: str = "http://localhost:13100"
     public_seanerbus_bridge_url: str = "http://localhost:18003"
+    public_dataplane_url: str = "http://localhost:18010"
     public_dashboard_url: str = "http://localhost:18099"
     slurm_mode: str = "mock"
 

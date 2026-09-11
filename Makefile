@@ -81,6 +81,7 @@ endif
         dashboard-up dashboard-logs dashboard-check dashboard-check-backend ci-frontend ci-control-plane \
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
+        dataplane-up dataplane-down dataplane-logs \
         firewall-fix-up firewall-fix-down firewall-fix-logs \
         agent agent-chat agent-server \
         skipper skipper-chat skipper-server skipper-test skipper-memory \
@@ -483,6 +484,21 @@ control-plane-down: ## Stop the control plane container
 
 control-plane-logs: ## Tail control plane logs
 	@cd $(COMPOSE_DIR) && $(DC) logs -f control-plane
+
+# =============================================================================
+##@ Dataplane  (ADR 0130 — pulls external data into versioned snapshots)
+# =============================================================================
+
+dataplane-up: ## Start the dataplane service on port 18010 (ADR 0130)
+	@cd $(COMPOSE_DIR) && $(DC) up -d --build dataplane
+	@printf "$(GREEN)Dataplane:$(RESET) http://localhost:18010  (/health · /ready · /metrics)\n"
+
+dataplane-down: ## Stop the dataplane container
+	@cd $(COMPOSE_DIR) && $(DC) stop dataplane && $(DC) rm -f dataplane
+	@printf "$(DIM)Dataplane stopped.$(RESET)\n"
+
+dataplane-logs: ## Tail dataplane logs
+	@cd $(COMPOSE_DIR) && $(DC) logs -f dataplane
 
 # =============================================================================
 ##@ Firewall fix  (lxp-cpu01 self-healing Docker egress — stopgap)
