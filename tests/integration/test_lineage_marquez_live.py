@@ -101,3 +101,55 @@ def test_revisions_are_versions_of_one_dataset(emit):
     # read's version facet. Each run's own revision is in its examlops.dataset_revision facet.
     latest = _get(f"/namespaces/examlops/datasets/{_q(f'examlops://dataset/{dataset}')}")
     assert latest["facets"]["version"]["datasetVersion"] == "rev-b"
+
+
+def test_a_training_run_reads_running_then_completed(emit):
+    """BL-069: START and COMPLETE share the flow run id, so the receiver closes the run."""
+    job, flow_run = f"train:live-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())
+    emit.emit_lineage("START", job, flow_run, inputs=[emit.dataset_node("LiveData")])
+    assert _get(f"/namespaces/examlops/jobs/{_q(job)}/runs")["runs"][0]["state"] == "RUNNING"
+
+    emit.emit_lineage("COMPLETE", job, flow_run, mlflow_run_id=uuid.uuid4().hex)
+
+    (run,) = _get(f"/namespaces/examlops/jobs/{_q(job)}/runs")["runs"]
+    assert (run["id"], run["state"]) == (flow_run, "COMPLETED")
+
+
+def test_a_failed_run_reads_failed_with_its_reason(emit):
+    job, flow_run = f"train:live-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())
+    emit.emit_lineage("START", job, flow_run)
+    emit.emit_lineage("FAIL", job, flow_run, facets=emit.error_facet("violates its data contract"))
+
+    (run,) = _get(f"/namespaces/examlops/jobs/{_q(job)}/runs")["runs"]
+    assert run["state"] == "FAILED"
+    assert run["facets"]["errorMessage"]["message"] == "violates its data contract"
+
+
+def test_registration_then_cost_leave_the_training_run_completed(emit):
+    """START → OTHER (what registration learned) → COMPLETE, then a cost recording. Marquez shows
+    a run RUNNING again after a trailing OTHER, so the cost is a child run: Marquez nests it under
+    the training job (`<parent>.<child>`) and the training run stays COMPLETED."""
+    model = f"live-{uuid.uuid4().hex[:8]}"
+    job, flow_run, mlflow_run = f"train:{model}", str(uuid.uuid4()), uuid.uuid4().hex
+    emit.emit_lineage("START", job, flow_run, inputs=[emit.dataset_node(model)], model=model)
+    emit.emit_lineage(
+        "OTHER",
+        job,
+        flow_run,
+        inputs=[emit.dataset_node(model, "r1")],
+        outputs=[emit.model_node(model, 1)],
+        mlflow_run_id=mlflow_run,
+        model=model,
+    )
+    emit.emit_lineage("COMPLETE", job, flow_run, model=model)
+    assert emit.attach_run_cost(mlflow_run, gpu_hours=1.5, cost_usd=3.0)
+
+    (run,) = _get(f"/namespaces/examlops/jobs/{_q(job)}/runs")["runs"]
+    assert (run["id"], run["state"]) == (flow_run, "COMPLETED")
+    assert [o["name"] for o in _get(f"/namespaces/examlops/jobs/{_q(job)}")["outputs"]] == [
+        f"examlops://model/{model}/1"
+    ], "the OTHER event's outputs are the run's"
+    (child,) = _get(f"/namespaces/examlops/jobs/{_q(f'{job}.cost:{model}')}/runs")["runs"]
+    assert child["state"] == "COMPLETED"
+    assert child["facets"]["parent"]["run"]["runId"] == flow_run
+    assert child["facets"]["examlops.cost"]["cost_usd"] == 3.0

@@ -487,6 +487,27 @@ def _tag_mlflow_version(
             pass  # tagging is best-effort; don't fail the command
 
 
+def _attach_lineage_cost(
+    run_id: str, gpu_hours: float, cpu_hours: float | None, cost_usd: float
+) -> None:
+    """Record the cost and carbon in lineage, as a child run of the training run (ADR 0004 cl. 2).
+
+    Carbon comes from the same pluggable provider `exa finops carbon` uses. A provider that cannot
+    account for CPU-hours refuses rather than undercounting, and then the facet carries cost alone.
+    """
+    from examlops.lineage import attach_run_cost
+
+    kwh = co2e_kg = 0.0
+    try:
+        from examlops.finops.carbon import estimate_carbon_via_provider
+
+        carbon = estimate_carbon_via_provider(gpu_hours, cpu_hours=cpu_hours or 0.0)
+        kwh, co2e_kg = float(carbon["kwh"]), float(carbon["co2e_g"]) / 1000.0
+    except Exception:  # noqa: BLE001 - cost without carbon beats no lineage at all
+        pass
+    attach_run_cost(run_id, gpu_hours=gpu_hours, cost_usd=cost_usd, kwh=kwh, co2e_kg=co2e_kg)
+
+
 @app.command(epilog=_EXAMPLES_COST)
 def cost(
     model: str = typer.Argument(..., help="Registered model name (e.g. JPCP)"),
@@ -578,6 +599,8 @@ def cost(
 
             if gpu_hours is not None and cost_usd is not None:
                 _tag_mlflow_version(cfg, model, str(ver_num), gpu_hours, cost_usd)
+                if run_id:
+                    _attach_lineage_cost(run_id, gpu_hours, cpu_hours, cost_usd)
 
             recorded_count += 1
 

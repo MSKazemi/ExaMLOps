@@ -1285,7 +1285,7 @@ def _emit_training_lineage(
     try:
         from examlops.lineage import dataset_node, emit_lineage, model_node  # noqa: PLC0415
 
-        run_id = registration.get("run_id") or f"train-{model}-{dataset}"
+        run_id, in_flow = _training_lineage_run_id(registration, model, dataset)
         version = registration.get("version")
         # The exact data this run trained on, so `exa models lineage --impact <revision>` can find
         # it: the dataplane pin (ADR 0130 §8), else a revision pinned with --dataset-revision.
@@ -1297,7 +1297,10 @@ def _emit_training_lineage(
         else:
             revision = os.getenv("EXAMLOPS_DATASET_REVISION") or None
         emit_lineage(
-            "COMPLETE",
+            # Inside a flow run the flow's hooks send the run's one START and its one ending, as
+            # the spec requires; what registration learned (dataset → model) is an OTHER on that
+            # run. Called on its own, this is the whole run and so its COMPLETE.
+            "OTHER" if in_flow else "COMPLETE",
             job=f"train:{model}",
             run_id=str(run_id),
             inputs=[dataset_node(dataset, revision)],
@@ -1312,6 +1315,77 @@ def _emit_training_lineage(
         )
     except Exception as exc:  # noqa: BLE001 - lineage must never fail a completed training run
         print(f"[pipeline] lineage emit skipped: {exc}")
+
+
+def _training_lineage_run_id(registration: dict, model: str, dataset: str) -> tuple[str, bool]:
+    """``(run id, inside a flow run)`` for this training run's lineage.
+
+    The id is the Prefect flow run's: one run, one id, for every event it emits — the flow's
+    state hooks, which know only the flow run, send ``START`` and the ending, and registration
+    sends an ``OTHER`` here. With the MLflow run id here instead, a run's ``START`` and its ending
+    were two runs, and a receiver showed every training run as still running. The MLflow run id
+    travels as its own facet. Outside a flow run (a direct call, a test) there is no flow run id:
+    the MLflow run id stands in, and there are no hooks to end the run.
+    """
+    try:
+        from prefect.runtime import flow_run  # noqa: PLC0415
+
+        flow_run_id = flow_run.id
+    except Exception:  # noqa: BLE001 - no Prefect context is "no flow run", not an error
+        flow_run_id = None
+    if flow_run_id:
+        return str(flow_run_id), True
+    return str(registration.get("run_id") or f"train-{model}-{dataset}"), False
+
+
+def _lineage_model_id(model_name: str) -> str:
+    """The MLflow model id the training job is named after (``train:<model_id>``)."""
+    try:
+        return str(MODEL_REGISTRY[model_name][1].get_inference_params()["model_id"])
+    except Exception:  # noqa: BLE001 - an unknown model still gets a job name
+        return model_name.lower()
+
+
+def _flow_state_lineage(event_type: str) -> Any:
+    """A Prefect flow-state hook that emits this training run's ``event_type`` (ADR 0004 cl. 1).
+
+    OpenLineage asks for exactly one ``START`` and one of ``COMPLETE``/``ABORT``/``FAIL`` per run,
+    and the flow's state is the only thing that knows which ending happened: a run that registered
+    its version and then failed at promotion ended in ``FAIL``. Hooks rather than a ``try`` around
+    the flow body: they see every way a run ends — an exception (``on_failure``), the
+    infrastructure dying under it (``on_crashed``), a cancellation (``on_cancellation``) —
+    including the ones no ``except`` inside the process can catch.
+    """
+
+    def hook(flow: Any, flow_run: Any, state: Any) -> None:
+        _emit_flow_state_lineage(event_type, flow_run, state)
+
+    hook.__name__ = f"_lineage_{event_type.lower()}"
+    return hook
+
+
+def _emit_flow_state_lineage(event_type: str, flow_run: Any, state: Any) -> None:
+    """``START`` / ``FAIL`` / ``ABORT`` for one training flow run, under its flow run id. Fail-open:
+    a hook that raised would turn a lineage problem into a flow-state problem."""
+    try:
+        from examlops.lineage import dataset_node, emit_lineage, error_facet  # noqa: PLC0415
+
+        params = dict(getattr(flow_run, "parameters", None) or {})
+        model_id = _lineage_model_id(str(params.get("model_name") or "unknown"))
+        dataset = params.get("dataset_cls_name")
+        facets: dict[str, Any] = {}
+        if event_type == "FAIL":
+            facets.update(error_facet(getattr(state, "message", None) or "training run failed"))
+        emit_lineage(
+            event_type,
+            job=f"train:{model_id}",
+            run_id=str(flow_run.id),
+            inputs=[dataset_node(str(dataset))] if dataset else [],
+            facets=facets,
+            model=model_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pipeline] lineage {event_type} skipped: {exc}")
 
 
 def _evaluate_stage_rule(metric_val: float, threshold: float, direction: str) -> bool:
@@ -1750,7 +1824,14 @@ def _record_contract_result(dataset_name: str, result: Any) -> None:
 # ── Generic Prefect Flow ───────────────────────────────────────────────────────
 
 
-@flow(name="training_flow")
+@flow(
+    name="training_flow",
+    on_running=[_flow_state_lineage("START")],
+    on_completion=[_flow_state_lineage("COMPLETE")],
+    on_failure=[_flow_state_lineage("FAIL")],
+    on_crashed=[_flow_state_lineage("FAIL")],
+    on_cancellation=[_flow_state_lineage("ABORT")],
+)
 def training_flow(
     model_name: str,
     dataset_cls_name: str,

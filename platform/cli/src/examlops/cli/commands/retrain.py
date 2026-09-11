@@ -150,23 +150,30 @@ def retrain(
 
 
 def _emit_retrain_lineage(model: str, dataset: str, result: dict) -> None:
-    """A2 lineage for a retrain trigger (ADR 0004 clause 1). Fail-open.
+    """A2 lineage for a retrain request (ADR 0004 clause 1). Fail-open.
 
-    The Prefect ``flow_run_id`` is a genuine run identifier, so the lineage run and the flow it
-    describes share one id — a graph whose run ids match nothing in Prefect is a graph nobody can
-    follow back. ``START``, not ``COMPLETE``: the retrain has been *scheduled*, and the flow
-    emits its own completion when it finishes.
+    The request and the training it schedules are two runs of two jobs. This one — job
+    ``retrain:<MODEL>`` — is complete the moment the flow run is scheduled, so it is a
+    ``COMPLETE``, and ``examlops.scheduled_run`` links it to the training run: the flow's own
+    ``START``/``COMPLETE``/``FAIL`` use the Prefect flow run id as their run id, so a receiver
+    and Prefect name that run the same way.
+
+    It used to be a ``START`` under the flow run id on this job, while the flow closed a different
+    run on job ``train:<model>`` — so the request never completed, and in any lineage receiver
+    every retrain stayed running forever. No output node either: the version it will produce does
+    not exist yet, and a ``<model>/pending`` node became a dataset no run ever wrote.
     """
     try:
-        from examlops.lineage import dataset_node, emit_lineage, model_node
+        from examlops.lineage import dataset_node, emit_lineage, scheduled_run_facet
 
         flow_run_id = result.get("flow_run_id")
+        ref = flow_run_id or result.get("command_id")
         emit_lineage(
-            "START",
+            "COMPLETE",
             job=f"retrain:{model.upper()}",
-            run_id=str(flow_run_id or f"retrain-{model.upper()}-{dataset}"),
+            run_id=f"retrain:{ref}" if ref else f"retrain-{model.upper()}-{dataset}",
             inputs=[dataset_node(dataset)],
-            outputs=[model_node(model.upper(), "pending")],
+            facets=scheduled_run_facet(str(flow_run_id)) if flow_run_id else {},
             model=model.upper(),
         )
     except Exception:  # noqa: BLE001

@@ -42,20 +42,26 @@ def _validator():
 
     spec = json.loads((FIXTURES / "OpenLineage-2-0-2.json").read_text())
     facet = json.loads((FIXTURES / "DatasetVersionDatasetFacet-1-0-1.json").read_text())
+    error = json.loads((FIXTURES / "ErrorMessageRunFacet-1-0-1.json").read_text())
+    parent = json.loads((FIXTURES / "ParentRunFacet-1-1-0.json").read_text())
     registry = Registry().with_resources(
-        [(s["$id"], Resource.from_contents(s)) for s in (spec, facet)]
+        [(s["$id"], Resource.from_contents(s)) for s in (spec, facet, error, parent)]
     )
     run_event = {"$ref": f"{spec['$id']}#/$defs/RunEvent"}
     version_facet = {"$ref": f"{facet['$id']}#/$defs/DatasetVersionDatasetFacet"}
+    error_facet = {"$ref": f"{error['$id']}#/$defs/ErrorMessageRunFacet"}
+    parent_facet = {"$ref": f"{parent['$id']}#/$defs/ParentRunFacet"}
     checker = jsonschema.Draft202012Validator.FORMAT_CHECKER
     make = jsonschema.Draft202012Validator
     return (
         make(run_event, registry=registry, format_checker=checker),
         make(version_facet, registry=registry, format_checker=checker),
+        make(error_facet, registry=registry, format_checker=checker),
+        make(parent_facet, registry=registry, format_checker=checker),
     )
 
 
-RUN_EVENT, VERSION_FACET = _validator()
+RUN_EVENT, VERSION_FACET, ERROR_FACET, PARENT_FACET = _validator()
 
 
 def _assert_valid(event):
@@ -64,6 +70,10 @@ def _assert_valid(event):
     for dataset in event["inputs"] + event["outputs"]:
         if "version" in dataset.get("facets", {}):
             VERSION_FACET.validate(dataset["facets"]["version"])
+    if "errorMessage" in event["run"]["facets"]:
+        ERROR_FACET.validate(event["run"]["facets"]["errorMessage"])
+    if "parent" in event["run"]["facets"]:
+        PARENT_FACET.validate(event["run"]["facets"]["parent"])
 
 
 def _training_event(run_id=MLFLOW_RUN, **facets):
@@ -206,9 +216,9 @@ def test_what_is_posted_is_the_translated_event(monkeypatch):
 
     lineage.emit_lineage("COMPLETE", "train:jpcp", MLFLOW_RUN, facets={"backend": ""})
 
-    ((url, event),) = posted
-    assert url == "http://marquez:5000"
-    _assert_valid(event)
+    assert {url for url, _ in posted} == {"http://marquez:5000"}
+    for _, event in posted:
+        _assert_valid(event)
 
 
 def test_the_mlflow_run_and_trace_reach_the_event(monkeypatch):
@@ -223,7 +233,87 @@ def test_the_mlflow_run_and_trace_reach_the_event(monkeypatch):
         "COMPLETE", "promote:jpcp", "promote-jpcp-18", mlflow_run_id=MLFLOW_RUN, trace_id="4bf92f35"
     )
 
-    (event,) = posted
+    event = posted[-1]
     _assert_valid(event)
     assert event["run"]["facets"]["examlops.mlflow_run"]["run_id"] == MLFLOW_RUN
     assert event["run"]["facets"]["examlops.trace"]["trace_id"] == "4bf92f35"
+
+
+def test_a_failed_run_and_a_retrain_request_validate():
+    """BL-069's two new shapes: FAIL with the standard errorMessage facet, and the request that
+    links to the training run it scheduled."""
+    failed = lineage.build_event(
+        "FAIL",
+        "train:jpcp",
+        "8c5e2a64-1f0b-4d9a-9e31-2b7f6c0d4a15",
+        facets=lineage.error_facet("boom"),
+    )
+    request = lineage.build_event(
+        "COMPLETE",
+        "retrain:JPCP",
+        "retrain:8c5e2a64-1f0b-4d9a-9e31-2b7f6c0d4a15",
+        inputs=[lineage.dataset_node("PM100Dataset")],
+        facets=lineage.scheduled_run_facet("8c5e2a64-1f0b-4d9a-9e31-2b7f6c0d4a15"),
+    )
+
+    for event in (failed, request):
+        _assert_valid(event)
+    link = request["run"]["facets"]["examlops.scheduled_run"]
+    assert link["run_id"] == "8c5e2a64-1f0b-4d9a-9e31-2b7f6c0d4a15", "the training run's own id"
+
+
+def test_a_cost_recording_validates_with_its_parent():
+    event = lineage.build_event(
+        "COMPLETE",
+        "cost:jpcp",
+        "cost:mlf-1:abc",
+        facets={
+            **lineage.parent_facet("train-jpcp-FData", "train:jpcp"),
+            **lineage.cost_facet(2.0, 1.0, 0.3, cost_usd=4.0),
+        },
+    )
+
+    _assert_valid(event)
+    parent = event["run"]["facets"]["parent"]
+    assert parent["run"]["runId"] == lineage.lineage_run_id("train-jpcp-FData")
+    bad = {**parent, "run": {"runId": "train-jpcp-FData"}}
+    assert list(PARENT_FACET.iter_errors(bad)), "an untranslated parent id must fail the schema"
+
+
+# ── one START and one ending per run ─────────────────────────────────────────
+
+
+@pytest.fixture
+def receiver(monkeypatch):
+    posted: list[dict] = []
+    monkeypatch.setenv("EXAMLOPS_OPENLINEAGE_URL", "http://marquez:5000")
+    monkeypatch.setattr(lineage, "_post", lambda url, event: posted.append(event))
+    init_db()
+    return posted
+
+
+def test_a_one_shot_run_is_sent_a_start_first(receiver):
+    """The schema's eventType: "It is required to issue 1 START event and 1 of [COMPLETE, ABORT,
+    FAIL] event per run". A promotion has nothing to report until it is over."""
+    lineage.emit_lineage("COMPLETE", "promote:jpcp", "promote-jpcp-18")
+
+    assert [e["eventType"] for e in receiver] == ["START", "COMPLETE"]
+    assert len({e["run"]["runId"] for e in receiver}) == 1
+
+
+def test_a_run_that_already_started_is_not_started_twice(receiver):
+    lineage.emit_lineage("START", "train:jpcp", "fr-p1")
+    lineage.emit_lineage("OTHER", "train:jpcp", "fr-p1")
+    lineage.emit_lineage("FAIL", "train:jpcp", "fr-p1", facets=lineage.error_facet("x"))
+
+    assert [e["eventType"] for e in receiver] == ["START", "OTHER", "FAIL"]
+
+
+def test_the_implied_start_is_not_recorded_in_platform_db(receiver):
+    """platform_db records what happened; the START is a protocol courtesy to the receiver."""
+    from examlops.data.events import lineage_graph
+
+    lineage.emit_lineage("COMPLETE", "promote:startm", "p1", model="startm")
+
+    (run,) = lineage_graph("startm")["runs"]
+    assert run["events"] == ["COMPLETE"]

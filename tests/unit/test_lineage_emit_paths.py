@@ -140,20 +140,43 @@ def test_promotion_lineage_never_fails_a_completed_promotion(monkeypatch):
 # ── clause 1: retrain ─────────────────────────────────────────────────────────
 
 
-def test_a_retrain_emits_a_start_event_not_a_completion():
-    """The retrain has been *scheduled*; the flow emits its own completion when it finishes."""
+def test_a_retrain_request_is_complete_once_scheduled():
+    """It was a START on job retrain:<MODEL> that nothing ever closed — the flow completed a
+    different run on a different job — so every retrain stayed running in a lineage receiver.
+    The request is complete the moment the flow run is scheduled (BL-069)."""
     retrain_cmd._emit_retrain_lineage("jpcp", "PM100Dataset", {"flow_run_id": "fr-1"})
 
-    event = _events("retrain:JPCP")[0]
+    (event,) = _events("retrain:JPCP")
 
-    assert event["event_type"] == "START"
+    assert event["event_type"] == "COMPLETE"
     assert event["model"] == "JPCP"
 
 
-def test_the_retrain_run_id_is_the_prefect_flow_run_id():
-    """A graph whose run ids match nothing in Prefect is a graph nobody can follow back."""
+def test_the_request_links_to_the_training_run_it_scheduled():
+    """The flow's own events use the Prefect flow run id as their run id, so the link names the
+    training run the way Prefect and the lineage receiver both do."""
+    import json
+
     retrain_cmd._emit_retrain_lineage("mack", "FDataDataset", {"flow_run_id": "fr-abc"})
-    assert _events("retrain:MACK")[0]["run_id"] == "fr-abc"
+
+    (event,) = _events("retrain:MACK")
+    assert event["run_id"] == "retrain:fr-abc", "the request is its own run"
+    link = json.loads(event["facets_json"])["examlops.scheduled_run"]
+    assert link["flow_run_id"] == "fr-abc"
+
+
+def test_the_request_does_not_invent_a_pending_model_node():
+    """The version it will produce does not exist yet; `<model>/pending` became a dataset no run
+    ever wrote."""
+    from examlops.platform_db import get_db
+
+    retrain_cmd._emit_retrain_lineage("jpcp", "PM100Dataset", {"flow_run_id": "fr-7"})
+
+    with get_db() as conn:
+        outputs = conn.execute(
+            "SELECT node_name FROM lineage_io WHERE run_id='retrain:fr-7' AND direction='output'"
+        ).fetchall()
+    assert outputs == []
 
 
 def test_a_retrain_without_a_flow_run_id_still_records_a_run():

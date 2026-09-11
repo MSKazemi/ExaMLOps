@@ -213,26 +213,70 @@ def get_reasoning_trace(request_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+#: Facts a run's events record; a run shows the newest non-empty value of each.
+_RUN_FACTS = ("dataset_revision", "mlflow_run_id", "model_version", "trace_id")
+
+
 def lineage_graph(model: str) -> dict[str, Any]:
-    """Return upstream (datasets/runs) + downstream (deployments) nodes for a model."""
+    """Return upstream (datasets/runs) + downstream (deployments) nodes for a model.
+
+    One entry per **run**, not per event: a training run emits ``START``, then ``COMPLETE`` or
+    ``FAIL``, under one run id. Each entry is the run's newest event, carrying ``events`` (its
+    event types, oldest first) and the newest non-empty value of each fact any of its events
+    recorded — a ``FAIL`` after ``COMPLETE`` does not erase the dataset revision the run trained
+    on, which the synthetic-only promotion gate reads from here.
+    """
     init_db()
     with get_db() as conn:
-        runs = conn.execute(
-            "SELECT * FROM lineage_events WHERE model=? ORDER BY ts DESC", (model,)
+        rows = conn.execute(
+            "SELECT * FROM lineage_events WHERE model=? ORDER BY ts DESC, id DESC", (model,)
         ).fetchall()
-        run_ids = [r["run_id"] for r in runs]
+        runs: dict[str, dict[str, Any]] = {}
+        for r in rows:  # newest first
+            row = dict(r)
+            run = runs.get(row["run_id"])
+            if run is None:
+                runs[row["run_id"]] = {**row, "events": [row["event_type"]]}
+                continue
+            run["events"].insert(0, row["event_type"])
+            for fact in _RUN_FACTS:
+                if run.get(fact) is None and row.get(fact) is not None:
+                    run[fact] = row[fact]
         io_rows: list[dict[str, Any]] = []
-        for rid in run_ids:
+        for rid in runs:
             io_rows.extend(
                 dict(r)
                 for r in conn.execute("SELECT * FROM lineage_io WHERE run_id=?", (rid,)).fetchall()
             )
     return {
         "model": model,
-        "runs": [dict(r) for r in runs],
+        "runs": list(runs.values()),
         "upstream": [r for r in io_rows if r["direction"] == "input"],
         "downstream": [r for r in io_rows if r["direction"] == "output"],
     }
+
+
+def lineage_run_seen(run_id: str) -> bool:
+    """Whether any lineage event has been recorded for ``run_id``."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM lineage_events WHERE run_id=? LIMIT 1", (run_id,)
+        ).fetchone()
+    return row is not None
+
+
+def lineage_run_for_mlflow_run(mlflow_run_id: str) -> dict[str, Any] | None:
+    """The training lineage run behind an MLflow run — its ``run_id``, ``job`` and ``model`` — or
+    ``None``. How a fact learned after the run (its cost) finds the run to attach to."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT run_id, job, model FROM lineage_events "
+            "WHERE mlflow_run_id=? AND job LIKE 'train:%' ORDER BY id DESC LIMIT 1",
+            (mlflow_run_id,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def lineage_impact(dataset_revision: str) -> list[dict[str, Any]]:

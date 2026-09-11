@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — each lineage run now has one start and one end (ADR 0004, now Accepted)
+
+- **Training runs.** Each training run is now one lineage run, identified by its Prefect flow run
+  id. It starts with `START` and ends with exactly one of `COMPLETE`, `FAIL` or `ABORT`. `FAIL`
+  includes the reason, in the standard OpenLineage `errorMessage` facet. Registering the model
+  version adds an `OTHER` event (dataset → model). Before this, no path sent `FAIL` and no
+  training run ever sent a `START`.
+- **Retrains.** `exa retrain` now records the request as a finished run of its own. That run
+  links to the training run it scheduled. Before, the request's `START` belonged to a different
+  job and run from the flow's completion, so a lineage receiver showed every retrain as still
+  running.
+- **Single-event runs.** Some runs send only an end event: promotions, prompt label moves, retrain
+  requests and cost records. The lineage receiver is now sent a `START` just before that end
+  event, as the OpenLineage spec requires. The `START` is not written to `platform_db`.
+- **`exa models lineage`** lists runs rather than individual events. Each entry shows the run's
+  event history, and keeps its dataset revision even if a later event is a `FAIL`.
+
+### Added — cost, carbon and trace ids in lineage
+
+- `exa models cost --record` now records each cost measurement as a lineage run of its own,
+  linked to the training run. It carries GPU-hours, cost, kWh and kg CO₂e. The carbon figures come
+  from the provider that `exa finops carbon` uses. It is a separate run rather than a late event on
+  the training run, because Marquez would otherwise show the finished training run as running
+  again.
+- A lineage event sent while an OpenTelemetry span is active now carries that span's trace id.
+  With tracing on, every path is linked to its trace; with tracing off (the default), none is.
+
 ### Added — a lineage receiver: Marquez under the Compose `lineage` profile (ADR 0004)
 
 - `docker compose --profile lineage up -d marquez-web` starts three services: Marquez 0.51.1,
