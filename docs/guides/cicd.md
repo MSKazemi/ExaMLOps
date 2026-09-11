@@ -958,6 +958,10 @@ or was cancelled (`dependency review` alone may be skipped, because it only runs
 requests). `tests/unit/test_github_workflows_hardened.py` fails when a job in `ci.yml` is missing
 from its `needs:`.
 
+The `main` branch has had a ruleset since 2026-09-11 (Settings → Rules). It requires `ci-ok`
+before a pull request can merge, and it blocks force-pushes and deleting the branch. Repository
+admins are on the bypass list, so the maintainer can still push directly.
+
 ### Reproducible installs
 
 The Python job installs with `uv sync --frozen --extra dev`, which gives exactly the versions
