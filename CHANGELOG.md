@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-09-11
+
 ### Added — the install bundle runs on any S3 store, can monitor itself, and upgrades its own `.env`
 
 - **Any S3-compatible object store.** The bundled MinIO moves behind a `minio` profile, on by default
