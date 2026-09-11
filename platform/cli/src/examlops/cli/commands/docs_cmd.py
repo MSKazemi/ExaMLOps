@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import click
 import typer
 
 from examlops.cli import _output
@@ -36,7 +35,11 @@ def _clean(text: str) -> str:
     return _MARKUP.sub("", text or "").strip()
 
 
-def _root_group() -> click.Command:
+# A Typer command is a `click.Command` on typer < 0.27 and a `typer._click.core.Command` from
+# 0.27 on, when typer began vendoring click — two unrelated classes with the same API. The tree
+# is therefore typed `Any` and walked duck-typed, and a context is built with the command's own
+# `context_class`, never `click.Context`, so it always matches the command it wraps.
+def _root_group() -> Any:
     import typer.main
 
     from examlops.cli.main import app
@@ -44,12 +47,12 @@ def _root_group() -> click.Command:
     return typer.main.get_command(app)
 
 
-def _walk(cmd: click.Command, path: list[str]) -> dict[str, Any]:
+def _walk(cmd: Any, path: list[str]) -> dict[str, Any]:
     node: dict[str, Any] = {
         "name": " ".join(path),
         "help": _clean(cmd.help or cmd.get_short_help_str() or ""),
     }
-    ctx = click.Context(cmd, info_name=path[-1])
+    ctx = cmd.context_class(cmd, info_name=path[-1])
     options: list[dict[str, object]] = []
     for param in cmd.get_params(ctx):
         # NB: don't use ``isinstance(param, click.Option)`` — Typer's ``TyperOption``

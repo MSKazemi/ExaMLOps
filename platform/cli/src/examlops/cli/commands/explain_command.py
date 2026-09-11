@@ -8,8 +8,8 @@ copy-paste examples — without the visual noise of full ``--help`` output.
 from __future__ import annotations
 
 import re
+from typing import Any
 
-import click
 import typer
 
 from examlops.cli import _output
@@ -28,8 +28,12 @@ _EXAMPLES = (
 _MARKUP = re.compile(r"\[/?[a-z ]+\]")
 
 
-def _root_group() -> click.Command:
-    """Return the Click group for the whole `exa` app (lazy to avoid import cycles)."""
+def _root_group() -> Any:
+    """Return the Click group for the whole `exa` app (lazy to avoid import cycles).
+
+    Typed `Any`: typer >= 0.27 vendors click, so the group is a `typer._click` command there and
+    a `click` command before — two unrelated classes with one API (see `docs_cmd._walk`).
+    """
     import typer.main
 
     from examlops.cli.main import app
@@ -53,8 +57,8 @@ def _normalize(path: list[str]) -> list[str]:
     return parts
 
 
-def _resolve(path: list[str]) -> click.Command | None:
-    node: click.Command | None = _root_group()
+def _resolve(path: list[str]) -> Any:
+    node: Any = _root_group()
     for part in _normalize(path):
         commands = getattr(node, "commands", None)
         if not commands or part not in commands:

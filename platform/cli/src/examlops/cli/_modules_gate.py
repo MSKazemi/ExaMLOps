@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import click
+from typer.core import TyperCommand
 
 from examlops.cli._help import SuggestGroup
 
@@ -45,9 +45,17 @@ def disabled_module(name: str) -> str | None:
     return owner
 
 
-def _disabled_stub(name: str, owner: str) -> click.Command:
-    def _refuse(args: tuple[str, ...]) -> None:
-        del args
+def _disabled_stub(name: str, owner: str) -> Any:
+    """A hidden command that refuses, whatever arguments follow it.
+
+    Built as a `TyperCommand`, not a `click.Command`: from typer 0.27 the group runs on typer's
+    vendored click (`typer._click`), and a stub from the `click` package would belong to another
+    class hierarchy than the group invoking it. `TyperCommand` always matches the group. The
+    extra arguments need no parameter to absorb them: `ignore_unknown_options` and
+    `allow_extra_args` leave them unparsed.
+    """
+
+    def _refuse() -> None:
         from examlops.cli import _output
         from examlops.lifecycle.modules import module
 
@@ -58,10 +66,9 @@ def _disabled_stub(name: str, owner: str) -> click.Command:
             hint=f"exa modules enable {owner}   ·   exa modules list",
         )
 
-    return click.Command(
+    return TyperCommand(
         name,
         callback=_refuse,
-        params=[click.Argument(["args"], nargs=-1, type=click.UNPROCESSED)],
         help=f"Disabled at this site (module '{owner}').",
         hidden=True,
         add_help_option=False,
@@ -70,13 +77,17 @@ def _disabled_stub(name: str, owner: str) -> click.Command:
 
 
 class ModuleGatedGroup(SuggestGroup):
-    """Root group that hides and refuses commands of modules disabled by the site profile."""
+    """Root group that hides and refuses commands of modules disabled by the site profile.
 
-    def list_commands(self, ctx: click.Context) -> list[str]:
+    The context and command types are `Any` because typer >= 0.27 passes its vendored click's
+    classes (see `_help.SuggestGroup`).
+    """
+
+    def list_commands(self, ctx: Any) -> list[str]:
         names = super().list_commands(ctx)
         return [n for n in names if disabled_module(n) is None]
 
-    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+    def get_command(self, ctx: Any, cmd_name: str) -> Any:
         cmd = super().get_command(ctx, cmd_name)
         if cmd is None:
             return None

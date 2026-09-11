@@ -24,13 +24,24 @@ right list. ``tests/unit/test_cli_help_panels.py`` fails loudly if a command is 
 from __future__ import annotations
 
 import difflib
+from typing import Any
 
 import click
+import typer
 from typer.core import TyperGroup
 from typer.main import get_command_name
 
 # Panel spec: an ordered list of (panel_title, [command_names]). Ordered => display order.
 PanelSpec = list[tuple[str, list[str]]]
+
+# typer >= 0.27 vendors click as `typer._click`, so a Typer group raises THAT module's
+# UsageError and takes THAT module's Context — unrelated to the `click` package's classes.
+# Catch both, and type the click objects in the overrides below as `Any`, so the fallback keeps
+# working and type-checks whichever typer is installed.
+_vendored_click = getattr(typer, "_click", None)
+_USAGE_ERRORS: tuple[type[Exception], ...] = (click.UsageError,) + (
+    (_vendored_click.exceptions.UsageError,) if _vendored_click is not None else ()
+)
 
 
 def _effective_name(info: object) -> str:
@@ -56,19 +67,17 @@ class SuggestGroup(TyperGroup):
     older Click and never doubles up Click's own suggestion.
     """
 
-    def resolve_command(
-        self, ctx: click.Context, args: list[str]
-    ) -> tuple[str | None, click.Command | None, list[str]]:
+    def resolve_command(self, ctx: Any, args: list[str]) -> tuple[str | None, Any, list[str]]:
         try:
             return super().resolve_command(ctx, args)
-        except click.UsageError as exc:
-            message = exc.message or ""
+        except _USAGE_ERRORS as exc:
+            message = getattr(exc, "message", "") or ""
             if "did you mean" not in message.lower():
                 typed = args[0] if args else ""
                 matches = difflib.get_close_matches(typed, self.list_commands(ctx), n=3, cutoff=0.5)
                 if matches:
                     hint = ", ".join(repr(m) for m in matches)
-                    exc.message = f"{message} Did you mean {hint}?"  # type: ignore[misc]
+                    exc.message = f"{message} Did you mean {hint}?"  # type: ignore[attr-defined]
             raise
 
 
@@ -89,7 +98,7 @@ def make_ordered_group(
     unmapped = len(flat_order)
 
     class _OrderedGroup(base):  # type: ignore[valid-type, misc]
-        def list_commands(self, ctx: click.Context) -> list[str]:
+        def list_commands(self, ctx: Any) -> list[str]:
             names = super().list_commands(ctx)
             original = {name: i for i, name in enumerate(names)}
             return sorted(names, key=lambda n: (flat_order.get(n, unmapped), original[n]))
