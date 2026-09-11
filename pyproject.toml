@@ -40,7 +40,7 @@ dependencies = [
     # import time, and fastapi>=0.137 holds an unpicklable `_thread.lock` ("cannot pickle
     # '_thread.lock' object"). 0.136.x is verified-compatible. Lift the cap when the ray pin
     # moves to a release that tolerates the newer fastapi. (starlette version is unaffected.)
-    "fastapi>=0.100.0,<0.137",
+    "fastapi>=0.136.3,<0.137",
     # ray serving
     "ray[serve]==2.55.0",
     # CLI

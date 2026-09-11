@@ -43,7 +43,7 @@ dependencies = [
     "pyyaml>=6.0",
     "tomli-w>=1.0",
     "prometheus-client>=0.20",
-    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
     # Imported at module load by examlops.resilience (HTTP client + timeouts) — a hard
     # runtime dependency of the CLI, not optional.
