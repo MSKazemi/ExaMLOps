@@ -1,0 +1,100 @@
+name: Release verification
+
+# Verify what a release PUBLISHED, fetched back from where it was published, the way someone
+# downloading it would (platform/ci/verify_release.sh, ADR 0129):
+#   - every asset is signed and summed, and the provenance attests exactly the wheel and sdist;
+#   - every image and the chart carry the release signature and provenance;
+#   - the wheel installs, and the dashboard image imports the matching `examlops`;
+#   - the whole release mirrors into a registry and verifies again with no route to the internet
+#     (docs/guides/air-gapped-install.md).
+#
+# release.yml calls this once the GitHub Release is out and before PyPI, the one step that can
+# never be undone. A weekly run re-verifies the latest release, because signatures, attestations
+# and registry tags can change or disappear after release day. The first published releases had
+# two defects that only this view shows: v0.54.0's provenance attested `dist/.gitignore`, and its
+# dashboard image could not import `examlops`.
+#
+# By hand:  gh workflow run release-verify.yml -f tag=v0.55.0
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to verify, e.g. v0.55.0
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify, e.g. v0.55.0 (empty = the latest release)"
+        required: false
+        type: string
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC: re-verify the latest release
+
+permissions: {}
+
+env:
+  COSIGN_VERSION: v3.1.3
+  ORAS_VERSION: 1.3.4
+  # The Helm line release.yml publishes with.
+  HELM_VERSION: v3.22.0
+
+jobs:
+  verify:
+    name: verify the published release
+    if: github.repository == 'MSKazemi/ExaMLOps'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read # download the release assets
+      attestations: read # gh attestation verify
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: platform/ci/verify_release.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Install oras and Helm (checksum-verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          oras="oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/${oras}"
+          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_checksums.txt"
+          grep " ${oras}\$" "oras_${ORAS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$oras" oras
+          install -m 0755 oras /usr/local/bin/oras
+          helm="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${helm}"
+          curl -fsSLO "https://get.helm.sh/${helm}.sha256sum"
+          sha256sum -c "${helm}.sha256sum"
+          tar -xzf "$helm" linux-amd64/helm
+          install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          oras version && helm version --short && gh --version | head -1
+
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=${INPUT_TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}
+          if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a release tag: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify ${{ steps.tag.outputs.tag }}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_WORKDIR: ${{ runner.temp }}/verify
+        run: platform/ci/verify_release.sh "$TAG"

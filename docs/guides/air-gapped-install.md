@@ -239,6 +239,11 @@ On 2026-09-11, against v0.54.0:
 - `pip install --no-index` of the wheel with `[mcp,finops]` succeeded with no network, and
   `pip check` found no broken requirements.
 
+Every release now runs the mirror and offline verification steps of this guide by itself:
+`platform/ci/verify_release.sh`, called by `.github/workflows/release-verify.yml` after the
+release is published and weekly after that. The Compose and Helm installs are not part of that
+run.
+
 `tests/unit/test_airgap_install.py` keeps the assumptions this guide depends on true in CI:
 - the release publishes `images-X.Y.Z.txt`;
 - every chart image is built from `global.imageRegistry`;

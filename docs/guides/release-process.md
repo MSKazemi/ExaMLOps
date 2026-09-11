@@ -106,7 +106,7 @@ A tag that fails any of these publishes nothing:
 
 ```text
 verify ─┬─ python-dist ─────────────┐
-        ├─ images (matrix) ─ chart ─┼─ github-release ─ pypi
+        ├─ images (matrix) ─ chart ─┼─ github-release ─ published ─ pypi
         └───────────────────────────┘
 ```
 
@@ -119,8 +119,27 @@ verify ─┬─ python-dist ─────────────┐
   packaged, pushed as an OCI artifact, signed and attested.
 - **The GitHub Release** is created from the CHANGELOG section if it does not exist yet, and its
   assets are uploaded with `--clobber`, so re-running a release replaces rather than fails.
+- **Then the release is verified as published** (`published`, which calls
+  `.github/workflows/release-verify.yml`). Every artifact is fetched back from where it was
+  published and checked the way a user would check it:
+    - the assets against their signed checksums;
+    - that the provenance attests exactly the wheel and the sdist;
+    - every image's and the chart's signature and provenance, and that the tag points at the
+      signed digest;
+    - that the wheel installs;
+    - that the dashboard image imports the matching `examlops`;
+    - the whole release again, mirrored into a registry on a network with no route out and
+      verified offline, as in [Air-gapped installs](air-gapped-install.md).
+
+  The checks live in `platform/ci/verify_release.sh`, which anyone can run:
+  `platform/ci/verify_release.sh vX.Y.Z`. A weekly run re-checks the latest release, because a
+  signature, an attestation or a tag can change after release day. The first published releases
+  had two defects that only this view shows: v0.54.0's provenance also attested `.gitignore`, and
+  its dashboard image could not import `examlops`. Run against v0.54.0, the script fails on
+  exactly those two.
 - **PyPI goes last**, from the protected `pypi` environment, because a version published there
-  can never be replaced. It uses Trusted Publishing: no PyPI token exists anywhere.
+  can never be replaced. It waits for the published release to verify. It uses Trusted
+  Publishing: no PyPI token exists anywhere.
 - **Nothing publishes from a fork or a mirror** — the workflow's first job only runs in
   `MSKazemi/ExaMLOps`, and every other job depends on it.
 - **Every action is pinned to a full commit SHA.** A tag is a mutable pointer; in March 2026 76 of

@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — every release is verified as published, before PyPI (ADR 0129)
+
+- New `.github/workflows/release-verify.yml`, called by `release.yml` as the `published` job after
+  the GitHub Release is out and before PyPI. It also runs weekly on the latest release and by hand
+  (`gh workflow run release-verify.yml -f tag=vX.Y.Z`). It fetches every artifact back from where
+  it was published and checks it the way a user would, in `platform/ci/verify_release.sh`:
+  - signed checksums, and no asset left outside them;
+  - provenance that attests exactly the wheel and the sdist;
+  - each image's and the chart's signature and `gh attestation`;
+  - that each tag points at the signed digest;
+  - that the wheel installs;
+  - that the dashboard image imports the matching `examlops`;
+  - and the whole release again, mirrored into a registry on a network with no route out and
+    verified offline.
+- Run against the published releases, the script passes all 50 checks on v0.55.0. On v0.54.0 it
+  fails on exactly the two defects found there by hand: provenance that also attested
+  `.gitignore`, and a dashboard image that could not import `examlops`. Every check counts toward
+  the exit status, and a check that cannot run is a failure; a test runs it with every tool
+  stubbed out to fail and requires a non-zero exit.
+- `tests/unit/test_release_verify.py` guards the wiring, the read-only permissions, the tag
+  validation and the fail-closed behaviour.
+
 ### Fixed — `exa slo ingest` counted the same events on every run (ADR 0023 clause 3)
 
 - An SLO's status sums its samples, and every ingester (`c1`, `c2`, `c5`) recorded its whole

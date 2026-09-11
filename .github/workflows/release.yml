@@ -3,8 +3,10 @@ name: Release
 # One tag → every artifact, at one version, signed (ADR 0129).
 #
 #   verify ─┬─ python-dist ─────────────┐
-#           ├─ images (matrix) ─ chart ─┼─ github-release ─ pypi
+#           ├─ images (matrix) ─ chart ─┼─ github-release ─ published ─ pypi
 #           └───────────────────────────┘
+#
+# `published` (release-verify.yml) fetches every artifact back and verifies it as a user would.
 #
 # A release is `git tag vX.Y.Z && git push github vX.Y.Z`. Before anything is built the tag
 # must name the tree's version, every version copy must agree, the tagged commit must be on
@@ -504,9 +506,23 @@ jobs:
           fi
           gh release upload "$TAG" assets/* --clobber
 
+  # Fetch everything back from where it was published and verify it as a user would, before the
+  # one irreversible step. The same check runs weekly against the latest release.
+  published:
+    name: verify the published release
+    needs: [verify, github-release]
+    permissions:
+      contents: read # download the release assets
+      attestations: read # gh attestation verify
+    # `./` rather than zizmor's preferred `$/` self-repository form: actionlint (v1.7.12, the
+    # latest, run by ci.yml) rejects `$/` until rhysd/actionlint#711 lands. Switch when it does.
+    uses: ./.github/workflows/release-verify.yml # zizmor: ignore[self-repository]
+    with:
+      tag: v${{ needs.verify.outputs.version }}
+
   pypi:
     name: PyPI (Trusted Publishing)
-    needs: [verify, github-release]
+    needs: [verify, github-release, published]
     # Off until the owner has registered the Trusted Publisher on PyPI and set the repository
     # variable PYPI_PUBLISH=true; without that the job would fail on the OIDC exchange.
     if: vars.PYPI_PUBLISH == 'true'
