@@ -1,11 +1,22 @@
 """Shared pytest fixtures."""
 
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+
+# CLI output under test must be the plain text a script sees, wherever the suite runs. typer
+# forces a colour terminal when GITHUB_ACTIONS, FORCE_COLOR or PY_COLORS is set — read ONCE, when
+# `typer.rich_utils` is imported — so on GitHub every `--help` assertion met ANSI escapes and
+# three tests failed only in CI (2026-09-10), while every local gate was green. This runs before
+# anything imports typer: drop the colour-forcing variables, and use typer's own off-switch for
+# the one we must not unset (GITHUB_ACTIONS, which other code may read).
+for _var in ("FORCE_COLOR", "PY_COLORS", "CLICOLOR_FORCE"):
+    os.environ.pop(_var, None)
+os.environ["_TYPER_FORCE_DISABLE_TERMINAL"] = "1"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _STARTED: pytest.StashKey[float] = pytest.StashKey()
