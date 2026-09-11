@@ -475,7 +475,7 @@
     {
      "cmd": "exa assets materialize",
      "group": "assets",
-     "help": "Rebuild the asset + its stale ancestors only (R4/GWT-3). `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam (ADR 0036 clause 3) instead of running the production function in this process; `--orchestrator prefect` runs it as a Prefect flow run, visible in the Prefect UI (clause 1).",
+     "help": "Rebuild the asset + its stale ancestors only (R4/GWT-3). `--orchestrator scheduler` runs the build as a job on the phase-23 HPC scheduler (ADR 0036 clause 3) — mock, Slurm or Flux — and waits for it, instead of running it in this process; `--orchestrator prefect` runs it as a Prefect flow run, visible in the Prefect UI (clause 1).",
      "anchor": "exa-assets-asset-centric-freshness-pipelines-a4",
      "guide": "guides/asset-pipelines.md"
     },

@@ -283,6 +283,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_ASSET_ORCHESTRATOR` | `local` | **A4** which engine materializes an asset (ADR 0036): `local` runs the production function in-process, `scheduler` submits it through the phase-23 HPC seam, `prefect` runs it as a Prefect flow run (falls back to local, recorded, when no Prefect API is configured or reachable). An unrecognised value falls back to `local` — a typo must leave the asset built, not route it to an engine nobody configured. Override per run with `exa assets materialize --orchestrator`. |
 | `EXAMLOPS_ASSET_PREFECT_RETRIES` | `0` | **A4** Prefect task retries for a failed asset production function under `--orchestrator prefect` (ADR 0036). Opt-in: a build that failed halfway is not known to be safe to repeat. |
 | `EXAMLOPS_ASSET_PREFECT_RETRY_DELAY` | `10` | **A4** seconds between those retries. |
+| `EXAMLOPS_ASSET_JOB_DIR` | `$XDG_CACHE_HOME/examlops/asset-jobs` | **A4** where `--orchestrator scheduler` keeps each generated `run.sh` (mode 0700), as the record of what the job ran. Never the adapter's working directory, which for the mock is inside the repository. The job's interpreter, repo and work dir come from `EXAMLOPS_HPC_REMOTE_PYTHON` / `_REPO` / `_WORKDIR`; with none set it uses the submitting interpreter. |
 | `EXAMLOPS_REINDEX_ORCHESTRATOR` | `inline` | **A6** where a blue-green reindex runs (ADR 0043 clause 4): `inline` in the calling process, `scheduler` submits it through the phase-23 HPC seam (the case the clause names — large corpora). An unrecognised value falls back to `inline`; an unreachable scheduler falls back too and records `inline-fallback`. Override per run with `exa embedding reindex --scheduler` / `--inline`. |
 | `EXAMLOPS_INFERENCE_EMBEDDING_DIM` | unset | **A5** inference-gate embedding width. When set, a request whose embedding is the wrong length is refused with 422. Never defaulted — an embedding width is a fact about a use case, not a platform constant. |
 | `EXAMLOPS_OPENLINEAGE_URL` | unset (no-op) | **A2** OpenLineage — Marquez endpoint; unset ⇒ `emit_lineage` skips HTTP but still dual-writes `platform_db`. |
@@ -762,6 +763,7 @@ Guides: [Core · deployment · instance data](../guides/three-layer-architecture
 | `EXAMLOPS_IMAGE_TAG` | `latest` | Image tag Compose runs; `exa instance info` reports it as part of the deployment layer. |
 | `KUBERNETES_SERVICE_HOST` | set by Kubernetes | **Set by the kubelet** in every pod; read only to detect that the process runs on Kubernetes. Not an operator knob. |
 | `POD_NAMESPACE` / `COMPOSE_PROJECT_NAME` | unset | Reported by `exa instance info` when the deployment provides them. |
+| `XDG_CACHE_HOME` | `~/.cache` | Standard XDG base directory; generated asset job scripts go to `$XDG_CACHE_HOME/examlops/asset-jobs` when `EXAMLOPS_ASSET_JOB_DIR` is unset. |
 | `XDG_DATA_HOME` | `~/.local/share` | Where an **installed wheel** keeps `examlops/platform.db` when neither `PLATFORM_DB` nor `EXAMLOPS_DATA_DIR` is set (a source checkout keeps `<repo>/platform.db`). |
 
 ---

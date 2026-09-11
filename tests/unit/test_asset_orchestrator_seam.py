@@ -9,6 +9,7 @@ function and bumps a row, and never submits to Slurm or Flux."
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -28,19 +29,47 @@ from examlops.assets import (  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch):
+def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("EXAMLOPS_ASSET_ORCHESTRATOR", raising=False)
+    monkeypatch.setenv("EXAMLOPS_TEST_ASSET_MARKER", str(tmp_path / "marker.json"))
+    monkeypatch.setenv("EXAMLOPS_ASSET_JOB_DIR", str(tmp_path / "asset-jobs"))
+
+
+def _fx():
+    # A job imports its production function by name, so the scheduler path needs a module-level
+    # one. Imported inside the test, never at collection: its `@asset` writes to PLATFORM_DB.
+    from tests.unit import _asset_job_fixtures
+
+    return _asset_job_fixtures
 
 
 class _Adapter:
-    """A scheduler that records what it was asked to submit."""
+    """A scheduler that records what it was asked to submit and reports it COMPLETED.
 
-    def __init__(self):
+    It does not run the script — `test_asset_scheduler_job.py` drives the real mock, Slurm and
+    Flux adapters for that. This stand-in once accepted a submission with no script at all,
+    which is how a scheduler path that could not run on any real scheduler passed its tests.
+    """
+
+    def __init__(self, tmp_path=None):
+        import tempfile
+
+        self.working_dir = Path(tmp_path or tempfile.mkdtemp())
         self.submitted: list[dict] = []
 
     def submit_job(self, script_path=None, resources=None, training_data=None, remote_dir=None):
-        self.submitted.append({"resources": resources, "training_data": training_data})
+        assert script_path, "a real adapter refuses a job with no script"
+        self.submitted.append({"resources": resources, "script": Path(script_path).read_text()})
         return "job-42"
+
+    def wait_until_complete(self, job_id, poll_interval=0, max_wait_s=None):
+        return ""
+
+    def get_job_status(self, job_id):
+        return {"state": "COMPLETED", "exit_code": 0, "start_time": None, "end_time": None}
+
+    def get_job_logs(self, job_id):
+        return ""
 
 
 # ── the seam exists as code ───────────────────────────────────────────────────
@@ -115,47 +144,35 @@ def test_the_scheduler_orchestrator_submits_a_job(monkeypatch):
     adapter = _Adapter()
     monkeypatch.setattr(assets, "_scheduler_adapter", lambda: adapter)
 
-    class _Def:
-        name = "big_model"
-        fn = staticmethod(lambda **kw: None)
-
-    result = SchedulerOrchestrator().run(_Def(), {})
+    result = SchedulerOrchestrator().run(assets.AssetDef("big_model", fn=_fx().build_marker), {})
 
     assert result["hpc_job_id"] == "job-42"
     assert adapter.submitted[0]["resources"]["job_name"] == "asset-big_model"
 
 
-def test_the_submitted_command_cannot_resubmit_itself(monkeypatch):
-    """Without `--no-deps` the job re-walks the graph and submits again, once per ancestor,
-    forever; without `--orchestrator local` it submits itself."""
+def test_the_submitted_job_cannot_resubmit_itself(monkeypatch):
+    """A job that re-entered `exa assets materialize` would re-walk the graph and submit again
+    (the old design needed `--no-deps --orchestrator local` to stop it). The job now runs the
+    production function and nothing else, so there is no graph for it to walk."""
     adapter = _Adapter()
     monkeypatch.setattr(assets, "_scheduler_adapter", lambda: adapter)
 
-    class _Def:
-        name = "m"
-        fn = None
+    SchedulerOrchestrator().run(assets.AssetDef("m", fn=_fx().build_marker), {})
 
-    SchedulerOrchestrator().run(_Def(), {})
-
-    command = adapter.submitted[0]["training_data"]["command"]
-    assert "--no-deps" in command
-    assert "--orchestrator local" in command
+    script = adapter.submitted[0]["script"]
+    assert "-m examlops.assets.job" in script
+    assert "materialize" not in script
 
 
 def test_a_missing_scheduler_falls_back_to_local_and_says_so(monkeypatch):
     """An absent scheduler is an environment fact, not an asset failure."""
-    calls = []
     monkeypatch.setattr(
         assets, "_scheduler_adapter", lambda: (_ for _ in ()).throw(RuntimeError("no sbatch"))
     )
 
-    class _Def:
-        name = "m"
-        fn = staticmethod(lambda **kw: calls.append(1))
+    result = SchedulerOrchestrator().run(assets.AssetDef("m", fn=_fx().build_marker), {})
 
-    result = SchedulerOrchestrator().run(_Def(), {})
-
-    assert calls == [1], "the asset must still get built"
+    assert Path(os.environ["EXAMLOPS_TEST_ASSET_MARKER"]).exists(), "the asset must still get built"
     assert "no sbatch" in result["fallback"]
 
 
@@ -163,7 +180,9 @@ def test_materialize_routes_through_the_scheduler_when_asked(monkeypatch):
     adapter = _Adapter()
     monkeypatch.setattr(assets, "_scheduler_adapter", lambda: adapter)
     declare_asset("SeamB", kind="model")
-    assets._REGISTRY["SeamB"] = assets.AssetDef(name="SeamB", kind="model", deps=[], fn=None)
+    assets._REGISTRY["SeamB"] = assets.AssetDef(
+        name="SeamB", kind="model", deps=[], fn=_fx().build_marker
+    )
 
     materialize("SeamB", force=True, orchestrator="scheduler")
 
@@ -214,7 +233,9 @@ def test_the_lineage_event_records_which_orchestrator_built_the_version(monkeypa
     adapter = _Adapter()
     monkeypatch.setattr(assets, "_scheduler_adapter", lambda: adapter)
     declare_asset("SeamC", kind="model")
-    assets._REGISTRY["SeamC"] = assets.AssetDef(name="SeamC", kind="model", deps=[], fn=None)
+    assets._REGISTRY["SeamC"] = assets.AssetDef(
+        name="SeamC", kind="model", deps=[], fn=_fx().build_marker
+    )
 
     materialize("SeamC", force=True, orchestrator="scheduler")
 

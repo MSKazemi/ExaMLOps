@@ -118,15 +118,19 @@ def materialize(
 ) -> None:
     """Rebuild the asset + its stale ancestors only (R4/GWT-3).
 
-    `--orchestrator scheduler` submits the build through the phase-23 HPC scheduler seam
-    (ADR 0036 clause 3) instead of running the production function in this process;
+    `--orchestrator scheduler` runs the build as a job on the phase-23 HPC scheduler (ADR 0036
+    clause 3) — mock, Slurm or Flux — and waits for it, instead of running it in this process;
     `--orchestrator prefect` runs it as a Prefect flow run, visible in the Prefect UI (clause 1).
     """
+    from examlops.assets import AssetBuildError
     from examlops.assets import materialize as _materialize
 
-    result = _materialize(
-        name, actor=_actor(), force=force, no_deps=no_deps, orchestrator=orchestrator
-    )
+    try:
+        result = _materialize(
+            name, actor=_actor(), force=force, no_deps=no_deps, orchestrator=orchestrator
+        )
+    except AssetBuildError as exc:  # the build did not complete; no version was recorded
+        _output.error(str(exc), hint="`exa hpc jobs` lists the job; its logs say why")
     if result.blocked:
         _output.error(f"Blocked by policy: {result.blocked}")
         return

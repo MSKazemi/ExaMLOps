@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — `exa assets materialize --orchestrator scheduler` runs the build (ADR 0036 clause 3, now Accepted)
+
+- **On Slurm and Flux it failed every time.** The orchestrator submitted no job script and put
+  its command where the real adapters ignore it, so both raised `script_path is required`.
+- **On the mock it recorded builds that never happened.** The job was accepted but never
+  executed, and the asset's version was bumped anyway.
+- A build now runs as a real job. A generated `run.sh` calls
+  `python -m examlops.assets.job --entrypoint module:function` with the upstream versions; the
+  submitter waits for the job and records the version only if it ends `COMPLETED`. A failed,
+  cancelled, timed-out or refused job raises `AssetBuildError` with the job's last log lines and
+  records nothing. The job runs only the production function, so it cannot resubmit itself and
+  needs no access to `platform.db`.
+- Assets can request resources (`@asset(..., resources={"gpus": 4})`), and asset jobs appear in
+  `exa hpc jobs`. Closures and lambdas, which cannot cross a process boundary, build locally and
+  say so. Job scripts are mode 0700, shell-quoted, carry no environment values, and live under
+  `EXAMLOPS_ASSET_JOB_DIR`, never inside the repository.
+
 ### Added — asset builds as Prefect flow runs (ADR 0036 clause 1)
 
 - `exa assets materialize --orchestrator prefect` (or `EXAMLOPS_ASSET_ORCHESTRATOR=prefect`)

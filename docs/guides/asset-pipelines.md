@@ -133,7 +133,7 @@ Materialization goes through an `AssetOrchestrator`. Three ship:
 | Orchestrator | What it does |
 |---|---|
 | `local` (**default**) | Calls the production function in this process. |
-| `scheduler` | Submits the build through the phase-23 HPC seam — mock, Slurm or Flux, whichever `EXAMLOPS_HPC_SCHEDULER` names. |
+| `scheduler` | Runs the build as a job on the phase-23 HPC scheduler — mock, Slurm or Flux, whichever `EXAMLOPS_HPC_SCHEDULER` names — and waits for it. |
 | `prefect` | Runs the build as a **Prefect flow run**, so it shows up in the Prefect UI with its state, duration and logs. |
 
 ```bash
@@ -183,24 +183,72 @@ With no `PREFECT_API_URL`, Prefect would normally start a temporary server of it
 layer declines that and builds locally, because a run recorded in a throwaway database under
 `~/.prefect` is a run nobody can see.
 
-### What the scheduler path needs, and what it does without it
+### Scheduler jobs
 
-A scheduler job is a separate process and cannot call an in-process closure, so the submitted
-command re-enters the CLI as `exa assets materialize <name> --no-deps --orchestrator local`. Both
-flags matter: without `--no-deps` the job re-walks the graph and submits again once per ancestor,
-and without `--orchestrator local` it submits itself.
+`--orchestrator scheduler` runs the build as a job on the phase-23 scheduler (mock, Slurm or
+Flux) and **waits for it**. That wait is what lets a selective rebuild stay correct: a downstream
+asset is built only after its upstream job has finished.
 
-That job therefore needs `exa` installed and reachability to the same `platform.db` — a shared
-filesystem, or the Postgres backend — because **it** is what bumps the version. Under
-`EXAMLOPS_HPC_SCHEDULER=mock` the job runs inline and both hold trivially.
+```mermaid
+sequenceDiagram
+    participant M as exa assets materialize
+    participant S as scheduler (sbatch / flux batch / mock)
+    participant J as job: python -m examlops.assets.job
+    M->>M: write run.sh (entrypoint + upstream versions)
+    M->>S: submit run.sh with the asset's resources
+    S->>J: run on an allocation
+    J->>J: import module:function, call it with the upstream versions
+    J-->>S: exit 0 (built) or non-zero (failed)
+    M->>S: wait for a terminal state
+    alt COMPLETED
+        M->>M: record the new version, lineage and audit
+    else FAILED / CANCELLED / TIMEOUT
+        M-->>M: AssetBuildError, no version recorded
+    end
+```
 
-If no scheduler is reachable, the build **falls back to local and records why** in the lineage
-facet. An absent scheduler is an environment fact, not an asset failure; leaving the asset unbuilt
-would be the worse answer.
+The job runs **only the production function**. It never touches the asset graph, so it cannot
+walk to other assets and submit more jobs, and it does not need to reach `platform.db`. The
+process that submitted it records the single version bump.
 
-Every materialization's lineage event names the orchestrator that produced it and carries the
-scheduler job id when there was one — an asset built on a cluster and one built in a notebook are
-different facts.
+**The production function must be importable** by the job, which means a module-level function.
+The job imports it by `module:function`, and the name is resolved first and must give back the
+very same object, so a wrapper borrowing another function's name is not sent. A closure or a
+lambda cannot cross into another process; such a build runs locally and the lineage facet says so.
+
+Ask for what the job needs through the asset's resources, which map onto sbatch / flux flags:
+
+```python
+@asset(kind="model", deps=["dataset:PM100"], resources={"gpus": 4, "time": "2:00:00"})
+def jpcp_model(**upstream): ...
+```
+
+| Situation | Outcome |
+|---|---|
+| Job ends `COMPLETED` | Version recorded, with the scheduler job id on its lineage event |
+| Job ends `FAILED`, `CANCELLED` or `TIMEOUT`, or is lost | `AssetBuildError` with the job's last log lines; **no version** |
+| The scheduler refuses the job (bad account, full queue) | `AssetBuildError`. It is **not** run on this host instead, because a cluster-sized build quietly running on a login node would be the worse surprise |
+| No scheduler in this environment | Built locally; the lineage facet records `fallback` |
+| The production function is a closure or lambda | Built locally; the lineage facet records `fallback` |
+
+The job is recorded in `hpc_jobs`, so `exa hpc jobs` lists asset builds (`model` = `asset:<name>`)
+next to training runs.
+
+**What the job's host needs:** the ExaMLOps package and the production function's code, reachable
+by the job's python. The settings are the training pipeline's:
+
+- `EXAMLOPS_HPC_REMOTE_PYTHON` names the interpreter.
+- `EXAMLOPS_HPC_REMOTE_REPO` re-roots paths inside the repository on the cluster.
+- `EXAMLOPS_HPC_REMOTE_WORKDIR` is where job directories go.
+
+With none of them set, the job uses the submitting interpreter, which is right for the mock and
+for a shared filesystem. The job gets its environment from the scheduler, which exports the
+submitter's. No environment value is ever written into the script.
+
+**The generated `run.sh`** is kept under `EXAMLOPS_ASSET_JOB_DIR`, by default
+`$XDG_CACHE_HOME/examlops/asset-jobs`, as the exact record of what the job was asked to run. It is
+mode 0700 with every value shell-quoted, and it is never written into the repository: it holds
+this host's absolute paths.
 
 ## In the dashboard
 
