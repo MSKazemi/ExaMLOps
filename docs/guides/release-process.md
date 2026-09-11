@@ -166,6 +166,19 @@ git tag vX.Y.Z && git push github vX.Y.Z
 To republish an existing tag (for example after a transient registry error), run the workflow
 from the Actions tab with that tag as input; every step is idempotent.
 
+### When the scan gate quarantines an image
+
+A fixable CRITICAL finding stops that image before it is tagged, and with it the chart and the
+GitHub Release assets. Fix the finding at its source when you can — upgrade the dependency, rebuild
+on a patched base. When a finding cannot be exploited in that image (a vulnerable library the image
+never calls, a scanner false positive), the owner may approve an exception in
+[`.github/trivy/ignore.yaml`](https://github.com/MSKazemi/ExaMLOps/blob/main/.github/trivy/ignore.yaml):
+scoped to the one file it covers, with the reason it is not exploitable and an expiry no more than
+90 days out, after which the gate fails on the finding again. The release reads that file from the
+workflow's own revision, so once the exception is on `main` the same tag is re-published from the
+Actions tab (**Release → Run workflow**, tag `vX.Y.Z`) — no tag moves. Every exception still appears
+in the release's `trivy-reports-X.Y.Z.tar.gz`.
+
 ### One-time repository setup
 
 These are GitHub and PyPI settings, not files, so they are made by the repository owner:

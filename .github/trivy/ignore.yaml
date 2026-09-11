@@ -1,0 +1,31 @@
+# Image-scan exceptions for the release gate (.github/workflows/release.yml).
+#
+# Every entry is OWNER-APPROVED (2026-09-11), scoped to the one file it covers, states why the
+# finding cannot be exploited in that image, and EXPIRES — after `expired_at` the gate fails on the
+# finding again, so an exception can never quietly become permanent. The release workflow reads this
+# file from the WORKFLOW's revision, not the tag's: a triage decision made after tagging can
+# re-publish that tag (Actions → Release → Run workflow, tag=vX.Y.Z) without moving it.
+# tests/unit/test_release_workflow.py fails on an entry without paths, statement or expiry, or
+# with an expiry more than 90 days out.
+
+vulnerabilities:
+  - id: CVE-2025-68121
+    paths:
+      - "usr/local/bin/gosu"
+    statement: >-
+      Go crypto/tls certificate validation during TLS session resumption, compiled into the gosu
+      helper of the upstream postgres image. gosu only switches user and execs the entrypoint; it
+      opens no TLS connection, so the vulnerable code is never executed. Drop this entry when the
+      upstream image ships gosu built with Go >= 1.24.13.
+    expired_at: 2026-10-11
+
+secrets:
+  - id: gitlab-pat
+    paths:
+      - "app/frontend/dist/assets/Config-*.js"
+      - "/app/frontend/dist/assets/Config-*.js"
+    statement: >-
+      False positive: the Config page's token-input placeholder ('glpat-' followed by x's), not a
+      credential. Config.tsx no longer renders a token-shaped placeholder; this entry only lets tags
+      built before that change be re-published.
+    expired_at: 2026-10-11

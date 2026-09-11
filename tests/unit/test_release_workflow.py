@@ -206,3 +206,35 @@ def test_release_assets_carry_a_signature_and_slsa_provenance():
     dist = "\n".join(s.get("run", "") for s in JOBS["python-dist"]["steps"])
     assert ".intoto.jsonl" in dist and "dsseEnvelope" in dist
     assert "provenance-python" in release
+
+
+def test_the_blocking_scan_reads_the_policy_from_the_workflow_revision():
+    """Triage made after a tag must be able to re-publish that tag without moving it."""
+    steps = JOBS["images"]["steps"]
+    policy = next(s for s in steps if s.get("name", "").startswith("Check out the scan policy"))
+    assert policy["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert policy["with"]["sparse-checkout"] == ".github/trivy"
+    gate = next(s for s in steps if "blocking" in s.get("name", ""))
+    assert gate["with"]["trivyignores"] == f"{policy['with']['path']}/.github/trivy/ignore.yaml"
+    report = next(s for s in steps if s.get("name", "").startswith("Full vulnerability report"))
+    assert "trivyignores" not in report["with"], "the advisory report must show every finding"
+
+
+def test_every_scan_exception_is_scoped_reasoned_and_expiring():
+    """An exception without an end date is how an accepted risk becomes a permanent one."""
+    import datetime as _dt
+
+    policy = yaml.safe_load((ROOT / ".github" / "trivy" / "ignore.yaml").read_text())
+    entries = [(kind, e) for kind, items in policy.items() for e in items]
+    assert entries, "empty policy: delete the file's entries rather than keep a placeholder"
+    today = _dt.date.today()
+    for kind, e in entries:
+        where = f"{kind}/{e.get('id')}"
+        assert e.get("paths"), f"{where}: scope it to the file(s) it covers"
+        assert len(e.get("statement", "")) >= 60, f"{where}: say why it cannot be exploited"
+        expiry = e.get("expired_at")
+        assert isinstance(expiry, _dt.date), f"{where}: needs expired_at (yyyy-mm-dd)"
+        assert expiry > today, (
+            f"{where}: expired on {expiry} — fix the finding or renew with the owner"
+        )
+        assert (expiry - today).days <= 90, f"{where}: an exception may run at most 90 days"

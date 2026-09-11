@@ -235,6 +235,17 @@ jobs:
           ref: ${{ env.TAG }}
           persist-credentials: false
 
+      # The scan policy — owner-approved, expiring exceptions in .github/trivy/ignore.yaml — comes
+      # from the WORKFLOW's revision, not the tag's: a triage decision made after tagging can then
+      # re-publish that same tag (workflow_dispatch tag=vX.Y.Z) without the tag ever moving.
+      - name: Check out the scan policy (workflow revision)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .scan-policy
+          sparse-checkout: .github/trivy
+          persist-credentials: false
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -289,6 +300,7 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           format: table
+          trivyignores: .scan-policy/.github/trivy/ignore.yaml
 
       - name: Full vulnerability report (HIGH + CRITICAL, advisory)
         if: always() && steps.build.outputs.digest != ''

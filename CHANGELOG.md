@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — two images the release gate quarantined can publish; exceptions are scoped, reasoned and expiring
+
+- **v0.52.0 and v0.53.0 published without `examlops-postgres` and `examlops-dashboard`**: the release's
+  fixable-CRITICAL gate stopped both before they had a name (as designed), and with them the chart and
+  the release assets. `postgres`: CVE-2025-68121 in the Go `crypto/tls` compiled into the upstream
+  image's `gosu`, which never opens a TLS connection. `dashboard`: trivy's GitLab-token rule on the
+  Config page's input placeholder (`glpat-` followed by x's). The placeholder is now `glpat-…`, which
+  no secret rule matches (the rebuilt image scans clean with no exception).
+- **`.github/trivy/ignore.yaml` — owner-approved exceptions, each scoped to one file, stating why it
+  cannot be exploited, and expiring on 2026-10-11**, after which the gate fails on it again.
+  `tests/unit/test_release_workflow.py` rejects an entry without paths, a reason, or an expiry within
+  90 days. Verified on the real images: without the file both scans exit 1, with it both exit 0.
+- **The release reads that policy from the workflow's revision, not the tag's**, so a triage made after
+  tagging re-publishes the same tag (Actions → Release → Run workflow, `tag=v0.53.0`) — no tag moves.
+  The advisory Trivy report still lists every finding, excepted or not.
+
 ### Changed — the dashboard navigation follows the site feature profile (ADR 0128)
 
 - A module a centre switched off (`exa modules disable …`) now leaves the dashboard's sidebar and ⌘K
