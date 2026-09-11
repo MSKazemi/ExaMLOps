@@ -1241,7 +1241,14 @@ def log_mlflow_task(
             print(f"[pipeline] MLflow registration skipped: {exc}")
 
     _emit_training_lineage(
-        registered_model_name, dataset_name, registration, job_id, scheduler, backend_name
+        registered_model_name,
+        dataset_name,
+        registration,
+        job_id,
+        scheduler,
+        backend_name,
+        model_name=model_name,
+        is_dummy=is_dummy,
     )
     return registration
 
@@ -1253,6 +1260,9 @@ def _emit_training_lineage(
     job_id: str | None,
     scheduler: str | None,
     backend_name: str | None,
+    *,
+    model_name: str | None = None,
+    is_dummy: bool = False,
 ) -> None:
     """A2 lineage for a completed training run (ADR 0004 clauses 1 and 2). Fail-open.
 
@@ -1264,19 +1274,36 @@ def _emit_training_lineage(
     Emitted after registration so the model node names a resolved version. When registration was
     skipped the version is unknown and the event still records the run — a training run that
     produced no registered version is exactly the case a provenance graph should show.
+
+    ``model`` is the MLflow model id (``jpcp``) the lineage nodes and model fields carry;
+    ``model_name`` is the ``MODEL_REGISTRY`` key (the YAML model name, ``JPCP``) the run's
+    dataplane pin is found by. They differ, and the YAML default backend is looked up by the
+    registry key: with the MLflow id, a run whose YAML defaults to dataplane (``exa retrain``,
+    ``POST /retrain``, the autopilot, deployments — none pass ``--backend``) recorded no
+    revision. A dummy run trains on synthetic rows and never claims the snapshot.
     """
     try:
         from examlops.lineage import dataset_node, emit_lineage, model_node  # noqa: PLC0415
 
         run_id = registration.get("run_id") or f"train-{model}-{dataset}"
         version = registration.get("version")
+        # The exact data this run trained on, so `exa models lineage --impact <revision>` can find
+        # it: the dataplane pin (ADR 0130 §8), else a revision pinned with --dataset-revision.
+        facets: dict[str, Any] = {"backend": backend_name or ""}
+        pin = None if is_dummy else _run_pin(model_name or model, dataset, backend_name)
+        if pin is not None:
+            revision: str | None = pin.revision
+            facets["dataplane.source"] = pin.source_key
+        else:
+            revision = os.getenv("EXAMLOPS_DATASET_REVISION") or None
         emit_lineage(
             "COMPLETE",
             job=f"train:{model}",
             run_id=str(run_id),
-            inputs=[dataset_node(dataset)],
+            inputs=[dataset_node(dataset, revision)],
             outputs=[model_node(model, version or "unregistered")],
-            facets={"backend": backend_name or ""},
+            facets=facets,
+            dataset_revision=revision,
             mlflow_run_id=registration.get("run_id"),
             model=model,
             model_version=version,
@@ -1488,12 +1515,19 @@ def data_contract_gate(
     context (the revision resolver may return a remote or unmaterialised URI), and a
     ``--dummy`` run, whose synthetic rows were never meant to satisfy a production contract.
     A genuine ``error``-severity failure raises :class:`DataContractViolation`.
+
+    A dataplane snapshot is validated ONE table at a time and never concatenated (ADR 0130 final
+    review I9): the contract's ``table``, else the tables the model's binding maps, else every
+    table in the snapshot, each on its own. Each table is read through the dataplane's bounded
+    reader — at most ``EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS`` rows — and the report says so
+    (``sampled``, and per table ``rows_checked`` of ``rows``) when a table was cut short.
     """
     report: dict = {"dataset": dataset_name, "gate": _contract_gate_mode()}
     if report["gate"] == "off":
         return {**report, "validated": False, "reason": "gate disabled"}
     if is_dummy:
         return {**report, "validated": False, "reason": "dummy run — synthetic rows"}
+    tables: dict[str, dict[str, Any]] = {}
     try:
         from pipelines.contracts import load_contract  # noqa: PLC0415
 
@@ -1501,19 +1535,42 @@ def data_contract_gate(
         if contract is None:
             return {**report, "validated": False, "reason": "no contract for this dataset"}
 
-        df, source = _contract_dataframe(dataset_name, backend_name, model_name=model_name)
-        if df is None:
+        inputs, source = _contract_inputs(
+            dataset_name,
+            backend_name,
+            model_name=model_name,
+            table=getattr(contract, "table", None),
+        )
+        if inputs is None:
             return {**report, "validated": False, "reason": source}
 
-        result = contract.validate(df)
+        per_table = []
+        for table, load in inputs:  # one table in memory at a time
+            sample = load()
+            per_table.append((table, contract.validate(sample.frame)))
+            tables[table] = {
+                "rows_checked": sample.rows,
+                "rows": sample.total_rows,
+                "sampled": sample.sampled,
+            }
+            del sample
+        result = _combine_table_results(per_table)
     except DataContractViolation:
         raise
     except Exception as exc:  # noqa: BLE001 - a broken gate must not masquerade as a pass
         return {**report, "validated": False, "reason": f"gate error: {exc}"}
 
     _record_contract_result(dataset_name, result)
-    report.update({"validated": True, "passed": result.passed, "score": result.score})
+    sampled = any(t["sampled"] for t in tables.values())
+    report.update(
+        {"validated": True, "passed": result.passed, "score": result.score, "sampled": sampled}
+    )
+    if any(tables):  # a dataplane pin: say which tables were checked, and how much of each
+        report["tables"] = tables
     failures = _describe(result.errors)
+    if sampled:
+        cut = [f"{t} {s['rows_checked']}/{s['rows']}" for t, s in tables.items() if s["sampled"]]
+        failures += f" [checked a sample of rows: {', '.join(cut)}]"
     if not result.passed and report["gate"] == "enforce":
         raise DataContractViolation(
             f"{dataset_name} violates its data contract (score {result.score}): {failures}"
@@ -1529,26 +1586,99 @@ def _describe(checks: list) -> str:
     return "; ".join(f"{c.get('name')} ({c.get('observed')})" for c in checks)
 
 
-def _contract_dataframe(
-    dataset_name: str, backend_name: str | None, *, model_name: str | None = None
-) -> tuple[Any, str]:
-    """The pinned dataset as a DataFrame, or ``(None, reason)``.
+def _combine_table_results(per_table: list[tuple[str, Any]]) -> Any:
+    """One verdict over tables validated separately: passed iff every table passed. With several
+    tables each check is named ``<table>:<check>`` so a failure says which table failed."""
+    if len(per_table) == 1:
+        return per_table[0][1]
+    from pipelines.contracts import QualityResult  # noqa: PLC0415
 
-    Resolves through the same A1 revision resolver that pins the run, so the gate validates
-    **the data this run will train on** rather than whatever happens to be on disk. A dataplane
-    run (ADR 0130 §8) validates the local copy of the snapshot it already pinned — only when
-    this run's effective backend is dataplane (the gate never reaches here for a dummy run).
+    checks = [
+        {**c, "name": f"{table}:{c.get('name')}"}
+        for table, result in per_table
+        for c in result.checks
+    ]
+    score = round(sum(1 for c in checks if c.get("passed")) / (len(checks) or 1), 4)
+    passed = all(result.passed for _, result in per_table)
+    return QualityResult(passed=passed, score=score, checks=checks)
+
+
+def _dataplane_binding(model_name: str | None, dataset_name: str) -> Any:
+    """The model YAML's ``datasets[].dataplane`` binding for (model, dataset), else ``None``."""
+    if not model_name or model_name not in MODEL_REGISTRY:
+        return None
+    yaml_cfg = getattr(MODEL_REGISTRY[model_name][1], "_yaml", None)
+    if yaml_cfg is None:
+        return None
+    try:
+        from pipelines.datasets.dataplane import DataplaneBinding  # noqa: PLC0415
+
+        entry = yaml_cfg.dataset(dataset_name)
+        return DataplaneBinding.from_yaml(getattr(entry, "dataplane", None))
+    except Exception:  # noqa: BLE001 - no YAML / no entry / no binding: every table is checked
+        return None
+
+
+def _contract_inputs(
+    dataset_name: str,
+    backend_name: str | None,
+    *,
+    model_name: str | None = None,
+    table: str | None = None,
+) -> tuple[list[tuple[str, Any]] | None, str]:
+    """What the gate validates: ``([(table, load), …], source)``, or ``(None, reason)`` to skip.
+
+    Each ``load()`` returns one table's sample (``frame``, ``rows``, ``total_rows``, ``sampled``)
+    and is called only when that table's turn comes, so one table is in memory at a time.
+
+    A dataplane run (ADR 0130 §8) validates the local copy of the snapshot it already pinned —
+    only when this run's effective backend is dataplane (the gate never reaches here for a dummy
+    run) — table by table (``table``, else the binding's mapped tables, else every table), each
+    read through ``examlops.dataplane.pull.read_contract_sample`` and so bounded by
+    ``EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS``. A named table the snapshot lacks is validated as
+    empty, which fails its checks: a contract for a table the run does not have is not a skip.
+    Any other run validates the A1-resolved local copy as one frame (``_contract_dataframe``).
     """
-    from pipelines.datasets.versioning import discover_files, resolve_revision  # noqa: PLC0415
+    import functools  # noqa: PLC0415
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from pipelines.datasets.versioning import discover_files  # noqa: PLC0415
 
     pin = _run_pin(model_name, dataset_name, backend_name)
     if pin is not None:
-        files = discover_files(pin.local_dir)
-        if not files:
+        if not discover_files(pin.local_dir):
             return None, f"no parquet files under {pin.local_dir}"
-        import pandas as pd  # noqa: PLC0415
+        from examlops.dataplane.pull import read_contract_sample  # noqa: PLC0415
 
-        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True), str(pin.local_dir)
+        if table:
+            names = [table]
+        else:
+            binding = _dataplane_binding(model_name, dataset_name)
+            mapped = sorted(set(binding.tables.values())) if binding is not None else []
+            names = mapped or list(pin.tables)
+        if not names:  # nothing to validate must never read as a pass
+            return None, f"{pin.source_key}@{pin.revision[:12]} lists no tables"
+        inputs: list[tuple[str, Any]] = []
+        for name in names:
+            directory = pin.local_dir / name
+            parts = sorted(directory.glob("*.parquet")) if directory.is_dir() else []
+            inputs.append((name, functools.partial(read_contract_sample, parts)))
+        return inputs, str(pin.local_dir)
+    df, source = _contract_dataframe(dataset_name, backend_name)
+    if df is None:
+        return None, source
+    whole = SimpleNamespace(frame=df, rows=len(df), total_rows=len(df), sampled=False)
+    return [("", lambda: whole)], source
+
+
+def _contract_dataframe(dataset_name: str, backend_name: str | None) -> tuple[Any, str]:
+    """The A1-resolved dataset as one DataFrame, or ``(None, reason)`` — the non-dataplane gate.
+
+    Resolves through the same A1 revision resolver that pins the run, so the gate validates
+    **the data this run will train on** rather than whatever happens to be on disk.
+    """
+    from pipelines.datasets.versioning import discover_files, resolve_revision  # noqa: PLC0415
+
     rev = resolve_revision(backend_name, dataset_name)
     uri = getattr(rev, "uri", "") or ""
     if not uri or "://" in uri:

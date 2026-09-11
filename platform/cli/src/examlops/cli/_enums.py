@@ -39,6 +39,7 @@ class StackService(StrEnum):
     orchestrator = "orchestrator"
     ray_serving = "ray-serving"
     control_plane = "control-plane"
+    dataplane = "dataplane"
     prometheus = "prometheus"
     alertmanager = "alertmanager"
     tempo = "tempo"

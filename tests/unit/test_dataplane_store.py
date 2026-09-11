@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -25,8 +26,17 @@ from examlops.dataplane.types import (  # noqa: E402
 from pipelines.datasets.versioning import resolve_revision  # noqa: E402
 
 
-@pytest.fixture
-def store(tmp_path):
+@pytest.fixture(params=["fsspec-local", "arrow-wrapper"])
+def store(request, tmp_path):
+    if request.param == "arrow-wrapper":
+        # Task 22b: S3 reaches the store as pyarrow's native filesystem behind fsspec's
+        # ArrowFSWrapper — run every store test over that wrapper too (a local root, no live S3).
+        from fsspec.implementations.arrow import ArrowFSWrapper
+        from pyarrow.fs import LocalFileSystem
+
+        root = tmp_path / "store"
+        fs = ArrowFSWrapper(LocalFileSystem(), skip_instance_cache=True)
+        return st.DatasetStore(fs, str(root), uri_prefix=f"file://{root}")
     return st.DatasetStore.from_url(f"file://{tmp_path / 'store'}")
 
 
@@ -167,6 +177,12 @@ def test_prune_grace_protects_young_manifested_pull_and_removes_old_one(store, t
 
     latest_id = new_pull_id()
     _pull(store, tmp_path, [[3]], parent=m_old, pull_id=latest_id)
+
+    # The grace counts from a pull dir's newest object (fix I4c), so the old pull's objects must
+    # be old too — a pull that started long ago but is uploading now is not garbage.
+    then = time.time() - (st._ORPHAN_AGE_S + 60)
+    for path in (Path(store.root) / "_global" / "pm100" / old_id).rglob("*"):
+        os.utime(path, (then, then))
 
     removed = st.prune(store, "_global/pm100", keep=0, pinned=set())
     assert old_id in removed

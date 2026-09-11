@@ -46,7 +46,15 @@ def _actor() -> str:
 @app.command(epilog=_EX_CREATE)
 def create(
     name: str = typer.Argument(..., help="Connection name (unique within its project)"),
-    kind: str = typer.Option("s3", "--kind", "-k", help=f"Connection kind: {', '.join(KINDS)}"),
+    kind: str = typer.Option(
+        "s3",
+        "--kind",
+        "-k",
+        help=(
+            f"Connection kind: {', '.join(KINDS)}, or any dataplane connector kind "
+            "(see: exa dataplane connectors)"
+        ),
+    ),
     project: str | None = typer.Option(
         None, "--project", "-p", help="Owning project (omit = global)"
     ),

@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
@@ -36,7 +38,13 @@ def platform(tmp_path, monkeypatch):
     monkeypatch.setenv("EXAMLOPS_HPC_REGISTRY", str(tmp_path / "clusters.yaml"))
     monkeypatch.setenv("EXAMLOPS_MCP_ALLOW_WRITES", "1")
     monkeypatch.setenv("EXAMLOPS_ACTOR", "test-actor")
+    # A fully local success path for dataplane_pull (ADR 0130): the built-in `files` connector
+    # reading a tiny parquet drop through a `file://` store — same recipe as
+    # tests/unit/test_dataplane_files.py / test_dataplane_pull.py, no live infrastructure needed.
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES", "1")
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_STORE_URL", f"file://{tmp_path / 'dpstore'}")
 
+    from examlops import dataplane as dpl
     from examlops.data import init_db
     from examlops.data.projects import create_project
     from examlops.hpc_registry import register_pending
@@ -44,6 +52,13 @@ def platform(tmp_path, monkeypatch):
     init_db()
     create_project("proj")
     register_pending("cl", "mock", host="localhost")
+
+    drop = tmp_path / "drop"
+    drop.mkdir()
+    pq.write_table(pa.Table.from_pylist([{"a": 1}, {"a": 2}]), drop / "data.parquet")
+    dpl.define_source(
+        "filesrc", "files", spec={"url": f"file://{drop}", "glob": "*.parquet"}, actor="t"
+    )
     yield
 
 
@@ -60,6 +75,7 @@ def _cases():
         ("project_assign_model", lambda: T.project_assign_model("proj", "JPCP")),
         ("project_add_member", lambda: T.project_add_member("proj", "bob", "editor")),
         ("hpc_approve_cluster", lambda: T.hpc_approve_cluster("cl")),
+        ("dataplane_pull", lambda: T.dataplane_pull("filesrc")),
     ]
 
 

@@ -98,6 +98,7 @@ WRITE_ARGS: dict[str, dict[str, object]] = {
     "set_drift_autoretrain": {"model": "JPCP", "dataset": "PM100Dataset", "enabled": True},
     "set_promotion_rule": {"model": "JPCP", "metric": "rmse", "operator": "<", "threshold": 5.0},
     "grant_access": {"subject": "guard-user", "relation": "viewer", "obj": "project:guard-proj"},
+    "dataplane_pull": {"name": "does-not-exist"},
 }
 
 MUTATING = [spec for spec in tools.REGISTRY if spec.mutating]

@@ -7,6 +7,7 @@ from examlops.dataplane.pull import (
     get_source_def,
     list_source_defs,
     preview,
+    reap_interrupted_pulls,
     remove_source,
     run_pull,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "preview",
     "probe_source",
     "read_manifest",
+    "reap_interrupted_pulls",
     "remove_source",
     "resolve",
     "run_pull",

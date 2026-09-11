@@ -19,16 +19,44 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ._manifest import OK, TierResult, TierUnavailable, rollup_status, sha256_file, sha256_text
+from ._manifest import (
+    OK,
+    SKIPPED,
+    TierResult,
+    TierUnavailable,
+    rollup_status,
+    sha256_file,
+    sha256_text,
+)
+
+
+def _bucket_missing(exc: Exception) -> bool:
+    """True when ``exc`` means "this bucket does not exist", not some other list failure.
+
+    Handles both a real boto3 ``ClientError`` (``exc.response["Error"]["Code"]`` /
+    ``ResponseMetadata.HTTPStatusCode``) and the plain-string form the tests' in-memory double
+    raises (``RuntimeError("NoSuchBucket: <bucket>")``).
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error") or {}
+        code = str(error.get("Code", ""))
+        status_code = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        if code in ("NoSuchBucket", "404") or status_code == 404:
+            return True
+    return "nosuchbucket" in str(exc).lower()
 
 
 def _buckets() -> list[str]:
     raw = os.getenv("EXAMLOPS_BACKUP_BUCKETS", "")
     if raw.strip():
         return [b.strip() for b in raw.split(",") if b.strip()]
-    # Default: MLflow artifacts + the projects bucket (resolved the same way projects.py does).
+    # Default: MLflow artifacts + the projects bucket (resolved the same way projects.py does)
+    # + the dataplane data bucket (ADR 0130) — committed snapshots are durable training data,
+    # not scratch, so they belong in the same mirror as everything else this tier backs up.
     projects_bucket = os.getenv("EXAMLOPS_PROJECTS_BUCKET", "examlops-projects")
-    return ["mlflow-artifacts", projects_bucket]
+    data_bucket = os.getenv("EXAMLOPS_DATA_BUCKET", "examlops-data")
+    return ["mlflow-artifacts", projects_bucket, data_bucket]
 
 
 def _s3_client():  # noqa: ANN202 — returns a boto3 client or a test double
@@ -62,7 +90,14 @@ def _list_keys(s3, bucket: str) -> list[dict[str, Any]]:
 
 
 def backup_objects_tier(dest_dir: Path) -> TierResult:
-    """Mirror each configured bucket into ``dest_dir/objects/<bucket>/`` + write per-bucket index."""
+    """Mirror each configured bucket into ``dest_dir/objects/<bucket>/`` + write per-bucket index.
+
+    A bucket that does not exist is *skipped and reported*, not a tier failure: the default
+    bucket list can grow (ADR 0130 added ``EXAMLOPS_DATA_BUCKET``) and an existing install's
+    objects backup must not start failing outright just because ``minio-init`` has not created
+    the new bucket yet. Any other list failure (unreachable endpoint, permission error, ...)
+    still fails the whole tier, exactly as before.
+    """
     try:
         s3 = _s3_client()
     except TierUnavailable:
@@ -76,7 +111,17 @@ def backup_objects_tier(dest_dir: Path) -> TierResult:
             keys = _list_keys(s3, bucket)
         except TierUnavailable:
             raise
-        except Exception as exc:  # noqa: BLE001 — unreachable endpoint / missing bucket → skip tier
+        except Exception as exc:  # noqa: BLE001 — distinguished by _bucket_missing() below
+            if _bucket_missing(exc):
+                items.append(
+                    {
+                        "bucket": bucket,
+                        "dir": f"objects/{bucket}",
+                        "status": SKIPPED,
+                        "reason": f"bucket does not exist: {exc}",
+                    }
+                )
+                continue
             raise TierUnavailable(f"cannot list bucket {bucket}: {exc}") from exc
 
         bucket_dir = objects_root / bucket
@@ -85,6 +130,11 @@ def backup_objects_tier(dest_dir: Path) -> TierResult:
         total = 0
         for k in keys:
             key = k["Key"]
+            if key.endswith("/"):
+                # A directory marker — the zero-byte `prefix/` object some S3 writers add (pyarrow's
+                # S3 filesystem, which the dataplane uses, does). It holds no data, and mirroring
+                # it as a file would block the real keys under that prefix (FileExistsError).
+                continue
             local = bucket_dir / key
             local.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(bucket, key, str(local))

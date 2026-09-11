@@ -117,14 +117,110 @@ def _linked_run(revision: str) -> str | None:
 # ── the contract gate ──────────────────────────────────────────────────────────
 
 
-def test_contract_dataframe_reads_the_pinned_copy(pin):
-    df, source = pg._contract_dataframe("PM100Dataset", "dataplane", model_name="JPCP")
-    assert len(df) == 2 and source == str(pin.local_dir)
+def test_contract_inputs_read_the_pinned_copy(pin):
+    inputs, source = pg._contract_inputs("PM100Dataset", "dataplane", model_name="JPCP")
+    assert source == str(pin.local_dir)
+    assert [table for table, _ in inputs] == ["job_table"]
+    sample = inputs[0][1]()
+    assert sample.rows == 2 and len(sample.frame) == 2 and sample.sampled is False
 
 
-def test_contract_dataframe_ignores_a_leftover_pin_for_a_minio_run(pin):
-    _, source = pg._contract_dataframe("PM100Dataset", "minio", model_name="JPCP")
+def test_contract_inputs_ignore_a_leftover_pin_for_a_minio_run(pin):
+    _, source = pg._contract_inputs("PM100Dataset", "minio", model_name="JPCP")
     assert source != str(pin.local_dir)
+
+
+# ── final review I9: the gate validates one table at a time, and a bounded number of rows ────
+
+
+def _write_parts(local, table, parts):
+    (local / table).mkdir(parents=True)
+    for i, rows in enumerate(parts):
+        pq.write_table(pa.Table.from_pylist(rows), local / table / f"part-{i:05d}.parquet")
+
+
+@pytest.fixture
+def two_table_pin(tmp_path, monkeypatch):
+    """A pinned snapshot with `job_table` (column `a`, 2 parts) and `node_table` (no `a` at all)."""
+    local = tmp_path / "rev2"
+    _write_parts(local, "job_table", [[{"a": 1}, {"a": 2}], [{"a": 3}, {"a": None}]])
+    _write_parts(local, "node_table", [[{"b": 9}]])
+    p = ad.SnapshotPin(
+        "_global/pm100", "rev2" * 16, local, ("job_table", "node_table"), "file:///m.json"
+    )
+    ad.reset_pins()
+    ad._PINS[("JPCP", "PM100Dataset")] = p
+    monkeypatch.setenv("EXAMLOPS_DATA_CONTRACT_GATE", "enforce")
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS", raising=False)
+    yield p
+    ad.reset_pins()
+
+
+def _gate_contract(monkeypatch, *checks, table=None):
+    from pipelines import contracts
+
+    contract = contracts.DataContract(
+        dataset="PM100Dataset", version="1", checks=list(checks), table=table
+    )
+    monkeypatch.setitem(contracts._REGISTRY, "pm100dataset", contract)
+    return contracts
+
+
+def test_the_gate_validates_only_the_contracts_table(two_table_pin, monkeypatch):
+    """Concatenating the tables would give node_table's row a null `a` and fail the gate."""
+    from pipelines import contracts
+
+    _gate_contract(
+        monkeypatch,
+        contracts.column_present("a"),
+        contracts.not_null("a", max_null_rate=0.3),
+        table="job_table",
+    )
+    report = pg.data_contract_gate("PM100Dataset", "dataplane", model_name="JPCP")
+    assert report["validated"] is True and report["passed"] is True
+    assert list(report["tables"]) == ["job_table"]
+
+
+def test_the_gate_validates_the_bindings_tables_one_at_a_time(two_table_pin, monkeypatch):
+    from pipelines import contracts
+
+    entry = pg.MODEL_REGISTRY["JPCP"][1]._yaml.dataset("PM100Dataset")
+    monkeypatch.setattr(
+        entry, "dataplane", {"source": "pm100", "tables": {"PM100/job.parquet": "job_table"}}
+    )
+    _gate_contract(
+        monkeypatch, contracts.column_present("a"), contracts.not_null("a", max_null_rate=0.3)
+    )
+    report = pg.data_contract_gate("PM100Dataset", "dataplane", model_name="JPCP")
+    assert report["passed"] is True and list(report["tables"]) == ["job_table"]
+
+
+def test_the_gate_without_a_table_or_binding_checks_every_table_separately(
+    two_table_pin, monkeypatch
+):
+    """node_table has no `a`: validated on its own it fails, and the gate names it."""
+    from pipelines import contracts
+
+    _gate_contract(monkeypatch, contracts.column_present("a"))
+    with pytest.raises(pg.DataContractViolation, match="node_table"):
+        pg.data_contract_gate("PM100Dataset", "dataplane", model_name="JPCP")
+
+
+def test_the_gate_reads_at_most_the_row_cap_and_says_it_sampled(two_table_pin, monkeypatch):
+    """The 4th job_table row is null; with a cap of 3 it is never read, so not_null passes —
+    while min_rows still sees the table's true row count (4), not the sample's (3)."""
+    from pipelines import contracts
+
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS", "3")
+    _gate_contract(monkeypatch, contracts.not_null("a"), contracts.min_rows(4), table="job_table")
+    report = pg.data_contract_gate("PM100Dataset", "dataplane", model_name="JPCP")
+    assert report["passed"] is True
+    assert report["sampled"] is True
+    assert report["tables"]["job_table"] == {"rows_checked": 3, "rows": 4, "sampled": True}
+
+    monkeypatch.delenv("EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS")
+    with pytest.raises(pg.DataContractViolation, match="not_null"):
+        pg.data_contract_gate("PM100Dataset", "dataplane", model_name="JPCP")
 
 
 # ── MLflow tags + the revision link ────────────────────────────────────────────
@@ -284,3 +380,102 @@ def test_training_flow_starts_without_the_previous_runs_pin(pin, monkeypatch):
 
     pg.training_flow.fn("JPCP", "PM100Dataset", is_dummy=True, backend_name="minio")
     assert seen == {"pin_at_start": None, "submit_backend": "minio", "log_is_dummy": True}
+
+
+# --- lineage: a pinned run is findable by its snapshot revision (ADR 0130 §8, live-verify gap) ---
+
+
+def test_training_lineage_records_the_pinned_revision(monkeypatch):
+    from examlops.data.events import lineage_impact
+
+    rev = "3a89add84d9091ff" * 4
+    fake_pin = SimpleNamespace(revision=rev, source_key="_global/pm100")
+    monkeypatch.setattr(pg, "_run_pin", lambda model, dataset, backend: fake_pin)
+    monkeypatch.delenv("EXAMLOPS_DATASET_REVISION", raising=False)
+
+    pg._emit_training_lineage(
+        "jpcp", "PM100Dataset", {"run_id": "run-pinned", "version": "22"}, None, None, "dataplane"
+    )
+
+    rows = lineage_impact(rev)
+    assert [(r["model"], str(r["model_version"]), r["mlflow_run_id"]) for r in rows] == [
+        ("jpcp", "22", "run-pinned")
+    ]
+
+
+def test_training_lineage_falls_back_to_a_dataset_revision_pin(monkeypatch):
+    from examlops.data.events import lineage_impact
+
+    monkeypatch.setattr(pg, "_run_pin", lambda model, dataset, backend: None)
+    monkeypatch.setenv("EXAMLOPS_DATASET_REVISION", "minio-rev-1")
+
+    pg._emit_training_lineage(
+        "jpcp", "PM100Dataset", {"run_id": "run-minio", "version": "23"}, None, None, "minio"
+    )
+
+    assert [r["mlflow_run_id"] for r in lineage_impact("minio-rev-1")] == ["run-minio"]
+    assert lineage_impact("3a89add84d9091ff" * 4) == []
+
+
+# --- final review I6: the default path (YAML backend dataplane, no --backend) records the pin ---
+
+
+def _log_mlflow_offline(monkeypatch, *, run_id: str):
+    """`log_mlflow_task` with MLflow and the framework adapter stubbed out — everything else real,
+    so the registry-key/MLflow-id hand-off to the lineage emitter is exercised as it runs."""
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.active_run.return_value.info.run_id = run_id
+    fake.MlflowClient.return_value.search_model_versions.return_value = []
+    monkeypatch.setattr(pg, "mlflow", fake)
+    monkeypatch.setattr(pg, "_adapter_for", lambda model: MagicMock(flavour="sklearn"))
+    monkeypatch.setenv("EXAMLOPS_SIGN_AT_REGISTRATION", "off")
+    monkeypatch.delenv("EXAMLOPS_DATASET_REVISION", raising=False)
+    model = SimpleNamespace(estimator=object(), metadata=None)
+    return model
+
+
+@pytest.mark.parametrize("is_dummy", [False, True], ids=["real-run", "dummy-run"])
+def test_a_yaml_default_dataplane_run_is_findable_by_its_revision(pin, monkeypatch, is_dummy):
+    """`JPCP`'s YAML defaults PM100Dataset to dataplane and the run passes no backend (`exa
+    retrain`, `POST /retrain`, autopilot, deployments). The pin is keyed by the registry key
+    (`JPCP`); lineage used to look it up by the MLflow id (`jpcp`) and recorded no revision.
+    `_run_pin` is NOT mocked: the real pin set up by the `pin` fixture must be found. A dummy run
+    trains on synthetic rows and must never claim the snapshot."""
+    from examlops.data.events import lineage_impact
+
+    entry = pg.MODEL_REGISTRY["JPCP"][1]._yaml.dataset("PM100Dataset")
+    monkeypatch.setattr(entry, "backend", "dataplane")
+    model = _log_mlflow_offline(monkeypatch, run_id="run-default")
+
+    pg.log_mlflow_task.fn(
+        model, {"rmse": 1.0}, "JPCP", "PM100Dataset", backend_name=None, is_dummy=is_dummy
+    )
+
+    runs = [r["mlflow_run_id"] for r in lineage_impact(pin.revision)]
+    assert runs == ([] if is_dummy else ["run-default"])
+
+
+def test_training_lineage_looks_the_pin_up_by_the_registry_key(pin, monkeypatch):
+    """The emitter itself: model fields carry the MLflow id, the pin lookup the registry key."""
+    from examlops.data.events import lineage_impact
+
+    entry = pg.MODEL_REGISTRY["JPCP"][1]._yaml.dataset("PM100Dataset")
+    monkeypatch.setattr(entry, "backend", "dataplane")
+    monkeypatch.delenv("EXAMLOPS_DATASET_REVISION", raising=False)
+
+    pg._emit_training_lineage(
+        "jpcp",
+        "PM100Dataset",
+        {"run_id": "run-key", "version": "7"},
+        None,
+        None,
+        None,
+        model_name="JPCP",
+    )
+
+    rows = lineage_impact(pin.revision)
+    assert [(r["model"], str(r["model_version"]), r["mlflow_run_id"]) for r in rows] == [
+        ("jpcp", "7", "run-key")
+    ]

@@ -15,13 +15,37 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 
 from examlops.dataplane.connectors.files import (  # noqa: E402
+    _PARQUET_BATCH,
     FilesConnector,
+    _batches,
     _fsspec_url,
     _http_headers,
     _refuse_unsafe_fs,
     _storage_options,
 )
 from examlops.dataplane.types import EgressDenied, LimitExceeded, Limits, SpecError  # noqa: E402
+
+# --- task 22a: bounded-memory parquet reads -----------------------------------------------------
+
+
+def test_parquet_batches_are_bounded_and_preserve_total_row_count(tmp_path):
+    """A 287 MB real-world Parquet pull (231k rows, one row group, wide list<int32> columns) OOM-
+    killed the dataplane container streaming it at the old 65,536-row batch size. A generated
+    single-row-group file with a list<int32> column must now come back in batches of at most
+    ``_PARQUET_BATCH`` rows, with the total row count preserved.
+    """
+    n_rows = 20_000
+    table = pa.Table.from_pylist(
+        [{"id": i, "trace": [i, i + 1, i + 2]} for i in range(n_rows)],
+        schema=pa.schema([("id", pa.int64()), ("trace", pa.list_(pa.int32()))]),
+    )
+    path = tmp_path / "wide.parquet"
+    pq.write_table(table, path, row_group_size=n_rows)  # force exactly one row group
+    with open(path, "rb") as fh:
+        batches = list(_batches(fh, "parquet"))
+    assert batches, "expected at least one batch"
+    assert all(b.num_rows <= _PARQUET_BATCH for b in batches)
+    assert sum(b.num_rows for b in batches) == n_rows
 
 
 def _handler_factory(*, bodies, extra_headers, captured):
@@ -153,17 +177,27 @@ def test_validate_spec_rejects_dotdot_glob():
     assert any(".." in e for e in errors)
 
 
-def test_http_headers_helper_builds_bearer_auth():
-    assert _http_headers({"secret": "tok123"}) == {"Authorization": "Bearer tok123"}
-    assert _http_headers(None) == {}
-    assert _http_headers({}) == {}
+def test_http_headers_helper_builds_bearer_auth_only_for_the_connections_own_origin():
+    # Final review C1: the bearer goes only to the origin the connection itself configures.
+    conn = {"uri": "https://data.example/exports/", "secret": "tok123"}
+    assert _http_headers(conn, "https://data.example/x.csv") == {"Authorization": "Bearer tok123"}
+    assert _http_headers(conn, "https://DATA.example:443/y.csv") == {
+        "Authorization": "Bearer tok123"
+    }
+    assert _http_headers(conn, "https://evil.example/x.csv") == {}
+    assert _http_headers(conn, "http://data.example/x.csv") == {}  # another scheme
+    assert _http_headers(conn, "https://data.example:8443/x.csv") == {}  # another port
+    assert _http_headers({"secret": "tok123"}, "https://data.example/x.csv") == {}  # no origin
+    assert _http_headers(None, "https://data.example/x.csv") == {}
+    assert _http_headers({}, "https://data.example/x.csv") == {}
 
 
 def test_probe_http_sends_the_same_auth_header_as_read(monkeypatch):
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "127.0.0.0/8")
     captured: list[dict[str, str]] = []
     with _local_server(captured=captured) as port:
-        FilesConnector().probe({"secret": "tok123"}, {"url": f"http://127.0.0.1:{port}/data.csv"})
+        conn = {"kind": "uri", "uri": f"http://127.0.0.1:{port}", "secret": "tok123"}
+        FilesConnector().probe(conn, {"url": f"http://127.0.0.1:{port}/data.csv"})
     assert captured[-1].get("Authorization") == "Bearer tok123"
 
 
@@ -178,14 +212,20 @@ def test_http_download_enforces_max_bytes(monkeypatch):
 
 
 def test_incremental_http_uses_content_hash_when_no_etag(monkeypatch):
+    """With no validator header, the content hash is what tells a changed body apart. A changed
+    body is not an append (the file is one table the parent snapshot already holds), so the read
+    signals ``IncrementalInvalidated`` and ``run_pull`` re-reads it in full (ADR 0130, fix I1)."""
+    from examlops.dataplane.types import IncrementalInvalidated
+
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOWED_HOSTS", "127.0.0.0/8")
     with _local_server(bodies=[b"a,b\n1,x\n", b"a,b\n1,x\n2,y\n"]) as port:
         spec = {"url": f"http://127.0.0.1:{port}/data.csv", "incremental": True}
         first = _read(spec)
         assert sum(tb.batch.num_rows for tb in first) == 1
         wm = first[-1].watermark
-        second = _read(spec, wm)
-        assert sum(tb.batch.num_rows for tb in second) == 2
+        assert wm["files"]["data.csv"].startswith("sha256:")
+        with pytest.raises(IncrementalInvalidated, match="changed"):
+            _read(spec, wm)
 
 
 def test_incremental_http_skips_when_content_hash_is_unchanged(monkeypatch):

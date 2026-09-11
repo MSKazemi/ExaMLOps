@@ -37,8 +37,23 @@ class SnapshotNotFound(DataplaneError):
     """No committed snapshot matches the requested source/revision."""
 
 
+class SnapshotIntegrityError(SnapshotNotFound):
+    """A snapshot's bytes do not hash to its revision id: the data behind a pinned id was changed.
+
+    A subclass of :class:`SnapshotNotFound` because, for a caller, the revision it asked for does
+    not exist in the store any more — only something else stored under its name."""
+
+
 class PullInProgress(DataplaneError):
     """Another pull of the same source holds the lock."""
+
+
+class IncrementalInvalidated(DataplaneError):
+    """An incremental read cannot be a pure append: data the parent snapshot already holds changed
+    or disappeared upstream (a file rewritten in place, a file removed).
+
+    Raised by a connector from ``read``; ``run_pull`` catches it and restarts the read as a full
+    pull under the same pull id, so the new snapshot never carries the parent's stale parts."""
 
 
 def _int_env(name: str) -> int | None:

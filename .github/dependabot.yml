@@ -132,6 +132,7 @@ updates:
       - "/platform/infra/docker-compose"
       - "/platform/services/agent"
       - "/platform/services/control_plane"
+      - "/platform/services/dataplane"
       - "/serving/ray_serving"
     schedule:
       interval: "weekly"

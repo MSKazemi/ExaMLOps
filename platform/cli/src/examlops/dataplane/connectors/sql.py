@@ -120,6 +120,14 @@ class SqlConnector(BaseConnector):
         since: Watermark | None,
         limits: Limits,
     ) -> Iterator[TableBatch]:
+        """Stream the query/table; incrementally, only rows with ``watermark_column > since``.
+
+        Incremental means **insert-only**: an incremental snapshot carries every row the parent
+        held and appends the new ones, so ``watermark_column`` must be monotonic and set once per
+        row (an increasing id, ``created_at``). A column that moves when a row is *updated*
+        (``updated_at``) re-reads that row and the snapshot then holds it twice; a changed spec
+        (table/query) makes ``run_pull`` read everything instead. For mutable rows, pull full.
+        """
         import pyarrow as pa
         import sqlalchemy as sa
 

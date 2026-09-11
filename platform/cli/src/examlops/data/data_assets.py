@@ -529,11 +529,20 @@ def record_dataset_revision(
     synthetic: bool = False,
     source_revision: str | None = None,
     generator: str | None = None,
-) -> None:
-    """Record a resolved dataset revision.
+    declare_asset: bool = True,
+) -> bool:
+    """Record a resolved dataset revision. ``True`` when the catalog learned something new.
 
     Idempotent on ``(backend, dataset, revision_id)`` (spec R5): re-recording the
-    same revision is a no-op and never raises a UNIQUE-constraint error.
+    same revision is a no-op and never raises a UNIQUE-constraint error. The one
+    exception is a *link-only placeholder* — the row ``link_dataset_revision_run``
+    inserts when a training run links a revision the catalog had lost. Its empty
+    uri/schema/size columns are filled in (``COALESCE``); ``mlflow_run_id`` is never
+    touched. A real row is never rewritten.
+
+    A new row or a filled placeholder advances the dataset's asset (downstream models go
+    stale) unless ``declare_asset=False`` — ``catalog-rebuild`` re-indexes history and
+    decides once, itself, whether anything is actually newer.
 
     A7 (ADR 0042): ``synthetic=True`` hard-flags the revision so it can never pass as
     real (spec R4); ``source_revision``/``generator`` anchor its provenance to the real
@@ -547,7 +556,12 @@ def record_dataset_revision(
                     mlflow_run_id, row_count, byte_count, actor,
                     synthetic, source_revision, generator)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(backend, dataset, revision_id) DO NOTHING""",
+               ON CONFLICT(backend, dataset, revision_id) DO UPDATE SET
+                   uri = COALESCE(dataset_revisions.uri, excluded.uri),
+                   schema_hash = COALESCE(dataset_revisions.schema_hash, excluded.schema_hash),
+                   row_count = COALESCE(dataset_revisions.row_count, excluded.row_count),
+                   byte_count = COALESCE(dataset_revisions.byte_count, excluded.byte_count)
+               WHERE dataset_revisions.uri IS NULL AND excluded.uri IS NOT NULL""",
             (
                 rev.backend,
                 rev.dataset,
@@ -566,8 +580,9 @@ def record_dataset_revision(
         )
         inserted = cur.rowcount > 0
 
-    if inserted:
+    if inserted and declare_asset:
         _declare_dataset_asset(rev.dataset, actor=actor)
+    return inserted
 
 
 def link_dataset_revision_run(backend: str, dataset: str, revision_id: str, run_id: str) -> None:
@@ -576,15 +591,29 @@ def link_dataset_revision_run(backend: str, dataset: str, revision_id: str, run_
     ADR 0130 §8: a dataplane pull records the revision; the training run only links itself to it.
     First run wins — a later retrain on the same snapshot never rewrites the provenance. An empty
     ``run_id`` (no active MLflow run) links nothing, so it cannot claim the slot for a real run.
+
+    An upsert: when the revision's row is missing (a catalog lost and not yet rebuilt, or a pull
+    whose bookkeeping failed) the link inserts it, so the run that used the snapshot is recorded
+    and ``exa dataplane prune`` keeps protecting it. Such a row carries only the revision and the
+    link; the next ``record_dataset_revision`` of that revision fills in its uri/size columns.
     """
     if not run_id:
         return
     init_db()
     with get_db() as conn:
         conn.execute(
-            """UPDATE dataset_revisions SET mlflow_run_id=?
-               WHERE backend=? AND dataset=? AND revision_id=? AND mlflow_run_id IS NULL""",
-            (run_id, backend, dataset, revision_id),
+            """INSERT INTO dataset_revisions (backend, dataset, revision_id, kind, mlflow_run_id)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(backend, dataset, revision_id) DO UPDATE SET
+                   mlflow_run_id = excluded.mlflow_run_id
+               WHERE dataset_revisions.mlflow_run_id IS NULL""",
+            (
+                backend,
+                dataset,
+                revision_id,
+                "dataplane" if backend == "dataplane" else "content",
+                run_id,
+            ),
         )
 
 

@@ -190,6 +190,11 @@ exa connection test minio --project research      # read-only reachability probe
 exa connection delete minio --project research
 ```
 
+A connection's `--kind` is not limited to `s3`/`uri`/`dataplane`: it also accepts every kind a
+registered [dataplane](dataplane.md) connector declares (`sql`, `rest`, `kafka`, `zenodo`, …), so
+the same Named Connection created here is what `exa dataplane sources create --connection <name>`
+binds a pulled dataset to — one credential, reused by both project storage and the dataplane.
+
 ## 10. Project-scoped serving & pipelines
 
 A model's owning project is threaded into serving and pipelines. `GET /models` includes each

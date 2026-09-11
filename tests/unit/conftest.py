@@ -12,6 +12,7 @@ stub in every collection order — the same condition the full suite already run
 
 from __future__ import annotations
 
+import os
 import socket
 
 import prometheus_client  # noqa: F401  (imported for its sys.modules side effect)
@@ -93,6 +94,27 @@ def _no_live_services():
     finally:
         socket.socket.connect = real_connect
         socket.socket.connect_ex = real_connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _no_cloud_metadata_endpoint():
+    """Keep pyarrow's S3 client (the AWS C++ SDK) off the EC2 metadata endpoint.
+
+    The platform snapshot store is not anonymous without explicit keys (task 22b), so building it
+    walks the AWS default credential chain; off-cloud the metadata-endpoint leg alone costs ~14 s of
+    timeouts per construction, and its sockets are opened from C++, out of `_no_live_services`'
+    reach. No unit test may wait for — or depend on — that endpoint. Restored by hand for the
+    reason `_no_live_services` gives.
+    """
+    before = os.environ.get("AWS_EC2_METADATA_DISABLED")
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
+        else:
+            os.environ["AWS_EC2_METADATA_DISABLED"] = before
 
 
 @pytest.fixture

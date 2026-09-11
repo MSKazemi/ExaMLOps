@@ -9,8 +9,14 @@ from collections.abc import Iterator
 from typing import Any
 
 from examlops.dataplane.connectors.base import BaseConnector
-from examlops.dataplane.connectors.files import _batches, _format_of
-from examlops.dataplane.safety import guarded_client, redact, validate_name
+from examlops.dataplane.connectors.files import _batches, _format_of, require_append_only
+from examlops.dataplane.safety import (
+    guarded_client,
+    redact,
+    same_origin,
+    url_origin,
+    validate_name,
+)
 from examlops.dataplane.types import (
     DataplaneError,
     LimitExceeded,
@@ -94,9 +100,24 @@ class ZenodoConnector(BaseConnector):
     supports_incremental = True
 
     def _base(self, conn: dict[str, Any] | None, spec: dict[str, Any]) -> str:
-        return str((conn or {}).get("base_url") or spec.get("base_url") or _DEFAULT_BASE).rstrip(
-            "/"
-        )
+        """The API base URL: the connection's, else ``spec.base_url``, else Zenodo itself.
+
+        A connection that carries a token scopes it to its own server — its ``base_url``, default
+        ``https://zenodo.org`` — so a ``spec.base_url`` on any other origin is refused rather than
+        silently receiving (or silently ignoring) the token. A token-less source may name any
+        Zenodo-compatible server: it sends nothing but the request.
+        """
+        cfg = conn or {}
+        requested = spec.get("base_url")
+        if cfg.get("secret") and requested:
+            own = str(cfg.get("base_url") or _DEFAULT_BASE)
+            if not same_origin(str(requested), own):
+                raise SpecError(
+                    "spec.base_url must have the same origin as the connection's base_url "
+                    f"(default {_DEFAULT_BASE}): the connection's token is only sent to its own "
+                    "server"
+                )
+        return str(cfg.get("base_url") or requested or _DEFAULT_BASE).rstrip("/")
 
     def _client(self, conn: dict[str, Any] | None, limits: Limits | None = None) -> Any:
         headers = (
@@ -140,8 +161,14 @@ class ZenodoConnector(BaseConnector):
         limits: Limits,
     ) -> Iterator[TableBatch]:
         pattern = spec.get("files") or "*"
-        with self._client(conn, limits) as client:
-            rec = self._record(client, self._base(conn, spec), spec["record"])
+        base = self._base(conn, spec)
+        api_origin = url_origin(base)
+        # File links come from the record JSON — server-controlled content, not configuration. A
+        # link on the API's own origin is fetched with the (possibly authenticated) API client; any
+        # other link through a client that carries no credential. `guarded_client` already strips
+        # the header on a cross-origin *redirect*; this covers the first request to the link.
+        with self._client(conn, limits) as client, self._client(None, limits) as anonymous:
+            rec = self._record(client, base, spec["record"])
             chosen = [f for f in rec.get("files") or [] if fnmatch.fnmatch(f["key"], pattern)]
             checksums = {f["key"]: f.get("checksum", "") for f in chosen}
             wm: Watermark = {
@@ -149,8 +176,14 @@ class ZenodoConnector(BaseConnector):
                 "version": rec.get("revision"),
                 "files": checksums,
             }
-            if since is not None and since.get("files") == checksums:
-                return
+            if since is not None:
+                # Incremental = append new files only: a file the parent snapshot holds whose
+                # checksum changed, or that left the record, forces a full re-read (I1).
+                prev = dict(since.get("files") or {})
+                if prev == checksums:
+                    return
+                require_append_only(prev, checksums, what="record file")
+                chosen = [f for f in chosen if f["key"] not in prev]
             for entry in chosen:
                 # Fail closed *before* downloading: an unparseable checksum must never be
                 # silently treated as "nothing to verify".
@@ -159,7 +192,9 @@ class ZenodoConnector(BaseConnector):
                 with tempfile.TemporaryFile() as tmp:
                     h = _hasher(algo, entry["key"])
                     total = 0
-                    with client.stream("GET", _file_url(entry)) as resp:
+                    link = _file_url(entry)
+                    own = api_origin is not None and url_origin(link) == api_origin
+                    with (client if own else anonymous).stream("GET", link) as resp:
                         resp.raise_for_status()
                         for chunk in resp.iter_bytes(chunk_size=_HTTP_CHUNK):
                             total += len(chunk)

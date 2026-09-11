@@ -5,6 +5,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the dataplane service, agent tools, and hardened pulls (ADR 0130)
+
+- The `platform/services/dataplane` HTTP service (port `8010`) wraps the dataplane behind
+  `/sources`, `/sources/{name}/test|preview|pull`, `/sources/{name}/snapshots`, `/pulls/{id}`,
+  `/health`, `/ready` and `/metrics`, with an interval scheduler that runs each source on its own
+  `--schedule`. Auth is a static `DATAPLANE_TOKEN` (a placeholder or short value fails closed) plus
+  identity-federation tokens (ADR 0120). With multitenancy on, a federated caller needs `viewer`
+  (read) or `editor` (write) on the source's project; another project's source or pull looks the
+  same as a missing one.
+- Metrics: per-source freshness (seconds since the last successful pull; an `unchanged` pull
+  counts), `dataplane_source_up`, the scheduled interval, and the label-free `dataplane_catalog_up`.
+- Agent tools `dataplane_sources`, `dataplane_snapshots` (read-only) and `dataplane_pull` (gated and
+  audited) for the Skipper agent and MCP clients.
+- Credentials stay with their connection: a Named Connection's secret is only ever sent to that
+  connection's own origin, a source whose URL scheme does not match its connection is refused, and
+  credential-like spec keys, headers, URL passwords and URL query tokens are refused rather than
+  stored. SFTP verifies host keys (`EXAMLOPS_DATAPLANE_SSH_KNOWN_HOSTS`), and S3 endpoints go through
+  the egress allow-list.
+- S3 goes through pyarrow's own S3 filesystem, so the dataplane extras no longer need `s3fs` and lock
+  cleanly with the rest of the workspace.
+- Pulls are safe to interrupt and to run incrementally: Parquet streams in bounded memory; a pull
+  whose process died is marked `failed` once its lease expires; a changed or removed file, or a
+  changed source spec, forces a full re-read instead of appending duplicates; the lock lease is
+  renewed for the whole pull; prune takes the source's lock and refuses to run blind on a lost
+  catalog; `exa dataplane catalog-rebuild` restores pull and revision history from the store; and
+  a snapshot is verified against its revision id before a training run uses it.
+- Contract checks validate one table at a time, capped at `EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS`
+  rows. A training run on a dataplane snapshot is findable by that snapshot's revision with
+  `exa models lineage --impact <revision>`.
+- The backup objects tier also mirrors the dataset bucket (`EXAMLOPS_DATA_BUCKET`); a bucket that
+  does not exist yet is skipped and reported.
+- New optional-dependency extras `dataplane-sql`, `dataplane-files`, `dataplane-kafka`,
+  `dataplane-service` and the union `dataplane`. See [The dataplane](docs/guides/dataplane.md).
+
 ### Added — the encoder registry can live in MLflow (ADR 0043 clause 1, now Accepted)
 
 - `EXAMLOPS_ENCODER_REGISTRY=mlflow` makes MLflow the encoder registry of record. Each encoder is

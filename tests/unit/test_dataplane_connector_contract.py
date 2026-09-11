@@ -112,3 +112,24 @@ def test_extra_follows_the_dataplane_pip_extras_naming_scheme(kind):
     """Every connector's ``extra`` names a real ``examlops[dataplane-*]`` install target."""
     extra = registry.get(kind).extra
     assert extra and extra.startswith("dataplane-")
+
+
+def test_every_builtin_connector_extra_is_declared_in_pyproject():
+    """A connector's ``extra`` must name a real key of ``[project.optional-dependencies]`` —
+    otherwise ``pip install 'examlops[<extra>]'`` (the hint ``BaseConnector.available()`` prints
+    on a missing dependency) fails outright instead of installing anything.
+
+    Scoped to the five built-ins, not ``ALL``: a third-party plugin (see the fake-plugin case
+    above) is free to declare its own extra in its own package, which this repo's pyproject.toml
+    has no reason to know about.
+    """
+    import tomllib
+    from pathlib import Path
+
+    manifest = tomllib.loads(
+        (Path(__file__).parents[2] / "platform" / "cli" / "pyproject.toml").read_text()
+    )
+    declared = set(manifest["project"]["optional-dependencies"])
+    for kind in KINDS:
+        extra = registry.get(kind).extra
+        assert extra in declared, f"connector {kind!r} names extra {extra!r}, not in pyproject.toml"

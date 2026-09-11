@@ -32,6 +32,20 @@ _EX_CREATE = (
     "  # A public Zenodo record, refreshed daily\n"
     "  exa dataplane sources create pm100-zenodo --connector zenodo --spec-json '{\"record\": 10127767}' --schedule 1d"
 )
+_EX_PRUNE = (
+    "Prune never runs beside a pull of the same source (it takes the source's pull lock), and it "
+    "refuses to prune blind: if the store has snapshots but the catalog has no revision rows for "
+    "the source (a lost or restored platform.db), run `exa dataplane catalog-rebuild` first, or "
+    "pass --force.\n\n"
+    "Examples:\n\n  exa dataplane prune pm100 --keep 5 --dry-run\n\n"
+    "  exa dataplane prune pm100 --keep 5"
+)
+_EX_REBUILD = (
+    "Walks every source prefix and committed manifest in the store; idempotent. Source "
+    "definitions are not in the store — sources that have snapshots but no definition are listed "
+    "to re-register.\n\n"
+    "Examples:\n\n  exa dataplane catalog-rebuild --dry-run\n\n  exa dataplane catalog-rebuild"
+)
 _EX_PULL = (
     "Examples:\n\n  exa dataplane pull pm100\n\n  # Ignore the watermark and re-read everything\n"
     "  exa dataplane pull pm100 --full"
@@ -436,51 +450,60 @@ def manifest_cmd(
     )
 
 
-@app.command("prune")
+@app.command("prune", epilog=_EX_PRUNE)
 def prune_cmd(
     name: str,
     keep: int = typer.Option(5, "--keep", min=1),
     project: str = typer.Option("", "--project", "-p"),
     dry_run: bool = typer.Option(False, "--dry-run", help="List what would be removed"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Prune even though the catalog has no revision rows for the source (a lost or "
+        "restored platform.db) — revisions training runs used are then NOT protected",
+    ),
 ) -> None:
     """Delete old snapshots; the newest N, the latest and any revision an MLflow run used are kept."""
-    from examlops import dataplane
-    from examlops.data.data_assets import get_dataset_revisions
-    from examlops.dataplane.store import prune
+    from examlops.dataplane.pull import prune_source
 
-    key = dataplane.source_key(project, name)
-    pinned = {
-        r["revision_id"]
-        for r in get_dataset_revisions(key, backend="dataplane")
-        if r.get("mlflow_run_id")
-    }
+    key_hint = f"{project or '_global'}/{name}"
     if not dry_run and not _output.confirm(
         f"Prune snapshots of {name}, keeping {keep}?", default=False
     ):
         raise typer.Exit(0)
-    removed = prune(dataplane.store_from_env(), key, keep=keep, pinned=pinned, dry_run=dry_run)
-    out = {"source": key, "removed": removed, "dry_run": dry_run}
+    try:
+        removed = prune_source(
+            project, name, keep=keep, dry_run=dry_run, force=force, actor=_actor()
+        )
+    except Exception as exc:
+        _fail(exc)
+    out = {"source": key_hint, "removed": removed, "dry_run": dry_run}
     _output.print_json(out) if _output.json_mode else _output.ok(
         f"{len(removed)} pull(s) {'would be ' if dry_run else ''}removed"
     )
 
 
-@app.command("catalog-rebuild")
+@app.command("catalog-rebuild", epilog=_EX_REBUILD)
 def catalog_rebuild(dry_run: bool = typer.Option(False, "--dry-run", help="Count only")) -> None:
-    """Recreate dataset_revisions rows for every committed snapshot found in the store."""
-    from examlops import dataplane
-    from examlops.dataplane.pull import _record_revision, list_source_defs
+    """Rebuild the pull history and revision index from the snapshot store (e.g. a lost platform.db)."""
+    from examlops.dataplane.pull import rebuild_catalog
 
-    store = dataplane.store_from_env()
-    found = 0
-    for src in list_source_defs():
-        try:
-            m = dataplane.read_manifest(store, dataplane.resolve(store, src.key))
-        except Exception:
-            continue
-        found += 1
-        if not dry_run:
-            _record_revision(src, m, store, _actor())
-    _output.print_json(
-        {"snapshots": found, "dry_run": dry_run}
-    ) if _output.json_mode else _output.ok(f"{found} snapshot(s) indexed")
+    try:
+        report = rebuild_catalog(dry_run=dry_run, actor=_actor())
+    except Exception as exc:
+        _fail(exc)
+    if _output.json_mode:
+        _output.print_json(report)
+        return
+    verb = "would restore" if dry_run else "restored"
+    _output.ok(
+        f"{report['snapshots']} committed snapshot(s) of {report['sources']} source(s) found; "
+        f"{verb} {report['pulls_restored']} pull row(s) and indexed {report['revisions']} "
+        "revision(s)"
+    )
+    for src in report["sources_to_register"]:
+        _output.warning(
+            f"source {src['project'] or '_global'}/{src['name']} ({src['connector']}, connection "
+            f"{src['connection'] or '-'}) has snapshots but no definition — re-register it with "
+            "`exa dataplane sources create` (the store keeps only its spec hash)"
+        )

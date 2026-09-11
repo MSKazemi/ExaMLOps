@@ -42,6 +42,11 @@ install rather than failing with a traceback:
 | `examlops[analysis]` | Statistical A/B analysis — `exa serve ab analyze` |
 | `examlops[backup]` | Object-store and off-site backup tiers — `exa backup` |
 | `examlops[coordination]` | Redis-backed cross-host locks, rate limits, deduplication, and event streams |
+| `examlops[dataplane]` | Everything the [dataplane](dataplane.md) service needs — the union of the four extras below |
+| `examlops[dataplane-sql]` | The `sql` dataplane connector — any SQLAlchemy URL (Postgres, MySQL, SQLite) |
+| `examlops[dataplane-files]` | The `files`, `zenodo` and `rest` dataplane connectors — object storage, HTTP(S), SFTP, Zenodo records |
+| `examlops[dataplane-kafka]` | The `kafka` dataplane connector — bounded batch reads from a topic |
+| `examlops[dataplane-service]` | Run the dataplane HTTP service (`platform/services/dataplane`) — not needed just to pull from the CLI |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics — `exa fairness` (a pure-Python fallback gives the same numbers without it) |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
@@ -176,9 +181,13 @@ See [Control Plane](control-plane.md) for the full API.
 # Pull from MinIO (after seeding s3://examlops-data/PM100/job_table.parquet):
 exa pipeline run --model JPCP --dataset PM100Dataset --backend minio
 
-# Snapshot the dataplane simulator and train on it:
-exa pipeline run --model JPCP --dataset PM100Dataset --backend dataplane --dummy
+# Pull an external source into a versioned snapshot with the dataplane:
+exa dataplane sources create pm100 --connector zenodo --spec-json '{"record": 10127767}'
+exa dataplane pull pm100
 ```
+
+To train on that snapshot, give the model's dataset entry `backend: dataplane` and a
+`dataplane: {source: pm100}` binding; see the [Dataplane guide](dataplane.md).
 
 ## 7. Scaffold a new model (Phase 2)
 

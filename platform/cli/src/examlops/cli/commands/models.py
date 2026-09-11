@@ -287,7 +287,8 @@ def lineage(
     metrics = {m["key"]: m["value"] for m in run.get("metrics", [])}
 
     prefect_run = tags.get("prefect_flow_run_id", "unknown")
-    dataset_version = tags.get("dataset_version", "unknown")
+    # A1/ADR 0130 runs tag `dataset_revision` (and `dataplane.source`); older runs `dataset_version`.
+    dataset_version = tags.get("dataset_revision") or tags.get("dataset_version", "unknown")
     training_rows = tags.get("training_rows", "unknown")
 
     if _output.json_mode:

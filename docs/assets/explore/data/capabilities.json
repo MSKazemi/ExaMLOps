@@ -378,7 +378,7 @@
     {
      "cmd": "exa dataplane catalog-rebuild",
      "group": "dataplane",
-     "help": "Recreate dataset_revisions rows for every committed snapshot found in the store.",
+     "help": "Rebuild the pull history and revision index from the snapshot store (e.g. a lost platform.db).",
      "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
      "guide": null
     },

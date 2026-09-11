@@ -61,11 +61,16 @@ class QualityResult:
 
 @dataclass
 class DataContract:
-    """A versioned data contract for one dataset."""
+    """A versioned data contract for one dataset.
+
+    ``table`` names the one table of a multi-table dataplane snapshot the contract describes
+    (ADR 0130). Unset, a snapshot's tables are each validated on their own — never concatenated.
+    """
 
     dataset: str
     version: str
     checks: list[Check] = field(default_factory=list)
+    table: str | None = None
 
     def validate(self, df: Any) -> QualityResult:
         """Run every check. ``passed`` is False iff any ``error``-severity check fails."""
@@ -147,7 +152,9 @@ def embedding_dim(column: str, dim: int, severity: str = ERROR) -> Check:
 
 def min_rows(n: int, severity: str = ERROR) -> Check:
     def _fn(df: Any) -> tuple[bool, Any]:
-        rows = len(df)
+        # A bounded dataplane check validates a sample; `attrs["total_rows"]` is the table's real
+        # size, so a large table is not judged by the size of its sample.
+        rows = int((getattr(df, "attrs", None) or {}).get("total_rows", len(df)))
         return rows >= n, f"rows={rows} (min {n})"
 
     return Check(f"min_rows:{n}", severity, _fn)

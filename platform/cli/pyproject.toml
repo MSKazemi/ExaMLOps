@@ -141,6 +141,41 @@ synth = [
     "numpy>=1.26",
     "sdv>=1.37",
 ]
+# Dataplane (ADR 0130): one extra per connector's dependencies, plus `dataplane` = everything the
+# service image needs. Each connector's `extra` attribute (examlops.dataplane.connectors.*) names
+# one of these keys — tests/unit/test_dataplane_connector_contract.py asserts they match.
+dataplane-sql = [
+    "sqlalchemy>=2.0",
+    "pyarrow>=25.0",
+    # Same floor as the `postgres`/`vector` extras above — one version of psycopg across the file.
+    "psycopg[binary]>=3.3.5",
+    "pymysql>=1.2",
+]
+dataplane-files = [
+    "fsspec>=2026.7",
+    # No s3fs: S3 goes through pyarrow's native filesystem (examlops.dataplane.s3), because
+    # s3fs's aiobotocore pin caps botocore below the workspace's boto3 floor — it can never lock.
+    "httpx>=0.28",
+    "pyarrow>=25.0",
+    # fsspec's SFTP filesystem (the files connector's sftp:// scheme) needs paramiko.
+    "paramiko>=5.0",
+]
+dataplane-kafka = [
+    "confluent-kafka>=2.15",
+    "pyarrow>=25.0",
+]
+# fastapi stays capped below 0.137 to match the root/pipelines/serving workspace pin: ray 2.55's
+# `@serve.ingress` cloudpickles a FastAPI app and fastapi>=0.137 holds an unpicklable
+# `_thread.lock`. This extra never touches Ray, but `uv.lock` resolves one version of fastapi for
+# the whole workspace, so an uncapped floor here would make the lock unsatisfiable.
+dataplane-service = [
+    "fastapi>=0.100.0,<0.137",
+    "uvicorn[standard]>=0.52",
+    "prometheus-client>=0.20",
+]
+dataplane = [
+    "examlops[dataplane-sql,dataplane-files,dataplane-kafka,dataplane-service]",
+]
 
 [project.scripts]
 exa = "examlops.cli.main:app"

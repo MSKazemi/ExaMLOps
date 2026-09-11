@@ -550,6 +550,66 @@ def dataset_revisions(dataset: str) -> dict[str, Any]:
     return _db_read(_q)
 
 
+def dataplane_sources(project: str = "") -> dict[str, Any]:
+    """Registered dataplane sources (what external data the platform can pull; no credentials)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.dataplane import list_sources
+
+        rows = list_sources(project or None)
+        return {
+            "sources": [
+                {k: r[k] for k in ("project", "name", "connector", "connection", "schedule")}
+                for r in rows
+            ]
+        }
+
+    return _db_read(_q)
+
+
+def dataplane_snapshots(name: str, project: str = "") -> dict[str, Any]:
+    """Committed snapshots of one dataplane source, newest first (revision, rows, time)."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.data.dataplane import list_pulls
+
+        rows = list_pulls(project=project, source=name, limit=50)
+        return {
+            "snapshots": [
+                {
+                    "revision": r["revision"],
+                    "rows": r.get("row_count"),
+                    "finished_at": r.get("finished_at"),
+                }
+                for r in rows
+                if r["status"] in ("succeeded", "unchanged") and r.get("revision")
+            ]
+        }
+
+    return _db_read(_q)
+
+
+def dataplane_pull(name: str, project: str = "") -> dict[str, Any]:
+    """Pull a dataplane source now and commit a snapshot. Mutating; tier A."""
+    gate = _agent_write_gate("dataplane_pull", {"name": name, "project": project})
+    if gate is not None:
+        return gate
+    from examlops.dataplane.safety import redact
+
+    try:
+        from examlops.dataplane import run_pull
+
+        r = run_pull(name, project=project, trigger_kind="api", actor="mcp")
+    except Exception as exc:  # noqa: BLE001 - failures become a safe tool response
+        return _err(redact(str(exc)))
+    return _with_audit(
+        {"ok": True, "status": r.status, "revision": r.revision, "rows": r.row_count},
+        "dataplane_pull_requested",
+        name,
+        {"project": project},
+    )
+
+
 def data_quality(dataset: str) -> dict[str, Any]:
     """Recent data-quality / contract validation checks for a dataset."""
 
@@ -1229,6 +1289,16 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(dataset_revisions, tags=("read", "data"), use_cases=("management",)),
     ToolSpec(data_quality, tags=("read", "data", "quality"), use_cases=("monitoring",)),
     ToolSpec(feature_view, tags=("read", "data"), use_cases=("management",)),
+    # ── dataplane (ADR 0130) ──────────────────────────────────────────────────
+    ToolSpec(dataplane_sources, tags=("read", "data"), use_cases=("management",)),
+    ToolSpec(dataplane_snapshots, tags=("read", "data"), use_cases=("management",)),
+    ToolSpec(
+        dataplane_pull,
+        mutating=True,
+        tags=("write", "data"),
+        use_cases=("management",),
+        tier="A",
+    ),
     # ── incident / lineage ────────────────────────────────────────────────────
     ToolSpec(
         model_lineage, tags=("read", "lineage", "incident"), use_cases=("incident", "management")

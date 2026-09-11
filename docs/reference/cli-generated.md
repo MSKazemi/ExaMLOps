@@ -657,7 +657,7 @@ Named Connections — reusable data sources (P2)
 
 Create a named connection.
 
-- `--kind, -k` — Connection kind: s3, uri, dataplane
+- `--kind, -k` — Connection kind: s3, uri, dataplane, or any dataplane connector kind (see: exa dataplane connectors)
 - `--project, -p` — Owning project (omit = global)
 - `--config, -c` — Non-secret config as JSON
 - `--secret-value` — Secret (stored in the secrets client, never in platform.db)
@@ -772,7 +772,7 @@ Dataplane — pull remote data into versioned snapshots (ADR 0130)
 
 ### `exa dataplane catalog-rebuild`
 
-Recreate dataset_revisions rows for every committed snapshot found in the store.
+Rebuild the pull history and revision index from the snapshot store (e.g. a lost platform.db).
 
 - `--dry-run` — Count only
 
@@ -800,6 +800,7 @@ Delete old snapshots; the newest N, the latest and any revision an MLflow run us
 - `--keep`
 - `--project, -p`
 - `--dry-run` — List what would be removed
+- `--force` — Prune even though the catalog has no revision rows for the source (a lost or restored platform.db) — revisions training runs used are then NOT protected
 
 ### `exa dataplane pull`
 

@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -25,9 +27,18 @@ from uuid import uuid4
 
 from examlops.data.content_hash import file_digest, revision_id, schema_hash, schema_part
 from examlops.dataplane.safety import validate_name
-from examlops.dataplane.types import LimitExceeded, Limits, SnapshotNotFound, TableBatch
+from examlops.dataplane.types import (
+    LimitExceeded,
+    Limits,
+    SnapshotIntegrityError,
+    SnapshotNotFound,
+    SpecError,
+    TableBatch,
+)
 
-_ORPHAN_AGE_S = 3600  # an uncommitted pull dir older than this is garbage
+_ORPHAN_AGE_S = 3600  # an uncommitted pull dir whose newest object is older than this is garbage
+# A revision id is `revision_id()`'s sha256 hex digest — nothing else may name a store key.
+_REVISION_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def source_key(project: str, name: str) -> str:
@@ -45,13 +56,14 @@ class DatasetStore:
 
     @classmethod
     def from_url(cls, url: str, **storage_options: Any) -> DatasetStore:
-        import fsspec
+        # s3:// goes through pyarrow's native S3 filesystem (examlops.dataplane.s3), not s3fs.
+        from examlops.dataplane.s3 import url_to_fs
 
-        fs, root = fsspec.core.url_to_fs(url, **storage_options)
+        fs, root = url_to_fs(url, **storage_options)
         return cls(fs, root, uri_prefix=url)
 
     def _path(self, key: str) -> str:
-        return f"{self.root}/{key}"
+        return f"{self.root}/{key}" if key else self.root
 
     def uri(self, key: str) -> str:
         return f"{self.uri_prefix}/{key}"
@@ -85,14 +97,55 @@ class DatasetStore:
                 out.append(PurePosixPath(entry["name"]).name)
         return sorted(out)
 
+    def ls_files(self, key: str) -> list[str]:
+        """Names of the plain files directly under ``key`` (``_revisions/<rev>`` pointers)."""
+        if not self.exists(key):
+            return []
+        return sorted(
+            PurePosixPath(entry["name"]).name
+            for entry in self.fs.ls(self._path(key), detail=True)
+            if entry.get("type") == "file"
+        )
+
+    def newest_mtime(self, key: str) -> float | None:
+        """Epoch seconds of the most recently modified object under ``key``, or ``None`` when the
+        listing carries no modification time for any of them (or there are none)."""
+        if not self.exists(key):
+            return None
+        found = self.fs.find(self._path(key), detail=True)
+        infos = found.values() if isinstance(found, dict) else ()
+        times = [t for t in (_mtime_s(info) for info in infos) if t is not None]
+        return max(times) if times else None
+
     def rm(self, key: str) -> None:
         if self.exists(key):
             self.fs.rm(self._path(key), recursive=True)
 
 
+def _mtime_s(info: dict[str, Any]) -> float | None:
+    """An fsspec listing entry's modification time as epoch seconds.
+
+    fsspec's local filesystem reports ``mtime`` as a float, pyarrow's (S3 behind
+    ``ArrowFSWrapper``) as a ``datetime``, s3fs as ``LastModified``; an object store has no
+    separate creation time, and each object is written once, so ``created`` is the same instant.
+    """
+    for name in ("mtime", "LastModified", "last_modified", "created"):
+        value = info.get(name)
+        if isinstance(value, datetime):
+            return (value if value.tzinfo else value.replace(tzinfo=UTC)).timestamp()
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
 def store_from_env() -> DatasetStore:
     """``EXAMLOPS_DATAPLANE_STORE_URL`` wins; otherwise ``s3://<EXAMLOPS_DATA_BUCKET>/dataplane``
-    on the dataset store (``EXAMLOPS_DATA_S3_*``), falling back to the platform MinIO."""
+    on the dataset store (``EXAMLOPS_DATA_S3_*``), falling back to the platform MinIO.
+
+    The store is operator-configured and trusted, unlike a connector's source: its endpoint is not
+    egress-checked (an internal name such as ``minio`` is the normal case), and with no explicit
+    key/secret it is **not** anonymous — pyarrow's default AWS credential chain (env, ``~/.aws``,
+    IRSA, instance role) serves it (``anon=False``). A source never gets that chain."""
     url = os.getenv("EXAMLOPS_DATAPLANE_STORE_URL", "").strip()
     if url and not url.startswith("s3://"):
         return DatasetStore.from_url(url)
@@ -101,7 +154,7 @@ def store_from_env() -> DatasetStore:
     endpoint = os.getenv("EXAMLOPS_DATA_S3_ENDPOINT") or os.getenv("MLFLOW_S3_ENDPOINT_URL")
     key = os.getenv("EXAMLOPS_DATA_S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID")
     secret = os.getenv("EXAMLOPS_DATA_S3_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
-    opts: dict[str, Any] = {"key": key, "secret": secret}
+    opts: dict[str, Any] = {"key": key, "secret": secret, "anon": False}
     if endpoint:
         opts["client_kwargs"] = {"endpoint_url": endpoint}
     return DatasetStore.from_url(url, **opts)
@@ -234,6 +287,15 @@ class SnapshotWriter:
         return sorted(self._done, key=lambda rp: PurePosixPath(rp[0]).parts)
 
 
+def _revision_of(files: Iterable[ManifestFile]) -> tuple[str, str]:
+    """``(revision, schema_hash)`` for a snapshot's files — THE formula, shared by ``publish``
+    (which names a snapshot) and ``materialize`` (which checks a stored one still has that name).
+    ``files`` must be in sorted path order, as a manifest stores them."""
+    ordered = list(files)
+    sh = schema_hash(f.schema for f in ordered)
+    return revision_id([f.sha256 for f in ordered], sh), sh
+
+
 def _rows(path: Path) -> int:
     import pyarrow.parquet as pq
 
@@ -262,7 +324,13 @@ def publish(
     pull_id: str,
     incremental: bool,
 ) -> tuple[SnapshotManifest, bool]:
-    """Upload parts, write the manifest and pointers. Returns (manifest, changed)."""
+    """Upload parts, write the manifest and pointers. Returns (manifest, changed).
+
+    ``changed`` is false — and nothing is written — only when the content revision **and** the
+    spec hash both equal the parent's. Identical data read under a changed spec is still a new
+    snapshot: it records the new ``spec_hash``, otherwise every later pull would see the spec
+    mismatch again and run full forever. The two pulls then share one revision (``prune`` keeps
+    the shared ``_revisions`` pointer on whichever of them it keeps)."""
     carried: list[ManifestFile] = list(parent.files) if (incremental and parent) else []
     offsets: dict[str, int] = {}
     for f in carried:
@@ -283,9 +351,8 @@ def publish(
         )
         new.append((mf, local))
     files = sorted(carried + [m for m, _ in new], key=lambda f: PurePosixPath(f.path).parts)
-    sh = schema_hash(f.schema for f in files)
-    rev = revision_id([f.sha256 for f in files], sh)
-    if parent is not None and rev == parent.revision:
+    rev, sh = _revision_of(files)
+    if parent is not None and rev == parent.revision and parent.spec_hash == spec_hash:
         return parent, False
     for mf, local in new:
         store.put_file(local, mf.object)
@@ -308,11 +375,25 @@ def publish(
     )
     store.write_text(f"{key}/{pull_id}/_manifest.json", manifest.to_json())
     store.write_text(f"{key}/_revisions/{rev}", pull_id)
-    store.write_text(f"{key}/_latest", json.dumps({"revision": rev, "pull_id": pull_id}))
+    write_latest(store, key, rev, pull_id)
     return manifest, True
 
 
+def write_latest(store: DatasetStore, key: str, revision: str, pull_id: str) -> None:
+    """Point ``_latest`` at a committed snapshot — the commit itself. Only a holder of the
+    source's pull lock may call it (``publish``, or the reaper finishing a crashed commit)."""
+    store.write_text(f"{key}/_latest", json.dumps({"revision": revision, "pull_id": pull_id}))
+
+
 def resolve(store: DatasetStore, key: str, revision: str | None = "latest") -> SnapshotRef:
+    """The committed snapshot ``revision`` names: ``latest`` (or empty), or a full revision id.
+
+    Anything else is refused before it can become part of a store key or a cache directory name
+    (``../_latest`` would otherwise read another object as a pointer)."""
+    if revision not in (None, "", "latest") and not _REVISION_RE.fullmatch(str(revision)):
+        raise SpecError(
+            "a snapshot revision is 'latest' or a full 64-character lowercase hex revision id"
+        )
     try:
         if revision in (None, "", "latest"):
             data = json.loads(store.read_text(f"{key}/_latest"))
@@ -361,6 +442,15 @@ def materialize(store: DatasetStore, ref: SnapshotRef, cache_root: Path) -> Path
     if _materialize_marker_valid(dest, ref.revision):
         return dest
     manifest = read_manifest(store, ref)
+    # The revision id is a content address: the manifest's digests must hash back to it, or the
+    # data behind a pinned id was swapped (the per-file checks below would then only prove the
+    # files match a *rewritten* manifest). Checked before a single byte is downloaded.
+    expected, _sh = _revision_of(manifest.files)
+    if expected != ref.revision or manifest.revision != ref.revision:
+        raise SnapshotIntegrityError(
+            f"{ref.source}@{ref.revision}: the manifest's file digests hash to revision "
+            f"{expected}, not the one requested — the snapshot was modified after it was committed"
+        )
     tmp = Path(cache_root) / f".{ref.revision}.{os.getpid()}.{uuid4().hex}.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     for f in manifest.files:
@@ -368,7 +458,9 @@ def materialize(store: DatasetStore, ref: SnapshotRef, cache_root: Path) -> Path
         store.get_file(f.object, local)
         if file_digest(local) != f.sha256:
             shutil.rmtree(tmp, ignore_errors=True)
-            raise SnapshotNotFound(f"checksum mismatch for {f.path} in {ref.source}@{ref.revision}")
+            raise SnapshotIntegrityError(
+                f"checksum mismatch for {f.path} in {ref.source}@{ref.revision}"
+            )
     (tmp / ".complete").write_text(ref.revision)
     for _attempt in range(_MATERIALIZE_MAX_RENAME_ATTEMPTS):
         try:
@@ -390,6 +482,22 @@ def _looks_like_pull_id(pid: str) -> bool:
     """True when ``pid`` starts with the 16-hex-nanosecond prefix ``new_pull_id`` produces."""
     prefix = pid[:16]
     return len(prefix) == 16 and all(c in "0123456789abcdef" for c in prefix.lower())
+
+
+def _last_activity(store: DatasetStore, key: str, pid: str) -> float:
+    """When a pull dir was last active: its newest object's mtime (the pull's start, from its id,
+    when the listing carries no modification times).
+
+    A pull uploads its parts only when it commits, so a pull that started long ago (a slow read)
+    can be uploading right now; the start time alone would call its fresh parts garbage and delete
+    them before the manifest lands. The later of the two is used, so a store clock running behind
+    this host's can only make a dir look younger (kept longer), never older."""
+    try:
+        newest = store.newest_mtime(f"{key}/{pid}")
+    except Exception:  # noqa: BLE001 - an unreadable listing falls back to the pull's start time
+        newest = None
+    started = int(pid[:16], 16) / 1_000_000_000
+    return max(newest, started) if newest is not None else started
 
 
 def prune(
@@ -426,7 +534,7 @@ def prune(
     kept_revisions: dict[str, str] = {}
     for kp in kept:
         kept_revisions.setdefault(manifests[kp].revision, kp)
-    now_ns = time.time_ns()
+    now = time.time()
     removed = []
     for pid in pulls:
         if pid in kept or pid in referenced:
@@ -436,7 +544,7 @@ def prune(
         # mid-commit (manifest + _revisions written, `_latest` not yet). A dir whose name does not
         # parse (legacy/test ids) can never be a real in-flight pull and is removed outright
         # (never crash on the parse).
-        if _looks_like_pull_id(pid) and now_ns - int(pid[:16], 16) < _ORPHAN_AGE_S * 1_000_000_000:
+        if _looks_like_pull_id(pid) and now - _last_activity(store, key, pid) < _ORPHAN_AGE_S:
             continue  # too young; may still be in flight or mid-commit
         removed.append(pid)
         if not dry_run:

@@ -16,6 +16,7 @@ import re
 import socket
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpcore
 
@@ -135,6 +136,20 @@ def local_files_allowed() -> bool:
     }
 
 
+def ssh_auto_add_host_keys() -> bool:
+    """Whether an SSH connection may trust an unknown host key (insecure; explicit opt-in only).
+
+    The same variable and the same truthy spellings as the HPC SSH executor
+    (``platform/infra/slurm-adapter/executor.py``): unset means paramiko's ``RejectPolicy``.
+    """
+    return os.getenv("EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _normalize_host(host: str) -> str:
     """Lower-case, drop IPv6 literal brackets, and drop a trailing FQDN dot.
 
@@ -142,6 +157,32 @@ def _normalize_host(host: str) -> str:
     raw string against ``_INTERNAL_NAMES`` let the dotted/upper-cased spellings through.
     """
     return (host or "").strip().strip("[]").lower().rstrip(".")
+
+
+def url_origin(url: str) -> tuple[str, str, int] | None:
+    """``(scheme, host, port)`` of an http(s) URL — the unit a credential is scoped to — else None.
+
+    The host is normalized like ``check_address`` normalizes it and the port defaults per scheme,
+    so ``https://Zenodo.org.`` and ``https://zenodo.org:443/x`` are one origin. Anything that is
+    not a parseable http(s) URL with a host has no origin, and is therefore never "the same
+    origin" as anything — a caller that attaches a credential only on a match fails closed.
+    """
+    try:
+        parts = urlsplit(str(url).strip())
+        port = parts.port
+    except ValueError:  # an out-of-range or non-numeric port
+        return None
+    scheme = parts.scheme.lower()
+    host = _normalize_host(parts.hostname or "")
+    if scheme not in ("http", "https") or not host:
+        return None
+    return scheme, host, port or (443 if scheme == "https" else 80)
+
+
+def same_origin(a: str, b: str) -> bool:
+    """True only when both URLs have an http(s) origin (``url_origin``) and it is the same one."""
+    origin = url_origin(a)
+    return origin is not None and origin == url_origin(b)
 
 
 def _in_allowed_cidr(

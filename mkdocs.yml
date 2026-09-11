@@ -183,6 +183,7 @@ nav:
   - Next-Gen 40:
       - Data & reproducibility:
           - Data versioning: guides/data-versioning.md
+          - The dataplane (connectors · snapshots · pinned training): guides/dataplane.md
           - Data contracts & quality gates: guides/data-quality.md
           - Synthetic data generation: guides/synthetic-data.md
           - Dataset & model cards: guides/cards.md

@@ -25,9 +25,12 @@ __all__ = [
     "new_pull_id",
     "insert_pull",
     "update_pull",
+    "restore_pull",
     "get_pull",
     "list_pulls",
+    "list_active_pulls",
     "last_pull",
+    "ACTIVE_PULL_STATUSES",
 ]
 
 _COMMITTED = ("succeeded", "unchanged")
@@ -170,8 +173,14 @@ def update_pull(
     byte_count: int | None = None,
     watermark: dict[str, Any] | None = None,
     error: str | None = None,
-) -> None:
-    """Update a pull's status and, optionally, its outcome fields."""
+    only_if_status: tuple[str, ...] | None = None,
+) -> bool:
+    """Update a pull's status and, optionally, its outcome fields. ``True`` if a row changed.
+
+    ``only_if_status`` makes the update conditional — one ``UPDATE … WHERE id=? AND status IN
+    (…)``, atomic in the database — so a writer that decided on a stale read (the interrupted-pull
+    reaper, a failure handler) can never overwrite an outcome another writer has recorded since.
+    """
     init_db()
     sets = ["status=?"]
     args: list[Any] = [status]
@@ -191,8 +200,61 @@ def update_pull(
         sets.append("finished_at=CURRENT_TIMESTAMP")
     args.append(pull_id)
     sql = f"UPDATE dataplane_pulls SET {', '.join(sets)} WHERE id=?"  # noqa: S608 - fixed column names
+    if only_if_status is not None:
+        if not only_if_status:
+            return False
+        sql += f" AND status IN ({', '.join('?' for _ in only_if_status)})"
+        args.extend(only_if_status)
     with get_db() as conn:
-        conn.execute(sql, args)
+        cur = conn.execute(sql, args)
+        return bool(cur.rowcount and cur.rowcount > 0)
+
+
+def restore_pull(
+    pull_id: str,
+    project: str,
+    source: str,
+    *,
+    revision: str,
+    parent_revision: str | None,
+    row_count: int,
+    byte_count: int,
+    watermark: dict[str, Any] | None,
+    started_at: str | None,
+    finished_at: str | None,
+    actor: str | None,
+) -> bool:
+    """Re-create a committed pull's row from its snapshot manifest (``catalog-rebuild``).
+
+    Idempotent: a row that already exists is left exactly as it is (``ON CONFLICT DO NOTHING``).
+    Returns ``True`` when a row was inserted. Timestamps are ``YYYY-MM-DD HH:MM:SS`` UTC, the form
+    ``CURRENT_TIMESTAMP`` writes, so the scheduler's freshness math reads them unchanged.
+    """
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO dataplane_pulls
+                   (id, project, source, status, trigger_kind, actor, started_at, finished_at,
+                    revision, parent_revision, row_count, byte_count, watermark_json)
+               VALUES (?,?,?,?,?,?,COALESCE(?, CURRENT_TIMESTAMP),?,?,?,?,?,?)
+               ON CONFLICT(id) DO NOTHING""",
+            (
+                pull_id,
+                project,
+                source,
+                "succeeded",
+                "rebuild",
+                actor,
+                started_at,
+                finished_at,
+                revision,
+                parent_revision,
+                row_count,
+                byte_count,
+                json.dumps(watermark or {}, sort_keys=True, default=str),
+            ),
+        )
+        return bool(cur.rowcount and cur.rowcount > 0)
 
 
 def get_pull(pull_id: str) -> dict[str, Any] | None:
@@ -223,6 +285,29 @@ def list_pulls(
     args.append(int(limit))
     with get_db() as conn:
         rows = conn.execute(sql, args).fetchall()  # noqa: S608 - fixed column names
+    return [_parse(r) for r in rows]
+
+
+# Every status a pull row holds while its process may still be working on it. `committing` is the
+# window between the upload and the final status write: a process that dies there leaves a row no
+# one else would ever finish.
+ACTIVE_PULL_STATUSES: tuple[str, ...] = ("running", "queued", "committing")
+_ACTIVE = ACTIVE_PULL_STATUSES
+
+
+def list_active_pulls() -> list[dict[str, Any]]:
+    """Every pull row currently ``running``, ``queued`` or ``committing``, across all sources.
+
+    No limit: there are normally very few of these at once (task 22a — the interrupted-pull
+    reaper's own query, called from the service lifespan and each scheduler tick).
+    """
+    init_db()
+    marks = ", ".join("?" for _ in _ACTIVE)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM dataplane_pulls WHERE status IN ({marks}) ORDER BY id",  # noqa: S608
+            _ACTIVE,
+        ).fetchall()
     return [_parse(r) for r in rows]
 
 

@@ -122,6 +122,80 @@ def test_objects_skips_when_endpoint_down(tmp_path, monkeypatch):
         objects_tier.backup_objects_tier(tmp_path)
 
 
+def test_objects_skips_a_missing_bucket_but_still_backs_up_the_rest(tmp_path, monkeypatch):
+    """A default-bucket-list change (ADR 0130's EXAMLOPS_DATA_BUCKET) must not break an existing
+    install's objects backup before minio-init has had a chance to create the new bucket."""
+    from examlops.backup import objects_tier
+    from examlops.backup._manifest import OK, PARTIAL, SKIPPED
+
+    # `mlflow-artifacts` exists; `examlops-data` does not — _FakeS3 raises NoSuchBucket for it.
+    fake = _FakeS3({"mlflow-artifacts": {"a.txt": b"hello"}})
+    monkeypatch.setenv("EXAMLOPS_BACKUP_BUCKETS", "mlflow-artifacts,examlops-data")
+    monkeypatch.setattr(objects_tier, "_s3_client", lambda: fake)
+
+    res = objects_tier.backup_objects_tier(tmp_path)
+    assert res.status == PARTIAL, res  # some ok, some skipped — never a silent full success
+    by_bucket = {i["bucket"]: i for i in res.items}
+    assert by_bucket["mlflow-artifacts"]["status"] == OK
+    assert by_bucket["mlflow-artifacts"]["object_count"] == 1
+    assert by_bucket["examlops-data"]["status"] == SKIPPED
+    assert "does not exist" in by_bucket["examlops-data"]["reason"]
+    # Nothing raised — the missing bucket is visible in the manifest, not hidden by an exception.
+
+
+def test_objects_skips_directory_marker_keys(tmp_path, monkeypatch):
+    """pyarrow's S3 filesystem (the dataplane's) writes zero-byte `prefix/` marker objects; the
+    mirror must skip them — written as files they would block the real keys under the prefix."""
+    from examlops.backup import objects_tier
+    from examlops.backup._manifest import OK
+
+    fake = _FakeS3(
+        {"examlops-data": {"dataplane/": b"", "dataplane/_global/s/_latest": b"x", "a.txt": b"hi"}}
+    )
+    monkeypatch.setenv("EXAMLOPS_BACKUP_BUCKETS", "examlops-data")
+    monkeypatch.setattr(objects_tier, "_s3_client", lambda: fake)
+
+    res = objects_tier.backup_objects_tier(tmp_path)
+    assert res.status == OK, res
+    assert res.items[0]["object_count"] == 2
+    assert (
+        tmp_path / "objects" / "examlops-data" / "dataplane" / "_global" / "s" / "_latest"
+    ).is_file()
+
+
+def test_objects_a_real_list_error_still_fails_the_whole_tier(tmp_path, monkeypatch):
+    """Only "bucket does not exist" degrades; every other list failure still aborts the tier."""
+    from examlops.backup import objects_tier
+    from examlops.backup._manifest import TierUnavailable
+
+    class _Down:
+        def list_objects_v2(self, **kw):
+            raise RuntimeError("Could not connect to the endpoint URL")
+
+    monkeypatch.setenv("EXAMLOPS_BACKUP_BUCKETS", "mlflow-artifacts,examlops-data")
+    monkeypatch.setattr(objects_tier, "_s3_client", lambda: _Down())
+    with pytest.raises(TierUnavailable, match="cannot list bucket"):
+        objects_tier.backup_objects_tier(tmp_path)
+
+
+def test_bucket_missing_detects_a_real_botocore_client_error():
+    """The boto3 shape (`exc.response`), not just the test double's plain string."""
+    from examlops.backup.objects_tier import _bucket_missing
+
+    class _ClientError(Exception):
+        def __init__(self, code, status):
+            self.response = {
+                "Error": {"Code": code},
+                "ResponseMetadata": {"HTTPStatusCode": status},
+            }
+
+    assert _bucket_missing(_ClientError("NoSuchBucket", 404))
+    assert _bucket_missing(_ClientError("SomethingElse", 404))
+    assert not _bucket_missing(_ClientError("AccessDenied", 403))
+    assert not _bucket_missing(RuntimeError("Could not connect to the endpoint URL"))
+    assert _bucket_missing(RuntimeError("NoSuchBucket: examlops-data"))
+
+
 def test_objects_mirror_and_restore_roundtrip(tmp_path, monkeypatch):
     from examlops.backup import objects_tier
 

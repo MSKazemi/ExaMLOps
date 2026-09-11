@@ -34,6 +34,11 @@ enough for an HPC login node:
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics (a pure-Python fallback computes the same numbers without it) |
 | `examlops[synth]` | synthetic dataset generation |
 | `examlops[serving-vllm]` / `examlops[serving-sglang]` | in-process vLLM / SGLang engines (GPU host) |
+| `examlops[dataplane]` | pull external data into versioned snapshots — the union of the four extras below |
+| `examlops[dataplane-sql]` | the `sql` dataplane connector (any SQLAlchemy URL) |
+| `examlops[dataplane-files]` | the `files`, `zenodo` and `rest` dataplane connectors |
+| `examlops[dataplane-kafka]` | the `kafka` dataplane connector |
+| `examlops[dataplane-service]` | run the dataplane HTTP service, not just pull from the CLI |
 
 ## Point it at a platform
 

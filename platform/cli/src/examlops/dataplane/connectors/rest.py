@@ -90,6 +90,14 @@ class RestConnector(BaseConnector):
         since: Watermark | None,
         limits: Limits,
     ) -> Iterator[TableBatch]:
+        """Page through the endpoint; incrementally, pass the watermark as ``since_param``.
+
+        Incremental means **insert-only**: the new snapshot carries every record the parent held
+        and appends what the API returns past the watermark, so ``watermark_field`` must be
+        monotonic and set once per record (an increasing id, a creation time). A field that
+        moves on update (``updated_at``) duplicates the updated records; for mutable data, pull
+        full.
+        """
         import pyarrow as pa
 
         pag = dict(spec.get("pagination") or {"type": "none"})

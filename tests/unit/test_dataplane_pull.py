@@ -245,3 +245,101 @@ def test_probe_source_redacts_secret_on_connector_error():
     probe = dpl.probe_source("leaky2")
     assert not probe.ok
     assert "sekret-value-2" not in probe.detail
+
+
+# ── task 22a: reap_interrupted_pulls (a process crashed/OOM'd mid-pull) ─────────────────────────
+
+
+def test_reap_marks_a_running_pull_with_no_lock_held_as_failed():
+    """No live process holds this source's lock (crashed after it expired, or never held at
+    all) — the row is stuck ``running`` and must be reaped."""
+    pull_id = catalog.new_pull_id()
+    catalog.insert_pull(pull_id, "", "gone", trigger_kind="manual", actor="t", parent_revision=None)
+    reaped = dpl.reap_interrupted_pulls()
+    assert reaped == [pull_id]
+    row = catalog.get_pull(pull_id)
+    assert row["status"] == "failed"
+    assert row["finished_at"] is not None
+    assert "interrupted" in row["error"]
+
+
+def test_reap_leaves_a_pull_whose_source_lock_is_held_by_another_holder():
+    """A live pull (or a crashed holder still inside its lease) must not be touched."""
+    from examlops.coordination import get_coordinator
+    from examlops.dataplane.pull import pull_lock_key
+    from examlops.dataplane.store import source_key
+
+    pull_id = catalog.new_pull_id()
+    catalog.insert_pull(
+        pull_id, "", "alive", trigger_kind="manual", actor="t", parent_revision=None
+    )
+    lock_key = pull_lock_key(source_key("", "alive"))
+    coord = get_coordinator()
+    assert coord.try_lock(lock_key, pull_id, ttl_s=60.0)
+    try:
+        reaped = dpl.reap_interrupted_pulls()
+        assert pull_id not in reaped
+        assert catalog.get_pull(pull_id)["status"] == "running"
+    finally:
+        coord.unlock(lock_key, pull_id)
+
+
+def test_reap_never_touches_a_succeeded_pull():
+    dpl.define_source("s", "counting", spec={})
+    result = dpl.run_pull("s")
+    assert result.status == "succeeded"
+    reaped = dpl.reap_interrupted_pulls()
+    assert reaped == []
+    assert catalog.get_pull(result.pull_id)["status"] == "succeeded"
+
+
+# ── task 22a: cleanup_stale_stage_dirs (leftover stage dirs from a crashed process) ─────────────
+
+
+def test_cleanup_removes_only_stale_dp_prefixed_dirs(tmp_path):
+    import os
+    import time
+
+    from examlops.dataplane.pull import cleanup_stale_stage_dirs
+
+    cutoff = time.time()
+
+    stale = tmp_path / "dp-oldpull-abc123"
+    stale.mkdir()
+    old = cutoff - 3600
+    os.utime(stale, (old, old))  # predates the cutoff: an earlier process's leftover
+
+    fresh = tmp_path / "dp-newpull-def456"
+    fresh.mkdir()
+    new = cutoff + 3600
+    os.utime(fresh, (new, new))  # postdates the cutoff: this process's own in-flight pull
+
+    unrelated = tmp_path / "not-a-stage-dir"
+    unrelated.mkdir()
+    os.utime(unrelated, (old, old))  # old, but not `dp-`-prefixed: never touched
+
+    removed = cleanup_stale_stage_dirs(root=tmp_path, cutoff=cutoff)
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()
+
+
+def test_cleanup_never_follows_a_symlink(tmp_path):
+    import os
+    import time
+
+    from examlops.dataplane.pull import cleanup_stale_stage_dirs
+
+    cutoff = time.time()
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    link = tmp_path / "dp-linked-abc"
+    link.symlink_to(real_target, target_is_directory=True)
+    old = cutoff - 3600
+    os.utime(link, (old, old), follow_symlinks=False)
+
+    removed = cleanup_stale_stage_dirs(root=tmp_path, cutoff=cutoff)
+    assert removed == 0
+    assert real_target.exists()
+    assert link.exists()
