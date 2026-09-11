@@ -402,6 +402,15 @@ def test_socket_proxies_grant_only_what_their_client_needs():
     assert services["logs-proxy"].get("profiles") == ["monitoring"]
 
 
+def test_mlflow_default_limit_clears_its_measured_footprint():
+    """v0.54.0 shipped MLflow 3.16 under a 2g limit; resident at 2.1 GiB, it was OOM-killed on
+    every start (kernel: memory cgroup out of memory). Keep the default at least 3g."""
+    mlflow = _services()["mlflow"]
+    limit = re.fullmatch(r"\$\{MLFLOW_MEM_LIMIT:-(\d+)g\}", mlflow["mem_limit"])
+    assert limit and int(limit.group(1)) >= 3, mlflow["mem_limit"]
+    assert "--workers ${MLFLOW_WORKERS:-2}" in mlflow["command"]
+
+
 def test_ports_bind_where_the_operator_says():
     for name, svc in _services().items():
         for port in svc.get("ports", []):

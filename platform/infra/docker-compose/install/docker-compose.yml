@@ -168,7 +168,9 @@ services:
 
   mlflow:
     image: ${EXAMLOPS_REGISTRY:-ghcr.io/mskazemi}/examlops-mlflow:${EXAMLOPS_VERSION:?set EXAMLOPS_VERSION in .env}
-    mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
+    # MLflow 3.16 measured 2.1 GiB resident with 4 workers and 1.8 GiB with 2; the 2g limit it
+    # shipped with OOM-killed it on every start. Scale MLFLOW_WORKERS and the limit together.
+    mem_limit: ${MLFLOW_MEM_LIMIT:-4g}
     command: >
       mlflow server
       --backend-store-uri postgresql://mlops:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/mlflow
@@ -176,6 +178,7 @@ services:
       --artifacts-destination s3://${EXAMLOPS_S3_ARTIFACT_BUCKET:-mlflow-artifacts}/
       --host 0.0.0.0
       --port 5000
+      --workers ${MLFLOW_WORKERS:-2}
       --allowed-hosts "mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*,${PUBLIC_HOST:-localhost},${PUBLIC_HOST:-localhost}:*"
       --cors-allowed-origins "http://${PUBLIC_HOST:-localhost}:${EXAMLOPS_PORT_DASHBOARD:-18099}"
     environment:

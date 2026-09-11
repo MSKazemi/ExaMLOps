@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the install bundle's MLflow was OOM-killed on every start
+
+- **The v0.54.0 install bundle's MLflow was OOM-killed on every start.** MLflow 3.16 needs ~2.1 GiB
+  with 4 workers; the bundle capped it at 2 GB. The default is now 4 GB with 2 workers
+  (`MLFLOW_MEM_LIMIT`, `MLFLOW_WORKERS`). On v0.54.0, add `MLFLOW_MEM_LIMIT=4g` to `.env`;
+  `install.sh upgrade-env` adds both settings on upgrade.
+
 ### Fixed — v0.54.0 verified from outside; its provenance no longer attests `dist/.gitignore`
 
 - **v0.54.0 is the first release published end to end** — seven images, the Helm chart and the
