@@ -504,6 +504,7 @@ automatically.
 | `AGENT_CONTAINER_OLLAMA_URL` | `http://host.docker.internal:11436` | Compose-only Ollama URL. This avoids treating the agent container's own loopback as the host's Ollama server. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids reload latency on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | Disable (`false`) / force (`true`) / leave-default (`default`) thinking models' extra reasoning tokens. |
+| `AGENT_OLLAMA_NUM_CTX` | `16384` | Context window requested from Ollama. Its server default (4096) truncates Skipper's scoped tool-pack prompts (~5k tokens) from the front, dropping the system prompt. `0` leaves the server default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
 | `AGENT_API_KEY` | unset | Legacy single credential protecting completions, status, history, and WebSocket tools. It remains the dashboard fallback and maps to the `primary` principal. Prefer distinct caller credentials in `AGENT_API_KEYS_JSON`. |
 | `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. |

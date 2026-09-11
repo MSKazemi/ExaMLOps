@@ -39,6 +39,11 @@ AGENT_OLLAMA_REASONING = (
     if _reasoning in ("false", "0", "no", "off")
     else None
 )
+# Context window requested from Ollama. Its server default is 4096 tokens and it truncates the
+# prompt from the FRONT, so a scoped tool pack (~5k tokens: system prompt + schemas) silently
+# lost its system prompt and every turn ran to the graph timeout (n1, 2026-09-10). 0 leaves the
+# server default. tests/test_llm.py fails if the largest pack outgrows this default.
+AGENT_OLLAMA_NUM_CTX = int(os.getenv("AGENT_OLLAMA_NUM_CTX", "16384"))
 
 MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
 RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")

@@ -249,3 +249,46 @@ def test_nothing_usable_names_the_preferred_backend_and_the_fix(monkeypatch):
     assert info["type"] == "azure"
     assert info["skipped"] == ["azure", "ollama"]
     assert "AZURE_OPENAI_ENDPOINT" in info["fix"]
+
+
+def test_ollama_backend_sends_the_configured_context_window(monkeypatch):
+    """Ollama's default window is 4096 tokens, and it truncates from the *front*.
+
+    Without an explicit ``num_ctx`` the scoped packs (~5k tokens) lost their system prompt:
+    on n1 on 2026-09-10 Ollama logged ``truncating input prompt limit=4096 prompt=5072`` and
+    every turn ran into the graph timeout.
+    """
+    _clear_backends(monkeypatch)
+    monkeypatch.setattr(config, "AGENT_OLLAMA_NUM_CTX", 16384)
+    assert llm.build_llm().num_ctx == 16384
+
+
+def test_ollama_context_window_zero_leaves_the_server_default(monkeypatch):
+    _clear_backends(monkeypatch)
+    monkeypatch.setattr(config, "AGENT_OLLAMA_NUM_CTX", 0)
+    assert llm.build_llm().num_ctx is None
+
+
+def test_default_context_window_fits_the_largest_specialist_prompt():
+    """The default must hold the biggest pack's system prompt + tool schemas, with headroom.
+
+    Tokens are estimated at 3 chars each, deliberately pessimistic (JSON schemas measured
+    closer to 4.5), plus 4096 tokens for the conversation and tool results. Adding tools to a
+    pack until this fails means the default has to grow with it, not that the test is wrong.
+    """
+    import json
+
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    from skipper import skills
+    from skipper import tools as inrepo
+    from skipper.prompts import system_prompt
+
+    packs = skills.toolsets(inrepo.TOOLS, extra_tools=[])
+    base = len(system_prompt())
+    worst = max(
+        base
+        + len(spec.playbook)
+        + len(json.dumps([convert_to_openai_tool(t) for t in packs.get(spec.name) or []]))
+        for spec in skills.ALL
+    )
+    assert config.AGENT_OLLAMA_NUM_CTX >= worst // 3 + 4096

@@ -76,6 +76,7 @@ def build_llm(model: str | None = None):
         temperature=0,
         keep_alive=config.AGENT_OLLAMA_KEEP_ALIVE,
         reasoning=config.AGENT_OLLAMA_REASONING,
+        num_ctx=config.AGENT_OLLAMA_NUM_CTX or None,
     )
 
 

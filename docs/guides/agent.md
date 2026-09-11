@@ -563,6 +563,7 @@ same-site session cookie.
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel Omega; `11434` for local `ollama serve`. |
 | `AGENT_OLLAMA_KEEP_ALIVE` | `30m` | Pins the Ollama model in memory between turns (avoids 30–60 s reloads on CPU-only servers). |
 | `AGENT_OLLAMA_REASONING` | `false` | `false` disables thinking models' extra reasoning tokens (snappier); `true` forces it on; `default`/`none` leaves the model default. |
+| `AGENT_OLLAMA_NUM_CTX` | `16384` | Context window sent to Ollama as `num_ctx`. Ollama's 4096 default truncates the ~5k-token specialist prompts from the front (system prompt lost, turns hit the graph timeout). `0` leaves the server default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
 | `AGENT_API_KEY` | unset | Legacy single credential protecting the agent HTTP surface; maps to the `primary` principal. |
 | `AGENT_API_KEYS_JSON` | unset | Principal-to-credential JSON map. Verified principal and tenant scope conversations and remote memory administration. |

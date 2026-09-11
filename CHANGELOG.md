@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — Skipper on a local Ollama lost its system prompt and never finished a turn
+
+- **Ollama truncated every specialist prompt from the front.** `ChatOllama` was built without
+  `num_ctx`, so Ollama used its 4096-token default while the scoped tool packs send ~4.3k–5.7k
+  tokens (system prompt + tool schemas). Ollama logged `truncating input prompt limit=4096
+  prompt=5072`, dropped the system prompt, generated until a context shift, and the turn ran into
+  the 300 s graph timeout (504). New `AGENT_OLLAMA_NUM_CTX` (default `16384`, `0` = server
+  default) is sent on every call; `tests/test_llm.py` fails if the largest pack outgrows it.
+
 ### Fixed — an asset job runs the same ExaMLOps code as the process that submitted it
 
 - The job's `PYTHONPATH` held only the production function's package, so `python -m
