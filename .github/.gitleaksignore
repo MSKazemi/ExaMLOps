@@ -47,3 +47,6 @@ bc236a06583ff58b810d8acece56805735263b19:tests/unit/test_projects_e2e.py:generic
 bec977e2f3d892b59f1ea40d016c967c744b6f51:tests/unit/test_secrets.py:generic-api-key:101
 fbb15ef60e99737280f5f9e0e41011166630e1bc:tests/unit/test_secrets.py:generic-api-key:101
 51f057171be48c09c8832256814dc2a74886574e:tests/unit/test_secrets.py:generic-api-key:101
+
+# tests/unit/test_genai_path_hardening.py — synthetic AWS-shaped key (AKIA + the alphabet in order) the guardrails must redact; no secret key exists for it
+1d5ede0979293d3ae63a62443ce97f66913eb98f:tests/unit/test_genai_path_hardening.py:aws-access-token:23
