@@ -127,7 +127,7 @@ vector = [
 # Cross-host locks, idempotency, and rate limiting. Imported only when
 # EXAMLOPS_COORDINATOR=redis selects this backend.
 coordination = [
-    "redis>=5.0",
+    "redis>=8.1.0",
 ]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback

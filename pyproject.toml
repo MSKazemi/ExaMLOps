@@ -31,7 +31,7 @@ dependencies = [
     # modelzoo dependencies
     "torch",
     "numpy",
-    "sentence-transformers>=2.0.0",
+    "sentence-transformers>=6.0.0",
     "xgboost>=1.7.0",
     # pipeline / orchestration
     "prefect>=3.0.0,<4.0",
@@ -144,6 +144,17 @@ ignore = ["E501"]
 python_version = "3.12"
 strict = false
 ignore_missing_imports = true
+
+[tool.uv]
+# Security floors for TRANSITIVE dependencies (Dependabot alerts, 2026-09-11). A floor goes here
+# only when `uv lock --upgrade-package <name>` alone cannot reach the patched version: the lock
+# resolves one copy per Python-version fork, and uv kept the vulnerable copy in the <3.15 fork —
+# the one every deployment runs. Remove a line once nothing in the tree could resolve below it.
+constraint-dependencies = [
+    "httpx2>=2.12.0",     # GHSA-8xx6-hgc6-gc2m (via anthropic, openai)
+    "httpcore2>=2.10.0",  # GHSA-7mj9-2mp8-4m2p (via httpx2)
+    "anthropic>=1.5.0",   # without it the fork satisfies the httpx2 floor by falling back to 0.x
+]
 
 [tool.uv.workspace]
 members = ["pipelines", "serving", "platform/cli"]
