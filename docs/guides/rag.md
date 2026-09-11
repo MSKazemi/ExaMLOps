@@ -9,9 +9,19 @@ Design: ADR 0019 · spec `design/vision/specs/B4-rag-pipeline.md`.
 
 ## Encoder compatibility
 
-`ingest(..., encoder="…")` stamps the KB's vector collection with the encoder that produced its
-embeddings, and `query` looks that value up and asks the store under it. A query embedded by a
-different encoder is refused rather than answered.
+A `RagPipeline` names the encoder behind its `embed_fn` with `encoder_id` — `token-hash` for the
+built-in embedding. `ingest` stamps the KB's vector collection with it (`encoder="…"` overrides the
+stamp), and `query` asks the store under the pipeline's own `encoder_id`, so a query embedded by a
+different encoder than the one that built the KB is refused rather than answered:
+
+```python
+RagPipeline(embed_fn=minilm, encoder_id="minilm@v1").ingest("runbooks", docs)
+RagPipeline(embed_fn=e5, encoder_id="e5@v2").query("runbooks", "…")   # EncoderMismatch
+```
+
+Until 2026-09-10 `query` asked under the KB's *recorded* encoder instead — the collection compared
+with itself — so the check could not fire. A pipeline with a custom `embed_fn` and no
+`encoder_id` still falls back to that record, since it has no identity of its own to claim.
 
 Retrieval is where cross-encoder scoring is most convincing and least detectable: every hit still
 arrives with a plausible score and a real citation attached, so nothing about the answer looks

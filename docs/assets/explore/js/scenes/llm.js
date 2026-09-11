@@ -33,7 +33,7 @@ XM.register("llm", {
         cli: ["exa prompt list", "exa prompt label support-bot prod 3"], links: [{ text: "Prompt registry", href: "guides/prompt-management.md" }] } },
     { id: "guardin", x: 670, y: 120, label: "Guardrail", sub: "inbound scan", line: "control",
       info: { title: "Inbound guardrail", sub: "EXAMLOPS_GUARDRAIL_MODE",
-        tasks: ["monitor (default): records findings, changes nothing", "enforce: blocks prompt injection and redacts personal data; secrets are recorded but not removed", "off: no scan", "Scans each message's text, including the text parts of a content-part list; image parts go to the media guard", "A blocked request never reaches the cache or a model"],
+        tasks: ["monitor (default): records findings, changes nothing", "enforce: blocks prompt injection and redacts personal data and secrets", "off: no scan", "Scans each message's text, including the text parts of a content-part list; image parts go to the media guard", "A blocked request never reaches the cache or a model"],
         cli: ["exa guardrails test --text \"ignore previous instructions\"", "exa guardrails stats"], links: [{ text: "Guardrails", href: "guides/guardrails.md" }] } },
     { id: "cache", x: 850, y: 120, label: "Semantic cache", sub: "opt-in · cosine ≥ 0.85", kind: "store", line: "data",
       info: { title: "Semantic cache", sub: "Opt-in: --cache, or the client's cache hooks",

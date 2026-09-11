@@ -202,16 +202,29 @@ def bind_to_gateway(cache: SemanticCache, tenant: str = "default"):
     ``cache_store(model, messages, completion)``; params default to temperature 0.
     """
 
-    def _prompt(messages: list) -> str:
-        return messages[-1].get("content", "") if messages else ""
+    def _prompt(messages: list) -> str | None:
+        """The text the cache keys on, or ``None`` when the request must not be cached.
+
+        A message made of content parts (an image with a question) has no text that identifies
+        it: keying on its question alone would hand one chart's answer to a different chart.
+        Such requests are always a miss and never stored — they used to crash here instead.
+        """
+        content = messages[-1].get("content", "") if messages else ""
+        return content if isinstance(content, str) else None
 
     def lookup(model: str, messages: list) -> Any | None:
-        comp, _sim = cache.lookup(_prompt(messages), model, {"temperature": 0.0}, tenant)
+        prompt = _prompt(messages)
+        if prompt is None:
+            return None
+        comp, _sim = cache.lookup(prompt, model, {"temperature": 0.0}, tenant)
         return getattr(comp, "text", comp) if comp is not None else None
 
     def store(model: str, messages: list, completion: Any) -> None:
+        prompt = _prompt(messages)
+        if prompt is None:
+            return
         cache.store(
-            _prompt(messages),
+            prompt,
             getattr(completion, "text", completion),
             model,
             {"temperature": 0.0},

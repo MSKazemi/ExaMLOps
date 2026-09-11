@@ -378,6 +378,20 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+def redact_secrets(text: str, placeholder: str = "[redacted-secret]") -> tuple[str, list[str]]:
+    """Replace every likely secret in ``text`` with ``placeholder``; return (text, rules hit).
+
+    The same patterns as :func:`scan_text`, which only reports. A guardrail that finds a secret
+    in a request has to be able to remove it, not just count it.
+    """
+    hits: list[str] = []
+    for rule, pat in _SECRET_PATTERNS:
+        if pat.search(text):
+            hits.append(rule)
+            text = pat.sub(placeholder, text)
+    return text, hits
+
+
 def scan_text(text: str) -> list[dict]:
     """Return findings (rule, line, match-preview) for likely secrets in ``text``."""
     findings: list[dict] = []

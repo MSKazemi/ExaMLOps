@@ -17,7 +17,7 @@ XM.register("rag", {
     { id: "embed", x: 510, y: 130, label: "Embed", sub: "64-dim token hash", line: "data",
       info: { title: "Embedding", tasks: ["By default a deterministic 64-dimension token-hash vector: no model, no service", "The knowledge base records which encoder built it"] } },
     { id: "vstore", x: 710, y: 130, label: "Vector store", sub: "SQLite · pgvector", kind: "store", line: "data",
-      info: { title: "Vector store", sub: "EXAMLOPS_VECTOR_BACKEND", tasks: ["sqlite (default): tables in the platform datastore", "pgvector: a Postgres extension", "Each collection is stamped with the encoder that built it; a search that names another encoder is refused"], cli: ["exa vector stats runbooks"] } },
+      info: { title: "Vector store", sub: "EXAMLOPS_VECTOR_BACKEND", tasks: ["sqlite (default): tables in the platform datastore", "pgvector: a Postgres extension", "Each collection is stamped with the encoder that built it; a query from a pipeline with another encoder is refused"], cli: ["exa vector stats runbooks"] } },
 
     { id: "ask", x: 120, y: 350, label: "exa rag query", sub: "--question · -k 5", line: "human",
       info: { title: "Ask a question", tasks: ["Prints the answer, the k retrieved chunks with their scores, and a warning if the guardrail fired", "With only the echo route, the answer is the assembled prompt itself"], cli: ["exa rag query runbooks --question \"How do I drain a node?\""] } },

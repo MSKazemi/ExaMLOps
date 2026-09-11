@@ -123,10 +123,17 @@ class RagPipeline:
     # name — which an embedding blurs. Dense stays the default so existing answers do not move.
     retrieval: str = "dense"
     fusion: str = "rrf"
+    #: Identity of the encoder behind ``embed_fn`` (ADR 0043). The built-in embedding is
+    #: ``token-hash``; pass your own id with your own ``embed_fn``. A query is checked against the
+    #: collection's stamp under *this* id, so a pipeline whose encoder differs from the one that
+    #: built the knowledge base is refused instead of scoring vectors that mean nothing.
+    encoder_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval not in RETRIEVAL_MODES:
             raise ValueError(f"retrieval '{self.retrieval}' not in {RETRIEVAL_MODES}")
+        if self.encoder_id is None and self.embed_fn is default_embed:
+            self.encoder_id = "token-hash"
 
     def _kb_encoder(self, kb: str, tenant: str) -> str | None:
         """The encoder this KB was ingested with, or ``None`` if it was never recorded.
@@ -157,11 +164,17 @@ class RagPipeline:
         *,
         tenant: str = "default",
         source_revision: str | None = None,
-        encoder: str = "token-hash",
+        encoder: str | None = None,
     ) -> int:
-        """Chunk→embed→index documents into the B5 store; version against A1 (R1)."""
+        """Chunk→embed→index documents into the B5 store; version against A1 (R1).
+
+        ``encoder`` overrides the id stamped on the collection; by default it is the pipeline's
+        own ``encoder_id``.
+        """
         from examlops.data import get_db, init_db
         from examlops.vector_store import VecItem
+
+        encoder = encoder or self.encoder_id or "token-hash"
 
         init_db()
         store = self._store()
@@ -212,11 +225,16 @@ class RagPipeline:
         """embed→retrieve→rerank→assemble→generate, citing chunks (R2/R3/GWT-1)."""
         store = self._store()
         qv = self.embed_fn(question)
-        # Ask under the encoder this KB was indexed with. If the query embedding comes from a
-        # different one the store refuses rather than returning ranked nonsense — retrieval is
-        # the case where cross-encoder scoring is most convincing and least detectable, because
-        # every hit still arrives with a plausible score and a real citation attached.
-        encoder_id = self._kb_encoder(kb, tenant)
+        # Ask under the encoder that produced *this query's* vector, so the store can compare it
+        # with the one that built the collection and refuse a mismatch rather than return ranked
+        # nonsense — retrieval is where cross-encoder scoring is most convincing and least
+        # detectable, because every hit still arrives with a plausible score and a real citation.
+        # Passing the KB's own recorded encoder here, as this used to, compared the collection
+        # with itself: the guard could never fire. A pipeline with a custom ``embed_fn`` and no
+        # ``encoder_id`` still falls back to the KB's record, because it has nothing to claim.
+        encoder_id = (
+            self.encoder_id if self.encoder_id is not None else self._kb_encoder(kb, tenant)
+        )
         if self.retrieval == "hybrid":
             hits = store.hybrid_search(
                 kb,

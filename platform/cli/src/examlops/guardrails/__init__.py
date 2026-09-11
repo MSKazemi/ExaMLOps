@@ -112,6 +112,11 @@ class DefaultGuardrail:
             self._record("input", "block", "injection")
             return GuardResult("block", "", findings, "prompt injection blocked")
         redacted, _ = redact_pii(text)
+        if "secret" in findings:
+            # Detected and, until now, sent on: the input path redacted only personal data, so a
+            # credential pasted into a prompt reached the model in enforce mode. The output path
+            # already replaced secrets; the request must not be the weaker side.
+            redacted = _redact_secret(redacted)
         self._record("input", "redact", ",".join(findings))
         return GuardResult("redact", redacted, findings, "PII/secret redacted")
 
@@ -176,6 +181,16 @@ class DefaultGuardrail:
                 )
         except Exception:
             pass
+
+
+def _redact_secret(text: str) -> str:
+    try:
+        from examlops.secrets import redact_secrets
+
+        return redact_secrets(text)[0]
+    except Exception:
+        # The scanner said there is a secret and we cannot locate it: fail closed on the text.
+        return "[redacted-secret]"
 
 
 def _secret_hit(text: str) -> bool:

@@ -136,9 +136,8 @@ def test_a_kb_with_no_recorded_encoder_still_queries():
 def test_a_matching_encoder_queries_normally():
     from examlops.rag import RagPipeline
 
-    rag = RagPipeline()
-    rag.ingest(
-        "kb4", [{"id": "d1", "text": "drift is a change in distribution"}], encoder="minilm@v1"
-    )
+    # The pipeline states the encoder its embed_fn is; ingest stamps it and query checks it.
+    rag = RagPipeline(encoder_id="minilm@v1")
+    rag.ingest("kb4", [{"id": "d1", "text": "drift is a change in distribution"}])
     answer = rag.query("kb4", "what is drift?")
     assert answer.citations

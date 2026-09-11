@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — RAG's encoder check fires, enforce mode redacts secrets, the cache survives content parts
+
+- **RAG's encoder check could never fire.** `RagPipeline.query` checked the collection's stamp
+  against the knowledge base's own record of it, so a pipeline embedding with another encoder got
+  confident, cited nonsense. A pipeline now carries `encoder_id` (`token-hash` by default) and
+  queries under it; a mismatch raises `EncoderMismatch`.
+- **Enforce mode sent secrets on.** The inbound guardrail detected a credential in a prompt but
+  redacted only personal data. Secrets are now redacted too (`secrets.redact_secrets`).
+- **The semantic cache crashed on content-part messages** (`bind_to_gateway`). Such requests are
+  now never looked up or stored: their text alone does not identify them.
+
 ## [0.52.0] - 2026-09-11
 
 ### Changed — dependencies: training and serving move together; typer 0.27
