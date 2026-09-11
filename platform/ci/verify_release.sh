@@ -3,13 +3,16 @@
 #
 # release.yml proves each artifact while it builds it. This proves what actually reached
 # people: the GitHub Release assets, the GHCR images and the OCI chart, fetched back from where
-# they were published. The first published releases had two defects visible only from here —
-# v0.54.0's provenance attested `dist/.gitignore`, and its dashboard image could not import
-# `examlops` — so every release is checked this way (.github/workflows/release-verify.yml).
+# they were published. The first published releases had three defects visible only from here, all
+# in v0.54.0: its provenance attested `dist/.gitignore`, its dashboard image could not import
+# `examlops`, and its Compose bundle's MLflow was OOM-killed on every start. So every release is
+# checked this way (.github/workflows/release-verify.yml).
 #
 # Usage:  platform/ci/verify_release.sh vX.Y.Z
 # Needs:  gh, cosign (v3), oras, helm, docker, python3, sha256sum, curl.
-# Env:    VERIFY_OFFLINE=0   skip the air-gapped phase (docs/guides/air-gapped-install.md)
+# Env:    VERIFY_COMPOSE=0   skip starting the Compose bundle (it pulls every image, ~6 GB)
+#         VERIFY_OFFLINE=0   skip the air-gapped phase (docs/guides/air-gapped-install.md)
+#         VERIFY_POLL_SECONDS  seconds between Compose health polls (default 5)
 #         VERIFY_WORKDIR     where to download (default: a fresh temporary directory)
 #
 # Every check is counted: one failure makes the exit status non-zero, and a check that cannot
@@ -186,11 +189,64 @@ chart_matches_release() {
 }
 check "chart: registry copy equals the signed asset and renders only released images" chart_matches_release
 
-# ── 5. Air-gapped: mirror, then verify with no route out ──────────────────────────────────────
+# ── 5. The Compose bundle starts healthy ──────────────────────────────────────────────────────
+# Nothing else starts the stack a release ships: the v0.54.0 bundle's MLflow was OOM-killed on
+# every start and no build noticed. Its own project name and ports, so it can share a host with a
+# running install.
+if [ "${VERIFY_COMPOSE:-1}" = 1 ]; then
+  BUNDLE_DIR=$WORK/compose/examlops-compose-$VERSION
+  PROJECT=examlops-verify-$$
+  compose() { (cd "$BUNDLE_DIR" && docker compose "$@"); }
+  compose_down() { [ -d "$BUNDLE_DIR" ] && compose down -v --remove-orphans >/dev/null 2>&1; }
+  set_env() { sed -i "/^$1=/d" "$BUNDLE_DIR/.env" && echo "$1=$2" >>"$BUNDLE_DIR/.env"; }
+
+  compose_starts_healthy() {
+    rm -rf "$WORK/compose" && mkdir -p "$WORK/compose" \
+      && tar -xzf "examlops-compose-$VERSION.tar.gz" -C "$WORK/compose" || return 1
+    (cd "$BUNDLE_DIR" && ./install.sh init >/dev/null) || { echo "install.sh init failed"; return 1; }
+    set_env EXAMLOPS_PROJECT_NAME "$PROJECT"
+    set_env COMPOSE_PROFILES minio,monitoring
+    local port=$((42000 + RANDOM % 500 * 20)) var
+    while read -r var; do
+      set_env "$var" "$port"; port=$((port + 1))
+    done < <(grep -oE '^EXAMLOPS_PORT_[A-Z_]+' "$BUNDLE_DIR/env.template")
+    compose pull -q || { echo "pull failed"; return 1; }
+    # `up -d` fails when a dependency never turns healthy; keep its reason and still report the
+    # state of every service below.
+    local up_out up_rc=0 states bad
+    up_out=$(compose up -d 2>&1) || up_rc=$?
+    # `|`-separated: a service without a health check has an empty Health field.
+    local looping=0
+    for _ in $(seq 1 90); do  # up to 7.5 minutes for every health check to settle
+      states=$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}')
+      grep -qE '\|(created|restarting)\||\|starting\|' <<<"$states" || break
+      # A service seen restarting on 3 polls is crash-looping; waiting longer only burns the host.
+      if grep -q '|restarting|' <<<"$states"; then looping=$((looping + 1)); fi
+      [ "$looping" -lt 3 ] || break
+      sleep "${VERIFY_POLL_SECONDS:-5}"
+    done
+    # Unhealthy, still starting, never started, crash-looping, or exited with an error.
+    bad=$(awk -F'|' '$3 == "unhealthy" || $3 == "starting" || $2 == "created" \
+      || $2 == "restarting" || ($2 == "exited" && $4 != "0")' <<<"$states")
+    # Most telling first: a failure excerpt shows the head and the tail of this output.
+    [ "$up_rc" = 0 ] || printf 'docker compose up failed: %s\n' "$(tail -1 <<<"$up_out")"
+    [ -z "$bad" ] || { echo "not healthy: $(cut -d'|' -f1,2,3 <<<"$bad" | tr '\n' ' ')"; }
+    echo "$states"
+    [ -z "$bad" ] && [ "$up_rc" = 0 ]
+  }
+  trap compose_down EXIT
+  check "compose: the published bundle starts, every health check passes" compose_starts_healthy
+  compose_down
+fi
+
+# ── 6. Air-gapped: mirror, then verify with no route out ──────────────────────────────────────
 if [ "${VERIFY_OFFLINE:-1}" = 1 ]; then
   NET=examlops-verify-$$
   REG=examlops-verify-registry-$$
-  cleanup() { docker rm -f "$REG" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
+  cleanup() {
+    type compose_down >/dev/null 2>&1 && compose_down
+    docker rm -f "$REG" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1
+  }
   trap cleanup EXIT
 
   mirror() {

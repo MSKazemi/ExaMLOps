@@ -5,14 +5,16 @@ name: Release verification
 #   - every asset is signed and summed, and the provenance attests exactly the wheel and sdist;
 #   - every image and the chart carry the release signature and provenance;
 #   - the wheel installs, and the dashboard image imports the matching `examlops`;
+#   - the Compose bundle starts with the released images and every health check passes;
 #   - the whole release mirrors into a registry and verifies again with no route to the internet
 #     (docs/guides/air-gapped-install.md).
 #
 # release.yml calls this once the GitHub Release is out and before PyPI, the one step that can
 # never be undone. A weekly run re-verifies the latest release, because signatures, attestations
 # and registry tags can change or disappear after release day. The first published releases had
-# two defects that only this view shows: v0.54.0's provenance attested `dist/.gitignore`, and its
-# dashboard image could not import `examlops`.
+# three defects that only this view shows, all in v0.54.0: its provenance attested
+# `dist/.gitignore`, its dashboard image could not import `examlops`, and its Compose bundle's
+# MLflow was OOM-killed on every start.
 #
 # By hand:  gh workflow run release-verify.yml -f tag=v0.55.0
 

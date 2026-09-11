@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — release verification starts the Compose bundle (ADR 0129)
+
+- `platform/ci/verify_release.sh` now also starts the release's Compose bundle, as the
+  release-verify workflow runs it after every release and weekly. It uses the published images,
+  both optional profiles, and its own project name and ports, so it can share a host with a
+  running install. It fails unless every service with a health check turns healthy and every
+  one-shot job exits 0. It gives up after three polls that show a service crash-looping, rather
+  than waiting out its 7.5-minute limit, and tears the stack down either way.
+- It would have caught the v0.54.0 bundle's MLflow being OOM-killed on every start. Run against
+  v0.54.0, the check fails with `dependency failed to start: container …-mlflow-1 is unhealthy`;
+  against v0.56.0 it passes. `VERIFY_COMPOSE=0` skips it: it pulls every image, about 6 GB.
+
 ### Added — the dataplane in the Compose stack: its own MinIO credential, alerts, runbook (ADR 0130)
 
 - A `dataplane` Compose service runs the dataplane on host port `18010`, bound to loopback unless

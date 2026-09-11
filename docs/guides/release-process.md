@@ -154,15 +154,20 @@ verify ─┬─ python-dist ─────────────┐
       signed digest;
     - that the wheel installs;
     - that the dashboard image imports the matching `examlops`;
+    - that the [Compose bundle](install-compose-bundle.md) starts with the released images and
+      every health check passes;
     - the whole release again, mirrored into a registry on a network with no route out and
       verified offline, as in [Air-gapped installs](air-gapped-install.md).
 
   The checks live in `platform/ci/verify_release.sh`, which anyone can run:
   `platform/ci/verify_release.sh vX.Y.Z`. A weekly run re-checks the latest release, because a
   signature, an attestation or a tag can change after release day. The first published releases
-  had two defects that only this view shows: v0.54.0's provenance also attested `.gitignore`, and
-  its dashboard image could not import `examlops`. Run against v0.54.0, the script fails on
-  exactly those two.
+  had three defects that only this view shows. In v0.54.0:
+    - the provenance also attested `.gitignore`;
+    - the dashboard image could not import `examlops`;
+    - the Compose bundle's MLflow was killed for lack of memory on every start.
+
+  Run against v0.54.0, the script fails on exactly those three.
 - **PyPI goes last**, from the protected `pypi` environment, because a version published there
   can never be replaced. It waits for the published release to verify. It uses Trusted
   Publishing: no PyPI token exists anywhere.
