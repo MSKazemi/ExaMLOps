@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-09-11
+
+### Added — the dataplane: connectors, content-addressed snapshots and pinned training data (ADR 0130)
+
+- **External data becomes immutable, content-addressed Parquet snapshots** in the dataset store, and
+  training is pinned to one snapshot revision per run (`pipelines.datasets.dataplane`, resolved once
+  per model and dataset from the model YAML's `dataplane:` binding).
+- **Connectors behind one registry** (`exa.dataplane.connectors` entry points): sql, files
+  (s3/gcs/az/http/sftp), zenodo, rest and bounded-batch kafka, each held to a shared contract test;
+  optional libraries load lazily and a connector without its library reports itself unavailable.
+- **Snapshot store and pulls:** manifests and revision pointers with `_latest` written last as the
+  commit, reference-aware prune, race-safe materialize; a pull takes a coordinator lock, retries the
+  whole attempt, and checks the data contract before committing. `examlops.data.content_hash` is the
+  revision formula shared with dataset versioning, so a materialized copy re-hashes to its pinned id.
+- **Egress guard:** host allow-list, DNS-pinned connections, no redirects to internal hosts or down to
+  plain http, credentials stripped cross-origin, and secrets redacted from errors and records.
+  Catalog tables `dataplane_sources` / `dataplane_pulls`; connection kinds now come from the
+  connector registry (CLI, dashboard `GET /connections/kinds`, the New-connection modal).
+
 ### Fixed — Skipper on a local Ollama lost its system prompt and never finished a turn
 
 - **Ollama truncated every specialist prompt from the front.** `ChatOllama` was built without
