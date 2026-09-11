@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — air-gapped and mirrored installs, verified offline
+
+- New guide, [Air-gapped and mirrored installs](docs/guides/air-gapped-install.md). It covers
+  carrying a release into a site with no internet: the seven images, the chart, the Compose
+  bundle's upstream images and the Python wheels. The release's signatures and SLSA provenance
+  travel with them, and everything is verified on the far side with `cosign --offline`. It was
+  tested end to end against v0.54.0: a mirror on a network with no route out, and every
+  signature and provenance check run there. A Docker daemon inside the gap pulled the images
+  and started the full Compose stack healthy.
+- Corrected advice: the Compose guide suggested `skopeo copy` or `imagetools create`. A copy
+  like that leaves the signatures behind (tested with `cosign copy`). It also never said how
+  Docker Hub images reach a private mirror. The enterprise guide recommended `make bootstrap`
+  for air-gapped boxes, but that path builds from source and needs registry and PyPI access.
+- `tests/unit/test_airgap_install.py` holds what the guide depends on:
+  - the signed `images-X.Y.Z.txt`;
+  - every chart image built from `global.imageRegistry`;
+  - Docker Hub-only, digest-pinned upstream images;
+  - a verification loop that names every released image.
+
 ### Fixed — the dashboard image carries the `examlops` package
 
 - **`examlops-dashboard:0.54.0` had no `examlops` package.** `/app/platform` was absent, and

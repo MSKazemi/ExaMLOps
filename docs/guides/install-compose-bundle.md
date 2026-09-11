@@ -188,9 +188,17 @@ release promises to keep.
 
 ## Air-gapped sites
 
-Copy the images into a registry you control (for example with `docker buildx imagetools create`
-or `skopeo copy`) and set `EXAMLOPS_REGISTRY` to it. Upstream images are pinned by digest in
-`docker-compose.yml`, so mirror them under the same digest.
+Mirror the release into a registry you control, then install from it. Two details decide whether
+the result can be trusted and pulled:
+
+- Copy the ExaMLOps images with `oras cp -r`, which brings their signatures and provenance along.
+  A plain image copy leaves the signatures behind. Then set `EXAMLOPS_REGISTRY` to the mirror.
+- The upstream images keep their Docker Hub names, so `EXAMLOPS_REGISTRY` doesn't reach them.
+  Mirror them under the same path and digest, and point Docker's `registry-mirrors` at the
+  mirror.
+
+[Air-gapped and mirrored installs](air-gapped-install.md) has the tested commands, and the offline
+verification to run before `docker compose up`.
 
 ## Known limits
 

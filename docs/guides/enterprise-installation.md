@@ -42,7 +42,9 @@ the external Postgres + object store and takes the centre's modules from
 
 ## Path A — Single node / small team (works end-to-end today)
 
-The `make bootstrap` path. Suitable for a workstation, a single production VM, or an air-gapped box.
+The `make bootstrap` path. Suitable for a workstation or a single production VM. It builds from
+source, so it needs access to container registries and PyPI. An air-gapped box installs a release
+instead; see [Air-gapped and mirrored installs](air-gapped-install.md).
 
 ### Prerequisites
 - Docker + Docker Compose v2
@@ -260,7 +262,9 @@ tenancy, followed by automated cluster bootstrap and operational hardening.
 
 ## Quick decision guide
 
-- **New laptop / single VM / demo / air-gapped box** → **Path A** (`make bootstrap`). Ready today.
+- **New laptop / single VM / demo** → **Path A** (`make bootstrap`). Ready today.
+- **Site with no internet access** → mirror a release and install the Compose bundle or the chart
+  from it ([Air-gapped and mirrored installs](air-gapped-install.md)).
 - **Existing K8s cluster, you already run managed Postgres/MinIO/Redis** → **Path B** (Helm), and plan
   for gaps #3–#4 (state re-platform + identity) before trusting it for multi-tenant HA.
 - **Brand-new cluster from scratch, turnkey** → not one command yet; close gaps #1, #2, #5 first (or run

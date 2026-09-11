@@ -83,6 +83,11 @@ cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
+**With no network access**, the `cosign` commands above work with
+`--offline --trusted-root trusted_root.json` added. To carry a release, and the trusted root,
+into a site with no internet with the signatures intact, see
+[Air-gapped and mirrored installs](air-gapped-install.md).
+
 ## What the workflow checks before it builds anything
 
 A tag that fails any of these publishes nothing:
