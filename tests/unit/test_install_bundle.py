@@ -506,15 +506,23 @@ def test_init_refuses_without_a_version(tmp_path):
 
 
 # A `.env` as `install.sh init` wrote it before the object store became replaceable (v0.52.0).
-_OLD_ENV = """EXAMLOPS_VERSION=0.52.0
-EXAMLOPS_REGISTRY=ghcr.io/mskazemi
-PUBLIC_HOST=ops.example.org
-POSTGRES_PASSWORD=pg-old-secret
-MINIO_ROOT_USER=examlops-0ld0ld
-MINIO_ROOT_PASSWORD=minio-old-secret
-MINIO_SERVING_ACCESS_KEY=examlops-5erv5r
-MINIO_SERVING_SECRET_KEY=serving-old-secret
-"""
+def _fake(tag: str) -> str:
+    """A fake credential assembled at runtime. A literal `KEY=value` fixture line trips gitleaks'
+    generic-api-key rule on the full-history gate (it did once: see .github/.gitleaksignore)."""
+    return "-".join((tag, "old", "fixture"))
+
+
+_FAKE = {
+    "POSTGRES_PASSWORD": _fake("pg"),
+    "MINIO_ROOT_USER": _fake("root"),
+    "MINIO_ROOT_PASSWORD": _fake("minio"),
+    "MINIO_SERVING_ACCESS_KEY": _fake("reader"),
+    "MINIO_SERVING_SECRET_KEY": _fake("serving"),
+}
+_OLD_ENV = (
+    "EXAMLOPS_VERSION=0.52.0\nEXAMLOPS_REGISTRY=ghcr.io/mskazemi\nPUBLIC_HOST=ops.example.org\n"
+    + "".join(f"{name}={value}\n" for name, value in _FAKE.items())
+)
 
 
 def _env(path: Path) -> dict[str, str]:
@@ -545,10 +553,11 @@ def test_upgrade_env_keeps_every_value_and_carries_renamed_ones(tmp_path):
     result = _run(tmp_path, "upgrade-env", "--version", "0.53.0")
     assert result.returncode == 0, result.stderr
     env = _env(tmp_path / ".env")
-    assert env["EXAMLOPS_S3_ACCESS_KEY"] == "examlops-0ld0ld"  # MinIO's volume holds these
-    assert env["EXAMLOPS_S3_SECRET_KEY"] == "minio-old-secret"
-    assert env["EXAMLOPS_S3_SERVING_ACCESS_KEY"] == "examlops-5erv5r"
-    assert env["POSTGRES_PASSWORD"] == "pg-old-secret"
+    assert env["EXAMLOPS_S3_ACCESS_KEY"] == _FAKE["MINIO_ROOT_USER"]  # MinIO's volume holds these
+    assert env["EXAMLOPS_S3_SECRET_KEY"] == _FAKE["MINIO_ROOT_PASSWORD"]
+    assert env["EXAMLOPS_S3_SERVING_ACCESS_KEY"] == _FAKE["MINIO_SERVING_ACCESS_KEY"]
+    assert env["EXAMLOPS_S3_SERVING_SECRET_KEY"] == _FAKE["MINIO_SERVING_SECRET_KEY"]
+    assert env["POSTGRES_PASSWORD"] == _FAKE["POSTGRES_PASSWORD"]
     assert env["PUBLIC_HOST"] == "ops.example.org"
     assert env["EXAMLOPS_VERSION"] == "0.53.0"
     assert set(_template_keys()) <= set(env), "a template setting is still missing"
