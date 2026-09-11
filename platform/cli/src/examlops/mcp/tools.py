@@ -1312,10 +1312,31 @@ def iter_tools(include_writes: bool | None = None) -> Iterator[ToolSpec]:
     """
     if include_writes is None:
         include_writes = _writes_enabled()
+    off = _disabled_modules()
     for spec in REGISTRY:
         if spec.mutating and not include_writes:
             continue
+        # Site feature profile (ADR 0128): a tool of a module this site switched off is not
+        # offered to agents at all — the same decision the CLI and the dashboard enforce.
+        if off and set(_modules_for_tags(spec.tags)) & off:
+            continue
         yield spec
+
+
+def _modules_for_tags(tags: tuple[str, ...]) -> list[str]:
+    from examlops.lifecycle.modules import modules_for_tags
+
+    return modules_for_tags(tags)
+
+
+def _disabled_modules() -> set[str]:
+    """Modules the site profile switches off; empty (nothing filtered) if it cannot be read."""
+    try:
+        from examlops.lifecycle.modules import resolve
+
+        return set(resolve().disabled_ids())
+    except Exception:  # noqa: BLE001 — a broken profile must not take the agent surface down
+        return set()
 
 
 def _writes_enabled() -> bool:

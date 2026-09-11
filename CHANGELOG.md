@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — agents see only the modules a site runs (ADR 0128)
+
+- The MCP server, `exa mcp tools` and the A2A agent card no longer offer the tools of a module the
+  site profile switches off: each module declares the MCP tool tags of its domain (`mcp_tags`, e.g.
+  `hpc`/`fleet`, `finops`, `gateway`/`llmops`), and `examlops.mcp.tools.iter_tools` skips a tool
+  that carries one of a disabled module's tags. With no profile every tool is offered, as before.
+
 ## [0.54.0] - 2026-09-11
 
 ### Added — the install bundle runs on any S3 store, can monitor itself, and upgrades its own `.env`

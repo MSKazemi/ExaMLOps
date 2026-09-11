@@ -55,6 +55,9 @@ class Module:
     dashboard_api: tuple[str, ...] = ()
     # Dashboard page routes (frontend paths) the module owns — hidden from the navigation when off.
     dashboard_pages: tuple[str, ...] = ()
+    # MCP tool tags (``examlops.mcp.tools`` ToolSpec.tags) of this module's domain: a tool carrying
+    # one of them is not offered to agents while the module is off.
+    mcp_tags: tuple[str, ...] = ()
     compose_services: tuple[str, ...] = ()
     compose_profiles: tuple[str, ...] = ()
     helm: tuple[str, ...] = ()
@@ -123,6 +126,7 @@ CATALOG: tuple[Module, ...] = (
         ),  # fmt: skip
         dashboard_api=("/pipelines", "/scaffold", "/hpo", "/feature-store", "/features"),
         dashboard_pages=("/build/datasets", "/build/features", "/build/assets", "/build/pipelines"),
+        mcp_tags=("training", "data"),
     ),
     M(
         "serving",
@@ -141,6 +145,7 @@ CATALOG: tuple[Module, ...] = (
             "/explain",
         ),  # fmt: skip
         dashboard_pages=("/serve/traffic", "/serve/scaling"),
+        mcp_tags=("serving",),
     ),
     M(
         "quality",
@@ -152,6 +157,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_api=("/drift", "/slo", "/fairness", "/quality"),
         env_switches=("EXAMLOPS_SLO_GATE_ENABLED", "EXAMLOPS_FAIRNESS_GATE_ENABLED"),
         dashboard_pages=("/operate/drift", "/operate/slos", "/govern/fairness"),
+        mcp_tags=("drift", "eval", "quality"),
     ),
     M(
         "governance",
@@ -180,6 +186,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_api=("/v1/llmops", "/gateway", "/prompts"),
         env_switches=("EXAMLOPS_GUARDRAIL_MODE",),
         dashboard_pages=("/build/prompts", "/serve/llmops", "/serve/gateway"),
+        mcp_tags=("gateway", "llmops"),
     ),
     M(
         "llm-serving",
@@ -221,6 +228,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_api=("/v1/facility",),
         env_switches=("EXAMLOPS_HPC_SCHEDULER", "EXAMLOPS_SLURM_MODE"),
         dashboard_pages=("/operate/facility",),
+        mcp_tags=("hpc", "fleet"),
     ),
     M(
         "finops",
@@ -229,6 +237,7 @@ CATALOG: tuple[Module, ...] = (
         cli=("finops", "report"),
         dashboard_api=("/v1/finops",),
         dashboard_pages=("/operate/finops",),
+        mcp_tags=("finops",),
     ),
     M(
         "workbenches",
@@ -256,6 +265,7 @@ CATALOG: tuple[Module, ...] = (
         compose_profiles=("seanerbus",),
         needs="a sibling seanerbus checkout to build the bridge image",
         dashboard_pages=("/platform/integrations",),
+        mcp_tags=("modelzoo",),
     ),
 )
 
@@ -566,6 +576,14 @@ def module_for_command(name: str) -> str | None:
 
 def module_for_flag(flag: str) -> str | None:
     return _FLAG_OWNER.get(flag)
+
+
+_TAG_OWNER: dict[str, str] = {t: m.id for m in CATALOG for t in m.mcp_tags}
+
+
+def modules_for_tags(tags: Iterable[str]) -> list[str]:
+    """The modules an MCP tool belongs to, from its tags (a tool can span two domains)."""
+    return sorted({_TAG_OWNER[t] for t in tags if t in _TAG_OWNER})
 
 
 def module_for_api_path(path: str) -> str | None:

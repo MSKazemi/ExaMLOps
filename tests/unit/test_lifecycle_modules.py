@@ -94,6 +94,25 @@ def test_dashboard_pages_exist_in_the_frontend_navigation():
     assert all(m.dashboard_pages == () for m in mods.CATALOG if m.required)  # core is never hidden
 
 
+def test_mcp_tags_name_real_tools_and_tools_follow_the_profile(monkeypatch):
+    """Agents see the same site as the CLI: a disabled module's MCP tools are not offered."""
+    from examlops.mcp.tools import REGISTRY, iter_tools
+
+    used = {t for spec in REGISTRY for t in spec.tags}
+    mapped = [t for m in mods.CATALOG for t in m.mcp_tags]
+    assert len(mapped) == len(set(mapped)), "an MCP tag is claimed by two modules"
+    assert not set(mapped) - used, f"mcp_tags no tool carries: {sorted(set(mapped) - used)}"
+
+    everything = {s.name for s in iter_tools(include_writes=True)}
+    assert everything == {s.name for s in REGISTRY}  # default profile: nothing filtered
+    monkeypatch.setenv(mods.FEATURES_ENV, "-hpc,-finops")
+    offered = {s.name for s in iter_tools(include_writes=True)}
+    assert {"hpc_clusters", "hpc_nodes", "fleet_simulate", "carbon", "model_costs"} <= (
+        everything - offered
+    )
+    assert {"platform_status", "list_models", "list_approvals", "drift_status"} <= offered
+
+
 # ── resolution ────────────────────────────────────────────────────────────────────────────
 
 
