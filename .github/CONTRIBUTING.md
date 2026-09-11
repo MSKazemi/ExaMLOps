@@ -53,10 +53,10 @@ for the unit tests.
 ```bash
 git clone https://github.com/MSKazemi/ExaMLOps.git
 cd ExaMLOps
-make install-dev          # creates .venv with uv and installs the exa CLI + dev tools
+make install-dev          # creates .venv and installs the exa CLI + dev tools, exactly as uv.lock pins them
 source .venv/bin/activate
 exa --help                # the platform CLI, grouped into 12 lifecycle panels
-make test-fast            # the whole unit suite in parallel (~70 s)
+make test-fast            # the whole unit suite, in parallel (a few minutes)
 ```
 
 Optional:
@@ -66,6 +66,8 @@ make stack-up             # full local stack in Docker Compose (see the Quick St
 make docs-serve           # the docs site at http://localhost:8080 with hot reload
 cd platform/services/dashboard/frontend && npm install && npm test   # dashboard frontend
 ```
+
+Clone with full history (not `--depth 1`): one guard test reads the release tags.
 
 The upstream model library `modelzoo/` is **not** part of this repository. Tests that need
 it skip cleanly when it is absent, so a fresh clone is fully testable.
@@ -85,9 +87,9 @@ Deeper orientation: [Developer onboarding](https://mskazemi.com/ExaMLOps/guides/
 
    | Command | What it runs | When |
    |---|---|---|
-   | `make test-fast` | whole unit suite, parallel (~70 s) | while you work |
+   | `make test-fast` | whole unit suite, in parallel (a few minutes) | while you work |
    | `make lint` / `make lint-fix` | Ruff (`E,F,W,I,UP`, line length 100) | before committing |
-   | `make gate` | lint · format · typecheck · unit · strict docs build (~2 min) | before opening the PR |
+   | `make gate` | lint · format · typecheck · unit · strict docs build | before opening the PR |
    | `.venv/bin/pytest tests/unit/test_x.py -v` | one file | debugging |
 
    A test that only passes when run serially is a bug in the test: each test gets its own

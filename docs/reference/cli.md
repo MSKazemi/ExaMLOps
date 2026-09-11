@@ -3,7 +3,7 @@
 `exa` is the primary operator interface for ExaMLOps. Install it once from the repo root:
 
 ```bash
-uv pip install -e ".[dev]"
+make install-dev      # the exa CLI + dev tools, exactly as uv.lock pins them
 ```
 
 ## Global Flags

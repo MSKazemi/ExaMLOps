@@ -64,7 +64,7 @@ python -c "from cryptography.fernet import Fernet; print('DASHBOARD_SECRET_KEY='
 
 # 2. One-shot bring-up: dev stack + install the `exa` CLI + all deps
 make bootstrap
-#   = touch-env-dashboard + stack-up (docker compose up -d --build) + install-dev (uv pip install -e ".[dev]")
+#   = touch-env-dashboard + stack-up (docker compose up -d --build) + install-dev (uv sync --frozen: uv.lock versions)
 
 # 3. Verify
 exa status

@@ -522,8 +522,12 @@ install: venv ## Install runtime dependencies into .venv
 	@$(UV) pip install -e . -q
 	@printf "$(GREEN)Runtime dependencies installed.$(RESET)\n"
 
-install-dev: venv ## Install runtime + dev dependencies (pytest · ruff · mypy)
-	@$(UV) pip install -e ".[dev]" -q
+install-dev: venv ## Install runtime + dev dependencies (pytest · ruff · mypy), exactly as uv.lock pins them
+	@# Same install as CI: the lock, not the newest release of everything. `uv pip install -e ".[dev]"`
+	@# ignored uv.lock, so a fresh clone got pandas 3 while the lock (and CI) said 2.3.3 and two
+	@# data-contract tests failed on a newcomer's first run. --inexact keeps packages installed
+	@# outside the lock (docs tooling, service test deps) instead of removing them.
+	@$(UV) sync --frozen --inexact --extra dev -q
 	@printf "$(GREEN)Runtime + dev dependencies installed.$(RESET)\n"
 
 # NEVER `cp` over .git/hooks/pre-push. On this machine that filename is owned by the global

@@ -136,7 +136,7 @@ exa chat                       # open the native interactive Skipper client
 exa chat --session incident-42 # continue a named investigation
 
 # exa CLI (primary operator interface)
-# Install once: uv pip install -e ".[dev]"  then use exa from anywhere
+# Install once: make install-dev  (exact versions from uv.lock), then use exa from anywhere
 exa status                          # platform snapshot
 exa approvals list                  # pending approvals
 exa models list                     # registered models
@@ -223,7 +223,7 @@ ExaMLOps/
     │   ├── agent/              # LangGraph management agent + skipper/ package
     │   ├── control_plane/      # FastAPI retrain API :18002
     │   └── dashboard/          # React 19 + FastAPI dashboard :18099
-    └── cli/                    # Installable `examlops` dist (uv pip install -e ".[dev]")
+    └── cli/                    # Installable `examlops` dist (installed by make install-dev)
         └── src/examlops/       # Shared schemas + `exa` platform CLI (Typer)
             └── cli/            # exa CLI: approvals/models/retrain/predict/serve/pipeline/seanerbus/stack/config
 ```

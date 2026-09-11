@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — a fresh clone installs what CI tests, and its first test run is green
+
+- `make install-dev` now installs exactly what `uv.lock` pins (`uv sync --frozen --inexact --extra
+  dev`), as CI already did. It used `uv pip install -e ".[dev]"`, which ignored the lock: a fresh
+  clone on 2026-09-11 got pandas 3.0.5 instead of the locked 2.3.3, and two data-contract tests
+  failed on a newcomer's first `make test-fast`. Verified on a fresh clone of `main`: 3889 passed,
+  0 failed. `--inexact` keeps packages installed outside the lock.
+- CONTRIBUTING asks for a full clone (one guard reads release tags) and no longer promises a
+  70-second test run. The install instructions in the README, the CLI reference, the upgrade
+  guide and the enterprise install guide point at `make install-dev`.
+
 ### Fixed — `exa embedding reindex --scheduler` runs the reindex, once, with its recall gate (ADR 0043 clause 4)
 
 It had the same defect as the asset scheduler path, plus two of its own:

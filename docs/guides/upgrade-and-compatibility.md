@@ -58,7 +58,7 @@ exa upgrade history
 exa backup create --all --push
 
 # 2. Install the new release (pick one)
-git pull && uv pip install -e ".[dev]"                          # source checkout
+git pull && make install-dev                                    # source checkout (exact uv.lock versions)
 docker compose pull && exa stack up                             # Compose
 helm upgrade examlops platform/infra/helm/examlops \
   --set global.imageRegistry=registry.example.org/ -f site-values.yaml   # Kubernetes
