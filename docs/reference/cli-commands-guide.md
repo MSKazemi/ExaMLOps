@@ -220,6 +220,27 @@ Records immutable dataset **revisions** (lakeFS commit id when `EXAMLOPS_LAKEFS_
 | `exa data synth generate <dataset>` | **[mutation]** Generates, gates (fidelity/privacy), and records a provenance-flagged synthetic dataset (spec R1–R4). | Produce a shareable synthetic replica of sensitive data. | `exa data synth generate FData --path ./data/FData --rows 5000 --method ctgan --min-fidelity 0.8 --min-privacy 0.9 --out ./data/FData-synth` |
 | `exa data synth evaluate <dataset>` | Scores fidelity + privacy of an existing synthetic set and applies the release gate (spec R2/R3). | Independently re-check a synthetic set against release floors. | `exa data synth evaluate FData --real ./data/FData --synthetic ./data/FData-synth --min-fidelity 0.8 --min-privacy 0.9` |
 
+### `exa dataplane` — pull remote data into versioned snapshots (ADR 0130)
+
+Connectors read SQL databases, object storage and file URLs, Zenodo records, REST APIs and Kafka topics; each pull commits a content-addressed Parquet snapshot a training run can pin.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa dataplane connectors` | Lists connector kinds and whether their extras are installed | Check an install | `exa dataplane connectors` |
+| `exa dataplane sources list` | Lists registered sources | Inventory | `exa dataplane sources list` |
+| `exa dataplane sources show` | Shows one source (no credentials) | Review a definition | `exa dataplane sources show pm100` |
+| `exa dataplane sources create` | Registers or updates a source. **Mutation.** | Connect a new dataset | `exa dataplane sources create pm100 --connector zenodo --spec-json '{"record": 10127767}'` |
+| `exa dataplane sources apply` | Registers every source in a YAML file. **Mutation.** | Sources kept in git | `exa dataplane sources apply --file sources.yaml` |
+| `exa dataplane sources delete` | Removes a source definition. **Mutation.** | Retire a source | `exa dataplane sources delete pm100` |
+| `exa dataplane test` | Checks reachability and credentials | Debug a connection | `exa dataplane test pm100` |
+| `exa dataplane preview` | Shows the first rows; stores nothing | Check the shape before pulling | `exa dataplane preview pm100 --limit 5` |
+| `exa dataplane pull` | Pulls now and commits a snapshot. **Mutation.** | Refresh training data | `exa dataplane pull pm100` |
+| `exa dataplane pulls` | Recent pulls and their outcomes | See why a refresh failed | `exa dataplane pulls --source pm100` |
+| `exa dataplane snapshots` | Committed snapshots of a source | Pick a revision to pin | `exa dataplane snapshots pm100` |
+| `exa dataplane manifest` | One snapshot's manifest | Audit what a run trained on | `exa dataplane manifest pm100` |
+| `exa dataplane prune` | Deletes old snapshots, keeping pinned ones. **Mutation.** | Reclaim storage | `exa dataplane prune pm100 --keep 5 --dry-run` |
+| `exa dataplane catalog-rebuild` | Re-indexes snapshots from the store. **Mutation.** | After a restore | `exa dataplane catalog-rebuild` |
+
 ### `exa feature` — serving feature store, zero train/serve skew (A3)
 
 The single train+serve feature-view store: define a view once, feed it point-in-time offline observations, materialize them to the online store, and read online or as-of offline values from the same definition so training and serving can never disagree.

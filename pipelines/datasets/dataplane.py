@@ -104,6 +104,16 @@ def reset_pins() -> None:
         _PINS.clear()
 
 
+def forget_pin(model_name: str, dataset_name: str) -> None:
+    """Drop one (model, dataset) pin so the next build resolves afresh.
+
+    The training flow calls this once at its start: every build inside one run shares the pin,
+    but a second run in the same process never inherits the first run's snapshot.
+    """
+    with _LOCK:
+        _PINS.pop((model_name.upper(), dataset_name), None)
+
+
 class DataplaneDatasetBackend:
     """Satisfies modelzoo's ``DatasetBackend`` protocol structurally (``name`` + ``fetch``)."""
 

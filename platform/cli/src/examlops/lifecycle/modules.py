@@ -114,6 +114,7 @@ CATALOG: tuple[Module, ...] = (
             "scaffold",
             "reproduce",
             "data",
+            "dataplane",
             "feature",
             "features",
             "assets",

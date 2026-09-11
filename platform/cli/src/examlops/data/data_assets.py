@@ -43,6 +43,7 @@ __all__ = [
     "get_synthetic_dataset",
     "is_synthetic_only",
     "last_materialization",
+    "link_dataset_revision_run",
     "list_adapters",
     "list_assets",
     "list_distributed_runs",
@@ -567,6 +568,24 @@ def record_dataset_revision(
 
     if inserted:
         _declare_dataset_asset(rev.dataset, actor=actor)
+
+
+def link_dataset_revision_run(backend: str, dataset: str, revision_id: str, run_id: str) -> None:
+    """Attach the first MLflow run that trained on a revision (the row is written at pull time).
+
+    ADR 0130 §8: a dataplane pull records the revision; the training run only links itself to it.
+    First run wins — a later retrain on the same snapshot never rewrites the provenance. An empty
+    ``run_id`` (no active MLflow run) links nothing, so it cannot claim the slot for a real run.
+    """
+    if not run_id:
+        return
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE dataset_revisions SET mlflow_run_id=?
+               WHERE backend=? AND dataset=? AND revision_id=? AND mlflow_run_id IS NULL""",
+            (run_id, backend, dataset, revision_id),
+        )
 
 
 def _declare_dataset_asset(dataset: str, *, actor: str | None = None) -> None:

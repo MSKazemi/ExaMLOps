@@ -122,6 +122,64 @@ def _dataset_store_kwargs(backend_name: str) -> dict[str, str]:
     return kwargs
 
 
+def _dataplane_backend(yaml_cfg: Any, ds_entry: Any) -> Any:
+    """ADR 0130 §8: the pinned-snapshot backend for a `backend: dataplane` dataset entry."""
+    from pipelines.datasets.dataplane import (  # noqa: PLC0415
+        DataplaneBinding,
+        DataplaneDatasetBackend,
+        pin_for,
+    )
+
+    binding = DataplaneBinding.from_yaml(getattr(ds_entry, "dataplane", None))
+    if binding is None:
+        raise ValueError(
+            f"model {yaml_cfg.name} dataset {ds_entry.name} uses backend 'dataplane' but has no "
+            "datasets[].dataplane binding — add `dataplane: {source: <name>}` to its YAML"
+        )
+    pin = pin_for(yaml_cfg.name, ds_entry.name, binding, project=yaml_cfg.project or "")
+    return DataplaneDatasetBackend(pin, binding.tables)
+
+
+def _is_dataplane(backend: str | None) -> bool:
+    """``dataplane`` in any case. A miss (``Dataplane``) would fall through to the pack's modelzoo
+    dataplane backend — the simulator ADR 0130 says must never serve training data."""
+    return str(backend or "").strip().lower() == "dataplane"
+
+
+def _effective_backend(
+    model_name: str | None, dataset_name: str, backend_name: str | None
+) -> str | None:
+    """The backend a build of (model, dataset) uses: the runtime arg, else the model YAML default.
+
+    Mirrors ``_build_train_components`` (``backend_name or ds_entry.backend``) for callers that see
+    only the runtime arg — the gate, the MLflow tagging and the HPC argv.
+    """
+    if backend_name:
+        return backend_name
+    if not model_name or model_name not in MODEL_REGISTRY:
+        return None
+    yaml_cfg = getattr(MODEL_REGISTRY[model_name][1], "_yaml", None)
+    if yaml_cfg is None:
+        return None
+    try:
+        return yaml_cfg.dataset(dataset_name).backend
+    except Exception:  # noqa: BLE001 - an unknown dataset has no YAML default
+        return None
+
+
+def _run_pin(model_name: str | None, dataset_name: str, backend_name: str | None) -> Any:
+    """This run's dataplane pin — only when its effective backend is dataplane (ADR 0130 §8).
+
+    Pins are process-wide, so a pin alone proves nothing about *this* run: a leftover from an
+    earlier dataplane run must not turn a minio run's gate, tags or HPC argv into dataplane ones.
+    """
+    if not _is_dataplane(_effective_backend(model_name, dataset_name, backend_name)):
+        return None
+    from pipelines.datasets.dataplane import current_pin  # noqa: PLC0415
+
+    return current_pin(model_name, dataset_name)
+
+
 # ── Model Registry ─────────────────────────────────────────────────────────────
 #
 # model_name → (model_cls, config_cls, tasks_dict)
@@ -415,7 +473,13 @@ def _build_train_components(
 
     # Backend: YAML default overridden by runtime arg
     effective_backend = backend_name or ds_entry.backend
-    if effective_backend and effective_backend != "zenodo":
+    if _is_dataplane(effective_backend) and not is_dummy:
+        # ADR 0130: never the pack's modelzoo `dataplane` backend (a dead simulator) — the pinned
+        # snapshot. Dummy runs never touch the dataset store.
+        ds_kwargs["backend"] = _dataplane_backend(yaml_cfg, ds_entry)
+    elif (
+        effective_backend and effective_backend != "zenodo" and not _is_dataplane(effective_backend)
+    ):
         ds_kwargs["backend"] = _get_backend(
             effective_backend, **_dataset_store_kwargs(effective_backend)
         )
@@ -745,6 +809,43 @@ def _update_hpc_job_safe(job_id: str, scheduler: str, status: dict) -> None:
         print(f"[hpc] update_hpc_job skipped: {exc}")
 
 
+def _hpc_train_command(
+    model_name: str,
+    dataset_cls_name: str,
+    *,
+    is_dummy: bool,
+    backend_name: str | None,
+    remote_model: str,
+    mlflow_uri: str,
+) -> str:
+    """The ``slurm_train_script.py`` invocation a real-HPC job runs (ADR 0130 §8).
+
+    A dataplane run forwards its pin — ``--backend dataplane --dataset-revision <rev>`` — so the
+    compute node trains on the exact snapshot the gate validated and the MLflow run is tagged with.
+    The node then needs only the dataset-store env, not ``platform.db`` or source credentials.
+    The pin is consulted only for a non-dummy run whose effective backend is dataplane.
+    """
+    remote_repo = os.getenv("EXAMLOPS_HPC_REMOTE_REPO", str(_REPO_ROOT))
+    remote_python = os.getenv(
+        "EXAMLOPS_HPC_REMOTE_PYTHON", str(Path(remote_repo) / ".venv" / "bin" / "python")
+    )
+    # Forward --dummy so a real-scheduler smoke test trains on the small dummy split
+    # instead of the full dataset (parity with mock mode and the CLI --dummy flag).
+    flags = " --dummy" if is_dummy else ""
+    pin = None if is_dummy else _run_pin(model_name, dataset_cls_name, backend_name)
+    if pin is not None:
+        flags += f" --backend dataplane --dataset-revision {pin.revision}"
+    elif backend_name:
+        flags += f" --backend {backend_name}"
+    return (
+        f"{remote_python} {remote_repo}/pipelines/slurm_train_script.py \\\n"
+        f"  --model {model_name} \\\n"
+        f"  --dataset {dataset_cls_name} \\\n"
+        f"  --output {remote_model} \\\n"
+        f"  --mlflow-uri {mlflow_uri}{flags}\n"
+    )
+
+
 @task(
     name="slurm_submit",
     retries=2,
@@ -758,6 +859,7 @@ def slurm_submit_task(
     model_name: str,
     dataset_cls_name: str,
     is_dummy: bool = False,
+    backend_name: str | None = None,
 ) -> tuple[str, str | None]:
     """
     Submit training to HPC (or run inline for mock mode).
@@ -797,26 +899,21 @@ def slurm_submit_task(
     remote_model = f"{remote_dir}/model.pkl"
 
     mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
-    remote_repo = os.getenv("EXAMLOPS_HPC_REMOTE_REPO", str(_REPO_ROOT))
-    remote_python = os.getenv(
-        "EXAMLOPS_HPC_REMOTE_PYTHON", str(Path(remote_repo) / ".venv" / "bin" / "python")
-    )
-    train_script = f"{remote_repo}/pipelines/slurm_train_script.py"
 
     local_job_dir = Path(adapter.working_dir) / run_uuid
     local_job_dir.mkdir(parents=True, exist_ok=True)
     bash_script = local_job_dir / "run.sh"
-    # Forward --dummy so a real-scheduler smoke test trains on the small dummy split
-    # instead of the full dataset (parity with mock mode and the CLI --dummy flag).
-    dummy_flag = " --dummy" if is_dummy else ""
     bash_script.write_text(
         "#!/bin/bash\n"
         f"mkdir -p {remote_dir}\n"
-        f"{remote_python} {train_script} \\\n"
-        f"  --model {model_name} \\\n"
-        f"  --dataset {dataset_cls_name} \\\n"
-        f"  --output {remote_model} \\\n"
-        f"  --mlflow-uri {mlflow_uri}{dummy_flag}\n"
+        + _hpc_train_command(
+            model_name,
+            dataset_cls_name,
+            is_dummy=is_dummy,
+            backend_name=backend_name,
+            remote_model=remote_model,
+            mlflow_uri=mlflow_uri,
+        )
     )
     bash_script.chmod(0o755)
 
@@ -960,15 +1057,44 @@ def evaluate_task(
 # ── Infrastructure tasks (model-agnostic) ──────────────────────────────────────
 
 
-def _pin_dataset_revision(dataset_name: str, backend_name: str | None, run_id: str) -> None:
+def _pin_dataset_revision(
+    dataset_name: str,
+    backend_name: str | None,
+    run_id: str,
+    *,
+    model_name: str | None = None,
+    is_dummy: bool = False,
+) -> None:
     """A1 (ADR 0003): resolve, tag, and record the dataset revision for this run.
 
     Fully fail-open (spec R4/R13): any error is swallowed so a revision hiccup can
     never fail a training run. Honours an explicit ``EXAMLOPS_DATASET_REVISION`` pin
     (spec R12) and otherwise records the resolved revision (lakeFS commit or
     ``unknown`` when content can't be materialised in this context).
+
+    A dataplane run (ADR 0130 §8) tags the snapshot it already pinned — never a fresh
+    resolution — and links this run to the revision row written at pull time. Only a
+    non-dummy run whose effective backend is dataplane does; a dummy run never claims a
+    snapshot's first-run link.
     """
     try:
+        pin = None if is_dummy else _run_pin(model_name, dataset_name, backend_name)
+        if pin is not None:
+            from examlops.data.data_assets import link_dataset_revision_run  # noqa: PLC0415
+
+            for k, v in (
+                ("dataset_revision", pin.revision),
+                ("dataset_backend", "dataplane"),
+                ("dataset_uri", pin.manifest_uri),
+                ("dataplane.source", pin.source_key),
+                ("dataplane.revision", pin.revision),
+            ):
+                mlflow.set_tag(k, v)
+            link_dataset_revision_run("dataplane", pin.source_key, pin.revision, run_id)
+            print(
+                f"[pipeline] dataset revision pinned: dataplane@{pin.revision} ({pin.source_key})"
+            )
+            return
         from examlops.platform_db import record_dataset_revision  # noqa: PLC0415
         from pipelines.datasets.versioning import resolve_revision  # noqa: PLC0415
 
@@ -1011,6 +1137,7 @@ def log_mlflow_task(
     job_id: str | None = None,
     scheduler: str | None = None,
     backend_name: str | None = None,
+    is_dummy: bool = False,
 ) -> dict:
     """Log model + metrics to MLflow. Returns registration dict."""
     _, config_cls, _ = MODEL_REGISTRY[model_name]
@@ -1083,7 +1210,9 @@ def log_mlflow_task(
             run_id = active_run.info.run_id if active_run is not None else ""
             registration["run_id"] = run_id
             # A1: pin + record the dataset revision for reproducibility (fail-open).
-            _pin_dataset_revision(dataset_name, backend_name, run_id)
+            _pin_dataset_revision(
+                dataset_name, backend_name, run_id, model_name=model_name, is_dummy=is_dummy
+            )
             client = mlflow.MlflowClient()
             versions = client.search_model_versions(f"run_id='{run_id}'")
             if versions:
@@ -1342,7 +1471,11 @@ class DataContractViolation(RuntimeError):
 
 
 def data_contract_gate(
-    dataset_name: str, backend_name: str | None, *, is_dummy: bool = False
+    dataset_name: str,
+    backend_name: str | None,
+    *,
+    is_dummy: bool = False,
+    model_name: str | None = None,
 ) -> dict:
     """Validate the A1-pinned dataset before training. Fails closed (ADR 0005 clause 2).
 
@@ -1368,7 +1501,7 @@ def data_contract_gate(
         if contract is None:
             return {**report, "validated": False, "reason": "no contract for this dataset"}
 
-        df, source = _contract_dataframe(dataset_name, backend_name)
+        df, source = _contract_dataframe(dataset_name, backend_name, model_name=model_name)
         if df is None:
             return {**report, "validated": False, "reason": source}
 
@@ -1396,14 +1529,26 @@ def _describe(checks: list) -> str:
     return "; ".join(f"{c.get('name')} ({c.get('observed')})" for c in checks)
 
 
-def _contract_dataframe(dataset_name: str, backend_name: str | None) -> tuple[Any, str]:
+def _contract_dataframe(
+    dataset_name: str, backend_name: str | None, *, model_name: str | None = None
+) -> tuple[Any, str]:
     """The pinned dataset as a DataFrame, or ``(None, reason)``.
 
     Resolves through the same A1 revision resolver that pins the run, so the gate validates
-    **the data this run will train on** rather than whatever happens to be on disk.
+    **the data this run will train on** rather than whatever happens to be on disk. A dataplane
+    run (ADR 0130 §8) validates the local copy of the snapshot it already pinned — only when
+    this run's effective backend is dataplane (the gate never reaches here for a dummy run).
     """
     from pipelines.datasets.versioning import discover_files, resolve_revision  # noqa: PLC0415
 
+    pin = _run_pin(model_name, dataset_name, backend_name)
+    if pin is not None:
+        files = discover_files(pin.local_dir)
+        if not files:
+            return None, f"no parquet files under {pin.local_dir}"
+        import pandas as pd  # noqa: PLC0415
+
+        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True), str(pin.local_dir)
     rev = resolve_revision(backend_name, dataset_name)
     uri = getattr(rev, "uri", "") or ""
     if not uri or "://" in uri:
@@ -1461,11 +1606,19 @@ def training_flow(
     )
     print(f"{'=' * 60}\n")
 
+    # ADR 0130 §8: resolve once per *run*. Every build inside this run shares one dataplane pin,
+    # but this run never inherits a pin an earlier run left in the same process.
+    from pipelines.datasets.dataplane import forget_pin  # noqa: PLC0415
+
+    forget_pin(model_name, dataset_cls_name)
+
     model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
-    gate = data_contract_gate(dataset_cls_name, backend_name, is_dummy=is_dummy)
+    gate = data_contract_gate(
+        dataset_cls_name, backend_name, is_dummy=is_dummy, model_name=model_name
+    )
     print(f"[contract] {gate}")
     job_id, artifact_hint = slurm_submit_task(
-        model_init, loader, model_name, dataset_cls_name, is_dummy
+        model_init, loader, model_name, dataset_cls_name, is_dummy, backend_name=backend_name
     )
     state, artifact_path = slurm_wait_task(job_id, artifact_hint)
     model = result_fetch_task(
@@ -1480,6 +1633,7 @@ def training_flow(
         job_id=job_id,
         scheduler=_hpc_scheduler_name(),
         backend_name=backend_name,
+        is_dummy=is_dummy,
     )
     status = promote_task(model_name, registration, metrics)
 

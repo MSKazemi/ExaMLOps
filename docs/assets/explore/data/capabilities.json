@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 432,
- "total_groups": 66,
+ "total_commands": 446,
+ "total_groups": 67,
  "panels": [
   {
    "title": "Getting Started",
@@ -305,6 +305,7 @@
    "blurb": "Version datasets, validate them and serve features without skew.",
    "groups": [
     "data",
+    "dataplane",
     "feature",
     "features",
     "assets",
@@ -373,6 +374,104 @@
      "help": "Validate a dataset against its data contract; exit non-zero on error violations (spec R11).",
      "anchor": "exa-data-dataset-versioning-reproducibility",
      "guide": "guides/data-versioning.md"
+    },
+    {
+     "cmd": "exa dataplane catalog-rebuild",
+     "group": "dataplane",
+     "help": "Recreate dataset_revisions rows for every committed snapshot found in the store.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane connectors",
+     "group": "dataplane",
+     "help": "List connector kinds, whether their dependencies are installed, and plugin load errors.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane manifest",
+     "group": "dataplane",
+     "help": "Show one snapshot's manifest (tables, files, schema, watermark).",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane preview",
+     "group": "dataplane",
+     "help": "Show the first rows a pull would read; nothing is stored.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane prune",
+     "group": "dataplane",
+     "help": "Delete old snapshots; the newest N, the latest and any revision an MLflow run used are kept.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane pull",
+     "group": "dataplane",
+     "help": "Pull a source now and commit a snapshot (or report it unchanged).",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane pulls",
+     "group": "dataplane",
+     "help": "Recent pulls, newest first.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane snapshots",
+     "group": "dataplane",
+     "help": "Committed snapshots of a source, newest first.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane sources apply",
+     "group": "dataplane",
+     "help": "Register every source in a YAML file (GitOps). Credentials are refused.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane sources create",
+     "group": "dataplane",
+     "help": "Register or update a source.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane sources delete",
+     "group": "dataplane",
+     "help": "Remove a source definition. Snapshots stay in the store until pruned.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane sources list",
+     "group": "dataplane",
+     "help": "List registered sources.",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane sources show",
+     "group": "dataplane",
+     "help": "Show one source definition (never any credential).",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
+    },
+    {
+     "cmd": "exa dataplane test",
+     "group": "dataplane",
+     "help": "Check that a source's system is reachable and the credentials work (reads no data).",
+     "anchor": "exa-dataplane-pull-remote-data-into-versioned-snapshots-adr-0130",
+     "guide": null
     },
     {
      "cmd": "exa feature apply",

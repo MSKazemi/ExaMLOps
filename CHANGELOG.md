@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — `exa dataplane`: sources, pulls and snapshots from the CLI (ADR 0130)
+
+- New `exa dataplane` command group: `connectors` (installed/available
+  connector kinds), `sources list/show/create/apply/delete` (register a source, GitOps `apply`
+  from a YAML file, credentials refused inline — only a Named Connection), `test`/`preview`
+  (reachability and a no-write row preview), `pull`/`pulls` (run a pull now or list recent ones),
+  `snapshots`/`manifest` (committed revisions and one snapshot's manifest), `prune` (delete old
+  snapshots, keeping pinned ones) and `catalog-rebuild` (re-index the store after a restore).
+- Training runs on one pinned dataplane snapshot: a model YAML dataset entry with
+  `backend: dataplane` and a `dataplane: {source: …}` binding resolves the source's latest
+  committed revision once per run (or the one given by `exa pipeline run --dataset-revision`),
+  and training, the data-contract gate, the MLflow `dataset_revision` tag and an HPC job all use
+  that same revision. The HPC node re-resolves it from the snapshot store, with no `platform.db`.
+- New config fields `dataplane_url` (`EXAMLOPS_DATAPLANE_URL`, default
+  `http://localhost:18010`) and `dataplane_token` (`EXAMLOPS_DATAPLANE_TOKEN`) back
+  `exa dataplane pull --remote`, which asks a dataplane service to run the pull instead of doing
+  it in-process.
+- `dataplane` joins the `training` site module (ADR 0128) and the Data & Features help panel.
+
 ## [0.53.0] - 2026-09-11
 
 ### Added — the dataplane: connectors, content-addressed snapshots and pinned training data (ADR 0130)

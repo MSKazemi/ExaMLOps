@@ -37,6 +37,7 @@ _LIVE_PORTS = {
     18001: "Ray Serve",
     18002: "the control plane",
     18004: "the Skipper agent",
+    18010: "the dataplane service",
     18099: "the dashboard",
 }
 _LOCAL = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}

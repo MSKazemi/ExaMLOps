@@ -26,6 +26,7 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("prefect_url", "prefect", "PREFECT_API_URL", "http://localhost:14200", False),
     ("dashboard_url", "dashboard", "DASHBOARD_URL", "http://localhost:18099", False),
     ("agent_url", "agent", "AGENT_URL", "http://localhost:18004", False),
+    ("dataplane_url", "dataplane", "EXAMLOPS_DATAPLANE_URL", "http://localhost:18010", False),
     # The bridge is reached at the *host* port by anything running outside its container.
     # `exa seanerbus status` read a `seanerbus_bridge_url` attribute that no Config ever
     # had, and `exa production` hard-coded the address twice, so the variable the platform
@@ -40,6 +41,7 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
     ("agent_token", "agent_token", "AGENT_API_KEY", "", True),
+    ("dataplane_token", "dataplane_token", "EXAMLOPS_DATAPLANE_TOKEN", "", True),
     # Organisation sign-in (ADR 0120): the IdP `exa auth login` uses when no --provider/--issuer is
     # given, and the CLI's public OAuth client id there. Per context, so each site keeps its own.
     ("auth_issuer", "auth_issuer", "EXAMLOPS_AUTH_ISSUER", "", False),
@@ -55,6 +57,7 @@ _URL_KEYS = {
     "dashboard",
     "agent",
     "seanerbus_bridge",
+    "dataplane",
 }
 
 # Kept for backward compatibility with callers importing _DEFAULTS.
@@ -69,10 +72,12 @@ class Config:
     prefect_url: str = "http://localhost:14200"
     dashboard_url: str = "http://localhost:18099"
     agent_url: str = "http://localhost:18004"
+    dataplane_url: str = "http://localhost:18010"
     seanerbus_bridge_url: str = "http://localhost:18003"
     control_plane_token: str = ""
     dashboard_token: str = ""
     agent_token: str = ""
+    dataplane_token: str = ""
     auth_issuer: str = ""
     auth_client_id: str = ""
 

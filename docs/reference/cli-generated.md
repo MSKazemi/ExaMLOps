@@ -745,6 +745,114 @@ Validate a dataset against its data contract; exit non-zero on error violations 
 - `--path, -p` — Local parquet file/dir to validate
 - `--revision` — A1 revision id for provenance
 
+## `exa dataplane`
+
+Dataplane — pull remote data into versioned snapshots (ADR 0130)
+
+### `exa dataplane catalog-rebuild`
+
+Recreate dataset_revisions rows for every committed snapshot found in the store.
+
+- `--dry-run` — Count only
+
+### `exa dataplane connectors`
+
+List connector kinds, whether their dependencies are installed, and plugin load errors.
+
+### `exa dataplane manifest`
+
+Show one snapshot's manifest (tables, files, schema, watermark).
+
+- `--project, -p`
+
+### `exa dataplane preview`
+
+Show the first rows a pull would read; nothing is stored.
+
+- `--project, -p`
+- `--limit, -n`
+
+### `exa dataplane prune`
+
+Delete old snapshots; the newest N, the latest and any revision an MLflow run used are kept.
+
+- `--keep`
+- `--project, -p`
+- `--dry-run` — List what would be removed
+
+### `exa dataplane pull`
+
+Pull a source now and commit a snapshot (or report it unchanged).
+
+- `--project, -p`
+- `--full` — Ignore the watermark; re-read everything
+- `--remote` — Ask the dataplane service to run it
+- `--dry-run` — Show what would be pulled
+
+### `exa dataplane pulls`
+
+Recent pulls, newest first.
+
+- `--source, -s`
+- `--project, -p`
+- `--limit, -n`
+
+### `exa dataplane snapshots`
+
+Committed snapshots of a source, newest first.
+
+- `--project, -p`
+
+### `exa dataplane sources`
+
+Register, inspect and remove dataplane sources.
+
+#### `exa dataplane sources apply`
+
+Register every source in a YAML file (GitOps). Credentials are refused.
+
+- `--file, -f` — YAML file with a sources: list
+- `--dry-run` — Validate every entry; register nothing
+
+#### `exa dataplane sources create`
+
+Register or update a source.
+
+- `--connector, -k` — Connector kind (see: exa dataplane connectors)
+- `--connection` — Named Connection holding the credentials
+- `--spec-json` — Inline JSON source spec (what to read)
+- `--schedule` — Refresh interval: 15m, 6h, 1d, @daily
+- `--max-rows` — Refuse pulls larger than this
+- `--max-bytes` — Refuse pulls larger than this many bytes
+- `--contract` — Data contract checked before commit
+- `--project, -p`
+- `--dry-run` — Validate and show; register nothing
+
+#### `exa dataplane sources delete`
+
+Remove a source definition. Snapshots stay in the store until pruned.
+
+- `--project, -p`
+- `--dry-run` — Show what would be removed
+
+#### `exa dataplane sources list`
+
+List registered sources.
+
+- `--project, -p` — Only this project
+
+#### `exa dataplane sources show`
+
+Show one source definition (never any credential).
+
+- `--project, -p`
+
+### `exa dataplane test`
+
+Check that a source's system is reachable and the credentials work (reads no data).
+
+- `--project, -p`
+
 ## `exa docs`
 
 Generate the full command reference from the live CLI tree.

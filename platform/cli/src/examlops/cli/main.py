@@ -31,6 +31,7 @@ from examlops.cli.commands import (
     config_cmd,
     connection_cmd,
     data_cmd,
+    dataplane_cmd,
     distributed_cmd,
     docs_cmd,
     doctor,
@@ -134,7 +135,7 @@ _QUICK_START = (
 _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("Getting Started", ["status", "doctor", "explain", "env", "docs", "config", "plugins"]),
     ("Training & Pipelines", ["pipeline", "retrain", "scaffold", "finetune", "reproduce"]),
-    ("Data & Features", ["data", "feature", "features", "assets", "cards"]),
+    ("Data & Features", ["data", "dataplane", "feature", "features", "assets", "cards"]),
     ("Models & Registry", ["models", "modelzoo", "embedding"]),
     ("Serving & Inference", ["serve", "predict", "production", "gateway", "vector", "rag"]),
     ("GenAI & LLMOps", ["genai", "prompt", "guardrails"]),
@@ -281,6 +282,11 @@ app.add_typer(
 )
 data_cmd.app.add_typer(
     synth_cmd.app, name="synth", help="Synthetic data generation + fidelity/privacy gate (A7)"
+)
+app.add_typer(
+    dataplane_cmd.app,
+    name="dataplane",
+    help="Dataplane — pull remote data into versioned snapshots (ADR 0130)",
 )
 app.add_typer(drift.app, name="drift", help="Prediction drift detection")
 app.add_typer(models.app, name="models", help="MLflow model registry")

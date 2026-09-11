@@ -11,7 +11,11 @@ Usage (called automatically by the pipeline — not meant for manual use):
         --model JPCP \\
         --dataset FDataDataset \\
         --output /shared/slurm_jobs/<job_id>/model.pkl \\
-        --mlflow-uri http://mlflow:5000
+        --mlflow-uri http://mlflow:5000 \\
+        [--dummy] [--backend dataplane --dataset-revision <rev>]
+
+A dataplane run is forwarded its pinned revision (ADR 0130 §8); the node then needs only the
+dataset-store env (``EXAMLOPS_DATA_S3_*`` / ``EXAMLOPS_DATAPLANE_STORE_URL``).
 
 The script exits 0 on success, non-zero on failure.
 Slurm stdout/stderr are captured to the job log files.
@@ -40,6 +44,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", required=True, help="Path to save trained estimator (.pkl)")
     p.add_argument("--mlflow-uri", default="http://localhost:15000", dest="mlflow_uri")
     p.add_argument("--dummy", action="store_true", help="Use dummy data (no Zenodo download)")
+    p.add_argument("--backend", default=None, help="Dataset backend (zenodo/minio/dataplane)")
+    p.add_argument(
+        "--dataset-revision",
+        default=None,
+        dest="dataset_revision",
+        help="Pinned dataplane revision (set by the submitting flow)",
+    )
     return p.parse_args()
 
 
@@ -49,8 +60,15 @@ def main() -> None:
     import os
 
     os.environ["MLFLOW_TRACKING_URI"] = args.mlflow_uri
+    # ADR 0130 §8: train on the exact snapshot the submitting flow pinned (read by pin_for). The
+    # node needs only the dataset-store env — not platform.db and not the source's credentials.
+    if args.dataset_revision:
+        os.environ["EXAMLOPS_DATASET_REVISION"] = args.dataset_revision
 
-    print(f"[slurm_train] model={args.model}  dataset={args.dataset}  dummy={args.dummy}")
+    print(
+        f"[slurm_train] model={args.model}  dataset={args.dataset}  dummy={args.dummy}  "
+        f"backend={args.backend or 'legacy'}  revision={args.dataset_revision or '-'}"
+    )
 
     # Import pipeline registry (triggers auto-discovery)
     from pipelines.pipeline_generator import MODEL_REGISTRY, _resolve_dataset_cls  # noqa: PLC0415
@@ -66,7 +84,7 @@ def main() -> None:
     _, config_cls, _ = MODEL_REGISTRY[args.model]
     ds_cls = _resolve_dataset_cls(config_cls, args.dataset)
     model, _, train_loader = config_cls.get_train_components(
-        ds_cls, split="train", is_dummy=args.dummy
+        ds_cls, split="train", is_dummy=args.dummy, backend_name=args.backend
     )
 
     print("[slurm_train] Starting training...")

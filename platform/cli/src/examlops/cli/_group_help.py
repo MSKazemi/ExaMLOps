@@ -55,6 +55,19 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ),
         ("Diff two revisions", "exa data diff FData <revA> <revB>"),
     ],
+    "dataplane": [
+        ("See which connectors are installed", "exa dataplane connectors"),
+        (
+            "Register a Zenodo record as a source",
+            "exa dataplane sources create pm100 --connector zenodo "
+            "--spec-json '{\"record\": 10127767}'",
+        ),
+        ("Pull it now", "exa dataplane pull pm100"),
+        ("See what was committed", "exa dataplane snapshots pm100"),
+    ],
+    "dataplane sources": [
+        ("List sources", "exa dataplane sources list"),
+    ],
     "feature": [
         ("List registered feature views", "exa feature list"),
     ],
