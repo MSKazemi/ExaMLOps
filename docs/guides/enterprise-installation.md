@@ -10,7 +10,7 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 | Install path | What it is | Status |
 |---|---|---|
 | **A — Single node (Docker Compose)** | `make bootstrap` → uv venv + `docker compose up` | **Production-in-use** (this is what runs on `lxp-cpu01`). Best path today for a new machine or single VM. |
-| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis, and images must come from a registry you control until the first tag is released through `release.yml`, which publishes signed, scanned images and the chart to GHCR ([Releases](release-process.md)). |
+| **B — Kubernetes (Helm)** | `helm install` control-plane + dashboard + agent | **Partial / reference.** Lints, renders, enterprise pod-security — but covers only 3 tiers, assumes you bring your own Postgres/MinIO/Redis, and every release publishes signed, scanned images and the chart to GHCR (`oci://ghcr.io/mskazemi/charts/examlops`, first: v0.54.0 — [Releases](release-process.md)). |
 | **C — CI auto-deploy (GitLab → node)** | `deploy:lxp` SSHes to the node, `git pull`, rebuilds, smoke-gated auto-rollback | **Production-in-use, single-node.** Deploy-from-HEAD to one NFS host; no image registry, no canary. |
 
 **Bottom line:** for a *new computer or single server* you can be fully running in ~15 minutes via
@@ -227,11 +227,11 @@ the dashboard was rebuilt, and the live API was verified end-to-end (authenticat
 The gap list below does not block Path A; these items stand between the current
 partial Helm chart and a turnkey, HA, multi-tenant cluster install:
 
-1. **Versioned artifacts, not build-from-HEAD** — *built, awaiting its first release (ADR 0129).*
+1. **Versioned artifacts, not build-from-HEAD** — *done; first published as v0.54.0 (ADR 0129).*
    `.github/workflows/release.yml` turns a tag into the `examlops` wheel (PyPI, Trusted Publishing),
    seven signed and scanned GHCR images, the Helm chart as a signed OCI artifact, and a GitHub
-   Release with SBOMs and checksums ([Releases](release-process.md)). Outstanding: the first tag
-   through it and the owner-side settings it needs (PyPI Trusted Publisher, GHCR visibility).
+   Release with SBOMs and checksums ([Releases](release-process.md)). Outstanding: PyPI, which
+   needs the owner-side Trusted Publisher before `pip install examlops` works.
 2. **Complete the Helm chart.** *Done: a strict `values.schema.json`, opt-in per-tier default-deny
    `NetworkPolicy`, and a control-plane `ServiceMonitor` (see the chart README).* Still to add: the
    missing tiers (MLflow, Prefect, Ray Serve, MinIO, JupyterHub), a `PrometheusRule`, and either bundle the stateful

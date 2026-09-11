@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — v0.54.0 verified from outside; its provenance no longer attests `dist/.gitignore`
+
+- **v0.54.0 is the first release published end to end** — seven images, the Helm chart and the
+  release assets — and was verified as a consumer would: `cosign verify-blob` on `SHA256SUMS`
+  ("Verified OK"), every asset against it, `cosign verify` on an image and on the chart, anonymous
+  `docker`/`helm` pulls from GHCR, the SLSA v1 provenance naming `release.yml@refs/tags/v0.54.0`, and
+  `exa --version` from the released wheel. The one defect found: the provenance listed
+  `dist/.gitignore` (written by `uv build`) as a subject; it now attests the wheel and sdist only.
+- The release guide, the installation guide and the quickstart now describe what is published
+  (install the signed wheel from the GitHub Release until the package is on PyPI).
+
 ### Added — the dataplane service, agent tools, and hardened pulls (ADR 0130)
 
 - The `platform/services/dataplane` HTTP service (port `8010`) wraps the dataplane behind

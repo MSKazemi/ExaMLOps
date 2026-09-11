@@ -6,10 +6,10 @@ turns that tag into every artifact, at one version, signed. Nothing is built on 
 nothing is uploaded by hand.
 
 !!! note "Status"
-    The workflow is in the repository and verified by `actionlint`, `zizmor` (auditor persona) and
-    `tests/unit/test_release_workflow.py`. A release becomes visible here only once a tag has been
-    pushed through it and the one-time settings under [Maintainers](#one-time-repository-setup)
-    are in place.
+    The first release published through it is **v0.54.0**: seven signed images, the signed Helm
+    chart, and the signed release assets, each verified from outside with the commands below.
+    PyPI publishing is off until the Trusted Publisher is configured (see
+    [Maintainers](#one-time-repository-setup)).
 
 ## What a release publishes
 

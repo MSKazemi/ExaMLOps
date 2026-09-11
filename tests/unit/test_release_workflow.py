@@ -238,3 +238,10 @@ def test_every_scan_exception_is_scoped_reasoned_and_expiring():
             f"{where}: expired on {expiry} — fix the finding or renew with the owner"
         )
         assert (expiry - today).days <= 90, f"{where}: an exception may run at most 90 days"
+
+
+def test_provenance_attests_only_the_distributions():
+    """`uv build` drops a .gitignore into dist/; v0.54.0's provenance listed it as a subject."""
+    step = next(s for s in JOBS["python-dist"]["steps"] if s.get("id") == "provenance")
+    subjects = step["with"]["subject-path"].split()
+    assert subjects == ["dist/*.whl", "dist/*.tar.gz"], subjects

@@ -29,9 +29,12 @@ exa --version
 exa status                     # points at the URLs in your active context
 ```
 
-The package reaches PyPI with the first release published through the release workflow
-([Releases](release-process.md)). Until then, install the same wheel from a checkout:
-`uv pip install ./platform/cli`.
+Until the package is on PyPI, install the signed wheel straight from a GitHub Release
+(verify it first as described in [Releases](release-process.md)):
+
+```bash
+uv pip install https://github.com/MSKazemi/ExaMLOps/releases/download/v0.54.0/examlops-0.54.0-py3-none-any.whl
+```
 
 Heavier capabilities are **extras**, so the base install stays small enough for a login
 node. Each one is lazily imported, and a command that needs a missing extra says which to
