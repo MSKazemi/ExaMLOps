@@ -400,3 +400,16 @@ def test_upgrade_hook_runs_exa_upgrade_apply_before_new_pods(tmp_path):
     assert env["EXAMLOPS_DB_BACKEND"] == "postgres"
     # a hook runs before the chart's own resources exist on a first install: no ConfigMap ref
     assert all("configMapRef" not in r for r in container.get("envFrom", []))
+
+
+def test_dashboard_image_contains_the_platform_package():
+    # v0.54.0 shipped `examlops-dashboard` without `examlops`: compose bind-mounts the source, so
+    # only a pull-only install (bundle, Helm) met the ModuleNotFoundError. The CLI Console,
+    # Resources, the config page and every shared-code-path backend module import it.
+    dockerfile = (
+        REPO / "platform" / "infra" / "docker-compose" / "Dockerfile.dashboard"
+    ).read_text()
+    assert "COPY platform/cli /app/platform/cli" in dockerfile
+    assert "platform/cli[postgres]" in dockerfile
+    # `python -m examlops.cli` (what the console runs) needs the package's own entry point.
+    assert (REPO / "platform" / "cli" / "src" / "examlops" / "cli" / "__main__.py").is_file()

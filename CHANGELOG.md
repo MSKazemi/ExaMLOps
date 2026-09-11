@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the dashboard image carries the `examlops` package
+
+- **`examlops-dashboard:0.54.0` had no `examlops` package.** `/app/platform` was absent, and
+  neither `exa` nor `python -m examlops.cli` existed in the image. The development compose hid
+  this, because it bind-mounts the repository and puts the source on `PYTHONPATH`. A pull-only
+  install (the bundle or the Helm chart) could not import the package: creating a project or a
+  connection answered 503 ("requires the examlops package"), and `/api/v1/modules` answered 500.
+  The image now installs `platform/cli[postgres]`, and `python -m examlops.cli` works
+  (`examlops/cli/__main__.py`). Guard:
+  `tests/unit/test_helm_chart.py::test_dashboard_image_contains_the_platform_package`.
+
 ### Fixed — the dashboard showed the eval gate as passed whenever a promotion policy existed (ADR 0008 clause 4)
 
 - The MLOps console's Promotion panel reported `eval: {pass: policy_allow}`. Any model with an
