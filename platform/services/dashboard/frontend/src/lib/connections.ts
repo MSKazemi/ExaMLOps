@@ -10,8 +10,10 @@ import { apiFetch } from './api'
 // is written through `examlops.secrets` (CLI-compatible) and only `hasSecret` (a boolean) is
 // ever sent back to the browser. The secret value itself never crosses the wire.
 
-export type ConnectionKind = 's3' | 'uri' | 'dataplane'
+export type ConnectionKind = string
 
+/** Fallback when the kinds endpoint is unreachable; the server list (useConnectionKinds) is
+ * authoritative and additionally includes every dataplane connector's kinds (sql, kafka, …). */
 export const CONNECTION_KINDS = ['s3', 'uri', 'dataplane'] as const
 
 export interface ConnectionSummary {
@@ -104,3 +106,14 @@ export const useTestConnection = (project: string) =>
   useMutation({
     mutationFn: (name: string) => testConnection(name, project || null),
   })
+
+/** Every connection kind the dataplane connector registry accepts (base kinds ∪ registry
+ * kinds — sql, kafka, rest, zenodo, fs, …). Falls back to CONNECTION_KINDS if unreachable. */
+export function useConnectionKinds(): string[] {
+  const q = useQuery({
+    queryKey: ['connections', 'kinds'],
+    queryFn: () => apiFetch<{ kinds: string[] }>('/api/v1/connections/kinds'),
+    staleTime: 5 * 60_000,
+  })
+  return q.data?.kinds ?? [...CONNECTION_KINDS]
+}

@@ -270,3 +270,18 @@ def test_no_duplicate_yaml_model_ids():
         if mid in seen:
             pytest.fail(f"Duplicate model_id={mid!r} in {seen[mid]} and {cfg.name}")
         seen[mid] = cfg.name
+
+
+@pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
+def test_yaml_dataplane_binding_is_valid(yaml_path):
+    """ADR 0130: backend: dataplane without a binding would fail at training time — fail here."""
+    from pipelines.datasets.dataplane import DataplaneBinding
+    from pipelines.model_loader import load_model_yaml
+
+    cfg = load_model_yaml(yaml_path)
+    for ds in cfg.datasets:
+        binding = DataplaneBinding.from_yaml(ds.dataplane)  # raises on a malformed block
+        if ds.backend == "dataplane":
+            assert binding is not None, (
+                f"{cfg.name}/{ds.name}: backend dataplane needs datasets[].dataplane.source"
+            )

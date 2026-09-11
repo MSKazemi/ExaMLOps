@@ -17,7 +17,29 @@ from typing import Any
 
 from examlops.data import get_db
 
-KINDS = ("s3", "uri", "dataplane")
+BASE_KINDS = ("s3", "uri", "dataplane")
+KINDS = BASE_KINDS  # back-compat alias; prefer kinds()
+
+
+def kinds() -> tuple[str, ...]:
+    """Every connection kind something can consume: the base kinds plus each dataplane
+    connector's ``connection_kinds`` (phase-42 registry integration, task 14).
+    """
+    try:
+        from examlops.dataplane.connectors.registry import connection_kinds
+
+        extra = connection_kinds()
+    except Exception:  # the dataplane must never break connection management
+        extra = ()
+    return tuple(sorted(set(BASE_KINDS) | set(extra)))
+
+
+def _connectors_accepting(kind: str) -> list[Any]:
+    try:
+        from examlops.dataplane.connectors.registry import all_connectors
+    except Exception:
+        return []
+    return [c for c in all_connectors() if kind in c.connection_kinds and c.available()[0]]
 
 
 class ConnectionError(Exception):
@@ -53,8 +75,8 @@ def create_connection(
     """Create a named connection. Stores non-secret ``config`` inline; if ``secret_value`` is given
     it is written to the D7 secrets client and only its ``secret_ref`` is kept here.
     """
-    if kind not in KINDS:
-        raise ConnectionError(f"unknown kind {kind!r} (expected one of {list(KINDS)})")
+    if kind not in kinds():
+        raise ConnectionError(f"unknown kind {kind!r} (expected one of {list(kinds())})")
     _ensure_table()
     proj = project or ""
     secret_ref: str | None = None
@@ -196,6 +218,9 @@ def test_connection(name: str, *, project: str | None = None) -> dict[str, Any]:
             )
             s3.head_bucket(Bucket=bucket)
             return {"ok": True, "detail": f"bucket '{bucket}' reachable"}
+        for connector in _connectors_accepting(kind):
+            probe = connector.probe(resolve_connection(name, project=project), None)
+            return {"ok": probe.ok, "detail": probe.detail}
     except Exception as exc:  # reachability failure — surface concisely, never a secret
         return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
     return {"ok": False, "detail": f"unknown kind {kind!r}"}

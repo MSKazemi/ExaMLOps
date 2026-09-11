@@ -16,7 +16,6 @@ a logged warning rather than failing a pipeline.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from collections.abc import Iterable
@@ -24,10 +23,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from examlops.data.content_hash import file_digest as _file_digest  # noqa: E402  (re-export)
+from examlops.data.content_hash import revision_id as _revision_id
+from examlops.data.content_hash import schema_hash as _fold_schema
+from examlops.data.content_hash import schema_part as _schema_part
+
 logger = logging.getLogger(__name__)
 
 UNKNOWN = "unknown"
-_CHUNK = 1 << 20  # 1 MiB streaming read — never load a multi-GB parquet into memory.
 
 
 @dataclass(frozen=True)
@@ -53,36 +56,9 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _file_digest(path: Path) -> str:
-    """SHA-256 of a file's bytes, streamed."""
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        while chunk := fh.read(_CHUNK):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _schema_hash(paths: list[Path]) -> str:
-    """Deterministic hash of the parquet schema across ``paths``.
-
-    Uses pyarrow when available; folds ``name:type`` pairs in column order. Returns
-    ``""`` when the schema cannot be read (non-parquet, pyarrow absent) — the file
-    digests still make the revision id unique, so this only weakens the *diff* facet.
-    """
-    try:
-        import pyarrow.parquet as pq
-    except Exception:  # pragma: no cover - pyarrow is a hard dep here, defensive only
-        return ""
-    parts: list[str] = []
-    for path in paths:
-        try:
-            schema = pq.read_schema(path)
-        except Exception:
-            continue
-        parts.append("|".join(f"{name}:{schema.field(name).type}" for name in schema.names))
-    if not parts:
-        return ""
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    """Deterministic hash of the parquet schema across ``paths`` (see examlops.data.content_hash)."""
+    return _fold_schema(_schema_part(p) for p in paths)
 
 
 def content_revision(paths: Iterable[Path]) -> tuple[str, str, int]:
@@ -99,10 +75,10 @@ def content_revision(paths: Iterable[Path]) -> tuple[str, str, int]:
     existing = [p for p in resolved if p.is_file()]
     if not existing:
         raise FileNotFoundError("no readable files to hash for content revision")
-    digests = sorted(_file_digest(p) for p in existing)
+    digests = [_file_digest(p) for p in existing]
     schema_hash = _schema_hash(existing)
     byte_count = sum(p.stat().st_size for p in existing)
-    revision_id = hashlib.sha256(("".join(digests) + schema_hash).encode()).hexdigest()
+    revision_id = _revision_id(digests, schema_hash)
     return revision_id, schema_hash, byte_count
 
 

@@ -17,7 +17,7 @@ import {
 } from '@/lib/projects'
 import {
   useConnections, useCreateConnection, useDeleteConnection, useTestConnection,
-  CONNECTION_KINDS, type CreateConnectionBody, type ConnectionKind,
+  useConnectionKinds, CONNECTION_KINDS, type CreateConnectionBody, type ConnectionKind,
 } from '@/lib/connections'
 import {
   useWorkbenches, useSetWorkbenchStatus, useCreateWorkbench, useDeleteWorkbench,
@@ -133,6 +133,7 @@ function AddMemberModal({ name, onClose }: { name: string; onClose: () => void }
 }
 
 function CreateConnectionModal({ project, onClose }: { project: string; onClose: () => void }) {
+  const kinds = useConnectionKinds()
   const [name, setName] = useState('')
   const [kind, setKind] = useState<ConnectionKind>(CONNECTION_KINDS[0])
   const [configText, setConfigText] = useState('{}')
@@ -177,7 +178,7 @@ function CreateConnectionModal({ project, onClose }: { project: string; onClose:
         <select value={kind} onChange={e => setKind(e.target.value as ConnectionKind)}
           className="w-full rounded-lg px-3 py-1.5 text-sm focus:outline-none"
           style={{ background: 'var(--input-bg)', border: '1px solid var(--border-md)', color: 'var(--foreground)' }}>
-          {CONNECTION_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+          {kinds.map(k => <option key={k} value={k}>{k}</option>)}
         </select>
       </div>
       <div className="space-y-1">

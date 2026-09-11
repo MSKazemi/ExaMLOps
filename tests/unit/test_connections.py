@@ -100,3 +100,18 @@ def test_delete_removes_row_and_resource():
 def test_test_connection_unknown_returns_not_ok():
     result = conn.test_connection("ghost", project="research")
     assert result["ok"] is False
+
+
+def test_kinds_include_dataplane_connector_kinds():
+    assert {"s3", "uri", "dataplane", "sql", "kafka", "rest", "zenodo", "fs"} <= set(conn.kinds())
+
+
+def test_create_accepts_a_registry_kind():
+    conn.create_connection("lab-pg", "sql", config={"url": "sqlite:///x.db"})
+    assert conn.get_connection("lab-pg")["kind"] == "sql"
+
+
+def test_probe_delegates_to_the_connector(tmp_path):
+    db = tmp_path / "p.db"
+    conn.create_connection("lite", "sql", config={"url": f"sqlite:///{db}"})
+    assert conn.test_connection("lite")["ok"] is True

@@ -189,6 +189,13 @@ async def test_connection_delete_requires_admin(client, platform_db):
     assert r.status_code == 403
 
 
+async def test_kinds_endpoint_lists_registry_kinds(client, platform_db):
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/connections/kinds", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    assert {"s3", "sql", "kafka"} <= set(r.json()["kinds"])
+
+
 async def test_connection_delete_unknown_404(client, platform_db):
     token = await _login(client, ADMIN_PW)
     r = await client.delete(

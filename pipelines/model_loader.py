@@ -30,6 +30,9 @@ class DatasetEntry:
     input_features: list[str] = field(default_factory=list)
     output_features: list[str] = field(default_factory=list)
     splits: dict[str, SplitConfig] = field(default_factory=dict)
+    # ADR 0130: bind this dataset entry to a dataplane source (only used with backend: dataplane).
+    # Kept raw; pipelines.datasets.dataplane.DataplaneBinding validates it.
+    dataplane: dict[str, Any] | None = None
 
 
 @dataclass
@@ -96,6 +99,7 @@ def _parse_dataset(raw: dict) -> DatasetEntry:
         input_features=list(raw.get("input_features", [])),
         output_features=list(raw.get("output_features", [])),
         splits=splits,
+        dataplane=raw.get("dataplane") or None,
     )
 
 

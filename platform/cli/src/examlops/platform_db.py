@@ -931,6 +931,42 @@ def init_db(*, force: bool = False) -> None:
                 created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (backend, dataset, revision_id)
             );
+            -- ADR 0130 — dataplane source registry + pull history. Snapshots live in the dataset
+            -- store (self-describing manifests); these rows are an index `exa dataplane
+            -- catalog-rebuild` can recreate. Column names avoid SQL keywords (Postgres backend).
+            CREATE TABLE IF NOT EXISTS dataplane_sources (
+                project      TEXT NOT NULL DEFAULT '',
+                name         TEXT NOT NULL,
+                connector    TEXT NOT NULL,
+                connection   TEXT,
+                spec_json    TEXT NOT NULL DEFAULT '{}',
+                schedule     TEXT,
+                limits_json  TEXT NOT NULL DEFAULT '{}',
+                contract     TEXT,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                created_by   TEXT,
+                created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, name)
+            );
+            CREATE TABLE IF NOT EXISTS dataplane_pulls (
+                id              TEXT PRIMARY KEY,
+                project         TEXT NOT NULL DEFAULT '',
+                source          TEXT NOT NULL,
+                status          TEXT NOT NULL,
+                trigger_kind    TEXT NOT NULL DEFAULT 'manual',
+                actor           TEXT,
+                started_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at     DATETIME,
+                revision        TEXT,
+                parent_revision TEXT,
+                row_count       INTEGER,
+                byte_count      INTEGER,
+                watermark_json  TEXT,
+                error           TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_dataplane_pulls_source
+                ON dataplane_pulls(project, source, id);
             -- Next-Gen 40 · A7 — synthetic dataset gate record (ADR 0042). One row per
             -- generated synthetic revision: the generator config + fidelity/privacy scores
             -- and whether it passed the release gate. The `synthetic=1` flag lives on the

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createElement, type ReactNode } from 'react'
 
 // Mock the shared fetch layer so we assert the URL/shape without touching the network.
 vi.mock('./api', () => ({
@@ -8,10 +11,21 @@ vi.mock('./api', () => ({
 import { apiFetch } from './api'
 import {
   listConnections, createConnection, deleteConnection, testConnection,
+  useConnectionKinds, CONNECTION_KINDS,
   type ConnectionSummary, type CreateConnectionBody,
 } from './connections'
 
 const mockFetch = vi.mocked(apiFetch)
+
+const wrapper = ({ children }: { children: ReactNode }) => {
+  // A query failure (tested below) is expected — swallow it here rather than let the
+  // cache's default onError console.error surface as an unhandled-rejection test failure.
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+    queryCache: new QueryCache({ onError: () => {} }),
+  })
+  return createElement(QueryClientProvider, { client: qc }, children)
+}
 
 describe('listConnections', () => {
   beforeEach(() => {
@@ -90,5 +104,27 @@ describe('testConnection', () => {
       method: 'POST',
     })
     expect(r.ok).toBe(true)
+  })
+})
+
+describe('useConnectionKinds', () => {
+  // No shared beforeEach here (unlike the describes above): a beforeEach that touches
+  // mockFetch in this block, combined with the rejection test below, makes vitest misattribute
+  // an already-handled rejection as unhandled. Each test resets the mock itself instead.
+
+  it('returns the server-provided kinds on success', async () => {
+    mockFetch.mockReset()
+    mockFetch.mockResolvedValue({ kinds: ['dataplane', 'kafka', 's3', 'sql', 'uri'] })
+    const { result } = renderHook(() => useConnectionKinds(), { wrapper })
+    await waitFor(() => expect(result.current).toEqual(['dataplane', 'kafka', 's3', 'sql', 'uri']))
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/connections/kinds')
+  })
+
+  it('falls back to the base kinds when the fetch fails', async () => {
+    mockFetch.mockReset()
+    mockFetch.mockRejectedValue(new Error('network down'))
+    const { result } = renderHook(() => useConnectionKinds(), { wrapper })
+    await waitFor(() => expect(mockFetch).toHaveBeenCalled())
+    expect(result.current).toEqual([...CONNECTION_KINDS])
   })
 })

@@ -49,6 +49,8 @@ _SCRATCH = {
     "t": "tests/unit/test_resilience.py — a table to run a retryable statement against",
     "x": "tests/unit/test_storage_pg_translate.py — a table to translate DDL for",
     "a": "tests/unit/test_storage_pg_translate.py — likewise",
+    "jobs": "tests/unit/test_dataplane_sql.py — the remote source database a SQL connector pulls"
+    " from, not platform state",
 }
 
 

@@ -27,7 +27,14 @@ router = APIRouter(prefix="/v1/connections", tags=["connections"])
 _viewer = require_role("viewer")
 _admin = require_role("admin")
 
-_KINDS = {"s3", "uri", "dataplane"}
+
+def _kinds() -> set[str]:
+    try:
+        from examlops.connections import kinds  # same code path as the CLI (phase 42)
+
+        return set(kinds())
+    except Exception:
+        return {"s3", "uri", "dataplane"}
 
 
 def _db_path() -> str:
@@ -148,6 +155,15 @@ async def list_connections_view(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "datastore unavailable") from exc
 
 
+@router.get("/kinds")
+def list_kinds(_=Depends(_viewer)) -> dict[str, list[str]]:
+    """Every connection kind the dataplane connector registry (+ the base s3/uri/dataplane
+    kinds) accepts. Declared before any ``/{name}``-style route so ``kinds`` is never captured
+    as a connection name.
+    """
+    return {"kinds": sorted(_kinds())}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_connection_view(
     payload: dict = Body(...), principal: dict = Depends(_admin)
@@ -166,8 +182,11 @@ async def create_connection_view(
     secret = payload.get("secret")
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "name is required")
-    if kind not in _KINDS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"kind must be one of {sorted(_KINDS)}")
+    valid_kinds = _kinds()
+    if kind not in valid_kinds:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"kind must be one of {sorted(valid_kinds)}"
+        )
     if not isinstance(config, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "config must be an object")
     if _view_one(project, name) is not None:

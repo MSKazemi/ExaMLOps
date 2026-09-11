@@ -30,6 +30,7 @@ __all__ = [
     "autopilot",
     "coordination",
     "data_assets",
+    "dataplane",
     "drift",
     "evaluation",
     "events",
