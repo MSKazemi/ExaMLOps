@@ -172,6 +172,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   them one repeated `PLATFORM_DB` default in dashboard routers). No file may gain one and no new file
   may introduce one; a count that falls must be lowered in the same change, so a removed coupling
   cannot return.
+- **Every base image is pinned by digest** (`FROM python:3.12-slim@sha256:…`, tag kept for
+  readability and for Dependabot's rules) in the twelve platform Dockerfiles: a tag is a mutable
+  pointer, so the same Dockerfile could build a different image tomorrow. Dependabot's new `docker`
+  ecosystem moves the digests weekly, so a pin is never a freeze. OpenSSF Scorecard's
+  Pinned-Dependencies check scored 4/10 for exactly this.
 - **The agent image can write its own volume.** It runs as uid 10001 but never created `/data`, so
   a fresh `agent_data:/data` named volume came up root-owned and the agent could not create its
   memory databases ("unable to open database file") — hidden on long-running hosts whose agent

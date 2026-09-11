@@ -1,1 +1,1 @@
-FROM prefecthq/prefect:3.6.27-python3.11
+FROM prefecthq/prefect:3.6.27-python3.11@sha256:ed9c73b555c114a8abca2a833ae4b36f7d47d918a25d6b7e08803e214755b0b4

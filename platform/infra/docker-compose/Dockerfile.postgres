@@ -1,4 +1,4 @@
-FROM postgres:15
+FROM postgres:15@sha256:9b1d34adbce1dd07ee6e94b4a2cf698884b89bd44a6c9c12f5da8f3acbfe4957
 
 # Create the Prefect metadata database alongside mlflow on first init.
 COPY initdb-prefect.sql /docker-entrypoint-initdb.d/10-prefect.sql

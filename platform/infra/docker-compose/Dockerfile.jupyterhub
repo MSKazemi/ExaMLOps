@@ -1,4 +1,4 @@
-FROM quay.io/jupyterhub/jupyterhub:4
+FROM quay.io/jupyterhub/jupyterhub:4@sha256:11ad46166793bda75267f4aedef371c8003621e442cb32c1beb143876c17b3bf
 
 RUN pip install --no-cache-dir \
     "dockerspawner>=13.0,<14" \
