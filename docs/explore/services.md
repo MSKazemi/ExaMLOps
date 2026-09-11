@@ -241,7 +241,7 @@ Hold models, artifacts, datasets and platform state.
 ### MinIO object store
 
 **Port:** 19000, 19001  
-**Built on:** minio/minio:latest (S3 API :9000 -> 19000, console :9001 -> 19001)
+**Built on:** quay.io/minio/minio (pinned release) (S3 API :9000 -> 19000, console :9001 -> 19001)
 
 **What it does**
 
@@ -260,7 +260,7 @@ Hold models, artifacts, datasets and platform state.
 ### MinIO bucket init (one-shot)
 
 **Port:** internal only  
-**Built on:** minio/mc:latest, restart: no
+**Built on:** quay.io/minio/mc (pinned release), restart: no
 
 **What it does**
 

@@ -33,8 +33,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - **Air-gapped sites:** the guide now copies upstream images from any registry and uses an override
   for the quay.io ones. Its guard now accepts an upstream image from a registry other than Docker
   Hub only when the guide names it.
-- The development stack (`platform/infra/docker-compose/docker-compose.yml`) still names
-  `minio/minio:latest` and `minio/mc:latest` and needs the same change.
+- The development stack (`platform/infra/docker-compose/docker-compose.yml`) pulls the same pinned
+  `quay.io/minio/minio` and `quay.io/minio/mc` images instead of Docker Hub's `:latest`.
 
 ### Fixed — unit tests no longer read the platform's real SQLite stores
 
