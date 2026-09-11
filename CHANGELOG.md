@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — an asset job runs the same ExaMLOps code as the process that submitted it
+
+- The job's `PYTHONPATH` held only the production function's package, so `python -m
+  examlops.assets.job` loaded whatever `examlops` the interpreter had installed. In an environment
+  where that copy was older than the submitter's, the job failed with `No module named
+  examlops.assets.job`, or ran older code. The submitter's `examlops` now comes first.
+- An interpreter's `site-packages` is no longer exported to a *different* job interpreter
+  (`EXAMLOPS_HPC_REMOTE_PYTHON`), where it would sit in front of that Python's own libraries.
+
 ### Fixed — `exa assets materialize --orchestrator scheduler` runs the build (ADR 0036 clause 3, now Accepted)
 
 - **On Slurm and Flux it failed every time.** The orchestrator submitted no job script and put

@@ -311,6 +311,45 @@ def test_a_closure_builds_locally_and_says_why(monkeypatch):
     assert "not importable" in result["fallback"]
 
 
+def test_the_job_runs_the_submitters_examlops_not_a_stale_install(monkeypatch, tmp_path, fx):
+    """Found replaying BL-049: with the submitter's examlops on a sys.path insert and a stale
+    copy installed in the interpreter, the job imported the stale one. A shadow package on the
+    job's inherited PYTHONPATH stands in for it here."""
+    from mock_slurm_adapter import MockSlurmAdapter
+
+    shadow = tmp_path / "shadow"
+    (shadow / "examlops" / "assets").mkdir(parents=True)
+    (shadow / "examlops" / "__init__.py").write_text("")
+    (shadow / "examlops" / "assets" / "__init__.py").write_text("")
+    (shadow / "examlops" / "assets" / "job.py").write_text("raise SystemExit('stale examlops')\n")
+    monkeypatch.setenv("PYTHONPATH", str(shadow))
+    monkeypatch.setattr(
+        assets, "_scheduler_adapter", lambda: MockSlurmAdapter(working_dir=tmp_path / "mock")
+    )
+
+    result = SchedulerOrchestrator().run(assets.AssetDef("Fresh", fn=fx.build_marker), {"u": 1})
+
+    assert result["hpc_job_id"] and _marker(tmp_path)["upstream"] == {"u": 1}
+
+
+def test_another_interpreters_site_packages_is_not_exported(monkeypatch, tmp_path):
+    """Putting the submitter's site-packages in front of a different Python's own would mix two
+    sets of compiled libraries; to the same interpreter it is harmless and is kept."""
+    import click
+
+    fn = click.echo  # resolves from site-packages
+    site = str(assets._import_root(fn))
+    assert site.endswith("-packages")
+
+    monkeypatch.setenv("EXAMLOPS_HPC_REMOTE_PYTHON", "/opt/cluster/python3.13")
+    other = assets._job_script("a", "click.utils:echo", fn, {})
+    assert site not in other
+
+    monkeypatch.setenv("EXAMLOPS_HPC_REMOTE_PYTHON", sys.executable)
+    same = assets._job_script("a", "click.utils:echo", fn, {})
+    assert site in same
+
+
 def test_a_wrapper_borrowing_a_name_is_not_sent_to_a_job(monkeypatch, fx):
     """`functools.wraps` copies the target's module and qualname. A job importing that name
     would run the target, not the wrapper — so it is resolved and compared, not trusted."""

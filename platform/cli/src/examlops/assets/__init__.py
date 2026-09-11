@@ -384,20 +384,35 @@ def _job_script(asset_name: str, entrypoint: str, fn: Any, upstream: dict[str, i
     python = os.getenv("EXAMLOPS_HPC_REMOTE_PYTHON") or (
         str(Path(remote_repo) / ".venv" / "bin" / "python") if remote_repo else sys.executable
     )
-    # The directory the production function's top-level package sits in, so the job's python
-    # can import it. Inside the repo it is re-rooted at EXAMLOPS_HPC_REMOTE_REPO when that is
-    # set; elsewhere it is assumed shared (the NFS layout the platform deploys on).
-    root = _import_root(fn)
-    if root is not None and remote_repo and root.is_relative_to(repo):
-        root = Path(remote_repo) / root.relative_to(repo)
+    # What the job's python must import: the *submitter's* examlops first — so the job runs the
+    # same `examlops.assets.job` as the code that wrote this script, not whatever copy that
+    # interpreter happens to have installed — then the production function's package. Paths
+    # inside the repo are re-rooted at EXAMLOPS_HPC_REMOTE_REPO when that is set; elsewhere they
+    # are assumed shared (the NFS layout the platform deploys on). An interpreter's library
+    # directory is exported only to that same interpreter: another Python's site-packages in
+    # front of the job's own would mix two sets of compiled libraries.
+    import examlops as _pkg
+
+    same_interpreter = python == sys.executable
+    roots: list[str] = []
+    for root in (Path(_pkg.__file__).resolve().parent.parent, _import_root(fn)):
+        if root is None:
+            continue
+        if not same_interpreter and root.name in ("site-packages", "dist-packages"):
+            continue
+        if remote_repo and root.is_relative_to(repo):
+            root = Path(remote_repo) / root.relative_to(repo)
+        if str(root) not in roots:
+            roots.append(str(root))
     lines = [
         "#!/usr/bin/env bash",
         f"# ExaMLOps asset build: {asset_name!r} (ADR 0036 clause 3). Generated — runs the",
         "# production function only; the submitting process records the version.",
         "set -euo pipefail",
     ]
-    if root is not None:
-        lines.append(f'export PYTHONPATH={shlex.quote(str(root))}"${{PYTHONPATH:+:$PYTHONPATH}}"')
+    if roots:
+        joined = shlex.quote(os.pathsep.join(roots))
+        lines.append(f'export PYTHONPATH={joined}"${{PYTHONPATH:+:$PYTHONPATH}}"')
     lines.append(
         f"exec {shlex.quote(python)} -m examlops.assets.job"
         f" --asset {shlex.quote(asset_name)}"

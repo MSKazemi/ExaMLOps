@@ -242,7 +242,12 @@ by the job's python. The settings are the training pipeline's:
 - `EXAMLOPS_HPC_REMOTE_WORKDIR` is where job directories go.
 
 With none of them set, the job uses the submitting interpreter, which is right for the mock and
-for a shared filesystem. The job gets its environment from the scheduler, which exports the
+for a shared filesystem.
+
+The script puts the **submitter's own** `examlops` first on the job's `PYTHONPATH`, so the job
+runs the same code that wrote it, not whatever copy that interpreter has installed. The one
+exception: an interpreter's `site-packages` is passed only to that same interpreter. In front of a
+different Python's own libraries it would mix two sets of compiled packages. The job gets its environment from the scheduler, which exports the
 submitter's. No environment value is ever written into the script.
 
 **The generated `run.sh`** is kept under `EXAMLOPS_ASSET_JOB_DIR`, by default
