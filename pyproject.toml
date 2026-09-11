@@ -31,7 +31,7 @@ dependencies = [
     # modelzoo dependencies
     "torch",
     "numpy",
-    "sentence-transformers>=2.0.0",
+    "sentence-transformers>=6.0.0",
     "xgboost>=1.7.0",
     # pipeline / orchestration
     "prefect>=3.0.0,<4.0",
