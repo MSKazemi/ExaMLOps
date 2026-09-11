@@ -49,6 +49,7 @@ const Scaling = lazy(() => import('@/pages/Scaling').then((m) => ({ default: m.S
 const Admission = lazy(() => import('@/pages/Admission').then((m) => ({ default: m.Admission })))
 const Secrets = lazy(() => import('@/pages/Secrets').then((m) => ({ default: m.Secrets })))
 const Features = lazy(() => import('@/pages/Features').then((m) => ({ default: m.Features })))
+const Assets = lazy(() => import('@/pages/Assets').then((m) => ({ default: m.Assets })))
 const Fairness = lazy(() => import('@/pages/Fairness').then((m) => ({ default: m.Fairness })))
 const Alerts = lazy(() => import('@/pages/Alerts').then((m) => ({ default: m.Alerts })))
 const Flags = lazy(() => import('@/pages/Flags').then((m) => ({ default: m.Flags })))
@@ -150,6 +151,7 @@ export default function App() {
                       <Route path="/build/pipelines" element={<Pipelines />} />
                       <Route path="/build/prompts" element={<Prompts />} />
                       <Route path="/build/features" element={<Features />} />
+                      <Route path="/build/assets" element={<Assets />} />
                       {/* Serve */}
                       <Route path="/serve/llmops" element={<Llmops />} />
                       <Route path="/serve/traffic" element={<Traffic />} />

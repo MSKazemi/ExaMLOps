@@ -163,6 +163,20 @@ Every materialization's lineage event names the orchestrator that produced it an
 scheduler job id when there was one — an asset built on a cluster and one built in a notebook are
 different facts.
 
+## In the dashboard
+
+**Build → Assets** (`/build/assets`) draws the asset DAG left to right: sources in the first
+column, and each asset one column right of its deepest upstream. Every node prints its kind and
+state (*fresh*, *stale*, *never built*, or *undeclared* for an upstream that is named but was never
+declared). Select an asset to see **why** it is stale, what it is built from, and what it feeds. The
+graph is also available as a data table for screen readers.
+
+The view reads the same `asset_status` as `exa assets status`, so the two never disagree. It is
+**read-only** on purpose. Materializing runs production code or submits scheduler jobs, which stays
+with `exa assets materialize`, under policy and the scheduler, rather than being a web click.
+
+API: `GET /api/assets` (the graph, freshness and counts) and `GET /api/assets/{name}`.
+
 ## Lineage, policy, audit
 
 Every materialization:

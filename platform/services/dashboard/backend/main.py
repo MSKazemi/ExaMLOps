@@ -15,6 +15,7 @@ from routers import (
     admission,
     alerts,
     approvals,
+    assets,
     audit,
     auth,
     autopilot,
@@ -227,6 +228,8 @@ app.include_router(modelzoo.router, prefix="/api")
 app.include_router(seanerbus.router, prefix="/api")
 app.include_router(containers.router, prefix="/api")
 app.include_router(approvals.router, prefix="/api")
+# Asset DAG + freshness, read-only (ADR 0036 clause 5); rebuilding stays `exa assets materialize`.
+app.include_router(assets.router, prefix="/api")
 app.include_router(pipelines.router, prefix="/api")
 app.include_router(scaffold.router, prefix="/api")
 app.include_router(platform_audit.router, prefix="/api")

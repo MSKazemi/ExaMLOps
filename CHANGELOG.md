@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the asset graph in the dashboard (ADR 0036 clause 5)
+
+- **Build → Assets** draws the software-defined asset DAG (datasets, features, models) left to
+  right by dependency depth. Each node prints its kind and freshness: fresh, stale, never built,
+  or undeclared (a named upstream nobody declared, shown rather than dropped). Selecting an asset
+  explains why it is stale and what it builds from and feeds. The graph comes with a data table
+  for screen readers.
+- `GET /api/assets` and `GET /api/assets/{name}`, read-only, report the same freshness as
+  `exa assets status` (a test holds them equal). Rebuilding deliberately stays with
+  `exa assets materialize`. A new dependency-free `AssetDag` chart joins the F4 viz set.
+
 ### Added — prompts can live in the MLflow Prompt Registry (ADR 0009 clause 1 — ADR 0009 now Accepted)
 
 - `EXAMLOPS_PROMPT_BACKEND=mlflow` keeps the prompt registry in MLflow, next to the models, with

@@ -314,6 +314,17 @@ p95 latency) + dependency health pills (`platform_db` probed live), auto-refresh
 
 ---
 
+## Assets  <!-- (role: viewer) -->
+
+The software-defined asset graph (ADR 0036): datasets, features and models, each drawn one column
+right of what it is built from, and labelled fresh, stale, never built or undeclared. Read-only.
+
+| Action | What it does | Use case | How to (UI) | Equivalent CLI |
+|---|---|---|---|---|
+| See the asset graph | Draws the DAG with each asset's kind and freshness; a data table is available too | Understand what feeds a model before changing a dataset | Sidebar → Build → Assets (`/build/assets`) | `exa assets graph` |
+| Find out why something is stale | Select a node: its reasons, upstreams, dependents and last build | Decide what to rebuild after a dataset revision | Assets → click an asset | `exa assets status ASSET` |
+| Rebuild | Not available in the UI, by design (runs code / scheduler jobs) | — | — | `exa assets materialize ASSET` |
+
 ## Governance  <!-- (role: admin) -->
 
 Compliance posture — NIST AI RMF control coverage (satisfied/partial/gap, never false

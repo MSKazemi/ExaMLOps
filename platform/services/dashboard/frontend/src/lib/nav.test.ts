@@ -22,6 +22,7 @@ const KNOWN_ROUTES = new Set([
   '/build/mlops',
   '/build/datasets',
   '/build/features',
+  '/build/assets',
   '/build/pipelines',
   '/build/prompts',
   // serve
