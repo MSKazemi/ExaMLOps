@@ -14,7 +14,7 @@ XM.register("system", {
       "through shared stations. Pick a line in the legend to follow it alone, or open a station."
   },
   lineStories: {
-    data: { title: "a prediction", text: "A client's request crosses the bus, is batched and validated, routed to a model alias on Ray Serve, and the answer returns the same way. Every prediction that arrives over the bus is recorded for drift." },
+    data: { title: "a prediction", text: "A client's request crosses the bus, is batched and validated, routed to a model alias on Ray Serve, and the answer returns the same way. Every prediction that arrives over the bus is recorded for drift. A chat request takes the same line through the model gateway to a vLLM endpoint." },
     control: { title: "a retrain", text: "A drift trigger or an operator asks the control plane to retrain. Prefect runs the training flow, the result is registered in MLflow, and Ray Serve hot-reloads the promoted version." },
     human: { title: "a decision", text: "Model changes from CI wait in the approval gate until an operator approves or rejects them from the CLI or the dashboard. Approving starts the training flow." },
     hpc: { title: "a cluster job", text: "The training step is submitted through a scheduler adapter — inline (mock), Slurm or Flux — and the run is accounted in GPU-hours." },
@@ -28,7 +28,8 @@ XM.register("system", {
     { x: 414, y: 396, w: 990, h: 140, label: "Retraining", line: "control" },
     { x: 8, y: 396, w: 380, h: 482, label: "Observability", line: "observe" },
     { x: 620, y: 584, w: 580, h: 294, label: "People & decisions", line: "human", labelPos: "bottom" },
-    { x: 1232, y: 584, w: 172, h: 150, label: "Cluster", line: "hpc" }
+    { x: 1232, y: 584, w: 172, h: 150, label: "Cluster", line: "hpc" },
+    { x: 400, y: 584, w: 206, h: 294, label: "LLM serving", line: "data" }
   ],
   nodes: [
     { id: "clients", x: 90, y: 270, label: "Clients", sub: "site services", kind: "external", line: "data",
@@ -116,6 +117,17 @@ XM.register("system", {
         human: ["Approves model changes", "Promotes, splits traffic and rolls back", "Turns the autopilot on or off", "Approves new HPC clusters"],
         links: [{ text: "Who decides", href: "explore/decisions.md" }] } },
 
+    { id: "gateway", x: 503, y: 660, label: "Model gateway", sub: "keys · guardrails · cost", line: "data",
+      info: { title: "Model gateway", sub: "A library inside the caller, not a service",
+        tasks: ["Checks a virtual key and its budget before any model is called", "Scans requests and answers with a guardrail; can answer from a semantic cache", "Routes to a registered vLLM endpoint by name and records the cost of every call", "Used by exa gateway chat, exa rag query and exa serve challenger judge"],
+        cli: ["exa gateway chat qwen --message \"hello\"", "exa gateway key list"],
+        links: [{ text: "Follow an LLM request", href: "explore/llm.md" }] } },
+    { id: "vllm", x: 503, y: 800, label: "vLLM endpoints", sub: "exa serve llm", line: "data",
+      info: { title: "LLM and VLM endpoints", sub: "External · Compose · Slurm job · KServe manifest",
+        tasks: ["exa serve llm start registers a server someone else runs, or launches one", "A health probe marks it ready; the gateway then routes to it by name", "A Slurm job runs on the HPC cluster and publishes its own address", "Prometheus scrapes each server's vLLM metrics"],
+        cli: ["exa serve llm start qwen --base-url http://gpu01:8000 --hf-model Qwen/Qwen3-8B", "exa serve llm list"],
+        links: [{ text: "Serving LLMs and VLMs", href: "guides/vlm-serving.md" }] } },
+
     { id: "prom", x: 295, y: 470, label: "Prometheus", sub: "scrape · 31 rules", line: "observe",
       info: { title: "Prometheus", sub: "Port 19090",
         tasks: ["Scrapes Ray Serve, control plane and bridge every 15 s", "Evaluates 31 alert rules", "Loads HPC fleet targets from file discovery"],
@@ -152,6 +164,9 @@ XM.register("system", {
     { id: "drift-gate-planned", from: "drift", to: "gate", line: "planned", via: [[705, 660]], label: "planned", labelAt: 0.28, labelDx: -32, labelDy: 4 },
 
     { id: "ray-prom", from: "ray", to: "prom", line: "observe", via: [[910, 366], [295, 366]], label: "metrics", labelAt: 0.5, weight: 3.5 },
+    { id: "gateway-vllm", from: "gateway", to: "vllm", line: "data", both: true, label: "route", labelDx: 26, labelDy: 4 },
+    { id: "gateway-db", from: "gateway", to: "db", line: "observe", label: "cost", labelDx: 22, labelDy: 4 },
+    { id: "vllm-prom", from: "vllm", to: "prom", line: "observe", start: [426, 800], via: [[395, 800], [395, 470]], end: [372, 470], label: "vLLM metrics", labelAt: 0.69, labelDx: 46, labelDy: 4, weight: 3.5 },
     { id: "prom-grafana", from: "prom", to: "grafana", line: "observe", weight: 3.5 },
     { id: "prom-alert", from: "prom", to: "alert", line: "observe", label: "rules", labelDx: 22, labelDy: 4, weight: 3.5 },
     { id: "loki-grafana", from: "loki", to: "grafana", line: "observe", label: "logs", labelDx: -24, labelDy: 4, weight: 3.5 },
