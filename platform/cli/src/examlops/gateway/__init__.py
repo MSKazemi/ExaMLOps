@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -413,6 +414,7 @@ class GatewayClient:
         from examlops.data.finops import add_key_spend
         from examlops.data.gateway import record_gateway_call
 
+        started = time.perf_counter()  # ADR 0023 c1: what the caller waits for, guardrail included
         key_hash = _hash_key(self.virtual_key) if self.virtual_key else None
         if self.virtual_key:
             authorize(self.virtual_key, model)  # raises typed errors before any backend call
@@ -483,6 +485,7 @@ class GatewayClient:
                 cost_usd=comp.cost_usd,
                 prompt_tokens=comp.prompt_tokens,
                 completion_tokens=comp.completion_tokens,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
             )
             if key_hash:
                 add_key_spend(key_hash, comp.cost_usd)
@@ -508,6 +511,15 @@ class GatewayClient:
                 self.cache_store(model, messages, comp)
             return comp
 
+        # The caller got an error, so the SLI must see one: a request that failed everywhere used
+        # to leave no row at all, and an error rate computed from successes alone is always zero.
+        record_gateway_call(
+            key_hash,
+            model,
+            backend=None,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            error=True,
+        )
         raise AllBackendsFailed("; ".join(errors) or f"no backend for model '{model}'")
 
     def health(self) -> dict[str, bool]:

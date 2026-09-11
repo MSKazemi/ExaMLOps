@@ -21,7 +21,7 @@ promotion (C3) when a budget is exhausted.
 
 ```bash
 # One SLO inline
-exa slo set JPCP latency-p99 --target 0.99 --window 30d --source c1
+exa slo set LLM  latency-800ms --target 0.99 --window 30d --source c1 --query 'latency_ms<=800'
 exa slo set LLM  groundedness --target 0.95 --source c2 --gate   # --gate: block promotion on exhaustion
 
 # Or a batch from OpenSLO-style YAML
@@ -92,9 +92,24 @@ good** — counting it would let a model with no data score a perfect fairness S
 comes from the same `effective_fairness_config` the promotion gate uses, so the SLI and the gate
 can never disagree about which attributes a model declares.
 
-**The remaining sources are reported as un-ingested, with the reason** — `c1` because
-`gateway_calls` persists cost and tokens but neither latency nor an error flag; `availability`
-because no serving probe is persisted; `prometheus` because Prometheus evaluates its own rules
+**`c1` (the model gateway) counts measured calls.** Every gateway call records how long the
+caller waited (guardrail scanning included) and whether it failed. A request that failed on
+every backend is recorded as an error, where it used to leave no row at all, making any error
+rate computed from the table zero by construction. A `c1` SLO needs `--query`:
+
+```bash
+exa slo set LLM latency-800ms --target 0.99 --source c1 --query 'latency_ms<=800'
+exa slo set LLM errors        --target 0.999 --source c1 --query errors
+```
+
+`latency_ms<=800` is the share of **successful** calls answered within 800 ms; a failed call
+belongs to the error SLI, the usual SRE split. `errors` is the share of calls that did not fail. A
+failover that eventually succeeded is one successful call, timed end to end. Only calls in the
+spec's own `--window` count, and only calls that carry a measurement: rows written before this
+existed have no latency and read as *unmeasured*, never as fast.
+
+**The remaining sources are reported as un-ingested, with the reason:** `availability` because
+no serving probe is persisted; `prometheus` because Prometheus evaluates its own rules
 (use `exa slo generate`). This is not an oversight to tidy away: a source that silently records
 nothing is indistinguishable downstream from a healthy service nobody asked about, which is the
 trap the `measured` flag already exists to close.
@@ -120,7 +135,7 @@ budget that refills is a rolling-window artefact, not a decision anyone made.
 ## Publishing the SLIs Prometheus cannot see
 
 `exa slo generate` emits burn-rate **alert** rules that range over a Prometheus series. For an SLI
-the platform ingests itself — `c2`, `c5`, `c8` — that series does not exist unless you publish it,
+the platform ingests itself — `c1`, `c2`, `c5`, `c8` — that series does not exist unless you publish it,
 so those alerts can never fire:
 
 ```bash

@@ -120,15 +120,57 @@ def record_gateway_call(
     cost_usd: float = 0.0,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
+    latency_ms: float | None = None,
+    error: bool = False,
 ) -> None:
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO gateway_calls
-                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens)
-               VALUES (?,?,?,?,?,?)""",
-            (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens),
+                   (key_hash, model, backend, cost_usd, prompt_tokens, completion_tokens,
+                    latency_ms, error)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                key_hash,
+                model,
+                backend,
+                cost_usd,
+                prompt_tokens,
+                completion_tokens,
+                latency_ms,
+                1 if error else 0,
+            ),
         )
+
+
+# Not in `__all__`: the facade contract is that every name there is `platform_db`'s own, and this
+# is read only by `examlops.slo` (ADR 0023 clause 3, the `c1` source).
+def gateway_call_sli(
+    model: str, since: str, *, latency_ms_max: float | None = None
+) -> tuple[int, int]:
+    """``(good, total)`` over a model's **measured** gateway calls since ``since`` (UTC).
+
+    Only rows that carry a measurement count — rows written before latency was recorded have
+    ``latency_ms`` NULL and are *unmeasured*, not fast. With ``latency_ms_max`` it is a latency
+    SLI over **successful** calls (a failed call is the error SLI's business, the usual SRE
+    split); without it, an error SLI: good = calls that did not fail.
+    """
+    init_db()
+    with get_db() as conn:
+        if latency_ms_max is None:
+            row = conn.execute(
+                "SELECT SUM(CASE WHEN error = 0 THEN 1 ELSE 0 END), COUNT(*) FROM gateway_calls "
+                "WHERE model = ? AND ts >= ? AND latency_ms IS NOT NULL",
+                (model, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT SUM(CASE WHEN latency_ms <= ? THEN 1 ELSE 0 END), COUNT(*) "
+                "FROM gateway_calls "
+                "WHERE model = ? AND ts >= ? AND latency_ms IS NOT NULL AND error = 0",
+                (latency_ms_max, model, since),
+            ).fetchone()
+    return int(row[0] or 0), int(row[1] or 0)
 
 
 def set_gateway_config(

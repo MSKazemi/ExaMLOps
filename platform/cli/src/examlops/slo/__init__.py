@@ -14,7 +14,9 @@ present, specs load from YAML; otherwise pass dict specs directly.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from examlops import data as platform_db
@@ -318,8 +320,6 @@ def record_sample(
 #: reads downstream as *unmeasured*, and "we have no ingester for this" and "the system is healthy"
 #: must not be the same observation.
 UNSUPPORTED_SOURCES = {
-    "c1": "gateway_calls records cost and tokens but neither latency nor an error flag, "
-    "so a latency or error SLI cannot be derived from it yet",
     "availability": "no serving-availability probe is persisted anywhere in platform_db",
     "prometheus": "needs a live Prometheus; use `exa slo generate` to emit recording rules "
     "and let Prometheus evaluate them there",
@@ -328,12 +328,61 @@ UNSUPPORTED_SOURCES = {
 #: Sources with an ingester. Named so an unrecognised value is reported as a **typo** rather than
 #: as "unknown source" — `c5` was in the ADR and not in this module, and the message a user got
 #: ("unknown sli_source 'c5'") said the source did not exist rather than that it was unbuilt.
-SUPPORTED_SOURCES = ("c2", "c5", "c8")
+SUPPORTED_SOURCES = ("c1", "c2", "c5", "c8")
 
 #: How many recorded drift verdicts one c5 ingest looks back over. Bounded so a long-lived
 #: model's SLI reflects its recent behaviour rather than its whole history — an SLO is a
 #: statement about a rolling window, and the window's own length lives on the spec.
 _DRIFT_WINDOW = 200
+
+
+_LATENCY_QUERY = re.compile(r"^latency(?:_ms)?\s*<=\s*(\d+(?:\.\d+)?)$")
+_WINDOW = re.compile(r"^(\d+)([mhdw])$")
+_WINDOW_UNIT = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _window_start(window: str) -> str | None:
+    """The UTC timestamp a spec's rolling ``window`` (``30d``, ``24h``, ``2w``) begins at, in
+    ``gateway_calls.ts``'s own format — or None when the window is not in that form."""
+    m = _WINDOW.match((window or "").strip())
+    if not m:
+        return None
+    start = datetime.now(UTC) - timedelta(seconds=int(m.group(1)) * _WINDOW_UNIT[m.group(2)])
+    return start.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _c1_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
+    """Good/total for a gateway latency or error SLO (ADR 0023 clause 3, the C1 GenAI source).
+
+    ``--query latency_ms<=800`` — the share of **successful** calls answered within 800 ms (a
+    failed call belongs to the error SLI, the usual SRE split). ``--query errors`` — the share of
+    calls that did not fail. Only calls that carry a measurement count, over the spec's own
+    ``window``; a query is required, as for `c2`, because a guessed default is how an SLO ends up
+    measuring something nobody chose.
+    """
+    from examlops.data.gateway import gateway_call_sli
+
+    query = (spec.get("sli_query") or "").strip().lower().replace(" ", "")
+    if query in ("errors", "error_rate", "success"):
+        latency_max = None
+    elif m := _LATENCY_QUERY.match(query):
+        latency_max = float(m.group(1))
+    else:
+        return (
+            "c1 needs --query `latency_ms<=<ms>` for a latency SLO or `errors` for an error SLO"
+            + (f" (got '{spec.get('sli_query')}')" if query else "")
+        )
+    since = _window_start(spec.get("window") or "30d")
+    if since is None:
+        return f"window '{spec.get('window')}' is not of the form <n>m|h|d|w (e.g. 30d)"
+    good, total = gateway_call_sli(model, since, latency_ms_max=latency_max)
+    if total == 0:
+        return (
+            f"no measured gateway calls for {model} in the last {spec.get('window') or '30d'}"
+            + (" that succeeded" if latency_max is not None else "")
+            + " — calls recorded before latency was measured carry none"
+        )
+    return (float(good), float(total))
 
 
 def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[float, float] | str:
@@ -449,7 +498,9 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
         if source in UNSUPPORTED_SOURCES:
             out.append({**row, "ingested": False, "reason": UNSUPPORTED_SOURCES[source]})
             continue
-        if source == "c2":
+        if source == "c1":
+            result = _c1_samples(model, spec, tenant)
+        elif source == "c2":
             result = _c2_samples(model, spec, tenant)
         elif source == "c5":
             result = _c5_samples(model, spec, tenant)

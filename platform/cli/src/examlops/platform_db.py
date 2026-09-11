@@ -1735,6 +1735,12 @@ def init_db(*, force: bool = False) -> None:
 # ``ALTER TABLE ADD COLUMN`` errors if the column already exists, so we gate on
 # PRAGMA table_info. Keep entries here forever — they are cheap and self-skipping.
 _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    # ADR 0023 clause 3 `c1`: a gateway call's measured latency and whether it failed, so a
+    # latency or error SLI can be derived. NULL on older rows reads as *unmeasured*, never as 0.
+    "gateway_calls": {
+        "latency_ms": "REAL",
+        "error": "INTEGER",
+    },
     # A6 reindex orchestration (ADR 0043 clause 4): where the job ran and how long it took.
     # `cost_usd` is deliberately absent — a monetary figure needs device-hours this path does not
     # know, and an invented one is worse than none (the rule the C1 carbon facet already follows).

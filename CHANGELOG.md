@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — gateway latency and error SLOs: the `c1` SLI source (ADR 0023 clause 3)
+
+- Every model-gateway call now records `latency_ms` (what the caller waited, guardrail scanning
+  included) and `error`. A request that failed on every backend is recorded as an error, where it
+  used to leave no row, so an error rate computed from `gateway_calls` was zero by construction.
+  Existing rows read as unmeasured; the columns arrive by an additive migration.
+- `exa slo ingest` supports `--source c1`: `--query 'latency_ms<=800'` is the share of successful
+  calls answered within 800 ms, and `--query errors` the share of calls that did not fail. Both
+  count only measured calls in the spec's own window.
+
 ## [0.55.0] - 2026-09-11
 
 ### Fixed — `exa serve llm start --launcher flux` starts the server (ADR 0107 clause 3)

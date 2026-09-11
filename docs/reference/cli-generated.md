@@ -3359,8 +3359,8 @@ Declare or version-bump one SLO spec (R1).
 
 - `--target` — Objective ratio 0..1
 - `--window` — Rolling window (e.g. 30d)
-- `--source` — c2 (eval quality) | c5 (drift verdicts) | c8 (fairness disparity) | c1 | availability | prometheus
-- `--query` — PromQL SLI expression (good ratio)
+- `--source` — c1 (gateway latency/errors) | c2 (eval quality) | c5 (drift verdicts) | c8 (fairness disparity) | availability | prometheus
+- `--query` — SLI expression: PromQL for prometheus; `latency_ms<=800` or `errors` for c1; `[suite:]metric` for c2; a drift kind for c5
 - `--tenant` — Tenant scope (D6)
 - `--gate` — Gate promotion when budget exhausted (C3)
 
