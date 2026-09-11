@@ -5,6 +5,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Security — MLflow 3.16: fixes an unauthenticated SSRF (critical) and a pickle-safety bypass
+
+- **mlflow 3.11.1 → 3.16.0 in all six places at once**: `uv.lock`, the three workspace
+  `pyproject.toml` files, `serving/ray_serving/requirements.txt`, and the tracking-server and
+  notebook images (`Dockerfile.mlflow` is re-pinned by digest). This closes GHSA-7gwp-5pfp-969j
+  (critical: unauthenticated full-read SSRF through webhook delivery), GHSA-gqvg-gmmx-x4hm (high:
+  `MLFLOW_ALLOW_PICKLE_DESERIALIZATION=False` bypassed by the statsmodels flavor) and
+  GHSA-2cm6-r77w-6g96 (high: trace APIs without authorization), 15 alerts in all. It also lifts
+  mlflow 3.11's `cryptography<47` cap, so cryptography moves to 50.0.1 (4 more alerts).
+  `tests/unit/test_training_serving_versions_agree.py` keeps every layer on one version.
+- **The serving image pins pandas and scikit-learn to the training lock** (2.3.3 and 1.9.1). Both
+  were floating. mlflow 3.11 had capped pandas below 3; with that cap gone, the image would have
+  built with pandas 3 while training locks 2.3.3, so the same feature transforms would run under a
+  different major. The training/serving guard now covers every `==` pin in the serving
+  requirements, not a fixed list. The serving image gets its own Dependabot entry that ignores
+  those packages and fastapi ≥ 0.137 (the ray 2.55 cap). That entry is why #25, #26 and #27 were
+  declined. boto3 ≥ 1.43.88 (#28) is taken.
+- **Upgrade note. Back up the MLflow database first; the migration is one-way.** A 3.16 tracking
+  server migrates the schema itself when it starts (checked against Postgres 16: alembic
+  `c3d6457b6d8a` → `b7e2c1a4d9f3`). Afterwards a 3.11 server refuses to start ("Detected
+  out-of-date database schema"). Before deploying, take `exa backup create --with-postgres`
+  (it covers the `mlflow` and `prefect` databases). Rolling back means restoring that backup
+  together with the old images. Rehearsed end to end: data written by 3.11 (params, metric
+  history, the `Production` alias, version tags, a logged model) reads back through 3.16, and the
+  model loads by alias and predicts identical values. The server image builds, and serving still
+  resolves with ray 2.55, fastapi 0.136 and xgboost 3.2.
+
+### Security — 78 of 111 Dependabot alerts closed; the other 33 have named blockers
+
+Turning on Dependabot alerts (2026-09-10) exposed 111 open advisories, some critical. None came
+from recent changes. The alerts had simply been off.
+
+- **Python, 66 alerts, lock only:** gitpython 3.1.62 (critical), aiohttp 3.14.3, pillow 12.3.0,
+  sqlparse 0.6.0, pyasn1 0.6.4, httpx2 2.12.0 / httpcore2 2.12.0, transformers 5.17, msgpack 1.2.2,
+  h2 4.4.1, pydantic-settings 2.15. Where `uv lock --upgrade-package` kept a vulnerable copy in
+  the Python < 3.15 fork (the one every deployment runs), a commented floor in
+  `[tool.uv] constraint-dependencies` now forces the patched version.
+- **Dashboard frontend, 12 alerts:** `npm audit fix` within the existing ranges (js-yaml,
+  browserslist, hono, qs, baseline-browser-mapping, postcss-selector-parser), with vitest 4.1.11
+  from the dependency update below.
+- **Still open, each needing a decision rather than a lock bump:** mlflow ≥ 3.15 (15 alerts, one
+  critical) is a coordinated training, serving and tracking-server upgrade and needs
+  `mlflow db upgrade`; mlflow 3.11.1 also caps `cryptography<47` (4 alerts). ray ≥ 2.56
+  (2 alerts) is a coordinated client and cluster upgrade. setuptools ≥ 83 (2) is blocked by vllm's
+  `<81`. sglang ≥ 0.5.10 (8, 4 of them unpatched upstream) pins torch, torchaudio and
+  transformers exactly and conflicts with vllm in the one shared lock. react-router 7 (2) is a
+  routing migration from v6.
+
+### Changed — dependency updates from Dependabot
+
+- sentence-transformers 6.0.1 (#17): embeddings from `all-MiniLM-L6-v2` are byte-identical to
+  5.5.1 on transformers 5.9 and on 5.17. redis-py 8.1 (#18): the live Redis coordination test
+  passes 5/5 under both 8.1 and 7.4.
+- Dashboard frontend (#8, #10, #14, #15, applied together on one lockfile): the minor/patch group
+  plus jsdom 30, @testing-library/jest-dom 7 and react-markdown 10. `npm ci`, lint, 386/386
+  vitest and `tsc -b` + build all pass on Node 24.
+- Held back: @types/node 26 (#13), because typings must match the Node that runs the code (24).
+  Dependabot now leaves @types/node majors to move with the runtime.
+
 ## [0.52.0] - 2026-09-11
 
 ### Added — community front door and a discoverable docs site
