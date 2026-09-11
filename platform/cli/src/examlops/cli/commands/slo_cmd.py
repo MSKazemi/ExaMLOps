@@ -40,7 +40,7 @@ def set_slo(
         "--source",
         help=(
             "c1 (gateway latency/errors) | c2 (eval quality) | c5 (drift verdicts) "
-            "| c8 (fairness disparity) | availability | prometheus"
+            "| c8 (fairness disparity) | availability (serving readiness probe) | prometheus"
         ),
     ),
     sli_query: str = typer.Option(
@@ -48,7 +48,7 @@ def set_slo(
         "--query",
         help=(
             "SLI expression: PromQL for prometheus; `latency_ms<=800` or `errors` for c1; "
-            "`[suite:]metric` for c2; a drift kind for c5"
+            "`[suite:]metric` for c2; a drift kind for c5; `version:<v>` for availability"
         ),
     ),
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),

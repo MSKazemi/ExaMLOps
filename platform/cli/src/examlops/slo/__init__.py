@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -321,7 +323,6 @@ def record_sample(
 #: reads downstream as *unmeasured*, and "we have no ingester for this" and "the system is healthy"
 #: must not be the same observation.
 UNSUPPORTED_SOURCES = {
-    "availability": "no serving-availability probe is persisted anywhere in platform_db",
     "prometheus": "needs a live Prometheus; use `exa slo generate` to emit recording rules "
     "and let Prometheus evaluate them there",
 }
@@ -329,7 +330,7 @@ UNSUPPORTED_SOURCES = {
 #: Sources with an ingester. Named so an unrecognised value is reported as a **typo** rather than
 #: as "unknown source" — `c5` was in the ADR and not in this module, and the message a user got
 #: ("unknown sli_source 'c5'") said the source did not exist rather than that it was unbuilt.
-SUPPORTED_SOURCES = ("c1", "c2", "c5", "c8")
+SUPPORTED_SOURCES = ("availability", "c1", "c2", "c5", "c8")
 
 #: How many recorded drift verdicts one c5 ingest looks back over. Bounded so a long-lived
 #: model's SLI reflects its recent behaviour rather than its whole history — an SLO is a
@@ -414,6 +415,66 @@ def _c1_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
             + " — calls recorded before latency was measured carry none"
         )
     return (float(good), float(total), f"gateway_calls:{last}")
+
+
+_PROBE_VERSION = re.compile(r"^version:([A-Za-z0-9._-]{1,64})$")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A readiness answer is the probed server's own; a redirect is not followed, and is not
+    ready — it would let the answer come from somewhere the platform did not choose to ask."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _availability_samples(
+    model: str, spec: dict[str, Any], tenant: str
+) -> tuple[float, float] | str:
+    """One black-box probe of whether ``model`` can serve now (ADR 0023 clause 3, availability).
+
+    It asks the platform's own Ray Serve the Open Inference Protocol question,
+    ``GET /v2/models/{model}/ready`` (``…/versions/{v}/ready`` with ``--query version:<v>``).
+    200 is good; anything else, including no answer at all, is one bad sample, because a model
+    that cannot be reached is exactly what an availability SLO exists to count. Each ingest is one
+    probe, a point-in-time sample, so run `exa slo ingest` on a schedule to probe on one.
+
+    The target is **not** configurable per spec. A URL taken from an SLO spec and fetched by the
+    platform would be a server-side request forgery primitive; the spec may pin a version, and
+    the host is the configured `ray_serve_url` (``RAY_SERVE_URL``). Request-based availability,
+    the share of real requests that succeeded, lives in Prometheus (the ``prometheus`` source);
+    this is its black-box complement.
+    """
+    query = (spec.get("sli_query") or "").strip()
+    version = None
+    if query:
+        m = _PROBE_VERSION.match(query)
+        if not m:
+            return f"availability accepts only --query version:<v> (got '{query}')"
+        version = m.group(1)
+    try:
+        from examlops.cli._config import load_config
+
+        base = str(load_config().ray_serve_url or "").rstrip("/")
+    except Exception as exc:  # noqa: BLE001
+        return f"no serving URL to probe ({exc})"
+    if not base.startswith(("http://", "https://")):
+        return f"ray_serve_url '{base}' is not an http(s) URL — set RAY_SERVE_URL"
+    if model in (".", "..") or version in (".", ".."):
+        # Quoting leaves a dot segment as it is, and a server that normalises the path would
+        # answer for a different endpoint than the model this SLO is about.
+        return "a model or version of '.' or '..' does not name a model to probe"
+    path = f"/v2/models/{urllib.parse.quote(model, safe='')}"
+    if version is not None:
+        path += f"/versions/{urllib.parse.quote(version, safe='')}"
+    timeout = float(os.getenv("EXAMLOPS_SLO_PROBE_TIMEOUT", "5") or 5)
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(f"{base}{path}/ready", timeout=timeout) as resp:
+            ok = resp.status == 200
+    except Exception:  # noqa: BLE001 - refused, timed out, 4xx/5xx, redirected: not available
+        ok = False
+    return (1.0 if ok else 0.0, 1.0)
 
 
 def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
@@ -545,7 +606,9 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
             out.append({**row, "ingested": False, "reason": UNSUPPORTED_SOURCES[source]})
             continue
         result: tuple[float, float, str] | tuple[float, float] | str
-        if source == "c1":
+        if source == "availability":
+            result = _availability_samples(model, spec, tenant)
+        elif source == "c1":
             result = _c1_samples(model, spec, tenant)
         elif source == "c2":
             result = _c2_samples(model, spec, tenant)

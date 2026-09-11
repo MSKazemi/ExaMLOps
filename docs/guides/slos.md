@@ -120,8 +120,25 @@ failover that eventually succeeded is one successful call, timed end to end. Onl
 spec's own `--window` count, and only calls that carry a measurement: rows written before this
 existed have no latency and read as *unmeasured*, never as fast.
 
-**The remaining sources are reported as un-ingested, with the reason:** `availability` because
-no serving probe is persisted; `prometheus` because Prometheus evaluates its own rules
+**`availability` probes the model itself.** Each ingest asks the platform's own Ray Serve the Open
+Inference Protocol readiness question, `GET /v2/models/{model}/ready`, and records one sample:
+good on 200, bad on anything else. A server that doesn't answer is a bad sample too, because a
+model nobody can reach is exactly what this SLO counts. Probes accumulate, so run the ingest on a
+schedule and the SLI becomes the share of probes the model was ready for:
+
+```bash
+exa slo set JPCP up --target 0.999 --source availability          # the served model
+exa slo set JPCP up-v17 --target 0.99 --source availability --query version:17
+* * * * * exa slo ingest JPCP     # e.g. a cron entry: one probe a minute
+```
+
+The host is always the configured `ray_serve_url` (`RAY_SERVE_URL`), and a spec can only pin a
+version. An SLO spec that could name a URL for the platform to fetch would be a server-side
+request forgery primitive. Redirects are not followed either. This is black-box availability:
+does the model answer. The share of *real* requests that succeeded is request-based
+availability, which lives in Prometheus.
+
+**The remaining source is reported as un-ingested, with the reason:** `prometheus` because Prometheus evaluates its own rules
 (use `exa slo generate`). This is not an oversight to tidy away: a source that silently records
 nothing is indistinguishable downstream from a healthy service nobody asked about, which is the
 trap the `measured` flag already exists to close.

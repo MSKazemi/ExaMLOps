@@ -135,7 +135,9 @@ def test_ingestion_that_breaches_reports_and_audits_it():
 # ── the skips are the point ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("source", ["c1", "availability", "prometheus"])
+# `availability` left this list when it gained a probe (BL-061): it probes and records a sample
+# rather than skipping. `c1` stays — with no --query it refuses rather than guessing.
+@pytest.mark.parametrize("source", ["c1", "prometheus"])
 def test_a_source_with_no_ingester_says_so_instead_of_recording_nothing(source):
     """Silence here would read downstream as *unmeasured*, and 'we have no ingester for this'
     must not look the same as 'the service is healthy and nobody asked'."""

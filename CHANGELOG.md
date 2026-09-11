@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — serving availability SLOs: the `availability` SLI source (ADR 0023 clause 3)
+
+- `exa slo ingest` probes each `availability` spec's model with the Open Inference Protocol
+  readiness check (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`, or a pinned
+  `--query version:<v>`). It records one sample per probe: good on 200, bad otherwise, including
+  when the server does not answer. Run the ingest on a schedule and the SLI is the share of
+  probes the model was ready for.
+- The probe target cannot be set from a spec (no SSRF), redirects are not followed, and a
+  `.`/`..` model or version is refused. Timeout: `EXAMLOPS_SLO_PROBE_TIMEOUT` (5 s).
+
 ## [0.56.0] - 2026-09-11
 
 ### Fixed — the vLLM job script could end a multi-node HPC job at startup with exit 141

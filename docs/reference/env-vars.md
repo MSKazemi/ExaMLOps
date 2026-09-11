@@ -797,6 +797,7 @@ appear in a log or a CI summary until you switch it on.
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SLO_GATE_ENABLED` | off | Make `exa slo` failures block a promotion instead of reporting. |
+| `EXAMLOPS_SLO_PROBE_TIMEOUT` | `5` | Seconds the `availability` SLI probe (`exa slo ingest`, ADR 0023) waits for the model's Open Inference Protocol readiness answer (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`) before counting it a bad sample. |
 | `EXAMLOPS_FAIRNESS_GATE_ENABLED` | off | Make subgroup-fairness failures block. |
 | `EXAMLOPS_SYNTHETIC_ONLY_GATE` | off | Refuse to train on anything but synthetic data — for a use case that may not touch real records yet. |
 

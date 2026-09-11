@@ -97,9 +97,10 @@ def test_a_genuine_typo_is_reported_as_such_and_lists_the_real_sources():
 
 
 def test_a_source_with_no_ingester_still_says_why_it_has_none():
-    """`availability` is unbuilt, not misspelled; the two must not read the same."""
-    _spec("DriftF", "s", "availability")
-    assert "no serving-availability probe" in _row("DriftF", "s")["reason"]
+    """`prometheus` is unbuilt here, not misspelled; the two must not read the same.
+    (`availability` was this example until it gained a probe, BL-061.)"""
+    _spec("DriftF", "s", "prometheus")
+    assert "needs a live Prometheus" in _row("DriftF", "s")["reason"]
 
 
 # ── c8: fairness ──────────────────────────────────────────────────────────────
