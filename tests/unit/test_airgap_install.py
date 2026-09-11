@@ -84,7 +84,10 @@ def test_every_chart_image_can_be_pointed_at_a_mirror():
     assert not unpinned, f"upstream images a mirror could serve differently (no digest): {unpinned}"
 
 
-def test_every_upstream_compose_image_is_a_pinned_docker_hub_image():
+def test_every_upstream_compose_image_is_pinned_and_the_guide_says_how_to_mirror_it():
+    """A Docker `registry-mirrors` entry serves Docker Hub images only. An upstream image from any
+    other registry (MinIO's, on quay.io since it left Docker Hub on 2026-09-11) reaches a mirror
+    only through the Compose override the guide describes, so the guide must name it."""
     services = yaml.safe_load(COMPOSE.read_text())["services"]
     upstream = {
         name: svc["image"]
@@ -92,14 +95,17 @@ def test_every_upstream_compose_image_is_a_pinned_docker_hub_image():
         if not svc["image"].startswith("${EXAMLOPS_REGISTRY")
     }
     assert upstream
+    guide = GUIDE.read_text()
     for name, image in upstream.items():
         match = PINNED.match(image)
         assert match, f"{name}: {image} is not pinned by digest"
         first = match["repo"].split("/")[0]
         # Docker's rule: a first component with a dot or a colon, or `localhost`, is a registry.
-        assert "/" not in match["repo"] or not (
-            "." in first or ":" in first or first == "localhost"
-        ), f"{name}: {image} is not on Docker Hub, so registry-mirrors will not serve it"
+        if "/" in match["repo"] and ("." in first or ":" in first or first == "localhost"):
+            assert match["repo"] in guide, (
+                f"{name}: {image} is not on Docker Hub, so registry-mirrors will not serve it; "
+                f"the air-gapped guide must say how to mirror {match['repo']}"
+            )
 
 
 def test_the_guides_verification_loop_names_every_released_image():

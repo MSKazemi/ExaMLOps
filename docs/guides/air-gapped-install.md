@@ -88,15 +88,22 @@ tar xzf examlops-compose-X.Y.Z.tar.gz
 grep -hoE 'image: [a-z][^$ ]+@sha256:[0-9a-f]{64}' examlops-compose-X.Y.Z/docker-compose.yml \
   | sed 's/image: //' | sort -u > upstream-images.txt
 
-while read -r ref; do             # ref = grafana/loki:2.9.10@sha256:…
+while read -r ref; do             # grafana/loki:2.9.10@sha256:… or quay.io/minio/mc:…@sha256:…
   digest=${ref#*@}; name=${ref%@*}; repo=${name%:*}; tag=${name##*:}
-  oras cp -r "docker.io/$repo@$digest" "$MIRROR/$repo:$tag"
+  case ${repo%%/*} in *.*) src=$repo; repo=${repo#*/} ;; *) src=docker.io/$repo ;; esac
+  oras cp -r "$src@$digest" "$MIRROR/$repo:$tag"
 done < upstream-images.txt
 ```
 
-v0.54.0 has ten, from `grafana`, `minio`, `prefecthq`, `prom` and `tecnativa`. All are Docker Hub
-images, which is what a Docker registry mirror serves. `tests/unit/test_airgap_install.py` fails
-the build if the bundle gains an upstream image from any other registry.
+v0.54.0 has ten upstream images, from `grafana`, `minio`, `prefecthq`, `prom` and `tecnativa`.
+MinIO removed `minio/minio` and `minio/mc` from Docker Hub on 2026-09-11. The same images, with
+the same digests, are on quay.io, and later bundles name them there: `quay.io/minio/minio` and
+`quay.io/minio/mc`. The loop above copies each one under its path without the registry host
+(`$MIRROR/minio/minio:…`). For a bundle that still names them `minio/…` (v0.54.0 to v0.56.0),
+copy those two from `quay.io` instead of `docker.io`. A Docker registry mirror serves Docker Hub
+names only, so step 6b shows how the quay.io images reach the mirror.
+`tests/unit/test_airgap_install.py` fails the build if the bundle gains an upstream image from any
+other registry that this guide doesn't name.
 
 ### 4. Collect the Python wheels and the trusted root
 
@@ -203,6 +210,23 @@ docker compose up -d
 
 The upstream references stay pinned by digest, so a pull through the mirror can only return the
 exact image the release was tested with.
+
+A Docker registry mirror does not apply to `quay.io/minio/minio` and `quay.io/minio/mc`. Point
+those services at your mirror with a `docker-compose.override.yml` next to `docker-compose.yml`;
+Compose merges it automatically. Keep the tags and digests the bundle pins:
+
+```yaml
+services:
+  minio:
+    image: registry.internal/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+  minio-init:
+    image: registry.internal/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+  s3-init:
+    image: registry.internal/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+```
+
+A v0.54.0 to v0.56.0 bundle names them `minio/minio` and `minio/mc`, which the registry mirror
+does serve, so it needs no override once the mirror holds them.
 
 !!! note "v0.54.0 only"
     The v0.54.0 bundle's MLflow limit is too small for MLflow 3.16. Add `MLFLOW_MEM_LIMIT=4g` to

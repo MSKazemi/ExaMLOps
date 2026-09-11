@@ -88,9 +88,10 @@ services:
   # Any S3-compatible service works: point EXAMLOPS_S3_ENDPOINT at it and remove `minio` from
   # COMPOSE_PROFILES in .env. The bundled MinIO (the `minio` profile, on by default) is for
   # evaluation and small sites: MinIO stopped publishing community images after this release
-  # (2025-09-07), so it receives no security fixes.
+  # (2025-09-07), so it receives no security fixes. MinIO also removed minio/minio and minio/mc
+  # from Docker Hub (2026-09-11); the same images, same digests, are on quay.io.
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     profiles: [minio]
     mem_limit: ${MINIO_MEM_LIMIT:-1g}
     command: server /data --console-address ":9001"
@@ -113,7 +114,7 @@ services:
   # models). With an external store, issue a read-only key there and put it in
   # EXAMLOPS_S3_SERVING_ACCESS_KEY / _SECRET_KEY.
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     profiles: [minio]
     depends_on:
       s3-init:
@@ -141,7 +142,7 @@ services:
 
   # One-shot, any S3 service: create the platform's buckets if they are missing.
   s3-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       minio:
         condition: service_healthy

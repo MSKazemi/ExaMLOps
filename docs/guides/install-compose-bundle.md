@@ -193,15 +193,34 @@ the result can be trusted and pulled:
 
 - Copy the ExaMLOps images with `oras cp -r`, which brings their signatures and provenance along.
   A plain image copy leaves the signatures behind. Then set `EXAMLOPS_REGISTRY` to the mirror.
-- The upstream images keep their Docker Hub names, so `EXAMLOPS_REGISTRY` doesn't reach them.
-  Mirror them under the same path and digest, and point Docker's `registry-mirrors` at the
-  mirror.
+- The upstream images keep their own names, so `EXAMLOPS_REGISTRY` doesn't reach them. Mirror
+  them under the same path and digest, and point Docker's `registry-mirrors` at the mirror. That
+  covers the Docker Hub images. The two MinIO images come from quay.io, so they also need a
+  `docker-compose.override.yml`.
 
 [Air-gapped and mirrored installs](air-gapped-install.md) has the tested commands, and the offline
 verification to run before `docker compose up`.
 
 ## Known limits
 
+- **Bundles v0.54.0 to v0.56.0 cannot pull MinIO any more.** MinIO removed `minio/minio` and
+  `minio/mc` from Docker Hub on 2026-09-11. Those bundles name them there, so on a host that has
+  not pulled them before, `docker compose pull` stops with `pull access denied for minio/minio`.
+  This affects every install, not only the `minio` profile, because the `s3-init` job uses
+  `minio/mc`. The same images, with the same digests, are on quay.io. Put this
+  `docker-compose.override.yml` next to `docker-compose.yml`; Compose merges it automatically:
+
+    ```yaml
+    services:
+      minio:
+        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+      minio-init:
+        image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+      s3-init:
+        image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    ```
+
+  Later bundles name quay.io themselves.
 - **MinIO:** MinIO stopped publishing community container images after `RELEASE.2025-09-07`,
   which is the release the bundle pins. That image receives no security fixes. For production,
   [use your own S3 store](#use-your-own-s3-store). If you keep the bundled MinIO, keep it on

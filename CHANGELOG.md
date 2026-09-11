@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the install bundle pulls MinIO from quay.io; MinIO left Docker Hub
+
+- MinIO removed `minio/minio` and `minio/mc` from Docker Hub on 2026-09-11. Every published
+  bundle (v0.54.0 to v0.56.0) names them there. On a host that hasn't pulled them before,
+  `docker compose pull` therefore stops with `pull access denied for minio/minio`. That hits
+  every install, because the `s3-init` job uses `minio/mc` whatever the profiles.
+- **Fix:** the bundle now names `quay.io/minio/minio` and `quay.io/minio/mc` with the same tags
+  and digests, so the images are byte for byte the ones already tested.
+- **Workaround for v0.54.0 to v0.56.0:** put this `docker-compose.override.yml` next to the
+  bundle's `docker-compose.yml`. Compose merges it automatically; the tags and digests are the
+  ones those bundles pin:
+
+  ```yaml
+  services:
+    minio:
+      image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    minio-init:
+      image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    s3-init:
+      image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+  ```
+
+  The same snippet is in [Install on a single node](docs/guides/install-compose-bundle.md#known-limits).
+- **How it was caught:** the release-verify workflow's new Compose check, run on v0.56.0, failed
+  on exactly this pull, about four hours after the same digest last pulled from Docker Hub.
+- **Air-gapped sites:** the guide now copies upstream images from any registry and uses an override
+  for the quay.io ones. Its guard now accepts an upstream image from a registry other than Docker
+  Hub only when the guide names it.
+- The development stack (`platform/infra/docker-compose/docker-compose.yml`) still names
+  `minio/minio:latest` and `minio/mc:latest` and needs the same change.
+
 ### Fixed — unit tests no longer read the platform's real SQLite stores
 
 - With `AGENT_MEMORY_DB` / `AGENT_DB` / `AGENT_MEMORY_REVIEW_DB` / `MLFLOW_SQLITE_DB` unset, those
