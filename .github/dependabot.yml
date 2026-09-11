@@ -138,6 +138,13 @@ updates:
       # A JupyterHub major needs `jupyterhub upgrade-db` on the hub's database first.
       - dependency-name: "*jupyterhub/jupyterhub"
         update-types: ["version-update:semver-major"]
+      # The notebook image's tag IS its Python (`python-3.12`), and Ray Client needs the same
+      # Python minor as the cluster it talks to (the serving image runs 3.12). PR #24 proposed
+      # python-3.13. Move it with the serving image, by hand.
+      - dependency-name: "*jupyter/scipy-notebook"
+      # The Prefect server image moves with the Prefect client in uv.lock, deliberately. PR #24
+      # proposed a development pre-release (3.8.6.dev3).
+      - dependency-name: "prefecthq/prefect"
 
   # CI actions. Workflows pin each action to a commit SHA with the version in a comment;
   # Dependabot updates the SHA and the comment together.
