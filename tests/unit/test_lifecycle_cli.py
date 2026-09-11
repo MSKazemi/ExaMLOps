@@ -25,7 +25,13 @@ def _pack(root):
 
 
 def test_instance_init_creates_a_working_data_root(tmp_path, monkeypatch):
+    from examlops.cli import main as cli_main
+
     monkeypatch.delenv("PLATFORM_DB")
+    # With PLATFORM_DB unset the CLI's start-up init opens the default datastore — in a source
+    # checkout, the checkout's own platform.db, which on a dev host is the live stack's. The
+    # command under test creates the new root's database itself (asserted below).
+    monkeypatch.setattr(cli_main, "_init_platform_db", lambda: None)
     monkeypatch.delenv("EXAMLOPS_SITE_PROFILE")  # let the profile follow the new data root
     root = tmp_path / "data"
     res, out = _json(

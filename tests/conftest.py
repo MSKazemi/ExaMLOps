@@ -22,6 +22,38 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _STARTED: pytest.StashKey[float] = pytest.StashKey()
 sys.path.insert(0, str(REPO_ROOT / "platform" / "cli" / "src"))
 
+# The checkout's own SQLite stores — on a dev host the live stack's. No test may open one: a unit
+# test copying or initialising them is a flake (they change under it) and reads private state.
+# An audit hook sees every `sqlite3.connect`, product code and libraries included (MLflow through
+# SQLAlchemy too). It refuses the connection and records it, so a test fails even when the code
+# under test swallows the error and degrades (2026-09-11, BL-062).
+_CHECKOUT_STORES = frozenset(
+    str(REPO_ROOT / n)
+    for n in (
+        "platform.db",
+        "mlflow.db",
+        "skipper_memory.db",
+        "agent_memory.db",
+        "skipper_review.db",
+    )
+)
+_CHECKOUT_STORE_OPENS: list[str] = []
+
+
+def _refuse_checkout_stores(event: str, args: tuple) -> None:
+    if event != "sqlite3.connect" or not args:
+        return
+    try:
+        path = os.path.realpath(os.fsdecode(args[0]))
+    except (TypeError, ValueError):
+        return
+    if path in _CHECKOUT_STORES:
+        _CHECKOUT_STORE_OPENS.append(path)
+        raise PermissionError(f"a unit test opened the checkout's own store {path}")
+
+
+sys.addaudithook(_refuse_checkout_stores)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_postgres_state():
@@ -58,6 +90,42 @@ def _isolate_platform_db(tmp_path, monkeypatch):
     first. No-op in effect on Postgres, where ``PLATFORM_DB`` is not consulted.
     """
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    yield
+
+
+#: The platform's other SQLite stores whose defaults are relative to the working directory — the
+#: repository root when the suite runs, which on a dev host is where the live stack keeps them.
+_CWD_RELATIVE_STORES = ("AGENT_MEMORY_DB", "AGENT_DB", "AGENT_MEMORY_REVIEW_DB", "MLFLOW_SQLITE_DB")
+
+
+@pytest.fixture(autouse=True)
+def _no_checkout_store_opened():
+    """Fail a test that connected to one of the checkout's own SQLite stores (see the hook)."""
+    del _CHECKOUT_STORE_OPENS[:]
+    yield
+    opened = sorted(set(_CHECKOUT_STORE_OPENS))
+    del _CHECKOUT_STORE_OPENS[:]
+    assert not opened, (
+        f"this test connected to the checkout's own store(s) {opened} — point it at tmp_path "
+        "(PLATFORM_DB / MLFLOW_TRACKING_URI / AGENT_* / MLFLOW_SQLITE_DB)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sqlite_stores(tmp_path, monkeypatch):
+    """Point every other CWD-relative SQLite store at a path under this test's ``tmp_path``.
+
+    Found 2026-09-11 chasing a backup-test flake: with these unset, `exa backup`'s sqlite tier
+    resolved `./skipper_memory.db`, `./agent_memory.db` and `./mlflow.db` in the repository root
+    and **copied the developer's real agent memory and MLflow databases** into the test's backup
+    — whatever happened to be there, while the live stack or another xdist worker was writing
+    them, which is a flake at best and a unit test reading private state at worst. The paths
+    are never created here; a test that wants a store creates it, and one that sets its own path
+    still wins, because this runs first. ``CONTROL_PLANE_DB`` is left alone: unset, it falls back
+    to the ``PLATFORM_DB`` above, which is already this test's own.
+    """
+    for var in _CWD_RELATIVE_STORES:
+        monkeypatch.setenv(var, str(tmp_path / "stores" / f"{var.lower()}.db"))
     yield
 
 

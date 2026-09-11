@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — unit tests no longer read the platform's real SQLite stores
+
+- With `AGENT_MEMORY_DB` / `AGENT_DB` / `AGENT_MEMORY_REVIEW_DB` / `MLFLOW_SQLITE_DB` unset, those
+  stores defaulted to the working directory, which is the repository root when the suite runs and
+  where a dev host's live stack keeps them. A backup test copied the developer's real agent-memory
+  and MLflow databases mid-write, a flake under `-n` and a unit test reading private state. Two
+  other tests opened the checkout's `platform.db` and MLflow 3's default `./mlflow.db`.
+- `tests/conftest.py` now isolates those stores per test and refuses, through an audit hook on
+  `sqlite3.connect`, any connection to the checkout's own stores, failing the offending test.
+
 ### Added — release verification starts the Compose bundle (ADR 0129)
 
 - `platform/ci/verify_release.sh` now also starts the release's Compose bundle, as the

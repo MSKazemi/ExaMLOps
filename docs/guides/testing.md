@@ -72,6 +72,23 @@ forty files.
 **The rule this establishes: a test must not depend on state left by another test.** If a test only
 passes serially, that is a bug in the test, not a reason to stop running in parallel.
 
+**No test touches the checkout's own stores either.** The platform's other SQLite stores default to
+paths in the working directory: `AGENT_MEMORY_DB`, `AGENT_DB`, `AGENT_MEMORY_REVIEW_DB` and
+`MLFLOW_SQLITE_DB`, and MLflow 3 itself, which falls back to `sqlite:///mlflow.db` when
+`MLFLOW_TRACKING_URI` is unset. The working directory is the repository root when the suite runs,
+and on a dev host that's where the live stack keeps them. A backup test was found copying the
+developer's real agent-memory and MLflow databases mid-write. That's a flake when they change under
+it, and a unit test reading private state regardless.
+
+Two things in `tests/conftest.py` close it:
+- `_isolate_sqlite_stores` points those variables at paths under each test's `tmp_path`.
+- An **audit hook on `sqlite3.connect`** refuses any connection to the checkout's `platform.db`,
+  `mlflow.db` or agent stores, whoever makes it (product code, MLflow through SQLAlchemy, a
+  library), and records it, so the test fails even if the code under test swallows the error.
+
+If a test trips it, state what the test needs at the seam (as `test_rollback_registry` does with
+`_alias_version`) or point the store at `tmp_path`.
+
 ### What is deliberately *not* parallel
 
 `test:postgres` in CI runs single-process on purpose. Its workers would share one schema that the

@@ -221,14 +221,21 @@ def _seed_drifting_model(model: str = "JPCP") -> None:
 
 
 def test_the_autopilot_refuses_a_retrain_it_could_not_undo():
-    """No MLflow here, so no previous version resolves, so no inverse can be built — and the
-    cycle must decline rather than retrain something it cannot roll back."""
+    """No previous version resolves, so no inverse can be built — and the cycle must decline
+    rather than retrain something it cannot roll back.
+
+    "No previous version" is stated at the seam (`_alias_version` → None), the way the sibling
+    test states a resolvable one. Letting it fall through to a real MLflow client meant MLflow 3's
+    default store, `sqlite:///mlflow.db` in the working directory: the repository root's file."""
     from examlops.cli.commands import autopilot_cmd
     from examlops.platform_db import set_autopilot_config
 
     set_autopilot_config("enabled", "1")
     _seed_drifting_model()
-    with patch.object(autopilot_cmd, "_call_retrain") as mock_retrain:
+    with (
+        patch.object(autopilot_cmd, "_alias_version", return_value=None),
+        patch.object(autopilot_cmd, "_call_retrain") as mock_retrain,
+    ):
         result = autopilot_cmd.run_cycle()
     mock_retrain.assert_not_called()
     assert result["refused"], "the cycle retrained without a way to undo it"
@@ -241,7 +248,10 @@ def test_the_refusal_is_recorded_in_the_evidence_chain():
 
     set_autopilot_config("enabled", "1")
     _seed_drifting_model()
-    with patch.object(autopilot_cmd, "_call_retrain"):
+    with (
+        patch.object(autopilot_cmd, "_alias_version", return_value=None),
+        patch.object(autopilot_cmd, "_call_retrain"),
+    ):
         autopilot_cmd.run_cycle()
     with get_db() as conn:
         rows = conn.execute(
