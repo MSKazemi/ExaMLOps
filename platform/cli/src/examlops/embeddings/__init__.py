@@ -393,10 +393,72 @@ def _result_from_row(
     )
 
 
-def reindex_status(collection: str, tenant: str = "default") -> dict:
+def reindex_status(collection: str, tenant: str = "default", *, reconcile: bool = True) -> dict:
+    """A collection's encoders and reindex history — reconciled with the scheduler first.
+
+    ``reconcile`` (default) settles any row still ``submitted`` whose scheduler job has ended
+    (see :func:`reconcile_submitted`), so a status never reports a dead job as queued.
+    """
+    if reconcile:
+        reconcile_submitted(collection, tenant)
     coll = platform_db.get_collection(collection, tenant)
     jobs = platform_db.list_reindex_jobs(collection)
     return {"collection": coll, "jobs": jobs}
+
+
+_TERMINAL = ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
+
+
+def reconcile_submitted(collection: str, tenant: str = "default") -> list[int]:
+    """Mark ``failed`` every ``submitted`` reindex whose scheduler job ended without settling it.
+
+    On Slurm / Flux a reindex is fire-and-forget: the job moves its own row on. A job that dies
+    before its interpreter runs — node failure, a cancelled or timed-out allocation, a broken
+    environment — never does, and the row would read ``submitted`` forever.
+
+    **The order is what makes it safe.** The scheduler is asked first; only a terminal state
+    leads to re-reading the row. By then the job's process is gone, so any write it was going to
+    make has been made — a row still ``submitted`` is genuinely orphaned, including when the job
+    ``COMPLETED`` without reaching the reindex. Reading the row first would race a job finishing
+    its bookkeeping. Anything short of a clear answer — no scheduler here, a job it cannot see, a
+    state that is not terminal — leaves the row alone: reconciliation may only settle, never
+    guess. Returns the reindex job ids it marked ``failed``.
+    """
+    pending = [
+        r
+        for r in platform_db.list_reindex_jobs(collection)
+        if r.get("status") == "submitted" and r.get("hpc_job_id") and r.get("tenant") == tenant
+    ]
+    if not pending:
+        return []
+    try:
+        adapter = _scheduler_adapter()
+    except Exception:  # noqa: BLE001 - no scheduler here: nothing can be decided
+        return []
+    from examlops import scheduler_jobs as jobs
+
+    settled: list[int] = []
+    for row in pending:
+        try:
+            status = adapter.get_job_status(str(row["hpc_job_id"]))
+        except Exception:  # noqa: BLE001 - a job the scheduler cannot see is not a verdict
+            continue
+        state = str(status.get("state") or "UNKNOWN").upper()
+        if state not in _TERMINAL:
+            continue
+        if _job_row(int(row["id"])).get("status") != "submitted":
+            continue  # the job settled it after all
+        platform_db.update_reindex_job(int(row["id"]), status="failed")
+        jobs.finish_job(str(row["hpc_job_id"]), jobs.scheduler_name(), status)
+        _audit(
+            collection,
+            tenant,
+            "reindex_reconciled_failed",
+            {"reindex_job": row["id"], "hpc_job_id": row["hpc_job_id"], "scheduler_state": state},
+            None,
+        )
+        settled.append(int(row["id"]))
+    return settled
 
 
 def _rebaseline_input_drift(collection: str, enc_id: str) -> None:
@@ -427,4 +489,5 @@ __all__ = [
     "set_collection_encoder",
     "reindex",
     "reindex_status",
+    "reconcile_submitted",
 ]

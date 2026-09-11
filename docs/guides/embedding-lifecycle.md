@@ -97,6 +97,22 @@ read back from the row.
 | The job cannot start its interpreter (mock) | The row is `failed`, not left `submitted` |
 | No scheduler in this environment | Runs here and records `inline-fallback` (not reindexing at all is the worse answer) |
 | A library caller passes a `recall_fn` | Runs here and records `inline-fallback`, because a function cannot travel to a job; pass `recall=` to submit |
+| The job dies before its interpreter runs (Slurm/Flux) | `exa embedding status` asks the scheduler and marks the row `failed` (audited `reindex_reconciled_failed`) |
+
+**How `status` reconciles.** On Slurm and Flux the job settles its own row. If the job dies first
+(a failed node, a cancelled or timed-out allocation, a broken environment), nothing settles it, so
+`exa embedding status` checks each `submitted` row with the scheduler before reporting:
+
+1. The scheduler is asked first.
+2. Only a terminal answer (`COMPLETED`, `FAILED`, `CANCELLED`, `TIMEOUT`) leads to re-reading the
+   row. By then the job's process is gone, so if the row still reads `submitted`, the job never
+   reached the reindex, and the row becomes `failed`. That includes a job that exited 0 without
+   reaching the reindex.
+
+Reading the row first would race a job that is just finishing its bookkeeping. When the answer is
+not clear, nothing changes: no scheduler here, a job the scheduler cannot see, or a job still in
+flight. Reconciliation settles rows; it never guesses. Library callers can pass
+`reindex_status(..., reconcile=False)` to read without asking the scheduler.
 
 Job scripts follow the same rules as asset jobs: mode 0700, shell-quoted, no environment
 values, kept under `EXAMLOPS_JOB_SCRIPT_DIR` and never inside the repository. The job is listed

@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — a reindex whose scheduler job died no longer reads `submitted` forever (ADR 0043 clause 4)
+
+- On Slurm and Flux a `--scheduler` reindex is fire-and-forget: the job settles its own row. A job
+  that died before its interpreter ran (a failed node, a cancelled or timed-out allocation, a
+  broken environment) never did, and `exa embedding status` reported it as queued indefinitely.
+- `exa embedding status` now asks the scheduler about each `submitted` row first, and marks it
+  `failed` (audited `reindex_reconciled_failed`) only on a terminal answer with the row still
+  unsettled. The scheduler is asked before the row is re-read, so a job finishing its bookkeeping
+  is never overwritten. Without a clear answer (no scheduler, a job it cannot see, a job still
+  running), nothing changes. `reindex_status(..., reconcile=False)` reads without asking.
+
 ### Changed — agents see only the modules a site runs (ADR 0128)
 
 - The MCP server, `exa mcp tools` and the A2A agent card no longer offer the tools of a module the

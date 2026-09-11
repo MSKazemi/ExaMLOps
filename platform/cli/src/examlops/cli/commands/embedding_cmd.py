@@ -165,7 +165,12 @@ def status(
     collection: str = typer.Argument(..., help="Collection name"),
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
-    """Show a collection's active/staging encoder + reindex history."""
+    """Show a collection's active/staging encoder + reindex history.
+
+    A reindex still `submitted` whose scheduler job has ended without settling it is marked
+    `failed` first (and audited), so a dead job never reads as queued. Only a clear terminal
+    answer from the scheduler settles a row; anything else leaves it as it is.
+    """
     from examlops.embeddings import reindex_status
 
     result = reindex_status(collection, tenant)
