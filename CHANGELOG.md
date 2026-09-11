@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — every docs page has its own search description
+
+- 117 of the 138 documentation pages had no `description:`, so each inherited the site-wide
+  summary: search results and AI answers showed the same text for different pages. A MkDocs hook
+  (`docs/overrides/seo_hooks.py`) now fills a missing description from the page's own first
+  paragraph, cut at a word boundary; hand-written front matter still wins. All 138 pages now
+  carry a distinct description. Guard: `tests/unit/test_docs_description_hook.py`.
+
 ### Added — Identity federation: sign in with your data center (ADR 0120)
 
 ExaMLOps now federates with the identity provider and authorization system the hosting data

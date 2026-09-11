@@ -64,6 +64,11 @@ theme:
 plugins:
   - search
 
+# Pages without `description:` front matter get one from their own first paragraph, instead of all
+# sharing site_description (tests/unit/test_docs_description_hook.py).
+hooks:
+  - docs/overrides/seo_hooks.py
+
 extra:
   social:
     - icon: fontawesome/brands/github
