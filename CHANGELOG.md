@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — `exa serve llm start --launcher flux` starts the server (ADR 0107 clause 3)
+
+- The vLLM job script called Slurm's `srun` and `scontrol` unconditionally. Under `flux batch`,
+  on the scheduler this platform's own cluster runs, even a single-node job died on its last
+  line and the server never started.
+- The script now detects its scheduler and places each step through it: `scontrol`/`srun -w` on
+  Slurm (unchanged), and `flux hostlist local` / `flux run --requires=host:NODE` on Flux,
+  requesting the node's GPUs per step. With no scheduler it runs on the current host.
+- Also fixed: the head-node address fallback (`hostname -I`) was unreachable. Under
+  `set -o pipefail`, a node name `getent` could not resolve ended the job on the line before it.
+
 ### Fixed — the training flow promoted past a blocking eval gate (ADR 0008)
 
 - The training flow's lifecycle promotion set Staging, Canary and Production on metric thresholds

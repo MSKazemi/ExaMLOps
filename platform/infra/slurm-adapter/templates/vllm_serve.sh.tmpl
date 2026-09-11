@@ -12,6 +12,14 @@
 #
 # The resolved endpoint is written to @@ENDPOINT_FILE@@ as soon as it is known, so the
 # launcher learns the address from the job itself instead of scraping squeue.
+#
+# Scheduler-neutral: the same script runs under `sbatch` and under `flux batch`. It used to call
+# `srun`/`scontrol` unconditionally, so under Flux — which has neither — even a single-node job
+# died on its last line and the server never started. Two helpers now hide the difference:
+# `job_hosts` lists the allocation's hosts and `on_host HOST CMD…` runs CMD as a one-task step
+# there. A `flux batch` job is its own Flux instance, so `flux hostlist local` is its allocation
+# and `flux run --requires=host:HOST` places a step on one of its nodes; Flux gives a task only
+# the GPUs it asks for, so the step requests the node's GPUs explicitly.
 
 set -euo pipefail
 
@@ -22,6 +30,7 @@ PORT="@@PORT@@"
 NODES="@@NODES@@"
 ENDPOINT_FILE="@@ENDPOINT_FILE@@"
 RAY_PORT="@@RAY_PORT@@"
+GPUS_PER_NODE="@@GPUS_PER_NODE@@"
 
 @@MODULE_LOADS@@
 
@@ -35,13 +44,47 @@ if [ ! -f "${SIF}" ]; then
   apptainer pull "${SIF}" "${IMAGE}"
 fi
 
-# ── address discovery ─────────────────────────────────────────────────────────
+# ── scheduler-neutral helpers ─────────────────────────────────────────────────
 if [ -n "${SLURM_JOB_NODELIST:-}" ]; then
-  HEAD_NODE=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n1)
+  SCHED=slurm
+elif [ -n "${FLUX_URI:-}" ] && command -v flux >/dev/null 2>&1; then
+  SCHED=flux
 else
-  HEAD_NODE=$(hostname -s)
+  SCHED=local  # no scheduler (a mock or hand-run job): this host only
 fi
-HEAD_IP=$(getent hosts "${HEAD_NODE}" | awk '{print $1}' | head -n1)
+
+job_hosts() {
+  case "${SCHED}" in
+    slurm) scontrol show hostnames "${SLURM_JOB_NODELIST}" ;;
+    flux) flux hostlist --expand local | tr ' ' '\n' | sed '/^$/d' ;;
+    *) hostname -s ;;
+  esac
+}
+
+on_host() {
+  local host="$1"
+  shift
+  case "${SCHED}" in
+    slurm) srun --nodes=1 --ntasks=1 -w "${host}" "$@" ;;
+    flux)
+      local gpus=()
+      if [ "${GPUS_PER_NODE}" -gt 0 ]; then
+        gpus=(--gpus-per-task="${GPUS_PER_NODE}")
+      fi
+      # `${gpus[@]+…}`: an empty array under `set -u` aborts bash < 4.4.
+      flux run --nodes=1 --ntasks=1 ${gpus[@]+"${gpus[@]}"} --requires="host:${host}" "$@"
+      ;;
+    *) "$@" ;;
+  esac
+}
+
+echo "[vllm-serve] scheduler=${SCHED}"
+
+# ── address discovery ─────────────────────────────────────────────────────────
+HEAD_NODE=$(job_hosts | head -n1)
+# `|| true`: under `set -o pipefail` a name getent cannot resolve (exit 2) would end the job
+# here, and the fallback on the next line — which exists for exactly that case — never ran.
+HEAD_IP=$(getent hosts "${HEAD_NODE}" | awk '{print $1}' | head -n1 || true)
 HEAD_IP=${HEAD_IP:-$(hostname -I | awk '{print $1}')}
 
 mkdir -p "$(dirname "${ENDPOINT_FILE}")"
@@ -51,14 +94,14 @@ echo "[vllm-serve] endpoint http://${HEAD_IP}:${PORT} (head=${HEAD_NODE})"
 # ── Ray cluster (multi-node only) ─────────────────────────────────────────────
 if [ "${NODES}" -gt 1 ]; then
   echo "[vllm-serve] starting Ray head on ${HEAD_NODE}"
-  srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  on_host "${HEAD_NODE}" \
     apptainer exec --nv "${SIF}" \
     ray start --head --port="${RAY_PORT}" --block &
   sleep 15
 
-  for node in $(scontrol show hostnames "${SLURM_JOB_NODELIST}" | tail -n +2); do
+  for node in $(job_hosts | tail -n +2); do
     echo "[vllm-serve] starting Ray worker on ${node}"
-    srun --nodes=1 --ntasks=1 -w "${node}" \
+    on_host "${node}" \
       apptainer exec --nv "${SIF}" \
       ray start --address="${HEAD_IP}:${RAY_PORT}" --block &
     sleep 5
@@ -70,7 +113,7 @@ fi
 
 # ── serve ─────────────────────────────────────────────────────────────────────
 # Apptainer forwards any APPTAINERENV_*-prefixed host variable into the container with the
-# prefix stripped, and srun propagates the batch environment by default. Going through the
+# prefix stripped, and both srun and flux run propagate the batch environment. Going through the
 # environment this way keeps the API key off every command line — `apptainer exec --env
 # VLLM_API_KEY=...` would expand the value into argv, where any user on the node could read
 # it out of `ps`.
@@ -78,6 +121,6 @@ if [ -n "${VLLM_API_KEY:-}" ]; then
   export APPTAINERENV_VLLM_API_KEY="${VLLM_API_KEY}"
 fi
 
-srun --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+on_host "${HEAD_NODE}" \
   apptainer exec --nv "${SIF}" \
   vllm serve "${MODEL}" @@VLLM_ARGS@@ --host 0.0.0.0 --port "${PORT}"

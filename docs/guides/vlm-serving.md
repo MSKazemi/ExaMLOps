@@ -93,6 +93,13 @@ pipeline parallelism *across* nodes. A single-node allocation skips Ray entirely
 does in-node tensor parallelism by itself, and an unnecessary Ray cluster is one more thing
 that can fail to start.
 
+The same script runs under `sbatch` and `flux batch`. It detects which scheduler it is in and
+places each step through it: `scontrol`/`srun -w NODE` on Slurm, and `flux hostlist local` /
+`flux run --requires=host:NODE` on Flux (a `flux batch` job is its own Flux instance). Flux gives
+a task only the GPUs it asks for, so every step requests the node's `--gpus` explicitly
+(`--gpus-per-task`). Run with no scheduler at all (a hand-run or mock job), the server starts on
+the current host.
+
 The job writes its own endpoint URL to `<work_dir>/<model>.endpoint` as soon as the head
 node is known, so the address is learned from the job rather than scraped out of `squeue`.
 The endpoint is registered at submission with no address. `exa serve llm health`, `status`
@@ -244,8 +251,9 @@ environment, never on a command line where `ps` could read them.
   multi-node TP/PP launch, and throughput/TTFT targets remain **unverified** until a GPU
   allocation exists.
 - KServe endpoints are validated, never applied; there is no live-apply path yet.
-- The HPC job script calls Slurm's `srun` and `scontrol`. `--launcher flux` submits it with
-  `flux batch`, but the server does not start there until the script gains a Flux launch path.
+- The Flux launch path is verified against the script's own logic (every scheduler command it
+  issues, executed under shims), not yet against a Flux instance with GPUs. The platform's own
+  Flux instance manages no GPUs today.
 - The address an HPC job publishes is its head node's IP. The machine running `exa` (and the
   gateway) must be able to reach it on the serving port; from outside a cluster that
   usually needs a tunnel or a reachable login-node proxy.

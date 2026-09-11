@@ -229,6 +229,7 @@ class HpcLauncher:
             "@@NODES@@": str(spec.nodes),
             "@@ENDPOINT_FILE@@": str(self._endpoint_file(spec)),
             "@@RAY_PORT@@": str(_RAY_PORT),
+            "@@GPUS_PER_NODE@@": str(int(spec.gpus or 0)),
             "@@MODULE_LOADS@@": module_loads,
             "@@VLLM_ARGS@@": " ".join(to_vllm_args(spec.config)),
         }
