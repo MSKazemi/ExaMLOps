@@ -1,4 +1,4 @@
-FROM quay.io/jupyter/scipy-notebook:python-3.12@sha256:15b50ef89a316b483279aa5f689c5b26947e586ddb403c504e65a73b47ff8569
+FROM quay.io/jupyter/scipy-notebook:python-3.13@sha256:ec7343ba248a7473c42322e86e7157bef9ebc9253c40a88e573b3fcf607a9a8a
 
 RUN pip install --no-cache-dir \
     mlflow==3.11.1 \
