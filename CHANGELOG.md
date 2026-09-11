@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the release docs say where each artifact's licence inventory is
+
+- [Releases](docs/guides/release-process.md#licences-of-what-a-release-contains) now shows how to
+  list the licence of every package in an image, from the image's signed SPDX SBOM, and in the
+  wheel's dependency set, from the `examlops-X.Y.Z.cdx.json` release asset. Both commands were
+  run against v0.55.0.
+
 ### Added — serving availability SLOs: the `availability` SLI source (ADR 0023 clause 3)
 
 - `exa slo ingest` probes each `availability` spec's model with the Open Inference Protocol

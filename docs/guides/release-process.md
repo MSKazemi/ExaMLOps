@@ -88,6 +88,32 @@ sha256sum -c SHA256SUMS --ignore-missing
 into a site with no internet with the signatures intact, see
 [Air-gapped and mirrored installs](air-gapped-install.md).
 
+## Licences of what a release contains
+
+ExaMLOps is Apache-2.0. The images and the wheel also contain third-party packages under their
+own licences. Every release lists them, so a licence review can start from the published
+inventory instead of unpacking images:
+
+- **Each image** carries a signed SPDX SBOM, which BuildKit generates at build time:
+
+    ```bash
+    docker buildx imagetools inspect ghcr.io/mskazemi/examlops-control-plane:X.Y.Z \
+      --format '{{ json .SBOM.SPDX }}' > control-plane.spdx.json
+    jq -r '.packages[] | [.name, .versionInfo, .licenseDeclared] | @tsv' control-plane.spdx.json
+    ```
+
+- **The wheel's dependency set** is the release asset `examlops-X.Y.Z.cdx.json`, a CycloneDX
+  SBOM:
+
+    ```bash
+    jq -r '.components[] | [.name, .version,
+      ([.licenses[]? | .license.id // .license.name // .expression] | join(" OR "))] | @tsv' \
+      examlops-X.Y.Z.cdx.json
+    ```
+
+The images are built on Debian, so their operating-system layer includes the usual GPL and LGPL
+system packages (bash, coreutils, glibc). The SBOM lists those too.
+
 ## What the workflow checks before it builds anything
 
 A tag that fails any of these publishes nothing:
