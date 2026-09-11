@@ -1,0 +1,54 @@
+# Prometheus for the install bundle's `monitoring` profile.
+#
+# The development stack's ../../prometheus.yml also scrapes the SeanerBUS bridge and vLLM, which
+# the bundle does not run. A job whose target never exists keeps `up == 0` true forever, so the
+# generic TargetDown alert would page for a service nobody installed. This file therefore keeps
+# only the jobs the bundle has, each copied verbatim from the development file;
+# tests/unit/test_install_bundle.py fails if one drifts from its original or goes missing.
+# Everything else (alert rules, Alertmanager, Loki, Tempo, Grafana) is shared by symlink.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: local
+    tenant: default
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  - job_name: ray_serve
+    static_configs:
+      - targets: ['ray-serving:8080']
+    metrics_path: /metrics
+
+  - job_name: control_plane
+    static_configs:
+      - targets: ['control-plane:8002']
+    metrics_path: /metrics
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']
+
+  - job_name: tempo
+    static_configs:
+      - targets: ['tempo:3200']
+
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']
+    metrics_path: /metrics
+
+  # Cluster nodes and HPC-launched vLLM endpoints, written by `exa hpc prometheus-sd`.
+  - job_name: fleet
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/*.json']
+        refresh_interval: 30s
+    metrics_path: /metrics

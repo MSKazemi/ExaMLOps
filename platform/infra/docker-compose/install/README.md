@@ -16,8 +16,10 @@ Dashboard: `http://localhost:18099`. Sign in as `admin` with `DASHBOARD_ADMIN_PA
 |---|---|
 | `docker-compose.yml` | The stack. Images are pinned to `EXAMLOPS_VERSION`, upstream images by digest. |
 | `env.template` | Every setting. `install.sh init` turns it into `.env`. |
-| `install.sh` | `init` and `check`. POSIX sh. |
+| `install.sh` | `init`, `upgrade-env` (after unpacking a newer bundle) and `check`. POSIX sh. |
+| `monitoring/` | Config for the optional `monitoring` profile (Prometheus, Alertmanager, Grafana, Loki, Tempo). |
 | `state/` | Created by `init`. The instance-data root (ADR 0128); back it up. |
+| `secrets/` | Created by `init`. Alertmanager receiver secrets; never part of a release. |
 
 The full guide is `docs/guides/install-compose-bundle.md`: requirements, exposing the stack,
 adding your models, backups, upgrades, air-gapped mirrors and known limits.

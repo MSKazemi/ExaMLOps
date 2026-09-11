@@ -18,15 +18,16 @@ as a tarball asset, with the matching version already filled in.
 | Ray Serve (inference) | `examlops-ray-serving` | `http://localhost:18001` |
 | Control plane (retrain API) | `examlops-control-plane` | `http://localhost:18002` |
 | Skipper agent (dashboard Copilot) | `examlops-agent` | loopback only |
-| PostgreSQL, MinIO | `examlops-postgres`, upstream MinIO | internal; MinIO on `:19000`/`:19001` |
+| PostgreSQL | `examlops-postgres` | internal |
+| MinIO (optional; or your own S3 service) | upstream MinIO, pinned by digest | `:19000` API, `:19001` console |
 | Backup sidecar (opt-in) | `examlops-backup` | — |
+| Monitoring (opt-in): Prometheus, Alertmanager, Grafana, Loki, Tempo | upstream, pinned by digest | Grafana `:13000`, Prometheus `:19090` |
 
 Every ExaMLOps image is pulled from `ghcr.io/mskazemi` at the bundle's version. Every upstream
 image is pinned by digest, so two installs of the same release run the same bytes.
 
-The bundle doesn't include the monitoring stack (Prometheus, Grafana, Loki, Tempo), JupyterHub,
-the SeanerBUS bridge or vLLM. They still run from the development stack
-(`platform/infra/docker-compose/docker-compose.yml`).
+The bundle doesn't include JupyterHub, the SeanerBUS bridge or vLLM. They still run from the
+development stack (`platform/infra/docker-compose/docker-compose.yml`).
 
 ## Requirements
 
@@ -84,11 +85,12 @@ Everything the platform creates lives in three places. Back them up together:
   (`EXAMLOPS_STATE_UID`/`EXAMLOPS_STATE_GID`). That lets you edit it without `sudo`, and the
   agent, which runs as uid 10001, can write to it through the group.
 - The `postgres_data` volume holds MLflow and Prefect metadata.
-- The `minio_data` volume holds model artifacts and project storage.
+- The object store holds model artifacts and project storage: the `minio_data` volume with the
+  bundled MinIO, or your own S3 buckets.
 
 The `backup` profile runs `exa backup schedule --all` inside the stack, hourly by default. It
 captures `platform.db` and the agent's memory, the site files in `./state`, the dashboard's own
-`exa` configuration, both Postgres databases and both MinIO buckets:
+`exa` configuration, both Postgres databases, and the artifact and project buckets:
 
 ```bash
 docker compose --profile backup up -d backup                         # scheduled
@@ -98,6 +100,49 @@ docker compose --profile backup run --rm backup backup create --all  # one now
 Bundles are written to the `backups_data` volume. Set `EXAMLOPS_BACKUP_S3_URI` to copy each one
 off the host. On a fresh install a few items report `skipped`, for example agent memory that
 hasn't been created yet or MLflow's SQLite file, which the bundle doesn't use. That's expected.
+
+## Use your own S3 store
+
+By default the bundle runs its own MinIO. To use an S3 service you already operate, such as
+Ceph RGW, an institutional object store or a cloud bucket, edit `.env` before the first start:
+
+1. Remove `minio` from `COMPOSE_PROFILES`, which leaves it empty. The bundled MinIO then never
+   starts, and nothing else depends on it.
+2. Set `EXAMLOPS_S3_ENDPOINT`, and `EXAMLOPS_S3_REGION` if your store uses one.
+3. Set `EXAMLOPS_S3_ACCESS_KEY` and `EXAMLOPS_S3_SECRET_KEY` to an account that can create and
+   write the three buckets.
+4. Set `EXAMLOPS_S3_SERVING_ACCESS_KEY` and `EXAMLOPS_S3_SERVING_SECRET_KEY` to a key that can
+   only read the artifact bucket. Ray Serve downloads models with it. The bundled MinIO issues
+   this key itself; on your own store you issue it.
+5. Bucket names are global on most public clouds, so give them a site prefix:
+   `EXAMLOPS_S3_ARTIFACT_BUCKET`, `EXAMLOPS_PROJECTS_BUCKET` and `DASHBOARD_MINIO_BUCKET`.
+
+The one-shot `s3-init` service creates any bucket that is missing on every start, whichever
+store you use. MLflow, the dashboard, Ray Serve and the backup sidecar all reach the store
+through `EXAMLOPS_S3_ENDPOINT`.
+
+## Turn on monitoring
+
+Add `monitoring` to `COMPOSE_PROFILES` in `.env` (for example `COMPOSE_PROFILES=minio,monitoring`)
+and run `docker compose up -d`. You get:
+
+- **Prometheus**, which scrapes Ray Serve, the control plane and the monitoring services, plus
+  any cluster nodes and HPC vLLM endpoints that `exa hpc prometheus-sd` writes to
+  `./state/prometheus-targets`.
+- **The platform's alert rules and Alertmanager.** The `Watchdog` alert fires constantly by
+  design, so a dead-man's switch can tell that alerting still works.
+- **Grafana** with the platform dashboards, at `:13000`. Sign in as `admin` with
+  `GRAFANA_ADMIN_PASSWORD` from `.env`.
+- **Loki and Promtail**, which collect every container's logs through a read-only Docker API
+  proxy. Promtail never mounts the Docker socket itself.
+- **Tempo** for traces. To send traces, also set `OTEL_SDK_DISABLED=false` and
+  `OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317`.
+
+Alertmanager's receivers read their secrets from files in `./secrets/alertmanager/`, which
+`install.sh init` creates with mode `0750`: `slack_api_url`, `pagerduty_routing_key` and
+`heartbeat_url`, one value per file. A missing file turns that receiver off. Give each file mode
+`0640`: Alertmanager reads them through your group, so they're never world-readable. This
+directory is never part of a release tarball.
 
 ## Add your models
 
@@ -124,7 +169,8 @@ which carries `exa` and sees `./state`:
 
 ```bash
 docker compose --profile backup run --rm backup backup create --all   # 1. the undo
-# 2. set EXAMLOPS_VERSION in .env to the new release, then:
+# 2. unpack the new release's bundle over this directory (.env, state/ and secrets/ stay), then:
+./install.sh upgrade-env                                              #    new settings in, version moved
 docker compose pull
 docker compose run --rm --entrypoint exa instance-init upgrade plan   # 3. what the release makes of the data
 docker compose stop                                                   # 4. only if the plan asks for it:
@@ -133,6 +179,9 @@ docker compose up -d                                                  # 5. start
 docker compose run --rm --entrypoint exa instance-init instance check # 6. exit 1 on any problem
 ```
 
+`upgrade-env` adds the settings a new release introduces and generates any new secrets. It
+never changes a value that's already set. A setting that was renamed keeps its old value, so
+credentials that a volume already holds (MinIO's root account, for example) aren't rotated.
 Credentials, `./state` and the volumes carry over. Read the release notes first for any step
 that release requires. [Upgrades and compatibility](upgrade-and-compatibility.md) explains what a
 release promises to keep.
@@ -146,9 +195,9 @@ or `skopeo copy`) and set `EXAMLOPS_REGISTRY` to it. Upstream images are pinned 
 ## Known limits
 
 - **MinIO:** MinIO stopped publishing community container images after `RELEASE.2025-09-07`,
-  which is the release the bundle pins. That image receives no security fixes. The bundle can't
-  yet point at an external S3 service instead, so the node must stay firewalled, with MinIO on
-  loopback (the default).
+  which is the release the bundle pins. That image receives no security fixes. For production,
+  [use your own S3 store](#use-your-own-s3-store). If you keep the bundled MinIO, keep it on
+  loopback (the default) behind a firewall.
 - **Datastore:** the platform datastore defaults to SQLite in `./state/platform.db`, which suits
   one node. For Postgres, set `EXAMLOPS_DB_BACKEND=postgres` and `EXAMLOPS_POSTGRES_DSN` (see
   [Postgres backend](postgres-backend.md)).
@@ -160,5 +209,5 @@ or `skopeo copy`) and set `EXAMLOPS_REGISTRY` to it. Upstream images are pinned 
 builds an image, mounts anything besides `./state` (or the Docker socket, read-only, in the
 socket proxy), references an ExaMLOps image the release workflow doesn't publish, uses an
 upstream image without a digest, or reads a credential that isn't required and generated. It
-also fails if a weak default reappears, a port ignores `EXAMLOPS_BIND`, or `env.template` falls
-out of step with the compose file.
+also fails if a weak default reappears, a port ignores `EXAMLOPS_BIND`, a service names the
+bundled MinIO or a bucket directly, or `env.template` falls out of step with the compose file.

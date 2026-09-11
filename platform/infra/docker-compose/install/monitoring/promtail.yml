@@ -1,0 +1,37 @@
+# Promtail for the install bundle's `monitoring` profile: ships every container's stdout/stderr
+# to Loki. It differs from the development stack's ../../promtail-config.yml in two ways:
+#   * it discovers containers through the read-only logs-proxy, never the raw socket (which is
+#     root on the host);
+#   * it filters on this install's project name, not a fixed "examlops".
+# Both values are expanded from the environment (promtail runs with -config.expand-env=true).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: ${DOCKER_HOST}
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values:
+              - "com.docker.compose.project=${EXAMLOPS_PROJECT_NAME}"
+    relabel_configs:
+      - replacement: examlops
+        target_label: project
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: compose_service
+      - source_labels: [__meta_docker_container_name]
+        regex: '/(.*)'
+        target_label: container
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream

@@ -470,7 +470,7 @@ jobs:
           # this release by the VERSION file that `install.sh init` reads.
           bundle="examlops-compose-${VERSION}"
           mkdir -p "$RUNNER_TEMP/$bundle"
-          cp src/platform/infra/docker-compose/install/{docker-compose.yml,env.template,install.sh,README.md} \
+          cp -rL src/platform/infra/docker-compose/install/{docker-compose.yml,env.template,install.sh,README.md,monitoring} \
             "$RUNNER_TEMP/$bundle/"
           echo "$VERSION" > "$RUNNER_TEMP/$bundle/VERSION"
           tar -czf "assets/${bundle}.tar.gz" -C "$RUNNER_TEMP" "$bundle"

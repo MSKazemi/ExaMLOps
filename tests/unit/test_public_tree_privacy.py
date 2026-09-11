@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -53,7 +54,10 @@ def test_public_text_has_no_personal_home_paths_or_consumer_email_addresses():
     for relative in _public_paths():
         if relative == Path(__file__).relative_to(REPO):
             continue  # This guard necessarily contains the patterns it detects.
-        raw = (REPO / relative).read_bytes()
+        path = REPO / relative
+        # Git stores a symlink as the path it points to, so that is what the public tree holds;
+        # the target is scanned on its own. Reading through a link to a directory would raise.
+        raw = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
         if b"\0" in raw:
             continue
         text = raw.decode(errors="replace")
@@ -77,7 +81,10 @@ def test_public_docs_and_runtime_code_do_not_link_private_assistant_material():
             ".yml",
         }:
             continue
-        raw = (REPO / relative).read_bytes()
+        path = REPO / relative
+        # Git stores a symlink as the path it points to, so that is what the public tree holds;
+        # the target is scanned on its own. Reading through a link to a directory would raise.
+        raw = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
         if b"\0" in raw:
             continue
         if PRIVATE_REFERENCE.search(raw.decode(errors="replace")):

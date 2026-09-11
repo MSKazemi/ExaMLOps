@@ -5,6 +5,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the install bundle runs on any S3 store, can monitor itself, and upgrades its own `.env`
+
+- **Any S3-compatible object store.** The bundled MinIO moves behind a `minio` profile, on by default
+  through `COMPOSE_PROFILES` in `.env`. Remove it and set `EXAMLOPS_S3_ENDPOINT` and keys to use Ceph
+  RGW, an institutional store or a cloud bucket instead. A one-shot `s3-init` creates the buckets on
+  whichever store is configured, and bucket names are settings, because they are global on public
+  clouds. MinIO stopped publishing community images after `RELEASE.2025-09-07`, so the bundled copy
+  receives no security fixes. `EXAMLOPS_S3_*` replaces the bundle's `MINIO_ROOT_*`/`MINIO_SERVING_*`.
+- **An opt-in `monitoring` profile**: Prometheus, Alertmanager, Grafana (the platform dashboards),
+  Loki/Promtail and Tempo, with the platform's alert rules.
+  - The bundle's `prometheus.yml` keeps only the jobs it runs, so `TargetDown` never pages for a
+    service that isn't installed.
+  - Promtail discovers containers through its own read-only Docker proxy (containers and networks,
+    no `POST`); the dashboard's proxy is not widened.
+  - Alertmanager's receiver secrets live in `./secrets/alertmanager/`, which is never part of a
+    release tarball.
+- **`install.sh upgrade-env`**, to run after unpacking a newer bundle. It adds the settings the new
+  release introduces and generates new secrets. It never changes a value already set, and renamed
+  settings keep their old value, so MinIO's root credentials are not rotated.
+
+### Fixed — install bundle
+
+- **Services whose image runs as non-root can write the data root.** The control plane and dashboard
+  images now run as uid 10001. On the bind-mounted `/state` the control plane crash-looped at startup
+  (`attempt to write a readonly database`). Every service that mounts `/state` now joins the data
+  root's group.
+- **A fresh install no longer fails its first `up --wait`.** Postgres reported healthy while the
+  image's socket-only first-start server was running, and Prefect's TCP connection was refused. The
+  healthcheck now probes over TCP.
+- **The public-tree privacy guard reads a symlink's target path, as git stores it**, instead of reading
+  through the link. A link to a directory raised `IsADirectoryError`, and an absolute link into a home
+  directory is now reported.
+
 ### Fixed — a fresh clone installs what CI tests, and its first test run is green
 
 - `make install-dev` now installs exactly what `uv.lock` pins (`uv sync --frozen --inexact --extra

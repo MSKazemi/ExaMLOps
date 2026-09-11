@@ -189,7 +189,7 @@ def test_the_compose_bundle_ships_every_file_it_needs():
     assert listed, "the release no longer assembles the compose bundle"
     install = ROOT / "platform" / "infra" / "docker-compose" / "install"
     for name in listed.group(1).split(","):
-        assert (install / name).is_file(), f"bundle file missing: {name}"
+        assert (install / name).exists(), f"bundle file missing: {name}"
     assert "VERSION" in run, "install.sh init reads the release version from VERSION"
 
 
