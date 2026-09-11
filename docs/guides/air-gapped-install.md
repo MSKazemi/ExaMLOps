@@ -151,8 +151,10 @@ cosign verify-attestation --offline --trusted-root trusted_root.json \
 ```
 
 Each command exits non-zero if the signature is missing or was made by any other identity. A
-plain-HTTP test registry also needs `--allow-http-registry --allow-insecure-registry` on cosign
-and `--plain-http` or `--to-plain-http` on oras and Helm. A production mirror should serve TLS.
+plain-HTTP test registry also needs `--allow-http-registry --allow-insecure-registry` on
+`cosign verify` and `cosign verify-attestation` (`verify-blob` reads local files and rejects
+them), and `--plain-http` or `--to-plain-http` on oras and Helm. A production mirror should
+serve TLS.
 
 ### 6a. Install with Helm
 
