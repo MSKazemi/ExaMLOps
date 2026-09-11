@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Pandera is the data-contract engine, and failures name their rows (ADR 0005)
+
+- With Pandera installed, a data contract compiles to one Pandera schema and is validated in a
+  single pass. A failed range, domain, null or embedding-width check now says which rows failed
+  and how many: `2 row(s) outside [0.0, 10.0] — row 1: -1.0, row 3: -3.0`.
+- Pandera is now a dependency of the pipelines package (`pandera[pandas]>=0.33`). The pandas-only
+  engine is kept as the fallback, and the two give the same verdict on every check. A missing
+  Pandera therefore costs detail in the report and never changes whether data passes. Set
+  `EXAMLOPS_CONTRACT_ENGINE=python` to force the fallback.
+- Each verdict records the engine that reached it. `exa data validate` prints it, `--json`
+  carries `engine`, and a new `data_quality_checks.engine` column stores it. Rows written before
+  this change keep it empty.
+- New check `fresh_within(column, max_age)` passes when the newest timestamp is no older than
+  `max_age`. A value that is not a timestamp fails the check rather than being skipped.
+
+### Fixed — two data-contract checks gave the wrong answer
+
+- `embedding_dim` looked only at the first row, so a column with the right first width and wrong
+  later widths passed. Every row is now checked. A contract that passed on such data will now fail.
+- `not_null` failed an empty column, reporting `null_rate=nan`. An empty column has no nulls;
+  whether a table is empty is what `min_rows` checks.
+
 ### Fixed — an install bundle on your own S3 store no longer needs any MinIO image
 
 - **Bucket creation (`s3-init`) runs in the platform's own `examlops-backup` image (boto3)**

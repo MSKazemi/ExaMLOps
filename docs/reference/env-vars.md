@@ -298,6 +298,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_DATAPLANE_SCHEDULER_INTERVAL` | `30` | ADR 0130 dataplane service — seconds between scheduler ticks (`examlops.dataplane.service.scheduler.Scheduler`); each tick queues every enabled source whose `schedule` has elapsed since its last pull. Must be > 0. |
 | `EXAMLOPS_DATAPLANE_WORKERS` | `2` | ADR 0130 dataplane service — pulls that run at once (the scheduler's worker pool, shared by scheduled and API-requested pulls). Further due pulls wait queued; a source never has two pulls queued or running. Must be ≥ 1. |
 | `EXAMLOPS_DATA_CONTRACT_GATE` | `enforce` | **A5** training-gate mode (ADR 0005 clause 2): `enforce` fails the run closed on an error-severity contract violation, `warn` records it and continues, `off` skips. An unrecognised value falls back to `enforce` — a typo must not quietly disable a gate that fails closed by design. Dummy runs and datasets with no contract are skipped with a recorded reason. |
+| `EXAMLOPS_CONTRACT_ENGINE` | `auto` | **A5** data-contract engine (ADR 0005 clause 1): `auto` validates with Pandera when it is importable — a row-level failure then names the rows that failed — and with the pandas-only engine otherwise; `python` forces the pandas-only engine. The two reach the same verdict on every check (`tests/unit/test_data_contract_engines.py`), so there is deliberately no value that requires Pandera. An unrecognised value warns and means `auto`. Every verdict records its engine (`exa data validate` output, `--json` `engine`, `data_quality_checks.engine`). |
 | `EXAMLOPS_ASSET_ORCHESTRATOR` | `local` | **A4** which engine materializes an asset (ADR 0036): `local` runs the production function in-process, `scheduler` submits it through the phase-23 HPC seam, `prefect` runs it as a Prefect flow run (falls back to local, recorded, when no Prefect API is configured or reachable). An unrecognised value falls back to `local` — a typo must leave the asset built, not route it to an engine nobody configured. Override per run with `exa assets materialize --orchestrator`. |
 | `EXAMLOPS_ASSET_PREFECT_RETRIES` | `0` | **A4** Prefect task retries for a failed asset production function under `--orchestrator prefect` (ADR 0036). Opt-in: a build that failed halfway is not known to be safe to repeat. |
 | `EXAMLOPS_ASSET_PREFECT_RETRY_DELAY` | `10` | **A4** seconds between those retries. |
@@ -544,7 +545,7 @@ automatically.
 | `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. |
 | `DASHBOARD_AGENT_API_KEY` | unset | Dashboard BFF credential forwarded to the agent. Its value must appear under the `dashboard` principal (or another intentionally named dashboard principal) in `AGENT_API_KEYS_JSON`. The dashboard prefers this over legacy `AGENT_API_KEY`. |
 | `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
-| `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool, and the one `exa slo ingest` queries for `prometheus`-source SLOs (ADR 0023) |
+| `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
 | `RAY_SERVE_URL` | `http://localhost:18001` | Ray Serve endpoint for the `predict` / inference tools |
 | `AGENT_DB` | `./agent_memory.db` | SQLite file backing the LangGraph checkpointer — conversations persist here and are resumable by thread id (`/resume`) |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs/knowledge tools (`search_docs`, `read_doc`, `list_docs`) search and read |
@@ -811,7 +812,7 @@ appear in a log or a CI summary until you switch it on.
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SLO_GATE_ENABLED` | off | Make `exa slo` failures block a promotion instead of reporting. |
-| `EXAMLOPS_SLO_PROBE_TIMEOUT` | `5` | Seconds `exa slo ingest` waits on the network (ADR 0023): the `availability` probe's Open Inference Protocol readiness answer (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`; no answer is a bad sample), and a `prometheus` source's instant query to `PROMETHEUS_URL` (no answer is unmeasured). |
+| `EXAMLOPS_SLO_PROBE_TIMEOUT` | `5` | Seconds the `availability` SLI probe (`exa slo ingest`, ADR 0023) waits for the model's Open Inference Protocol readiness answer (`GET /v2/models/{model}/ready` on `RAY_SERVE_URL`) before counting it a bad sample. |
 | `EXAMLOPS_FAIRNESS_GATE_ENABLED` | off | Make subgroup-fairness failures block. |
 | `EXAMLOPS_SYNTHETIC_ONLY_GATE` | off | Refuse to train on anything but synthetic data — for a use case that may not touch real records yet. |
 

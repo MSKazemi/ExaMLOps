@@ -775,6 +775,10 @@ Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4)
 
 Validate a dataset against its data contract; exit non-zero on error violations (spec R11).
 
+Pandera is the engine when installed, and a row-level failure then names the rows that failed;
+without it the same checks run on pandas alone and reach the same verdict. The output says
+which engine judged. EXAMLOPS_CONTRACT_ENGINE=python forces the pandas-only engine.
+
 - `--path, -p` — Local parquet file/dir to validate
 - `--revision` — A1 revision id for provenance
 

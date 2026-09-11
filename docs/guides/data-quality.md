@@ -16,6 +16,7 @@ Contracts are Python, versioned under `pipelines/contracts/<dataset>.py`, export
 ```python
 from pipelines.contracts import (
     DataContract, column_present, categorical, in_range, not_null, embedding_dim, min_rows,
+    fresh_within,
 )
 
 CONTRACT = DataContract(dataset="FData", version="1", checks=[
@@ -28,8 +29,83 @@ CONTRACT = DataContract(dataset="FData", version="1", checks=[
 ])
 ```
 
-Supported checks: column presence + dtype, nullability (max null-rate), numeric range,
-categorical domain, exact embedding dimensionality, minimum row count.
+| Check | Passes when | Notes |
+|---|---|---|
+| `column_present(col, dtype=None)` | the column exists (and its dtype name contains `dtype`) | `dtype="float"` accepts `float32` and `float64` |
+| `not_null(col, max_null_rate=0.0)` | the share of nulls is at most the ceiling | an empty column has no nulls; emptiness is `min_rows`'s question |
+| `in_range(col, low=None, high=None)` | every non-null value is within `[low, high]` | both ends inclusive; either may be open |
+| `categorical(col, allowed)` | every non-null value is in `allowed` | |
+| `embedding_dim(col, dim)` | **every** non-null value is a sequence of exactly `dim` numbers | a column with no non-null values fails |
+| `min_rows(n)` | the table has at least `n` rows | on a bounded dataplane sample, the table's real row count is judged |
+| `fresh_within(col, max_age)` | the newest timestamp is no older than `max_age` (`"24h"`, `"7d"`, a `timedelta`) | naive timestamps are UTC; a value that is not a timestamp fails the check rather than being dropped |
+
+A check that is not on the list can be written by hand — `Check(name, severity, fn)` where `fn`
+takes the dataframe and returns `(passed, observed)`.
+
+!!! note "Embedding width is judged on every row"
+    Earlier releases' `embedding_dim` read the first row only, so a column whose first embedding had
+    the right width and whose others did not passed. Such a ragged column fails later and further
+    from its cause, in collate or at the model's input layer. It is now judged row by row, and
+    a contract that passed on ragged data will now fail — which is the point of it.
+
+## How a contract is checked
+
+**Pandera is the engine when it is installed** (it is a dependency of the pipelines package), and
+the pandas-only engine is the fallback. They are two engines with one verdict: installing Pandera
+changes how precisely a failure is reported, never whether data passes.
+
+Every check built with the functions above carries a declarative description as well as a
+predicate. The Pandera engine compiles a contract's descriptions into one
+`pandera.DataFrameSchema` and validates it *lazily*, so every failure is collected in one pass
+instead of stopping at the first:
+
+| Contract check | Compiles to |
+|---|---|
+| `column_present` | a required `Column`; a dtype through the check's predicate |
+| `not_null(…, 0.0)` | a row-level not-null mask |
+| `not_null(…, r > 0)` | a table-level check over the null-rate predicate |
+| `in_range` | `Check.ge(low)` and/or `Check.le(high)` |
+| `categorical` | `Check.isin(allowed)` |
+| `embedding_dim` | an element-wise width test, plus "at least one value" |
+| `min_rows`, `fresh_within` | a table-level check over the predicate |
+| a hand-written `Check` | not compiled — its own `fn` runs |
+
+Pandera returns its failures as a table of *failure cases*, each naming the column, the position
+of the check within that column, and — for a row-level check — the row and its value. Each case
+is mapped back to the contract check that compiled to it, so the result has the same shape either
+way: one entry per contract check, in contract order.
+
+What the Pandera engine adds is **which rows failed**:
+
+```text
+range:x          error  ✗  2 row(s) outside [0.0, 10.0] — row 1: -1.0, row 3: -3.0
+embedding_dim:e  error  ✗  1 row(s) not 384-dim — row 4: dim 383
+not_null:x       error  ✗  4 row(s) null — rows 0, 2, 3, …
+```
+
+The count is always exact; at most three rows are quoted. The pandas-only engine reports the same
+failures as a summary (`x < 0.0 present (min -3.0)`).
+
+**Why the verdicts cannot drift apart.** Table-level facts have no row to point at, so each is a
+Pandera check wrapping the *same* predicate the fallback runs. Row-level checks are Pandera's own,
+and `tests/unit/test_data_contract_engines.py` holds them to the fallback check for check — on
+every edge case listed there (missing columns, NaN, infinity, both range bounds, non-numeric
+values, ragged and scalar embeddings, naive and unparseable timestamps, empty tables) and on 300
+seeded random frames. If Pandera itself raises — as opposed to reporting a failing check — the
+contract is re-run on the fallback with a warning: an engine fault is not a data verdict, and it
+must not become a skipped gate either.
+
+Every verdict records its engine: `exa data validate` prints it, `--json` carries `engine`, and
+each `data_quality_checks` row stores it (`pandera`, `python`, or `pandera+python` when one table
+of a multi-table snapshot fell back).
+
+```bash
+EXAMLOPS_CONTRACT_ENGINE=auto     # default — Pandera when importable
+EXAMLOPS_CONTRACT_ENGINE=python   # force the pandas-only engine
+```
+
+There is deliberately no setting that *requires* Pandera: the two engines agree, so a missing
+library costs precision in a failure report and nothing else.
 
 ## The training gate
 
@@ -94,8 +170,8 @@ exa data validate FData --path ./data/FData --revision <r>  # tie the check to a
 exa --json data validate FData --path ./data/FData          # machine-readable per-check results
 ```
 
-`exa data validate` is safe to wire as a **blocking GitLab CI step** before promotion:
-a corrupted dataset makes it exit non-zero.
+`exa data validate` exits non-zero on an error-severity violation, so it can gate a CI job or a
+promotion script as it stands.
 
 ## Quality score & SLOs
 

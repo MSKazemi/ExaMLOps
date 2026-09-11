@@ -35,6 +35,7 @@ dependencies = [
     "xgboost>=1.7.0",
     # pipeline / orchestration
     "prefect>=3.0.0,<4.0",
+    "pandera[pandas]>=0.33",  # data-contract engine (ADR 0005); mirrors pipelines/pyproject.toml
     # serving — FastAPI is used as the HTTP layer inside Ray Serve (@serve.ingress).
     # Upper-bound is REQUIRED: ray 2.55.0's `@serve.ingress` cloudpickles the FastAPI app at
     # import time, and fastapi>=0.137 holds an unpicklable `_thread.lock` ("cannot pickle

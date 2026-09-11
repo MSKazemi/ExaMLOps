@@ -1851,6 +1851,9 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "revision": "TEXT",
         "stage": "TEXT NOT NULL DEFAULT 'train'",
         "score": "REAL",
+        # Which contract engine judged — pandera or python (ADR 0005 clause 1). NULL on rows
+        # written before it was recorded.
+        "engine": "TEXT",
     },
     # Unified Project workspace (ADR 0086): per-project cost attribution anchor.
     "model_costs": {

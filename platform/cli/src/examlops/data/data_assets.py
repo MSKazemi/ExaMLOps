@@ -491,7 +491,8 @@ def record_data_quality_check(
     """Record a contract-validation outcome (spec R7).
 
     ``result`` is a QualityResult-like object exposing ``passed``, ``score``, and
-    ``checks`` (kept duck-typed so this layer never imports the pipelines package).
+    ``checks`` (kept duck-typed so this layer never imports the pipelines package), and
+    optionally ``engine`` — which contract engine reached the verdict.
     """
     init_db()
     checks = list(getattr(result, "checks", []))
@@ -502,8 +503,8 @@ def record_data_quality_check(
         conn.execute(
             """INSERT INTO data_quality_checks
                    (model, dataset, status, passed, failed, details_json, actor,
-                    revision, stage, score)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    revision, stage, score, engine)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 model,
                 dataset,
@@ -515,6 +516,7 @@ def record_data_quality_check(
                 revision,
                 stage,
                 float(getattr(result, "score", 0.0)),
+                getattr(result, "engine", None),
             ),
         )
 

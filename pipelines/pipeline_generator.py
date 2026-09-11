@@ -1644,7 +1644,10 @@ def _combine_table_results(per_table: list[tuple[str, Any]]) -> Any:
     ]
     score = round(sum(1 for c in checks if c.get("passed")) / (len(checks) or 1), 4)
     passed = all(result.passed for _, result in per_table)
-    return QualityResult(passed=passed, score=score, checks=checks)
+    # Which engine judged. One process, one engine — unless Pandera faulted on one table and that
+    # table fell back, in which case the record says both rather than claiming either.
+    engine = "+".join(sorted({getattr(r, "engine", "python") for _, r in per_table}))
+    return QualityResult(passed=passed, score=score, checks=checks, engine=engine)
 
 
 def _dataplane_binding(model_name: str | None, dataset_name: str) -> Any:

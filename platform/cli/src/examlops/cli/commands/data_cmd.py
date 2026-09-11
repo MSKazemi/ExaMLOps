@@ -244,7 +244,12 @@ def validate(
     path: str = typer.Option(..., "--path", "-p", help="Local parquet file/dir to validate"),
     revision: str | None = typer.Option(None, "--revision", help="A1 revision id for provenance"),
 ) -> None:
-    """Validate a dataset against its data contract; exit non-zero on error violations (spec R11)."""
+    """Validate a dataset against its data contract; exit non-zero on error violations (spec R11).
+
+    Pandera is the engine when installed, and a row-level failure then names the rows that failed;
+    without it the same checks run on pandas alone and reach the same verdict. The output says
+    which engine judged. EXAMLOPS_CONTRACT_ENGINE=python forces the pandas-only engine.
+    """
     init_db()
     repo_root = Path(__file__).resolve().parents[6]
     _mz = os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(repo_root / "modelzoo")
@@ -274,7 +279,12 @@ def validate(
         _actor(),
         "data_validate",
         dataset,
-        {"passed": result.passed, "score": result.score, "errors": len(result.errors)},
+        {
+            "passed": result.passed,
+            "score": result.score,
+            "errors": len(result.errors),
+            "engine": result.engine,
+        },
     )
     if _output.json_mode:
         _output.print_json(
@@ -282,6 +292,7 @@ def validate(
                 "dataset": dataset,
                 "passed": result.passed,
                 "score": result.score,
+                "engine": result.engine,
                 "checks": result.checks,
             }
         )
@@ -290,11 +301,11 @@ def validate(
             f"Data contract — {dataset} (v{contract.version})",
             ["Check", "Severity", "Result", "Observed"],
             [
-                [c["name"], c["severity"], "✓" if c["passed"] else "✗", str(c["observed"])[:48]]
+                [c["name"], c["severity"], "✓" if c["passed"] else "✗", str(c["observed"])[:96]]
                 for c in result.checks
             ],
         )
-        _output.info(f"Quality score: {result.score:.2%}")
+        _output.info(f"Quality score: {result.score:.2%} · engine: {result.engine}")
     if not result.passed:
         _output.error(
             f"Data contract FAILED for {dataset}: {len(result.errors)} error-severity violation(s).",
