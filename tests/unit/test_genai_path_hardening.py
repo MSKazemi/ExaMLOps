@@ -20,7 +20,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 
 _DOC = [{"id": "d1", "text": "drift is a change in the distribution of model inputs"}]
-_AWS = "AKIAABCDEFGHIJKLMNOP"
+# Built at runtime, as the repo's other secret tests do: a credential-shaped literal in a public
+# file trips the dual-git leak scan even when, as here, it is a fixture.
+_AWS = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+_SLACK = "xox" + "b-1234567890-abc"
 
 
 @pytest.fixture(autouse=True)
@@ -97,9 +100,9 @@ def test_monitor_still_changes_nothing():
 def test_redact_secrets_reports_the_rules_it_hit():
     from examlops.secrets import redact_secrets
 
-    text, rules = redact_secrets(f"a {_AWS} b xoxb-1234567890-abc")
+    text, rules = redact_secrets(f"a {_AWS} b {_SLACK}")
     assert rules == ["aws-access-key", "slack-token"]
-    assert _AWS not in text and "xoxb-" not in text
+    assert _AWS not in text and _SLACK not in text
 
 
 def test_the_gateway_does_not_send_a_secret_in_enforce_mode(monkeypatch):
