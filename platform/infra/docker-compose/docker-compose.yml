@@ -298,6 +298,9 @@ services:
     environment:
       DATAPLANE_PORT: "8010"
       DATAPLANE_TOKEN: ${DATAPLANE_TOKEN:-}
+      # OpenLineage receiver for this service's lineage events (ADR 0004); unset ⇒ platform_db
+      # only. http://marquez:5000 with `--profile lineage`.
+      EXAMLOPS_OPENLINEAGE_URL: ${EXAMLOPS_OPENLINEAGE_URL:-}
       EXAMLOPS_DATA_BUCKET: ${EXAMLOPS_DATA_BUCKET:-examlops-data}
       EXAMLOPS_DATA_S3_ENDPOINT: ${EXAMLOPS_DATA_S3_ENDPOINT:-http://minio:9000}
       # Its own least-privilege credential (plan P3.4 pattern), the same fallback shape as the
@@ -455,6 +458,93 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+
+  # ── Lineage receiver (`--profile lineage`) — Marquez, the OpenLineage reference server ────
+  # ADR 0004 clause 3. Every lineage emit path POSTs OpenLineage run events to
+  # EXAMLOPS_OPENLINEAGE_URL; this receives them and draws the graph (docs/guides/lineage.md).
+  # Opt-in like every profile: without it `exa models lineage` reads the same graph from
+  # platform_db, which is always written.
+  # Marquez has NO authentication — whoever reaches its API can write or delete lineage — so both
+  # ports are published on loopback only, and its database sits on a network nothing else joins.
+  # API: http://localhost:15050 (host) · http://marquez:5000 (containers). UI:
+  # http://localhost:13050, which proxies the API and is no less sensitive. Point the containers'
+  # emitters at it with EXAMLOPS_OPENLINEAGE_URL=http://marquez:5000 in this directory's .env.
+  marquez-db:
+    image: postgres:15@sha256:9b1d34adbce1dd07ee6e94b4a2cf698884b89bd44a6c9c12f5da8f3acbfe4957
+    profiles: [lineage]
+    container_name: examlops-marquez-db
+    mem_limit: ${MARQUEZ_DB_MEM_LIMIT:-512m}
+    environment:
+      POSTGRES_USER: marquez
+      # Dev default; the database publishes no port and only `marquez` shares its network.
+      POSTGRES_PASSWORD: ${MARQUEZ_DB_PASSWORD:-marquez}
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U marquez -d marquez"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  marquez:
+    # 0.51.1 is the newest Marquez release (2025-03-27). Pinned by digest; the image's own dev
+    # config is replaced by ./marquez/marquez.yml (no inline password, no OpenSearch).
+    image: marquezproject/marquez:0.51.1@sha256:0721c976cff17d8b14f7949d85d6dac9c7ea37cb9fe857caa19833730fcb1a50
+    profiles: [lineage]
+    container_name: examlops-marquez
+    mem_limit: ${MARQUEZ_MEM_LIMIT:-1g}
+    # The image runs as root; nothing in it needs to. Verified serving with this user, a
+    # read-only root filesystem and no capabilities.
+    user: "65534:65534"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      MARQUEZ_CONFIG: /etc/marquez/marquez.yml
+      MARQUEZ_DB_PASSWORD: ${MARQUEZ_DB_PASSWORD:-marquez}
+    volumes:
+      - ./marquez/marquez.yml:/etc/marquez/marquez.yml:ro
+    ports:
+      - "127.0.0.1:15050:5000"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5001/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.51.1@sha256:7312112ca0e611b0a37b00d3da6a677485ae4a97622b23d3ae24d849a927868b
+    profiles: [lineage]
+    container_name: examlops-marquez-web
+    mem_limit: ${MARQUEZ_WEB_MEM_LIMIT:-256m}
+    user: "65534:65534"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: "5000"
+      WEB_PORT: "3000"
+    ports:
+      - "127.0.0.1:13050:3000"
+    depends_on:
+      marquez:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   # ── Optional monitoring stack (start with: make monitoring-up) ─────────────
   # Run under the "monitoring" profile — not started by dev-up.
@@ -638,6 +728,9 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       GRAFANA_URL: http://grafana:3000
       PUBLIC_GRAFANA_URL: "http://${PUBLIC_HOST:-localhost}:13000"
+      # OpenLineage receiver for this service's lineage events (ADR 0004); unset ⇒ platform_db
+      # only. http://marquez:5000 with `--profile lineage`.
+      EXAMLOPS_OPENLINEAGE_URL: ${EXAMLOPS_OPENLINEAGE_URL:-}
       MINIO_URL: http://minio:9000
       PUBLIC_MINIO_CONSOLE_URL: http://${PUBLIC_HOST:-localhost}:19001
       DATABASE_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
@@ -965,6 +1058,7 @@ volumes:
   dashboard_cli_data:
   dataplane_stage:
   kafka_data:
+  marquez_db_data:
 
 networks:
   seanerbus-net:

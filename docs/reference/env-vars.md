@@ -37,7 +37,7 @@ Docker Compose memory ceilings (OOM isolation) are also env-overridable:
 `RAY_MEM_LIMIT` (`6g`), `RAY_CPUS` (`2.0`), `MLFLOW_MEM_LIMIT` (`2g`),
 `ORCHESTRATOR_MEM_LIMIT` (`2g`), `POSTGRES_MEM_LIMIT` (`1g`),
 `CONTROL_PLANE_MEM_LIMIT` (`512m`), `DASHBOARD_MEM_LIMIT` (`1g`),
-`JUPYTERHUB_MEM_LIMIT` (`2g`), `BRIDGE_MEM_LIMIT` (`1g`), `DATAPLANE_MEM_LIMIT` (`2g`).
+`JUPYTERHUB_MEM_LIMIT` (`2g`), `BRIDGE_MEM_LIMIT` (`1g`), `DATAPLANE_MEM_LIMIT` (`2g`), and for the `lineage` profile `MARQUEZ_MEM_LIMIT` (`1g`), `MARQUEZ_WEB_MEM_LIMIT` (`256m`), `MARQUEZ_DB_MEM_LIMIT` (`512m`).
 
 ---
 
@@ -309,7 +309,8 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_ENCODER_MLFLOW_URI` | `MLFLOW_TRACKING_URI` | **A6** a separate MLflow for the encoder registry; unset uses the platform's tracking server. |
 | `EXAMLOPS_REINDEX_ORCHESTRATOR` | `inline` | **A6** where a blue-green reindex runs (ADR 0043 clause 4): `inline` in the calling process; `scheduler` runs it as a job on the phase-23 HPC scheduler (the case the clause names, large corpora). That job continues the same reindex row and applies `--recall` / `--recall-floor` there. An unrecognised value falls back to `inline`; an unreachable scheduler, or a library caller's `recall_fn`, runs it inline and records `inline-fallback`. Override per run with `exa embedding reindex --scheduler` / `--inline`. |
 | `EXAMLOPS_INFERENCE_EMBEDDING_DIM` | unset | **A5** inference-gate embedding width. When set, a request whose embedding is the wrong length is refused with 422. Never defaulted — an embedding width is a fact about a use case, not a platform constant. |
-| `EXAMLOPS_OPENLINEAGE_URL` | unset (no-op) | **A2** OpenLineage — Marquez endpoint; unset ⇒ `emit_lineage` skips HTTP but still dual-writes `platform_db`. |
+| `EXAMLOPS_OPENLINEAGE_URL` | unset (no-op) | **A2** OpenLineage receiver (ADR 0004): every lineage emit path POSTs its run event to `<url>/api/v1/lineage`; unset ⇒ no HTTP, and `platform_db` is still written. With the Compose `lineage` profile (Marquez) use `http://marquez:5000` for containers — set it in `platform/infra/docker-compose/.env`, which the control plane loads and the dataplane and dashboard receive — and `http://localhost:15050` for host processes (`exa`, the flows `exa pipeline deploy` serves). Fail-open: an unreachable receiver is logged, never raised. |
+| `MARQUEZ_DB_PASSWORD` | `marquez` | Compose `lineage` profile: the password of Marquez's own Postgres (`marquez-db`), which publishes no port and shares a network only with Marquez. Set it before the first `up`; the database keeps the password it was created with. |
 | `OTEL_SDK_DISABLED` | `true` | **C1** master tracing switch; `false` enables OTLP export of GenAI spans. |
 | `EXAMLOPS_GENAI_CAPTURE_CONTENT` | unset (off) | **C1** capture prompt/completion content on spans (redactor-gated, D8). |
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | **C1** OpenTelemetry's comma-separated convention opt-in. Listing `gen_ai_latest_experimental` switches GenAI spans wholesale to the current conventions: `gen_ai.provider.name` instead of `gen_ai.system`, the registry's operation names (`text_completion`, `chat`, `invoke_agent`, `execute_tool`, …), span names `"<operation> <model>"`, and structured `gen_ai.input.messages`/`gen_ai.output.messages` for captured content. Spans then report `examlops.semconv.version = genai@<commit>`, the conventions revision the names were checked against. Absent it, the pinned 1.27.0 attributes keep being emitted unchanged. |

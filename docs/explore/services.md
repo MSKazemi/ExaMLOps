@@ -10,7 +10,7 @@ hide:
 ExaMLOps runs as more than 30 cooperating services, stores and external dependencies. Twenty of
 them are Docker Compose services in the development stack: `make stack-up` starts the core ten, `make monitoring-up` six
 observability services, `make jupyter-up` JupyterHub and `make seanerbus-up` the bus bridge; the
-backup sidecar and vLLM are opt-in profiles (`docker compose --profile backup|vllm up`). The rest
+backup sidecar, vLLM and the Marquez lineage receiver are opt-in profiles (`docker compose --profile backup|vllm|lineage up`). The rest
 are processes, stores and external systems they work with, including the dataplane service (its own
 image, not yet in any compose file) and the reference identity stack (its own compose file,
 upstream Keycloak and OPA images). This page lists
@@ -34,6 +34,7 @@ Ports are the host ports of the local development stack.
 | PostgreSQL (MLflow + Prefect metadata) | Registry and storage | — | Databases for MLflow, Prefect and the dashboard |
 | Shared platform datastore (platform.db) | Registry and storage | — | Shared platform state: drift, traffic, audit, jobs, projects |
 | Backup sidecar | Registry and storage | — | Scheduled backup of databases and buckets (optional profile) |
+| Marquez lineage receiver | Registry and storage | 15050, 13050 | Receives OpenLineage events and draws the provenance graph (optional profile) |
 | SeanerBUS bridge | Integration | 18003 | Connects the site message bus to serving and retraining |
 | SeanerBUS message bus (external) | Integration | 5398 | The site's message bus (external system) |
 | Event outbox relay (NovaFabric backbone) | Integration | — | Publishes outbox events at least once |
@@ -332,6 +333,25 @@ Hold models, artifacts, datasets and platform state.
 **Operate:** `docker compose --profile backup up -d backup ; exa backup ...`
 
 **Guide:** [backup restore](../guides/backup-restore.md)
+
+### Marquez lineage receiver
+
+**Port:** 15050 (API), 13050 (web UI), both bound to loopback  
+**Built on:** marquezproject/marquez and marquez-web 0.51.1 (pinned by digest) plus its own PostgreSQL 15; profile lineage; ADR 0004
+
+**What it does**
+
+- Receives the OpenLineage run event every lineage emit path sends: training, promotion, retrain, prompt label moves, dataplane pulls, assets, fine-tuning, distributed training and synthetic data
+- Draws the dataset → run → model → deployment graph in its web UI, with each run's facets (MLflow run id, dataset revision, HPC job)
+- Is a view, not the record: `platform_db` holds the same graph and `exa models lineage` reads it with or without Marquez
+
+**Talks to:** its own PostgreSQL (`marquez-db`, on a network nothing else joins)
+
+**Keeps:** volume marquez_db_data (not in `exa backup`)
+
+**Operate:** `docker compose --profile lineage up -d marquez-web ; set EXAMLOPS_OPENLINEAGE_URL (http://marquez:5000 in containers, http://localhost:15050 on the host)` — it has no authentication, so keep both ports on loopback
+
+**Guide:** [lineage](../guides/lineage.md#running-marquez-the-lineage-profile)
 
 ## Integration
 

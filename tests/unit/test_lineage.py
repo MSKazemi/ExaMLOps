@@ -95,10 +95,14 @@ def test_gwt5_event_schema_shape():
         facets=lineage.dataset_revision_facet("rev1"),
     )
     assert event["eventType"] == "COMPLETE"
-    assert event["run"]["runId"] == "run-3"
+    # runId must be a UUID (OpenLineage 2-0-2); the platform's own id rides in a facet.
+    assert event["run"]["runId"] == lineage.lineage_run_id("run-3")
+    assert event["run"]["facets"]["examlops.run"]["run_id"] == "run-3"
     assert event["job"]["name"] == "train.jpcp"
     assert event["producer"].startswith("https://")
-    assert event["inputs"][0]["name"] == "examlops://dataset/FData@rev1"
+    # One dataset with versions, not one dataset per revision (test_lineage_openlineage_conformance)
+    assert event["inputs"][0]["name"] == "examlops://dataset/FData"
+    assert event["inputs"][0]["facets"]["version"]["datasetVersion"] == "rev1"
     # custom facet carries the required _producer/_schemaURL (R12)
     f = event["run"]["facets"]["examlops.dataset_revision"]
     assert f["_producer"] and f["_schemaURL"]

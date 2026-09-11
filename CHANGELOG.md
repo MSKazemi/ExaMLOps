@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a lineage receiver: Marquez under the Compose `lineage` profile (ADR 0004)
+
+- `docker compose --profile lineage up -d marquez-web` starts three services: Marquez 0.51.1,
+  its web UI and its own PostgreSQL. Set `EXAMLOPS_OPENLINEAGE_URL` to send lineage events to it:
+  `http://marquez:5000` in the Compose `.env` for containers, `http://localhost:15050` for
+  processes on the host. The UI is at `http://localhost:13050`.
+- Marquez has no authentication. Both ports are therefore bound to loopback only. The API and UI
+  run as an unprivileged user, with a read-only filesystem and no Linux capabilities. Marquez's
+  database sits on its own internal network, which nothing else joins.
+- Without the profile nothing changes. `exa models lineage` still reads the graph from
+  `platform_db`, which is always written.
+
+### Fixed — lineage events now match the OpenLineage 2-0-2 schema
+
+- Run ids are now UUIDs, as the schema requires. An MLflow run id is sent as the UUID it already
+  is, so the run in the lineage receiver and the run in MLflow share an id. Any other id becomes a
+  fixed name-based UUID, and the original is kept in the `examlops.run` facet. Before this, Marquez
+  replaced each run id with a UUID of its own, and the MLflow id was lost.
+- A dataset revision is now sent as a version of one dataset, in the standard `version` facet.
+  Before, each revision appeared as a separate dataset. `platform_db` still records the revision in
+  the node name, so `exa models lineage --impact <revision>` is unchanged.
+- Bare values passed as facets (for example `{"backend": "minio"}`) are now grouped into one
+  valid `examlops.run` facet.
+- The MLflow run id and the OTel trace id now appear in the event, as the `examlops.mlflow_run`
+  and `examlops.trace` facets. Before, they were stored only in `platform_db`.
+- The `producer` URL now names this project's repository.
+
 ### Added — Pandera is the data-contract engine, and failures name their rows (ADR 0005)
 
 - With Pandera installed, a data contract compiles to one Pandera schema and is validated in a

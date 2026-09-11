@@ -1,0 +1,34 @@
+# Marquez API configuration for the `lineage` Compose profile (ADR 0004 clause 3).
+#
+# Mounted read-only at /etc/marquez/marquez.yml and selected with MARQUEZ_CONFIG. It replaces the
+# image's development config, which hard-codes the database password and turns on a search
+# backend (OpenSearch) this stack does not run. ${VAR:-default} is substituted by Marquez itself.
+server:
+  applicationConnectors:
+    - type: http
+      port: 5000
+  adminConnectors:
+    - type: http
+      port: 5001
+
+db:
+  driverClass: org.postgresql.Driver
+  url: jdbc:postgresql://marquez-db:5432/marquez
+  user: marquez
+  password: ${MARQUEZ_DB_PASSWORD:-marquez}
+
+# Flyway brings the schema up to this release's version on start, so an upgrade is a new image
+# digest and a restart.
+migrateOnStartup: true
+
+graphql:
+  enabled: true
+
+# No OpenSearch in this stack: search off rather than a backend that is never there.
+search:
+  enabled: false
+
+logging:
+  level: INFO
+  appenders:
+    - type: console
