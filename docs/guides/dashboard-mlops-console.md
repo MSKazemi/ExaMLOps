@@ -64,6 +64,24 @@ All require the `viewer` role and are composed through the F8 BFF substrate (par
 | `GET /api/v1/mlops/registry` | `{registry: {rows, count}}` |
 | `GET /api/v1/mlops/model/{name}` | `{detail: {cost, drift, traffic, promotion}}` |
 | `GET /api/v1/mlops/promotion/{name}` | `{promotion: {policy, eval, approval, allowed}}` |
+| `GET /api/v1/mlops/gate-reports/{name}` | `{reports: [...]}`: the model's persisted eval-gate reports, newest first |
+
+### The eval gate on the Promotion panel (ADR 0008)
+
+The panel shows the eval gate **as its latest persisted report found it**:
+- a status pill: passed / failed / warning (not blocking) / not yet run / no gate;
+- the reason;
+- a per-metric table of candidate, baseline, floor, tolerated drop and verdict;
+- which candidate version and baseline the report judged.
+
+A failed `block`-mode gate denies the promotion with that reason. A `warn`-mode failure is shown
+and does not block, and a configured gate that has never run is not treated as a pass.
+
+The panel used to show the eval gate as passed whenever a *promotion policy* existed, whatever the
+gate had found. It now reads `gate_reports`, the rows `run_eval_gate` writes at every
+`exa pipeline promote`, `exa eval gate` and autopilot promotion. A failed latest report also raises
+an alert (source `gate`): an `error` when it blocked, a `warn` in `warn` mode. A later passing report
+clears it.
 
 `name` is case-insensitive — the central `mlflow_name()` / `display_name()` mapping in `mlops.py`
 resolves registry (uppercase) vs MLflow (lowercase) casing in one place.

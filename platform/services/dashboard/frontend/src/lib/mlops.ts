@@ -26,9 +26,71 @@ export interface PromotionCheck {
     fromAlias?: string
     toAlias?: string
   }
-  eval: { pass: boolean; metrics: Record<string, number> }
+  eval: EvalGate
   approval: { required: boolean; state?: string }
   allowed: boolean
+}
+
+/** One metric's verdict from a persisted eval-gate report (ADR 0008). */
+export interface GateMetric {
+  name: string
+  candidate: number | null
+  baseline: number | null
+  delta: number | null
+  min: number | null
+  max_drop: number | null
+  max?: number | null
+  failed: boolean
+  reason?: string
+}
+
+export interface GateReport {
+  id: number
+  candidate: string | null
+  baseline: string | null
+  passed: boolean
+  mode: string
+  ts: string
+  aggregate: string
+  metrics: GateMetric[]
+  judge: string | null
+  judgeEligible: boolean
+  judgeFailures: string[]
+  calibrationId: string | null
+}
+
+/**
+ * The ADR 0008 eval gate's standing, read from the gate reports the platform persisted — never
+ * inferred from the promotion policy (which is what the panel used to do).
+ */
+export interface EvalGate {
+  state: 'no_gate' | 'not_run' | 'passed' | 'failed' | 'warned'
+  pass: boolean | null
+  reason: string
+  metrics: GateMetric[]
+  lastReport: GateReport | null
+  suite?: string
+  baselineAlias?: string
+  mode?: string
+}
+
+/** How the eval gate reads on the panel: a status for the pill and a short label. */
+export function evalGateView(g: EvalGate): {
+  status: 'healthy' | 'failed' | 'degraded' | 'pending' | 'unknown'
+  label: string
+} {
+  switch (g.state) {
+    case 'passed':
+      return { status: 'healthy', label: `Eval gate passed (v${g.lastReport?.candidate ?? '?'})` }
+    case 'failed':
+      return { status: 'failed', label: `Eval gate failed (v${g.lastReport?.candidate ?? '?'})` }
+    case 'warned':
+      return { status: 'degraded', label: 'Eval gate warning — not blocking' }
+    case 'not_run':
+      return { status: 'pending', label: 'Eval gate not yet run' }
+    default:
+      return { status: 'unknown', label: 'No eval gate' }
+  }
 }
 
 export interface RegistryResponse {
@@ -67,6 +129,13 @@ export const useMlopsRegistry = () =>
   useQuery<RegistryResponse>({
     queryKey: ['mlops', 'registry'],
     queryFn: () => apiFetch<RegistryResponse>('/api/v1/mlops/registry'),
+  })
+
+export const useGateReports = (name: string | null) =>
+  useQuery<{ reports: GateReport[] }>({
+    queryKey: ['mlops', 'gate-reports', name],
+    queryFn: () => apiFetch<{ reports: GateReport[] }>(`/api/v1/mlops/gate-reports/${name}`),
+    enabled: !!name,
   })
 
 export const useMlopsPromotion = (name: string | null) =>

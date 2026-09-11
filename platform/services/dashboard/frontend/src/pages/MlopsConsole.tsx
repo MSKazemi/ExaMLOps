@@ -7,6 +7,8 @@ import { isAdmin } from '@/lib/auth'
 import {
   useMlopsRegistry,
   useMlopsPromotion,
+  evalGateView,
+  type EvalGate,
   promotionVerdict,
   freshnessLabel,
   type ModelRow,
@@ -50,10 +52,63 @@ function PromotionPanel({ name }: { name: string }) {
           ))}
         </ul>
       )}
+      <EvalGateSection gate={chk.eval} />
       <p className="text-xs text-muted-foreground">
         Approval: {chk.approval.required ? `required (${chk.approval.state ?? 'pending'})` : 'not required'}
       </p>
     </div>
+  )
+}
+
+/** The ADR 0008 eval gate, as its latest persisted report found it — never inferred. */
+function EvalGateSection({ gate }: { gate: EvalGate }) {
+  const view = evalGateView(gate)
+  const fmt = (v: number | null | undefined) => (v === null || v === undefined ? '—' : v.toFixed(3))
+  return (
+    <section aria-label="Eval gate" className="space-y-2">
+      <div className="flex items-center gap-2">
+        <StatusPill status={view.status} label={view.label} />
+        {gate.suite && (
+          <span className="text-xs text-muted-foreground">
+            suite <code className="font-mono">{gate.suite}</code> vs {gate.baselineAlias} · {gate.mode}
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">{gate.reason}</p>
+      {gate.metrics.length > 0 && (
+        <table className="w-full text-xs">
+          <caption className="sr-only">Eval gate metric verdicts</caption>
+          <thead>
+            <tr className="text-left text-muted-foreground">
+              <th scope="col" className="font-medium">Metric</th>
+              <th scope="col" className="font-medium">Candidate</th>
+              <th scope="col" className="font-medium">Baseline</th>
+              <th scope="col" className="font-medium">Floor</th>
+              <th scope="col" className="font-medium">Max drop</th>
+              <th scope="col" className="font-medium">Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gate.metrics.map((m) => (
+              <tr key={m.name} data-metric={m.name}>
+                <td className="font-mono">{m.name}</td>
+                <td>{fmt(m.candidate)}</td>
+                <td>{fmt(m.baseline)}</td>
+                <td>{fmt(m.min)}</td>
+                <td>{fmt(m.max_drop)}</td>
+                <td>{m.failed ? `fail${m.reason ? ` — ${m.reason}` : ''}` : 'pass'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {gate.lastReport && (
+        <p className="text-xs text-muted-foreground">
+          Report {gate.lastReport.ts} · v{gate.lastReport.candidate} vs {gate.lastReport.baseline} ·
+          aggregate {gate.lastReport.aggregate}
+        </p>
+      )}
+    </section>
   )
 }
 

@@ -56,3 +56,14 @@ async def promotion(name: str, _=Depends(_viewer)) -> dict[str, Any]:
         return mlops.promotion_check(db, name)
 
     return await aggregate({"promotion": _check})
+
+
+@router.get("/gate-reports/{name}")
+async def gate_reports(name: str, limit: int = 20, _=Depends(_viewer)) -> dict[str, Any]:
+    """The model's persisted eval-gate reports, newest first (ADR 0008 clause 4)."""
+    db = _platform_db_path()
+
+    def _reports() -> list[dict[str, Any]]:
+        return mlops.gate_reports(db, name, limit)
+
+    return await aggregate({"reports": _reports})

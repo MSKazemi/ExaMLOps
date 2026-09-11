@@ -243,6 +243,8 @@ Model-detail-2.0 tabs for one model (case-insensitive `name`). Requires `viewer`
 — `cost` (runs/gpu_hours/cost_usd), `drift` (samples/mean_prediction/latest), `traffic`
 (configured/rules/updated_at), and the embedded `promotion` gate.
 
+REPLACE the section from `### `GET /api/v1/mlops/promotion/{name}` (MLOps console, F9)` up to (not incl.) the next `---` line WITH:
+
 ### `GET /api/v1/mlops/promotion/{name}` (MLOps console, F9)
 
 Guided-promotion gate for one model. Requires `viewer`.
@@ -253,15 +255,44 @@ Guided-promotion gate for one model. Requires `viewer`.
   "promotion": {
     "model": "DEMOAD", "mlflowName": "demoad",
     "policy": {"allow": false, "reasons": ["no promotion policy configured"]},
-    "eval": {"pass": false, "metrics": {}},
+    "eval": {"state": "no_gate", "pass": null, "reason": "no eval gate configured — promotion is not eval-gated",
+             "metrics": [], "lastReport": null},
     "approval": {"required": true, "state": "pending"},
     "allowed": false
   }
 }
 ```
 
-A promotion is `allowed` only when an **enabled** promotion policy exists; otherwise it is denied
-with an explicit `reasons` list (F9 R4). The phase-11 approval step is always flagged as required.
+A promotion is `allowed` only when an **enabled** promotion policy exists **and** the ADR 0008 eval
+gate does not stand in the way; otherwise it is denied with an explicit `reasons` list (F9 R4). The
+phase-11 approval step is always flagged as required.
+
+`eval` is read from the eval-gate reports the platform persisted. `run_eval_gate` writes one at
+every `exa pipeline promote`, `exa eval gate` and autopilot promotion:
+
+| `eval.state` | Meaning | Blocks `allowed` |
+|---|---|---|
+| `no_gate` | No eval gate configured; promotion is not eval-gated | no |
+| `not_run` | A gate is configured but has produced no report yet | yes (`exa pipeline promote` runs it) |
+| `passed` | The latest report passed | no |
+| `failed` | The latest report failed in `block` mode | yes |
+| `warned` | The latest report failed in `warn` mode: shown, not blocking | no |
+
+`eval.metrics` holds the per-metric verdicts (`candidate`, `baseline`, `delta`, `min`, `max_drop`,
+`failed`, `reason`). `eval.lastReport` names the candidate version it judged. The dashboard cannot
+see which version is the candidate *now* without MLflow, so check that version.
+
+### `GET /api/v1/mlops/gate-reports/{name}` (MLOps console, ADR 0008)
+
+A model's persisted eval-gate reports, newest first. `?limit=` (default 20, max 200). Requires
+`viewer`.
+
+**Response:** `{"reports": [{"id", "candidate", "baseline", "passed", "mode", "ts", "aggregate",
+"metrics": [...], "judge", "judgeEligible", "judgeFailures", "calibrationId"}]}`
+
+A failed latest report also appears in the alert inbox (`GET /api/alerts`, source `gate`). It is an
+`error` when the gate blocked (`block` mode) and a `warn` in `warn` mode, and a later passing report
+for the model clears it.
 
 ---
 

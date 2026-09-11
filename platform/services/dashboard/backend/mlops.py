@@ -12,6 +12,7 @@ while the MLflow registry is lowercase (``jpcp``). The mapping lives in ONE plac
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -172,14 +173,124 @@ def promotion_check(db_path: str, name: str) -> dict[str, Any]:
             policy_allow = True
             policy = _policy_dict(policy_row)
 
+        gate = eval_gate_state(conn, key)
+        eval_ok = gate["state"] in ("passed", "warned", "no_gate")
+        if gate["state"] == "failed":
+            reasons.append(f"eval gate failed: {gate['reason']}")
+        elif gate["state"] == "not_run":
+            reasons.append(gate["reason"])
         return {
             "model": display_name(name),
             "mlflowName": key,
             "policy": {"allow": policy_allow, "reasons": reasons, **policy},
-            "eval": {"pass": policy_allow, "metrics": {}},
+            "eval": gate,
             "approval": {"required": True, "state": "pending"},
-            "allowed": policy_allow,
+            "allowed": policy_allow and eval_ok,
         }
+    finally:
+        conn.close()
+
+
+def eval_gate_state(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """The ADR 0008 eval gate's standing for a model — from what the platform persisted.
+
+    It used to be ``{"pass": policy_allow}``: the panel reported the eval gate as passed
+    whenever a *promotion policy* existed, whatever the gate had actually found. Now it is the
+    latest ``gate_reports`` row that ``run_eval_gate`` writes at every ``exa pipeline promote``
+    / ``exa eval gate`` / autopilot promotion, against the ``eval_gates`` config:
+
+    * ``no_gate`` — no eval gate configured: promotion is not eval-gated (``pass`` is None).
+    * ``not_run`` — a gate is configured but has never produced a report.
+    * ``passed`` / ``failed`` — the latest report's verdict, in ``block`` mode.
+    * ``warned`` — the latest report failed in ``warn`` mode: shown, not blocking.
+
+    The report names the candidate version it judged; the panel shows it, because the dashboard
+    cannot see which version is the candidate *now* without asking MLflow.
+    """
+    gate = None
+    if _table_exists(conn, "eval_gates"):
+        gate = conn.execute(
+            "SELECT suite, baseline_alias, mode FROM eval_gates WHERE lower(model)=?", (key,)
+        ).fetchone()
+    latest = None
+    if _table_exists(conn, "gate_reports"):
+        latest = conn.execute(
+            "SELECT id, candidate, baseline, passed, mode, report_json, ts FROM gate_reports "
+            "WHERE lower(model)=? ORDER BY id DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+    last = _gate_report(latest) if latest is not None else None
+    if gate is None:
+        return {
+            "state": "no_gate",
+            "pass": None,
+            "reason": "no eval gate configured — promotion is not eval-gated",
+            "metrics": [],
+            "lastReport": last,
+        }
+    base = {"suite": gate["suite"], "baselineAlias": gate["baseline_alias"], "mode": gate["mode"]}
+    if last is None:
+        return {
+            **base,
+            "state": "not_run",
+            "pass": None,
+            "reason": (
+                f"eval gate (suite {gate['suite']}) has not run yet — "
+                "`exa pipeline promote` runs it before moving the alias"
+            ),
+            "metrics": [],
+            "lastReport": None,
+        }
+    failed = [m["name"] for m in last["metrics"] if m.get("failed")]
+    if last["passed"]:
+        state, reason = "passed", "every metric within its floor and tolerated drop"
+    else:
+        state = "warned" if last["mode"] == "warn" else "failed"
+        why = ", ".join(failed) if failed else "; ".join(last["judgeFailures"]) or "gate failed"
+        reason = f"v{last['candidate']} vs {last['baseline']}: {why}"
+    return {
+        **base,
+        "state": state,
+        "pass": bool(last["passed"]),
+        "reason": reason,
+        "metrics": last["metrics"],
+        "lastReport": last,
+    }
+
+
+def _gate_report(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        report = json.loads(row["report_json"] or "{}")
+    except (TypeError, ValueError):
+        report = {}
+    return {
+        "id": row["id"],
+        "candidate": row["candidate"],
+        "baseline": row["baseline"],
+        "passed": bool(row["passed"]),
+        "mode": row["mode"],
+        "ts": row["ts"],
+        "aggregate": report.get("aggregate", "all"),
+        "metrics": report.get("metrics") or [],
+        "judge": report.get("judge"),
+        "judgeEligible": report.get("judge_eligible", True),
+        "judgeFailures": report.get("judge_failures") or [],
+        "calibrationId": report.get("calibration_id"),
+    }
+
+
+def gate_reports(db_path: str, name: str, limit: int = 20) -> list[dict[str, Any]]:
+    """A model's persisted eval-gate reports, newest first (ADR 0008 clause 4)."""
+    conn = _connect(db_path)
+    try:
+        if not _table_exists(conn, "gate_reports"):
+            return []
+        rows = conn.execute(
+            "SELECT id, candidate, baseline, passed, mode, report_json, ts FROM gate_reports "
+            "WHERE lower(model)=? ORDER BY id DESC LIMIT ?",
+            (mlflow_name(name), max(1, min(int(limit), 200))),
+        ).fetchall()
+        return [_gate_report(r) for r in rows]
     finally:
         conn.close()
 

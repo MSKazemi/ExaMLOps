@@ -122,6 +122,7 @@ awaiting approval). Read-only — it visualizes the decision the CLI enforces.
 |---|---|---|---|---|
 | Review registry health | Per-model health (`ok`/`warn`/`unknown`), governed flag, freshness | Spot ungoverned or stale models before promoting | Sidebar → MLOps | `exa drift status` / `exa models lineage` |
 | Read the promotion gate | Shows the policy, approval step, and the one-line verdict (Blocked / Eligible / Ready) | Decide if a model is safe to promote | MLOps → select a model row | `exa pipeline promote <name> --if-rmse-lt …` |
+| Read the eval gate's verdict | The latest persisted ADR 0008 eval-gate report: passed / failed / warning / not yet run / no gate, with a per-metric table and the candidate version it judged. A failed gate also raises an alert | See *why* a promotion is blocked before retrying | MLOps → select a model → Eval gate | `exa eval gate <model>` |
 
 ## Datasets  <!-- (role: viewer / admin) -->
 

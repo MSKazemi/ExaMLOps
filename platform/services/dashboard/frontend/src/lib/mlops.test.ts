@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { promotionVerdict, freshnessLabel, type PromotionCheck } from './mlops'
+import { promotionVerdict, freshnessLabel, evalGateView, type EvalGate, type PromotionCheck } from './mlops'
 
 const base: PromotionCheck = {
   model: 'JPCP',
   mlflowName: 'jpcp',
   policy: { allow: true, reasons: [] },
-  eval: { pass: true, metrics: {} },
+  eval: { state: 'no_gate', pass: null, reason: 'no eval gate configured', metrics: [], lastReport: null },
   approval: { required: true, state: 'pending' },
   allowed: true,
 }
@@ -37,5 +37,27 @@ describe('freshnessLabel', () => {
   })
   it('formats an ISO timestamp to date + HH:MM', () => {
     expect(freshnessLabel('2026-07-02T11:00:00')).toBe('2026-07-02 11:00')
+  })
+})
+
+describe('evalGateView (ADR 0008)', () => {
+  const gate = (state: EvalGate['state']): EvalGate => ({
+    state,
+    pass: state === 'passed' ? true : state === 'failed' || state === 'warned' ? false : null,
+    reason: '',
+    metrics: [],
+    lastReport: null,
+  })
+  it('never reads a failed or unrun gate as healthy', () => {
+    expect(evalGateView(gate('failed')).status).toBe('failed')
+    expect(evalGateView(gate('not_run')).status).toBe('pending')
+    expect(evalGateView(gate('warned'))).toEqual({
+      status: 'degraded',
+      label: 'Eval gate warning — not blocking',
+    })
+  })
+  it('passes only on a passing report, and says when no gate exists', () => {
+    expect(evalGateView(gate('passed')).status).toBe('healthy')
+    expect(evalGateView(gate('no_gate'))).toEqual({ status: 'unknown', label: 'No eval gate' })
   })
 })

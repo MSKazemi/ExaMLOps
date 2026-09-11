@@ -1,8 +1,8 @@
 """Alert aggregation (F12 / ADR 0062).
 
 A unified alert inbox derived from the platform's own signals — prediction drift (`drift_snapshots`
-vs `drift_baselines`), budget overspend (`project_budgets` vs `model_costs`), and eval regressions
-(`eval_results`). Alerts are severity-coded (F3) and ack-able; an ack is audited to `platform_db`
+vs `drift_baselines`), budget overspend (`project_budgets` vs `model_costs`), eval regressions
+(`eval_results`), and failed ADR 0008 eval gates (`gate_reports`, the latest per model). Alerts are severity-coded (F3) and ack-able; an ack is audited to `platform_db`
 (D4) and published on the F8 ``alert.*`` channel so open dashboards update live.
 
 The full center (Alertmanager merge, incident correlation, on-call/escalation, runbooks, SLO board)
@@ -151,6 +151,48 @@ def _eval_alerts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return out
 
 
+def _gate_alerts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The latest ADR 0008 eval-gate report per model, when it failed (clause 4's alert).
+
+    A `block`-mode failure is an **error** — that promotion was refused. A `warn`-mode failure is
+    a **warn** — shown, not blocking. A later passing report for the model clears it, because only
+    the latest report per model is read.
+    """
+    if not _table_exists(conn, "gate_reports"):
+        return []
+    rows = conn.execute(
+        "SELECT g.model AS model, g.candidate AS candidate, g.baseline AS baseline, "
+        "g.mode AS mode, g.report_json AS report_json FROM gate_reports g "
+        "JOIN (SELECT lower(model) AS m, MAX(id) AS mid FROM gate_reports GROUP BY lower(model)) l "
+        "ON g.id = l.mid WHERE g.passed = 0"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            report = json.loads(r["report_json"] or "{}")
+        except (TypeError, ValueError):
+            report = {}
+        failed = ", ".join(m.get("name", "?") for m in report.get("metrics", []) if m.get("failed"))
+        blocking = r["mode"] != "warn"
+        what = "Promotion blocked" if blocking else "Eval gate warning"
+        out.append(
+            _alert(
+                "gate",
+                f"{str(r['model']).lower()}:{r['candidate']}",
+                "error" if blocking else "warn",
+                f"{what}: {r['model']} v{r['candidate']} vs {r['baseline']}"
+                + (f" ({failed})" if failed else ""),
+                {
+                    "model": str(r["model"]),
+                    "candidate": str(r["candidate"]),
+                    "mode": str(r["mode"]),
+                    "failed": failed,
+                },
+            )
+        )
+    return out
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 
@@ -158,7 +200,9 @@ def active_alerts(db_path: str) -> dict[str, Any]:
     """All firing alerts across sources, most-severe first, with per-severity counts (F12 R1)."""
     conn = _connect(db_path)
     try:
-        alerts = _drift_alerts(conn) + _budget_alerts(conn) + _eval_alerts(conn)
+        alerts = (
+            _drift_alerts(conn) + _budget_alerts(conn) + _eval_alerts(conn) + _gate_alerts(conn)
+        )
     finally:
         conn.close()
     alerts.sort(key=lambda a: (_SEVERITY_RANK.get(a["severity"], 9), a["id"]))

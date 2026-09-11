@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the dashboard showed the eval gate as passed whenever a promotion policy existed (ADR 0008 clause 4)
+
+- The MLOps console's Promotion panel reported `eval: {pass: policy_allow}`. Any model with an
+  enabled promotion policy read as "eval passed", including one whose eval gate had just blocked
+  its promotion. It now shows the latest persisted eval-gate report: passed, failed, warning (not
+  blocking), not yet run, or no gate. It has a per-metric table and names the candidate version
+  judged. A failed or unrun `block` gate denies the promotion with the reason.
+- New `GET /api/v1/mlops/gate-reports/{name}` lists a model's gate reports, newest first.
+- A failed latest gate report raises an alert (source `gate`): an `error` when it blocked, a `warn`
+  in `warn` mode. A later passing report clears it.
+
 ### Fixed — the install bundle's MLflow was OOM-killed on every start
 
 - **The v0.54.0 install bundle's MLflow was OOM-killed on every start.** MLflow 3.16 needs ~2.1 GiB
