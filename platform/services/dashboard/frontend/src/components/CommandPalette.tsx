@@ -5,6 +5,7 @@ import { getRole } from '@/lib/auth'
 import { rankCommands } from '@/lib/search'
 import { useSearch, type SearchResult } from '@/lib/search'
 import type { Command } from '@/lib/commands'
+import { pageAllowed, useModules } from '@/lib/modules'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 
 // A flat, selectable palette row — either a registered command or a federated search hit.
@@ -29,6 +30,8 @@ export function CommandPalette() {
   // Trap focus inside the dialog while open and restore it to the trigger on close (F18 R2).
   useFocusTrap(dialogRef, open)
   const role = getRole()
+  // A page of a module this site switched off (ADR 0128) is not offered either.
+  const disabledPages = useModules().data?.disabled_pages
   const { results } = useSearch(query)
 
   // ⌘K / Ctrl-K toggles the palette from anywhere. Resetting query/selection here (an event
@@ -52,7 +55,9 @@ export function CommandPalette() {
   }, [open])
 
   const rows: Row[] = useMemo(() => {
-    const cmdRows: Row[] = rankCommands(query, role).map((cmd) => ({
+    const cmdRows: Row[] = rankCommands(query, role)
+      .filter((cmd) => !cmd.to || pageAllowed(cmd.to, disabledPages))
+      .map((cmd) => ({
       type: 'command',
       key: `cmd:${cmd.id}`,
       label: cmd.label,
@@ -67,7 +72,7 @@ export function CommandPalette() {
       result: r,
     }))
     return [...cmdRows, ...resultRows]
-  }, [query, role, results])
+  }, [query, role, results, disabledPages])
 
   // Derive the effective selection (clamped to the current list) instead of syncing it in an
   // effect — the raw `active` may exceed `rows.length` after the list shrinks.

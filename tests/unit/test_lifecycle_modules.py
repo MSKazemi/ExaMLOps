@@ -78,6 +78,22 @@ def test_compose_services_and_profiles_exist_in_the_compose_file():
             assert prof in profiles, f"{m.id}: no compose profile {prof!r}"
 
 
+def test_dashboard_pages_exist_in_the_frontend_navigation():
+    """A module's dashboard pages must be real nav routes, or hiding them would hide nothing."""
+    import re
+    from pathlib import Path
+
+    nav = (
+        Path(__file__).resolve().parents[2] / "platform/services/dashboard/frontend/src/lib/nav.ts"
+    ).read_text()
+    routes = set(re.findall(r"path: '([^']+)'", nav))
+    owned = [p for m in mods.CATALOG for p in m.dashboard_pages]
+    assert len(owned) == len(set(owned)), "a dashboard page is claimed by two modules"
+    missing = sorted(set(owned) - routes)
+    assert not missing, f"CATALOG dashboard_pages not in the frontend nav: {missing}"
+    assert all(m.dashboard_pages == () for m in mods.CATALOG if m.required)  # core is never hidden
+
+
 # ── resolution ────────────────────────────────────────────────────────────────────────────
 
 

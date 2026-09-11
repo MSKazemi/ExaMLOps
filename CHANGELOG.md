@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — the dashboard navigation follows the site feature profile (ADR 0128)
+
+- A module a centre switched off (`exa modules disable …`) now leaves the dashboard's sidebar and ⌘K
+  palette too, not only its API: each module declares its `dashboard_pages` in the catalog,
+  `GET /api/v1/modules` returns `disabled_pages`, and the frontend hides those routes
+  (`lib/modules.ts`). With no profile, or before it answers, every page shows, as before.
+
 ### Added — `exa dataplane`: sources, pulls and snapshots from the CLI (ADR 0130)
 
 - New `exa dataplane` command group: `connectors` (installed/available

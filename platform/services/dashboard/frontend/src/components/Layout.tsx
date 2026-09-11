@@ -9,6 +9,7 @@ import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
 import { useApprovalsCount } from '@/lib/api'
 import { isEnabled } from '@/lib/flags'
+import { pageAllowed, useModules } from '@/lib/modules'
 import {
   HOME_ITEM,
   NAV_SECTIONS,
@@ -52,6 +53,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation()
   const role = getRole()
   const { tenant } = useCapabilities()
+  // Pages of the modules this site switched off (ADR 0128) — decided by the server's site profile.
+  const disabledPages = useModules().data?.disabled_pages
   const { theme, setTheme } = useTheme()
   const { data: pendingApprovals } = useApprovalsCount()
   const pendingCount = pendingApprovals?.length ?? 0
@@ -73,7 +76,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // An item is shown when the role clears any admin gate and its feature flag (if any) is on.
   const canSee = (item: NavItem) =>
     (!item.adminOnly || role === 'admin') &&
-    (!item.flag || isEnabled(item.flag as Parameters<typeof isEnabled>[0]))
+    (!item.flag || isEnabled(item.flag as Parameters<typeof isEnabled>[0])) &&
+    pageAllowed(item.path, disabledPages)
 
   const toggleSection = (id: string) =>
     setCollapsed((prev) => {

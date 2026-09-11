@@ -92,6 +92,7 @@ Unknown module or preset names never crash anything. They appear as warnings in
 | `exa` CLI | The module's commands disappear from `exa --help`, `exa docs` and the dashboard's CLI Console catalogue. Invoking one names the module and how to enable it, and exits **3**. That code is distinct from 1, so a script can tell "switched off here" from "failed". Third-party plugin commands are never gated. |
 | Dashboard API | Every route the module owns answers `404` with `{"code": "module_disabled", "module": …}`. This is checked server-side, not just hidden in the UI. |
 | Dashboard flags | A flag that belongs to a disabled module evaluates **false**, even with an admin override. `GET /api/v1/modules` returns the profile for the UI. |
+| Dashboard navigation | The module's consoles leave the sidebar and the ⌘K palette. The server lists them (`disabled_pages` in `GET /api/v1/modules`, from each module's `dashboard_pages` in the catalog), so the UI keeps no module map of its own. |
 | Docker Compose | `exa modules render --target compose` prints `COMPOSE_PROFILES` for the enabled modules. It also writes an override that parks disabled always-on services in an inactive profile and makes their dependents optional. |
 | Kubernetes | `exa modules render --target helm` writes values: `site.features` (injected into every pod as `EXAMLOPS_FEATURES`) and `agent.enabled`. |
 

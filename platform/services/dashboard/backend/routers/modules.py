@@ -24,7 +24,7 @@ async def modules(_claims: dict = Depends(_viewer)) -> dict[str, Any]:
 
     profile = current_profile()
     if profile is None:
-        return {"available": False, "modules": []}
+        return {"available": False, "modules": [], "disabled_pages": []}
     return {
         "available": True,
         "preset": profile.preset,
@@ -40,7 +40,12 @@ async def modules(_claims: dict = Depends(_viewer)) -> dict[str, Any]:
                 "why": profile.reasons[m.id],
                 "flags": list(m.dashboard_flags),
                 "api": list(m.dashboard_api),
+                "pages": list(m.dashboard_pages),
             }
             for m in CATALOG
         ],
+        # The page routes the navigation must hide: every page of every module that is off.
+        "disabled_pages": sorted(
+            p for m in CATALOG if not profile.is_enabled(m.id) for p in m.dashboard_pages
+        ),
     }

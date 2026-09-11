@@ -53,6 +53,8 @@ class Module:
     required: bool = False
     dashboard_flags: tuple[str, ...] = ()
     dashboard_api: tuple[str, ...] = ()
+    # Dashboard page routes (frontend paths) the module owns — hidden from the navigation when off.
+    dashboard_pages: tuple[str, ...] = ()
     compose_services: tuple[str, ...] = ()
     compose_profiles: tuple[str, ...] = ()
     helm: tuple[str, ...] = ()
@@ -120,6 +122,7 @@ CATALOG: tuple[Module, ...] = (
             "assets",
         ),  # fmt: skip
         dashboard_api=("/pipelines", "/scaffold", "/hpo", "/feature-store", "/features"),
+        dashboard_pages=("/build/datasets", "/build/features", "/build/assets", "/build/pipelines"),
     ),
     M(
         "serving",
@@ -137,6 +140,7 @@ CATALOG: tuple[Module, ...] = (
             "/rollback",
             "/explain",
         ),  # fmt: skip
+        dashboard_pages=("/serve/traffic", "/serve/scaling"),
     ),
     M(
         "quality",
@@ -147,6 +151,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_flags=("incidentTimeline",),
         dashboard_api=("/drift", "/slo", "/fairness", "/quality"),
         env_switches=("EXAMLOPS_SLO_GATE_ENABLED", "EXAMLOPS_FAIRNESS_GATE_ENABLED"),
+        dashboard_pages=("/operate/drift", "/operate/slos", "/govern/fairness"),
     ),
     M(
         "governance",
@@ -154,6 +159,7 @@ CATALOG: tuple[Module, ...] = (
         "Compliance evidence, governance reports and model/dataset cards.",
         cli=("compliance", "governance", "cards"),
         dashboard_api=("/compliance", "/v1/governance", "/cards"),
+        dashboard_pages=("/govern/governance", "/govern/compliance"),
     ),
     M(
         "genai",
@@ -173,6 +179,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_flags=("llmopsConsole",),
         dashboard_api=("/v1/llmops", "/gateway", "/prompts"),
         env_switches=("EXAMLOPS_GUARDRAIL_MODE",),
+        dashboard_pages=("/build/prompts", "/serve/llmops", "/serve/gateway"),
     ),
     M(
         "llm-serving",
@@ -202,6 +209,7 @@ CATALOG: tuple[Module, ...] = (
         requires=("quality", "training", "serving"),
         dashboard_api=("/autopilot",),
         env_switches=("EXAMLOPS_AUTOPILOT_ENABLED",),
+        dashboard_pages=("/operate/autopilot",),
     ),
     M(
         "hpc",
@@ -212,6 +220,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_flags=("facilityConsole",),
         dashboard_api=("/v1/facility",),
         env_switches=("EXAMLOPS_HPC_SCHEDULER", "EXAMLOPS_SLURM_MODE"),
+        dashboard_pages=("/operate/facility",),
     ),
     M(
         "finops",
@@ -219,6 +228,7 @@ CATALOG: tuple[Module, ...] = (
         "Budgets, cost and carbon accounting, and offline cost/carbon/SLA reports.",
         cli=("finops", "report"),
         dashboard_api=("/v1/finops",),
+        dashboard_pages=("/operate/finops",),
     ),
     M(
         "workbenches",
@@ -227,6 +237,7 @@ CATALOG: tuple[Module, ...] = (
         cli=("workbench",),
         dashboard_api=("/v1/workbenches",),
         compose_profiles=("jupyter",),
+        dashboard_pages=("/platform/jupyter",),
     ),
     M(
         "observability",
@@ -244,6 +255,7 @@ CATALOG: tuple[Module, ...] = (
         dashboard_api=("/seanerbus", "/modelzoo"),
         compose_profiles=("seanerbus",),
         needs="a sibling seanerbus checkout to build the bridge image",
+        dashboard_pages=("/platform/integrations",),
     ),
 )
 

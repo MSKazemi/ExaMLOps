@@ -93,6 +93,10 @@ async def test_modules_endpoint_lists_profile(client, monkeypatch):
     assert body["available"] is True and body["preset"] == "standard"
     state = {m["id"]: m["enabled"] for m in body["modules"]}
     assert state["hpc"] is True and state["genai"] is False and state["core"] is True
+    # the navigation hides exactly the pages of the modules that are off
+    assert "/serve/llmops" in body["disabled_pages"]  # genai: off under `standard`
+    assert "/operate/facility" not in body["disabled_pages"]  # hpc: enabled on top
+    assert "/operate/finops" not in body["disabled_pages"]  # finops: part of `standard`
 
 
 @pytest.mark.asyncio
