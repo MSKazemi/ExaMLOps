@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-09-11
+
 ### Changed — dependencies: training and serving move together; typer 0.27
 
 - **New guard: models are served with the library versions they were trained with.**
