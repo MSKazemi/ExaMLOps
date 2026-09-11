@@ -10,6 +10,7 @@
  * item = edit this file; `Layout`, the router redirects, and the nav test all derive from it.
  */
 import {
+  Landmark,
   Activity,
   BellRing,
   Blocks,
@@ -118,6 +119,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'Govern',
     icon: ShieldCheck,
     items: [
+      { path: '/govern/governance', label: 'Governance', icon: Landmark, adminOnly: true },
       { path: '/govern/compliance', label: 'Compliance', icon: FileCheck, adminOnly: true },
       { path: '/govern/audit', label: 'Audit', icon: ShieldCheck, adminOnly: true },
       { path: '/govern/approvals', label: 'Approvals', icon: ClipboardCheck, adminOnly: true, badge: 'approvals' },
@@ -168,7 +170,7 @@ export const ROUTE_REDIRECTS: Record<string, string> = {
   '/facility': '/operate/facility',
   '/finops': '/operate/finops',
   '/status': '/operate/self-obs',
-  '/governance': '/govern/compliance',
+  '/governance': '/govern/governance',
   '/audit': '/govern/audit',
   '/approvals': '/govern/approvals',
   '/projects': '/platform/projects',

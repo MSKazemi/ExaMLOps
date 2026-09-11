@@ -40,6 +40,7 @@ const KNOWN_ROUTES = new Set([
   '/operate/finops',
   '/operate/self-obs',
   // govern
+  '/govern/governance',
   '/govern/compliance',
   '/govern/audit',
   '/govern/approvals',
@@ -123,7 +124,7 @@ describe('ROUTE_REDIRECTS (clean-slate URL migration)', () => {
     // except the two whose flat name differs (seanerbus→integrations, status→self-obs) — covered explicitly.
     expect(ROUTE_REDIRECTS['/models']).toBe('/build/models')
     expect(ROUTE_REDIRECTS['/drift']).toBe('/operate/drift')
-    expect(ROUTE_REDIRECTS['/governance']).toBe('/govern/compliance')
+    expect(ROUTE_REDIRECTS['/governance']).toBe('/govern/governance')
     expect(ROUTE_REDIRECTS['/seanerbus']).toBe('/platform/integrations')
     expect(ROUTE_REDIRECTS['/status']).toBe('/operate/self-obs')
     expect(ROUTE_REDIRECTS['/next-gen']).toBe('/serve/nextgen')

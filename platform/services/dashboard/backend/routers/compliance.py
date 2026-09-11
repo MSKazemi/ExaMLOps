@@ -114,3 +114,110 @@ async def set_conformity(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return {"model": model, "state": state}
+
+
+# ── Compliance page: the Annex-IV technical file with evidence sufficiency (ADR 0012 cl. 4) ──
+
+
+def _technical_file_payload(model: str, tenant: str) -> dict:
+    """Generate (never save) the Annex-IV file and shape it for the Compliance page.
+
+    Each section carries ADR 0110's sufficiency verdict — verified / unverified / insufficient /
+    missing, with reasons — so the page shows what the file cannot vouch for, not only what is
+    absent. Generation verifies the audit chain and the telemetry anchors, which is why it runs off
+    the event loop.
+    """
+    c = _examlops_compliance()
+    doc = c.generate_technical_file(model, tenant=tenant)
+    return {
+        "model": model,
+        "tenant": tenant,
+        "disclaimer": c.DISCLAIMER,
+        "gaps": doc.gaps,
+        "missing": doc.missing,
+        "insufficient": doc.insufficient,
+        "unverified": doc.unverified,
+        "auditChain": doc.chain_summary,
+        "telemetryAnchors": doc.anchors_summary,
+        "sections": [
+            {
+                "key": s.key,
+                "title": s.title,
+                "annexIv": s.annex_iv,
+                "present": s.present,
+                "status": s.status,
+                "reasons": s.reasons,
+                "content": s.content,
+            }
+            for s in doc.sections
+        ],
+    }
+
+
+@router.get("/technical-file/{model}")
+async def technical_file(model: str, tenant: str = "default", _=Depends(_viewer)) -> dict:
+    """Preview the Annex-IV technical file from live evidence (read-only; nothing is stored)."""
+    import asyncio
+
+    return await asyncio.to_thread(_technical_file_payload, model, tenant)
+
+
+@router.get("/technical-files/{model}")
+async def technical_file_versions(model: str, _=Depends(_viewer)) -> list[dict]:
+    """Saved technical-file versions of a system, newest first (metadata only)."""
+    import asyncio
+
+    try:
+        from examlops.data.governance import list_technical_files
+    except ImportError as exc:  # pragma: no cover
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "examlops unavailable") from exc
+    rows = await asyncio.to_thread(list_technical_files, model)
+    return [dict(r) for r in rows]
+
+
+@router.post("/technical-file/{model}")
+async def save_technical_file_version(
+    model: str, tenant: str = "default", principal: dict = Depends(_admin)
+) -> dict:
+    """Save a new technical-file version (admin + ``compliance.classify``; audited).
+
+    Mirrors ``exa compliance technical-file`` — the same generator, the same versioned store — so a
+    version saved here is the one ``exa compliance declare`` rests on. Gaps include insufficient
+    evidence (ADR 0110), so a declaration built on this version stays a draft while any remain.
+    """
+    import asyncio
+
+    _require_manage(principal)
+    c = _examlops_compliance()
+    from examlops.data.audit import write_audit_event
+    from examlops.data.governance import save_technical_file
+
+    def _save() -> dict:
+        doc = c.generate_technical_file(model, tenant=tenant)
+        version = save_technical_file(
+            model,
+            doc.to_markdown(),
+            tenant=tenant,
+            gaps=doc.gaps,
+            generated_by=principal.get("sub", "?"),
+        )
+        write_audit_event(
+            "dashboard",
+            principal.get("sub", "?"),
+            "technical_file_saved",
+            model,
+            {"version": version, "gaps": doc.gaps, "insufficient": doc.insufficient},
+            tenant=tenant,
+        )
+        return {"model": model, "version": version, "gaps": doc.gaps}
+
+    return await asyncio.to_thread(_save)
+
+
+@router.get("/art12/{model}")
+async def art12_coverage(model: str, _=Depends(_viewer)) -> dict:
+    """Art. 12 record-keeping coverage: which required event types the audit trail holds."""
+    import asyncio
+
+    c = _examlops_compliance()
+    return await asyncio.to_thread(c.check_art12_logging, model)

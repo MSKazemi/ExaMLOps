@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a dashboard Compliance page (ADR 0012 clause 4 — ADR 0012 now Accepted)
+
+- **Govern → Compliance** shows the EU AI Act system register and, for a chosen system, its
+  Annex-IV technical file generated live from platform evidence. The page opens with what the file
+  cannot vouch for: insufficient (integrity check failed), missing, and not tamper-evident
+  sections, each with the reason. It then shows the audit-chain and anchor state, Art. 12
+  coverage, and saved versions. Admins save a version (audited) into the store that
+  `exa compliance declare` reads.
+- New read-only routes `GET /api/compliance/technical-file/{model}`, `…/technical-files/{model}`
+  and `…/art12/{model}`, plus admin `POST /api/compliance/technical-file/{model}`, all through the
+  shared `examlops.compliance` code path. The Governance console keeps its NIST posture, card and
+  audit views, now at `/govern/governance`.
+
 ### Changed — the control-plane and dashboard images run as non-root
 
 - **The control-plane and dashboard images run as non-root**, like the agent. They ran as root

@@ -38,7 +38,7 @@ footer of utility links. URLs are lifecycle-scoped (e.g. `/build/models`,
 | **Build** | Models · MLOps · Datasets · Features · Pipelines · Prompts |
 | **Serve** | LLMOps · Traffic · Gateway · Scaling · Next-Gen |
 | **Operate** | Drift · Alerts · Autopilot · SLOs · Admission · Facility · FinOps · Self-Obs |
-| **Govern** (admin) | Compliance · Audit · Approvals · Fairness · Secrets |
+| **Govern** (admin) | Governance · Compliance · Audit · Approvals · Fairness · Secrets |
 | **Platform** | Projects · Events · Services · Providers · Config · SeanerBUS · Jupyter · Flags (admin) |
 | **Utility (footer)** | Documents · Preferences |
 
@@ -314,7 +314,7 @@ p95 latency) + dependency health pills (`platform_db` probed live), auto-refresh
 
 ---
 
-## Compliance (Governance)  <!-- (role: admin) -->
+## Governance  <!-- (role: admin) -->
 
 Compliance posture — NIST AI RMF control coverage (satisfied/partial/gap, never false
 green), EU AI Act status per model, model-card coverage with missing models named, and an
@@ -323,9 +323,25 @@ about gaps.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
-| Review compliance posture | Graded NIST controls + EU AI Act per model | Prepare for an audit; find gaps | Sidebar → Compliance | `exa audit` (evidence source) |
-| Check card coverage | Fraction of models with a model card + which are missing | Close documentation gaps before promotion | Compliance → Model-card coverage | — |
-| Verify audit integrity | Shows the tamper-evidence hash-chain head digest | Prove the audit log wasn't altered | Compliance → Audit integrity | `exa audit verify-worm` (related) |
+| Review compliance posture | Graded NIST controls + EU AI Act per model | Prepare for an audit; find gaps | Sidebar → Governance (`/govern/governance`) | `exa governance report` |
+| Check card coverage | Fraction of models with a model card + which are missing | Close documentation gaps before promotion | Governance → Model-card coverage | — |
+| Verify audit integrity | Shows the tamper-evidence hash-chain head digest | Prove the audit log wasn't altered | Governance → Audit integrity | `exa audit verify-worm` (related) |
+
+## Compliance (EU AI Act)  <!-- (role: admin) -->
+
+The EU AI Act workspace: the system register, and for a chosen system its Annex-IV technical file,
+generated live from platform evidence. The file opens with **what it cannot vouch for**, meaning
+every section that is *insufficient* (its integrity check failed: a broken audit chain or anchor),
+*missing*, or *not tamper-evident*, with the reason for each. Every status is a text label, never
+colour alone.
+
+| Action | What it does | Use case | How to (UI) | Equivalent CLI |
+|---|---|---|---|---|
+| Classify a system | Sets the risk tier and intended purpose (audited) | Put a new model in scope before promotion | Compliance → register → risk tier | `exa compliance classify MODEL --risk-tier high …` |
+| Advance conformity | Moves draft → documented → assessed → declared (validated transitions) | Record progress towards a declaration | Compliance → register → conformity | `exa compliance declare MODEL --state assessed` |
+| Preview the technical file | Generates Annex IV from live evidence with per-section sufficiency, gap counts, and audit-chain + anchor state; stores nothing | See what an auditor would get, and what it cannot vouch for | Compliance → Technical file → pick a system | `exa compliance technical-file MODEL` |
+| Check Art. 12 coverage | Which required event types the audit trail holds | Find record-keeping gaps | Compliance → Art. 12 record-keeping | `exa compliance art12 MODEL` |
+| Save a version | Stores the file as a new version (audited `technical_file_saved`); a declaration rests on a saved version with no gaps | Freeze evidence for an assessment | Compliance → Saved versions → **Save version** | `exa compliance technical-file MODEL --out file.md` |
 
 ## Audit  <!-- (role: admin) -->
 

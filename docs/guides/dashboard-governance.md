@@ -4,7 +4,9 @@ The **Governance** page renders the platform's compliance posture: NIST AI RMF c
 Act status per model, model-card coverage, and audit-trail integrity. It is deliberately **honest** —
 it reports *evidence coverage*, not certification, and surfaces gaps rather than showing false green.
 
-Open it from the sidebar (**Governance**, admin only) or navigate to `/governance`.
+Open it from the sidebar (**Govern → Governance**, admin only) or navigate to `/govern/governance`
+(the old `/governance` URL redirects there). The EU AI Act technical file and Art. 12 coverage have
+their own page, **Govern → Compliance** (`/govern/compliance`).
 
 - **Feature:** F14 · **Design:** ADR 0063 (`design/adr/0063-dashboard-governance-compliance-surface.md`) ·
   **Spec:** `design/vision/specs/F14-governance-compliance-surface.md`

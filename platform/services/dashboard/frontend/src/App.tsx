@@ -36,6 +36,7 @@ const FacilityConsole = lazy(() =>
 const Finops = lazy(() => import('@/pages/Finops').then((m) => ({ default: m.Finops })))
 const SelfObs = lazy(() => import('@/pages/SelfObs').then((m) => ({ default: m.SelfObs })))
 const Governance = lazy(() => import('@/pages/Governance').then((m) => ({ default: m.Governance })))
+const Compliance = lazy(() => import('@/pages/Compliance').then((m) => ({ default: m.Compliance })))
 const Llmops = lazy(() => import('@/pages/Llmops').then((m) => ({ default: m.Llmops })))
 const Gateway = lazy(() => import('@/pages/Gateway').then((m) => ({ default: m.Gateway })))
 const Prompts = lazy(() => import('@/pages/Prompts').then((m) => ({ default: m.Prompts })))
@@ -165,7 +166,8 @@ export default function App() {
                       <Route path="/operate/finops" element={<Finops />} />
                       <Route path="/operate/self-obs" element={<SelfObs />} />
                       {/* Govern */}
-                      <Route path="/govern/compliance" element={<Governance />} />
+                      <Route path="/govern/governance" element={<Governance />} />
+                      <Route path="/govern/compliance" element={<Compliance />} />
                       <Route path="/govern/audit" element={<Audit />} />
                       <Route path="/govern/approvals" element={<Approvals />} />
                       <Route path="/govern/secrets" element={<Secrets />} />

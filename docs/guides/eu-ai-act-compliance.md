@@ -132,6 +132,25 @@ Each generated declaration is versioned and retained alongside the technical fil
 version sequence. **Art. 47's ten-year retention is not enforced by the platform** — the
 documents are stored and every generation is audited, but nothing prevents their removal.
 
+## The Compliance page (dashboard)
+
+**Govern → Compliance** (`/govern/compliance`) is the same tooling as a page:
+
+- **System register.** Every system's risk tier and conformity state. Admins classify and
+  advance state through the same audited code path as `exa compliance classify` / `declare`.
+- **Technical file, live.** Pick a system and the page generates its Annex-IV file from current
+  evidence: nothing is stored until you save. It opens with **What this file cannot vouch for**,
+  every section that is *insufficient* (its integrity check failed), *missing*, or *not
+  tamper-evident*, each with its reason. Below that come the gap counts, the audit-chain and
+  telemetry-anchor state, and each section with its status.
+- **Art. 12 record-keeping.** Which required event types the audit trail holds.
+- **Saved versions.** Admins save a version (audited as `technical_file_saved`) into the store
+  `exa compliance declare` reads. A declaration resting on a version with gaps stays a draft.
+
+API (for automation): `GET /api/compliance/technical-file/{model}` (preview),
+`GET /api/compliance/technical-files/{model}` (saved versions), `GET /api/compliance/art12/{model}`,
+`POST /api/compliance/technical-file/{model}` (admin, `compliance.classify`).
+
 ## The shared framework
 
 ```bash
