@@ -147,6 +147,9 @@ def test_pipeline_run_pin_unknown_revision_exits_nonzero(monkeypatch):
 
 def test_pipeline_run_pin_known_revision_launches(tmp_path, monkeypatch):
     """R12: a recorded revision is accepted, exported to the env, and launches."""
+    # The command writes os.environ directly; registering the variable with monkeypatch first
+    # makes teardown remove it again, so it cannot leak into later tests on this worker.
+    monkeypatch.setenv("EXAMLOPS_DATASET_REVISION", "")
     p = _parquet(tmp_path / "d.parquet", 7)
     runner.invoke(app, ["data", "snapshot", "FData", "-b", "minio", "-p", str(p)])
     rev = get_dataset_revisions("FData")[0]["revision_id"]

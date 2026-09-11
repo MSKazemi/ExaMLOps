@@ -23,6 +23,9 @@ def snapshot(tmp_path, monkeypatch):
     url = f"file://{tmp_path / 'store'}"
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_STORE_URL", url)
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_CACHE_DIR", str(tmp_path / "cache"))
+    # A pinned revision leaked by an earlier test on this worker would redirect `pin_for` to a
+    # snapshot that does not exist in this test's store.
+    monkeypatch.delenv("EXAMLOPS_DATASET_REVISION", raising=False)
     ad.reset_pins()
     store = st.DatasetStore.from_url(url)
 
