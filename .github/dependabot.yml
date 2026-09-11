@@ -92,6 +92,11 @@ updates:
       # typescript-eslint release admits typescript 7.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # @types/node's major must be the Node that runs the code (24: CI's setup-node and the
+      # dashboard's node:24 builder). Node 26 typings accept APIs Node 24 lacks (PR #13). Move
+      # them with the runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # Container base images. A Dockerfile that pins `image:tag@sha256:<digest>` (OpenSSF
   # Scorecard, Pinned-Dependencies) builds reproducibly, and Dependabot re-pins the digest when the
