@@ -12,9 +12,9 @@
 #     and keeps a compromised release from arriving as a green PR.
 #   • every `ignore` below carries its reason and the condition that lifts it. An
 #     unexplained ignore is how a pin outlives the reason it was added.
-#   • each ecosystem runs on its own weekday (uv Mon · pip Tue · npm Wed · actions Thu). On
-#     2026-09-10 all four fired at once: 13 PRs × ~11 CI jobs overran the runner pool, and
-#     main's own run sat queued until a newer push replaced it.
+#   • each ecosystem runs on its own weekday (uv Mon · pip Tue · npm Wed · actions Thu ·
+#     docker Fri). On 2026-09-10 four fired at once: 13 PRs × ~11 CI jobs overran the runner
+#     pool, and main's own run sat queued until a newer push replaced it.
 version: 2
 updates:
   # Root uv workspace (pyproject.toml + uv.lock): the examlops CLI, pipelines, serving.
@@ -91,6 +91,47 @@ updates:
       # cannot even install next to it (`npm ci` → ERESOLVE, PR #2). Lift when a
       # typescript-eslint release admits typescript 7.
       - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # Container base images. A Dockerfile that pins `image:tag@sha256:<digest>` (OpenSSF
+  # Scorecard, Pinned-Dependencies) builds reproducibly, and Dependabot re-pins the digest when the
+  # tag is re-published with patched layers, so a pin never freezes a known CVE in place.
+  - package-ecosystem: "docker"
+    directories:
+      - "/platform/infra/docker-compose"
+      - "/platform/services/agent"
+      - "/platform/services/control_plane"
+      - "/serving/ray_serving"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+    cooldown:
+      default-days: 7
+    groups:
+      images-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The images run the Python CI tests (3.12, ci.yml); a 3.13 image would run code no job
+      # tested. Move the image and CI's python-version together, by hand.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The dashboard's frontend builder stage matches CI's Node (setup-node 24); same rule.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      # A Postgres major is a data-directory migration (pg_upgrade), never a routine bump.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      # The tracking server moves with the mlflow client pins, all at once —
+      # tests/unit/test_training_serving_versions_agree.py.
+      - dependency-name: "*mlflow/mlflow"
+      # A Grafana major changes the dashboard and provisioning formats; upgrade deliberately.
+      - dependency-name: "grafana/grafana"
+        update-types: ["version-update:semver-major"]
+      # A Prometheus major (v2 → v3) changes config and rule semantics; upgrade deliberately.
+      - dependency-name: "prom/prometheus"
+        update-types: ["version-update:semver-major"]
+      # A JupyterHub major needs `jupyterhub upgrade-db` on the hub's database first.
+      - dependency-name: "*jupyterhub/jupyterhub"
         update-types: ["version-update:semver-major"]
 
   # CI actions. Workflows pin each action to a commit SHA with the version in a comment;

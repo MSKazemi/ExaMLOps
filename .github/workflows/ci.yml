@@ -33,15 +33,15 @@ on:
   merge_group:
   workflow_dispatch:
 
-# A newer push to the same PR supersedes the old run. Pushes to main are NEVER cancelled:
-# each commit on main gets its own verdict, or a red commit hides behind a green successor
-# (the cancelled "--help" run of 2026-09-10 is exactly that gap). That needs a group per
-# COMMIT for non-PR events, not per ref: a group holds at most one PENDING run, and GitHub
-# cancels the pending one when a newer run joins — even with cancel-in-progress false. With a
-# per-ref group, a24fa30's run (2026-09-10) waited behind a busy runner pool and was cancelled
-# by the next push before it ever started.
+# Pull requests: a newer push cancels the superseded run. main: a run that has STARTED is never
+# cancelled (the "--help" run of 2026-09-10 was cancelled mid-way and left its commit with no
+# verdict), and while one runs, at most ONE newer push waits — GitHub replaces a waiting run
+# with the next push, so a burst of pushes costs one extra run, and the newest always runs and
+# covers every commit before it. A per-commit group was tried the same day: every push got its
+# own run, and multi-session pushes queued 27 runs behind the ~20-job runner pool until main
+# waited hours for any verdict at all.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

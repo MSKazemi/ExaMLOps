@@ -211,6 +211,17 @@ def test_dependabot_watches_every_npm_package() -> None:
     assert not missing, f"package.json files Dependabot never updates: {missing}"
 
 
+def test_dependabot_watches_every_dockerfile() -> None:
+    """A base image pinned by digest and never re-pinned freezes its CVEs in place."""
+    dirs = {
+        "/" if str(Path(p).parent) == "." else f"/{Path(p).parent}"
+        for p in _tracked_files()
+        if Path(p).name.startswith("Dockerfile")
+    }
+    missing = sorted(dirs - _covered("docker"))
+    assert not missing, f"Dockerfiles whose base images Dependabot never updates: {missing}"
+
+
 def test_dependabot_watches_the_uv_workspace_and_the_actions() -> None:
     assert "/" in _covered("uv"), "the root uv workspace (uv.lock) is not watched"
     assert "/" in _covered("github-actions"), "the pinned workflow actions are not watched"

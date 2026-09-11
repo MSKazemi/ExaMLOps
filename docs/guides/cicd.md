@@ -988,7 +988,9 @@ versions CI uses) and `tests/unit/test_github_workflows_hardened.py` enforce the
 ### Dependabot
 
 `.github/dependabot.yml` covers the uv workspace, every pinned `requirements*.txt` (the services,
-`serving/ray_serving` and the docs toolchain), the dashboard frontend and the workflow actions.
+`serving/ray_serving` and the docs toolchain), the dashboard frontend, the workflow actions and
+every Dockerfile's base image. Where a Dockerfile pins `image:tag@sha256:<digest>`, Dependabot
+re-pins the digest when the tag is republished with patched layers.
 Minor and patch updates arrive grouped, one PR per ecosystem. A major update arrives on its own
 PR, so one breaking major cannot block the safe updates next to it. A release must be at least 7
 days old before Dependabot proposes it (14 for a major); most malicious releases are found and
