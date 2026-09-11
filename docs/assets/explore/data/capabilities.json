@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 430,
+ "total_commands": 432,
  "total_groups": 66,
  "panels": [
   {
@@ -1254,6 +1254,13 @@
      "guide": "guides/genai-observability.md"
     },
     {
+     "cmd": "exa prompt backend",
+     "group": "prompt",
+     "help": "Show which registry holds prompts: platform_db (default) or the MLflow Prompt Registry.",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
      "cmd": "exa prompt create",
      "group": "prompt",
      "help": "Create a new immutable prompt version (spec R1).",
@@ -1278,6 +1285,13 @@
      "cmd": "exa prompt list",
      "group": "prompt",
      "help": "List prompt names, or the versions + labels of one prompt.",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt migrate",
+     "group": "prompt",
+     "help": "Copy every prompt (all versions in order, then labels) to another backend (ADR 0009). Version numbers are preserved; a prompt that already exists at the destination is skipped, because merging into it would renumber its history.",
      "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
      "guide": "guides/prompt-management.md"
     },

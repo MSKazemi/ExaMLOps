@@ -2504,6 +2504,10 @@ Set the active project (persisted in config.toml; EXAMLOPS_PROJECT env overrides
 
 Prompt registry — versioned templates + labels (dev/prod)
 
+### `exa prompt backend`
+
+Show which registry holds prompts: platform_db (default) or the MLflow Prompt Registry.
+
 ### `exa prompt create`
 
 Create a new immutable prompt version (spec R1).
@@ -2524,6 +2528,17 @@ Move a label to a version — audited (spec R8/R9) and C3-gated (ADR 0009 clause
 ### `exa prompt list`
 
 List prompt names, or the versions + labels of one prompt.
+
+### `exa prompt migrate`
+
+Copy every prompt (all versions in order, then labels) to another backend (ADR 0009).
+
+Version numbers are preserved; a prompt that already exists at the destination is skipped,
+because merging into it would renumber its history.
+
+- `--to` — Destination backend: mlflow | platform_db
+- `--from` — Source backend
+- `--dry-run` — Report what would move; write nothing
 
 ### `exa prompt rollback`
 

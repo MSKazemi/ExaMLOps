@@ -287,3 +287,71 @@ def rollback(
         {"label": label_name, "to_version": to_version},
     )
     _output.ok(f"Rolled back {name}@{label_name} → v{to_version} (history intact)")
+
+
+_EX_MIGRATE = (
+    "Examples:\n\n"
+    "  exa prompt migrate --to mlflow --dry-run     # what would move\n\n"
+    "  exa prompt migrate --to mlflow               # copy versions + labels into MLflow\n\n"
+    "  EXAMLOPS_PROMPT_BACKEND=mlflow exa prompt list"
+)
+
+
+@app.command("backend", epilog=_EX_MIGRATE)
+def backend() -> None:
+    """Show which registry holds prompts: platform_db (default) or the MLflow Prompt Registry."""
+    from examlops.data.prompts import prompt_backend
+
+    try:
+        name = prompt_backend()
+    except ValueError as exc:
+        _output.error(str(exc))
+    where = (
+        os.getenv("EXAMLOPS_PROMPT_MLFLOW_URI") or os.getenv("MLFLOW_TRACKING_URI") or "(unset)"
+        if name == "mlflow"
+        else "platform.db"
+    )
+    if _output.json_mode:
+        _output.print_json({"backend": name, "location": where})
+        return
+    _output.ok(f"Prompt backend: {name} ({where}) — set EXAMLOPS_PROMPT_BACKEND to change it")
+
+
+@app.command("migrate", epilog=_EX_MIGRATE)
+def migrate(
+    to: str = typer.Option("mlflow", "--to", help="Destination backend: mlflow | platform_db"),
+    source: str = typer.Option("platform_db", "--from", help="Source backend"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would move; write nothing"),
+) -> None:
+    """Copy every prompt (all versions in order, then labels) to another backend (ADR 0009).
+
+    Version numbers are preserved; a prompt that already exists at the destination is skipped,
+    because merging into it would renumber its history.
+    """
+    from examlops.prompts import migrate_prompts
+    from examlops.prompts.mlflow_backend import PromptBackendError
+
+    if not dry_run and not _output.confirm(f"Copy every prompt from {source} to {to}?"):
+        raise typer.Exit(1)
+    try:
+        report = migrate_prompts(to=to, source=source, dry_run=dry_run)
+    except (ValueError, RuntimeError, PromptBackendError) as exc:
+        _output.error(str(exc))
+    if not dry_run:
+        write_audit_event(
+            "exa-prompt",
+            _actor(),
+            "prompt_migrate",
+            to,
+            {k: report[k] for k in ("source", "destination", "migrated", "versions", "labels")},
+        )
+    if _output.json_mode:
+        _output.print_json(report)
+        return
+    verb = "Would copy" if dry_run else "Copied"
+    _output.ok(
+        f"{verb} {len(report['migrated'])} prompt(s), {report['versions']} version(s), "
+        f"{report['labels']} label(s) from {source} to {to}."
+    )
+    for s in report["skipped"]:
+        _output.warning(f"Skipped {s['name']}: {s['reason']}")

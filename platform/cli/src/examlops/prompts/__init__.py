@@ -100,3 +100,69 @@ def get_prompt(name: str, label: str = "prod") -> PromptVersion:
 
 def clear_cache() -> None:
     _cache.clear()
+
+
+def migrate_prompts(
+    to: str = "mlflow", *, source: str = "platform_db", dry_run: bool = False
+) -> dict[str, Any]:
+    """Copy every prompt — all versions in order, then every label — from ``source`` to ``to``.
+
+    Version numbers must survive the move: a label, an audit event or a lineage node that says
+    ``skipper-system@prod = v3`` has to mean the same v3 afterwards. A registry numbers versions
+    itself, so a prompt that already exists at the destination is **skipped**, never merged — merging
+    would renumber it. After each create the returned number is checked against the source's, and a
+    mismatch stops the migration rather than leaving a shifted history behind.
+    """
+    from examlops.data import prompts as store
+
+    if to == source:
+        raise ValueError("source and destination backends are the same")
+    with store.use_backend(source):
+        names = store.list_prompt_names()
+        plan = {
+            n: (
+                sorted(store.list_prompt_versions(n), key=lambda r: int(r["version"])),
+                store.list_prompt_labels(n),
+            )
+            for n in names
+        }
+    with store.use_backend(to):
+        existing = set(store.list_prompt_names())
+    report: dict[str, Any] = {
+        "source": source,
+        "destination": to,
+        "dry_run": dry_run,
+        "migrated": [],
+        "skipped": [],
+        "versions": 0,
+        "labels": 0,
+    }
+    for name, (versions, labels) in plan.items():
+        if name in existing:
+            report["skipped"].append(
+                {"name": name, "reason": "already in the destination — merging would renumber it"}
+            )
+            continue
+        report["migrated"].append(name)
+        report["versions"] += len(versions)
+        report["labels"] += len(labels)
+        if dry_run:
+            continue
+        with store.use_backend(to):
+            for row in versions:
+                got = store.create_prompt_version(
+                    name,
+                    row["template"],
+                    variables=json.loads(row.get("variables") or "[]"),
+                    tags=json.loads(row.get("tags") or "{}"),
+                    actor=row.get("actor"),
+                )
+                if int(got) != int(row["version"]):
+                    raise RuntimeError(
+                        f"prompt '{name}': source v{row['version']} became v{got} in {to} — "
+                        "stopping before any label points at the wrong version"
+                    )
+            for lab in labels:
+                store.set_prompt_label(name, lab["label"], int(lab["version"]))
+    clear_cache()
+    return report

@@ -5,9 +5,9 @@ can change what a model is asked *without a code deploy* — and roll back insta
 Prompts resolve by `name@label` (`triage@prod`), moves are audited, and the resolved
 version attaches to GenAI traces (C1) and eval results (C2).
 
-Design: ADR 0009 · spec `design/vision/specs/B1-prompt-management.md`. Backend is
-`platform_db` (works with no external service); an MLflow Prompt Registry backend can
-be swapped behind the same client.
+Design: ADR 0009 · spec `design/vision/specs/B1-prompt-management.md`. Prompts live in
+`platform_db` by default (no external service), or in the **MLflow Prompt Registry**, next to
+the models they drive (see [Backends](#backends)).
 
 ## Concepts
 
@@ -27,6 +27,40 @@ exa prompt diff triage 1 2                                           # line diff
 exa prompt label triage prod 2                                       # move prod → v2 (audited)
 exa prompt rollback triage prod 1                                    # roll prod back to v1 (history kept)
 ```
+
+## Backends
+
+| `EXAMLOPS_PROMPT_BACKEND` | where prompts live | use it when |
+|---|---|---|
+| `platform_db` (default) | the platform database | no external service; single node, CI, dev |
+| `mlflow` | the MLflow Prompt Registry at `MLFLOW_TRACKING_URI` (or `EXAMLOPS_PROMPT_MLFLOW_URI`) | you want prompts in the same registry, UI and access control as models |
+
+Every command, the dashboard, Skipper and the gateway work identically on either backend: the
+backend implements the same seven registry operations with the same results. On MLflow:
+
+- **Labels are MLflow aliases.** `exa prompt label triage prod 2` sets the `prod` alias on
+  version 2, visible in the MLflow UI.
+- **Templates are stored verbatim.** ExaMLOps templates use Python `{var}` syntax; MLflow's own
+  renderer uses `{{var}}`. Converting would lose format specs and escaped braces, so the template
+  is stored exactly as written and tagged `examlops.template_syntax = python-format`. ExaMLOps
+  renders it, byte-identically on both backends.
+- Variables, tags and the author ride in version tags (`examlops.variables`, `examlops.tags`,
+  `examlops.actor`).
+- An unknown `EXAMLOPS_PROMPT_BACKEND` value is an error. A typo never quietly writes prompts to
+  the wrong registry.
+
+**Moving an existing registry:**
+
+```bash
+exa prompt backend                              # which backend is active, and where
+exa prompt migrate --to mlflow --dry-run        # what would move
+exa prompt migrate --to mlflow                  # copy every version in order, then every label
+export EXAMLOPS_PROMPT_BACKEND=mlflow           # then point every process at it
+```
+
+Migration preserves **version numbers**, so `triage@prod = v3` means the same v3 afterwards. A
+prompt that already exists in the destination is skipped rather than merged, because merging
+would renumber it. The move is audited as `prompt_migrate`.
 
 ## Runtime resolution
 

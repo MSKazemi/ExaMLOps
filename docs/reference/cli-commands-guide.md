@@ -556,6 +556,8 @@ An immutable, versioned prompt store. Each `create` appends a new version; movab
 | `exa prompt show` | Shows a prompt version's template, addressed by `name <version>` or `name@label`. | View exactly what template `prod` (or a given version) is serving. | `exa prompt show greeting@prod` |
 | `exa prompt diff` | Shows a line diff between two versions of a prompt (spec R3). | Review what changed between two prompt revisions before promoting. | `exa prompt diff greeting 1 2` |
 | `exa prompt label` | **(Mutation)** Moves a label to a version — audited (spec R8/R9). | Promote a prompt version to `prod` (or any environment label). | `exa prompt label greeting prod 2` |
+| `exa prompt backend` | Shows which registry holds prompts, `platform_db` (default) or the MLflow Prompt Registry, and where (`EXAMLOPS_PROMPT_BACKEND`). | Check where prompts are read and written before a move. | `exa prompt backend` |
+| `exa prompt migrate` | **(Mutation)** Copies every prompt, all versions in order and then every label, from `--from` (default `platform_db`) to `--to` (default `mlflow`). Version numbers are preserved, prompts already in the destination are skipped, `--dry-run` writes nothing, and the move is audited. | Move the prompt registry into MLflow next to the models. | `exa prompt migrate --to mlflow --dry-run` |
 | `exa prompt rollback` | **(Mutation)** Rolls a label back to a prior version without deleting history (spec R10). | Revert `prod` to a known-good prompt version after a bad release. | `exa prompt rollback greeting prod 1` |
 
 ### `exa guardrails` — injection / PII / toxicity defense

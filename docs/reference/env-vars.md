@@ -550,6 +550,8 @@ it and `exa prompt rollback skipper-system prod` to go back.
 | Variable | Default | Purpose |
 |---|---|---|
 | `SKIPPER_PROMPT_REGISTRY` | `1` | Resolve the system prompt from the registry. `0`/`false`/`no`/`off` ⇒ always use the literal in `skipper/prompts.py`. |
+| `EXAMLOPS_PROMPT_BACKEND` | `platform_db` | **B1** where prompts live: `platform_db` or `mlflow` (the MLflow Prompt Registry, ADR 0009 clause 1). Unknown values are an error. |
+| `EXAMLOPS_PROMPT_MLFLOW_URI` | unset (`MLFLOW_TRACKING_URI`) | **B1** MLflow URI for the `mlflow` prompt backend, when prompts should live in a different MLflow than the tracking server. |
 | `EXAMLOPS_PROMPT_GATE_LABELS` | `prod` | **B1** comma-separated prompt labels whose moves are gated by the C3 eval regression check (ADR 0009 clause 4). Gating `dev`/`staging` too would deadlock the registry — the gate reads its baseline from a labelled version. |
 | `SKIPPER_PROMPT_LABEL` | `prod` | Which label to resolve (`dev`/`staging`/`prod`), so a staging agent can run an unpromoted prompt. |
 

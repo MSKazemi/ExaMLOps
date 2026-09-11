@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — prompts can live in the MLflow Prompt Registry (ADR 0009 clause 1 — ADR 0009 now Accepted)
+
+- `EXAMLOPS_PROMPT_BACKEND=mlflow` keeps the prompt registry in MLflow, next to the models, with
+  labels as MLflow aliases. Every consumer (`exa prompt`, the dashboard Prompts console, Skipper's
+  system prompt, the gateway's `name@label` resolution, prompt lineage) works unchanged, because
+  the backend implements the same registry operations with the same results. `platform_db` stays
+  the default.
+- Templates are stored **verbatim** and tagged `examlops.template_syntax = python-format`.
+  Converting to MLflow's `{{var}}` syntax would lose format specs and escaped braces, and a
+  prompt must render byte-identically whichever backend holds it. A test holds the two backends
+  to that.
+- `exa prompt migrate --to mlflow [--dry-run]` copies every version in order, then every label.
+  Version numbers are preserved, a prompt already in the destination is skipped rather than
+  merged (merging would renumber it), and the move is audited. `exa prompt backend` shows which
+  registry is active.
+- An unknown `EXAMLOPS_PROMPT_BACKEND` is an error, never a silent fallback.
+
 ### Added — a dashboard Compliance page (ADR 0012 clause 4 — ADR 0012 now Accepted)
 
 - **Govern → Compliance** shows the EU AI Act system register and, for a chosen system, its
