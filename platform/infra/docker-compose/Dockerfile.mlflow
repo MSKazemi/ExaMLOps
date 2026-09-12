@@ -1,3 +1,10 @@
 # MLflow with PostgreSQL + S3-compatible artifact store (MinIO) support
 FROM ghcr.io/mlflow/mlflow:v3.16.0@sha256:470607da2a70fa38724d3d7db0a54a78b50fac708f7291bfebe1935fa95259ae
+# perl-base in the pinned base image carries three fixable CRITICAL advisories (CVE-2026-13221,
+# CVE-2026-42496, CVE-2026-8376); the release's trivy gate blocks on fixable CRITICALs, and it
+# should. Debian ships the fix, but the base image has not been rebuilt yet, so upgrade that one
+# package. Drop this step once the pinned base carries it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade perl-base \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir psycopg2-binary boto3

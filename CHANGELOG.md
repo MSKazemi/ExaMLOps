@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — v0.59.0's images were quarantined by three new perl CVEs
+
+- **The release gate blocked six of the seven images**: `perl-base` 5.40.1-6 in the pinned base
+  carries three fixable CRITICAL advisories published on 2026-09-12 (CVE-2026-13221,
+  CVE-2026-42496, CVE-2026-8376), and the release scan blocks on a fixable CRITICAL, as it should.
+  Debian ships the fix (5.40.1-6+deb13u1) but the base images have not been rebuilt, so the
+  control-plane, agent, dashboard, ray-serving, mlflow and postgres images now upgrade that one
+  package. Measured: the pinned `python:3.12-slim` scans 3 CRITICAL, and clean with the upgrade.
+  `examlops-backup` was never affected, because installing postgresql-client already pulled the
+  patched package. Each step says which advisories it is for, so it can be dropped when the base
+  images carry them.
+
 ## [0.59.0] - 2026-09-12
 
 ### Fixed — project budgets now mean their period, and a breach announces itself
