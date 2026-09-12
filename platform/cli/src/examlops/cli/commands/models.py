@@ -487,6 +487,23 @@ def _tag_mlflow_version(
             pass  # tagging is best-effort; don't fail the command
 
 
+def _evaluate_project_budget(model: str) -> None:
+    """Announce a project budget breach as soon as the spend that caused it is recorded (ADR 0089).
+
+    The spend point, not a daemon: a breach used to exist only while somebody ran
+    `exa project budget`. Fail-open — recording a cost must not fail on a governance write.
+    """
+    try:
+        from examlops.data.projects import get_project_for_model
+        from examlops.project_finops import evaluate_budget
+
+        project = get_project_for_model(model)
+        if project:
+            evaluate_budget(project, actor=os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER"))
+    except Exception as exc:  # noqa: BLE001
+        _output.warning(f"project budget check skipped: {exc}")
+
+
 def _attach_lineage_cost(
     run_id: str, gpu_hours: float, cpu_hours: float | None, cost_usd: float
 ) -> None:
@@ -603,6 +620,7 @@ def cost(
                     _attach_lineage_cost(run_id, gpu_hours, cpu_hours, cost_usd)
 
             recorded_count += 1
+            _evaluate_project_budget(model)
 
         _output.ok(f"Recorded cost data for {recorded_count} version(s) of {model}")
 

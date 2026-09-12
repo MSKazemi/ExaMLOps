@@ -600,14 +600,19 @@ def cost(
 def budget(
     name: str = typer.Argument(..., help="Project name"),
 ) -> None:
-    """Show budget/quota status and flag breaches (exit 1 if over budget)."""
-    from examlops.project_finops import budget_status
+    """Show budget/quota status and flag breaches (exit 1 if over budget).
+
+    The consumption shown is the spend inside the budget's period (``monthly`` by default), not
+    every cost ever recorded. A governance event is written when the state *changes*, so running
+    this on a breached project does not add one event per run.
+    """
+    from examlops.project_finops import evaluate_budget
 
     init_db()
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
-    st = budget_status(name, actor=_actor(), audit=True)
+    st = evaluate_budget(name, actor=_actor())
     if _output.json_mode:
         _output.print_json(st)
     else:
@@ -616,8 +621,10 @@ def budget(
             f"Budget — {name}",
             ["Field", "Value"],
             [
+                ["Period", f"{st['period']} (from {st['window_start'] or 'the beginning'})"],
                 ["Consumed GPU-h", f"{cons['gpu_hours']:.2f}"],
                 ["Consumed USD", f"${cons['cost_usd']:.2f}"],
+                ["Consumed USD (lifetime)", f"${st['consumption_total']['cost_usd']:.2f}"],
                 ["Budget", str(st["budget"] or "(none)")],
                 ["Over budget", "YES" if st["over_budget"] else "no"],
             ],

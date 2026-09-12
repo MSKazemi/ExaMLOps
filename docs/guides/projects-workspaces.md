@@ -209,8 +209,31 @@ exa pipeline run --model JPCP --project research   # tags the run + attributes r
 
 ```bash
 exa project cost research      # attributed GPU-hours · USD · carbon (model_costs.project)
-exa project budget research    # budget/quota status; exits 1 and audits a breach if over budget
+exa project budget research    # budget/quota status for the budget's period; exits 1 if over
 ```
+
+**A budget is compared against its period.** A budget row carries one — `monthly` by default —
+and the consumption it is checked against is the spend *inside that window* (the current calendar
+month, UTC). `total` means lifetime. `exa project budget` shows the period, the window start, the
+spend inside it, and the lifetime figure beside it.
+
+!!! warning "Fixed after v0.58.0 — a monthly budget used to be compared against all spend ever"
+    Every recorded cost was summed against the budget whatever its period said, so a monthly budget
+    breached permanently once lifetime spend passed it and never reset at the month boundary.
+
+**A breach announces itself.** The governance event is written when the state *changes*:
+
+| Event | When |
+|---|---|
+| `project_budget_breach` | the project enters breach, or an already-breached project breaches something else as well |
+| `project_budget_recovered` | it leaves breach — including because an operator raised the budget |
+
+Nothing is written while the state holds, so a breached project does not collect one event per
+look. Evaluation happens where the spend becomes known — `exa models cost --record` checks the
+project of each model it records — and on demand from `exa project budget`. There is no daemon to
+run, and a governance-write failure never fails the recording.
+
+Enforcement stays advisory (ADR 0084): a project over budget is announced and shown, not blocked.
 
 ## 12. Workbenches
 

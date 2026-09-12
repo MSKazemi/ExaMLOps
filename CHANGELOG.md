@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — project budgets now mean their period, and a breach announces itself
+
+- A project budget has a period (`monthly` by default), and the spend compared against it was
+  every cost ever recorded. A monthly budget therefore breached permanently once lifetime spend
+  passed it, and never reset at the month boundary. Consumption is now the spend inside the
+  period; `total` means lifetime. `exa project budget` shows the period, the window it covers, and
+  the lifetime figure beside it.
+- A budget breach now raises its governance event when the state changes, rather than only when
+  someone runs `exa project budget` — which also wrote a duplicate event on every run. Leaving
+  breach raises `project_budget_recovered`, including when an operator raises the budget.
+- `exa models cost --record` evaluates the budget of each recorded model's project, so a breach
+  exists as soon as the spend that caused it is recorded. No daemon is involved, and a failure to
+  write the governance event never fails the cost recording.
+- Budgets are still advisory: a project over budget is reported, not blocked.
+
 ### Fixed — the semantic cache mixed up requests that asked for different things
 
 - The gateway keyed every cached answer as if it had been asked at `temperature=0`, so one cache

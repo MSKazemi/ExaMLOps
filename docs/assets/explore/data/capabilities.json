@@ -2815,7 +2815,7 @@
     {
      "cmd": "exa project budget",
      "group": "project",
-     "help": "Show budget/quota status and flag breaches (exit 1 if over budget).",
+     "help": "Show budget/quota status and flag breaches (exit 1 if over budget). The consumption shown is the spend inside the budget's period (monthly by default), not every cost ever recorded. A governance event is written when the state *changes*, so running this on a breached project does not add one event per run.",
      "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
      "guide": "guides/projects-workspaces.md"
     },

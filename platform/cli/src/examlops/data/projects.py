@@ -8,6 +8,7 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any  # noqa: F401
 
@@ -260,18 +261,24 @@ def get_project_budget(project: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def get_project_consumption(project: str) -> dict[str, float]:
+def get_project_consumption(project: str, since: str | None = None) -> dict[str, float]:
     """Sum recorded GPU-hours and cost attributed to a project (ADR 0086).
 
     Resolves the project's models from the unified membership tables — ``project_resources``
     (kind='model') ∪ ``project_models`` ∪ ``namespace_models`` (back-compat alias) — so budgets
     enforce against the real training spend tracked by ``exa models cost``, whether a model was
     grouped via the new Projects surface or the legacy namespace surface.
+
+    ``since`` is an ISO-8601 UTC timestamp: only costs recorded at or after it are counted. A
+    budget has a *period* (ADR 0089), and comparing a monthly budget against every cost ever
+    recorded made it breach permanently. Omitted, the sum is lifetime, as before.
     """
     init_db()
+    clause = " AND c.recorded_at >= ?" if since else ""
+    params: tuple = (project, project, project) + ((since,) if since else ())
     with get_db() as conn:
         row = conn.execute(
-            """WITH members(model) AS (
+            f"""WITH members(model) AS (
                    SELECT ref  FROM project_resources WHERE project = ? AND kind = 'model'
                    UNION SELECT model FROM project_models   WHERE project   = ?
                    UNION SELECT model FROM namespace_models WHERE namespace = ?
@@ -279,8 +286,9 @@ def get_project_consumption(project: str) -> dict[str, float]:
                SELECT COALESCE(SUM(c.gpu_hours), 0) AS gpu_hours,
                       COALESCE(SUM(c.cost_usd), 0)  AS cost_usd
                FROM members m
-               JOIN model_costs c ON c.model_name = m.model""",
-            (project, project, project),
+               JOIN model_costs c ON c.model_name = m.model
+               WHERE 1=1{clause}""",
+            params,
         ).fetchone()
     return {"gpu_hours": float(row["gpu_hours"]), "cost_usd": float(row["cost_usd"])}
 
@@ -545,12 +553,53 @@ def set_project_budget(
     period: str = "monthly",
     updated_by: str | None = None,
 ) -> None:
+    """Set a project's budget, keeping its alert state (ADR 0089).
+
+    An upsert of the budget columns only: ``INSERT OR REPLACE`` would drop the alert state, and an
+    operator raising a budget above current spend is exactly when the recovery has to be noticed.
+    """
+    init_db()
     with get_db() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO project_budgets
-               (project, gpu_hours_budget, cost_budget, period, updated_by)
-               VALUES (?,?,?,?,?)""",
+            """INSERT INTO project_budgets
+               (project, gpu_hours_budget, cost_budget, period, updated_by, updated_at)
+               VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(project) DO UPDATE SET
+                   gpu_hours_budget=excluded.gpu_hours_budget,
+                   cost_budget=excluded.cost_budget,
+                   period=excluded.period,
+                   updated_by=excluded.updated_by,
+                   updated_at=CURRENT_TIMESTAMP""",
             (project, gpu_hours_budget, cost_budget, period, updated_by),
+        )
+
+
+def get_project_budget_alert(project: str) -> dict[str, Any] | None:
+    """The last alert state recorded for a project's budget (ADR 0089), or ``None``."""
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT alert_state, alert_breaches_json, alerted_at FROM project_budgets "
+            "WHERE project=?",
+            (project,),
+        ).fetchone()
+    if row is None or row["alert_state"] is None:
+        return None
+    return {
+        "state": row["alert_state"],
+        "breaches": json.loads(row["alert_breaches_json"] or "[]"),
+        "at": row["alerted_at"],
+    }
+
+
+def set_project_budget_alert(project: str, state: str, breaches: list[str]) -> None:
+    """Record the alert state a breach event was raised for (ADR 0089)."""
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE project_budgets SET alert_state=?, alert_breaches_json=?, "
+            "alerted_at=CURRENT_TIMESTAMP WHERE project=?",
+            (state, json.dumps(breaches), project),
         )
 
 

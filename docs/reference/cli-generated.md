@@ -2579,6 +2579,10 @@ Assign a model to a project (alias for: exa project assign <p> <model> --kind mo
 
 Show budget/quota status and flag breaches (exit 1 if over budget).
 
+The consumption shown is the spend inside the budget's period (``monthly`` by default), not
+every cost ever recorded. A governance event is written when the state *changes*, so running
+this on a breached project does not add one event per run.
+
 ### `exa project compose`
 
 Generate a Docker Compose fragment with resource limits for this project.

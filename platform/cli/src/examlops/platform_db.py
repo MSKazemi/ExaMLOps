@@ -1846,6 +1846,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "signal_type": "TEXT",
         "signal_method": "TEXT",
     },
+    # ADR 0089: the alert state of a project's budget, so a breach is announced on the transition
+    # rather than once per look (and a recovery is announced at all).
+    "project_budgets": {
+        "alert_state": "TEXT",
+        "alert_breaches_json": "TEXT",
+        "alerted_at": "DATETIME",
+    },
     # ADR 0035 clause 1: did the schema constrain the decoder, or only judge the answer?
     "structured_output_events": {"constrained": "INTEGER NOT NULL DEFAULT 0"},
     # A5 data contracts (ADR 0005): revision/stage/score facets on the quality table.
