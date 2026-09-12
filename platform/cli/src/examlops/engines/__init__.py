@@ -152,6 +152,9 @@ class VLLMEngine:
     """
 
     name = "vllm-inproc"
+    #: vLLM constrains the decoder to a JSON schema (ADR 0035 clause 1) via
+    #: ``SamplingParams(guided_decoding=…)``; see :meth:`_sampling_params`.
+    constrains_schema = True
 
     def __init__(self, model_path: str, config: EngineConfig | None = None) -> None:
         self.model_path = model_path
@@ -177,11 +180,25 @@ class VLLMEngine:
             enable_prefix_caching=self.config.prefix_cache,
         )
 
-    def generate(self, prompt: str, **kw: Any) -> Completion:  # pragma: no cover - GPU
-        self._ensure()
+    @staticmethod
+    def _sampling_params(kw: dict[str, Any]) -> Any:
+        """vLLM ``SamplingParams`` for this call, with the schema constraint when one was asked
+        for (ADR 0035 clause 1). Separated from :meth:`generate` so the decision is testable
+        without a GPU: only the vLLM imports live here, and a test can supply them.
+        """
         from vllm import SamplingParams  # type: ignore
 
-        sp = SamplingParams(**_sampling_kwargs(kw))  # R-A2: sampling passthrough
+        params = _sampling_kwargs(kw)  # R-A2: sampling passthrough
+        schema = kw.get("response_schema")
+        if schema is not None:
+            from vllm.sampling_params import GuidedDecodingParams  # type: ignore
+
+            params["guided_decoding"] = GuidedDecodingParams(json=schema)
+        return SamplingParams(**params)
+
+    def generate(self, prompt: str, **kw: Any) -> Completion:  # pragma: no cover - GPU
+        self._ensure()
+        sp = self._sampling_params(kw)
         result = self._llm.generate([prompt], sp)[0]
         out = result.outputs[0]
         return Completion(

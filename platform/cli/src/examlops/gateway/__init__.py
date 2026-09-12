@@ -250,15 +250,22 @@ def _extract_json(text: str) -> Any:
 
 
 def _enforce_schema(
-    comp: Completion, schema: dict[str, Any], *, tenant: str, max_repairs: int
+    comp: Completion,
+    schema: dict[str, Any],
+    *,
+    tenant: str,
+    max_repairs: int,
+    constrained: bool = False,
 ) -> None:
     """Attach a schema-valid object to ``comp``, or raise ``StructuredOutputError``.
 
-    ADR 0035 clause 1 asks the platform to *guarantee* a response validates. The half of that
-    clause built on **constrained decoding** is still absent — no guided decoding, no grammar, no
-    provider structured-output API — so this reaches the guarantee the other way: parse, validate,
-    repair, and raise if it still does not validate. A caller gets a valid object or a typed error,
-    never an unchecked one.
+    ADR 0035 clause 1 asks the platform to *guarantee* a response validates, and it is reached
+    from both ends. When the backend can constrain its decoder the schema went *into* the request
+    (``constrained``), so the answer should fit the first time; when it cannot, the model was asked
+    in prose. This end is the same either way — parse, validate, repair, and raise if it still does
+    not validate — because a constraint the platform did not enforce itself is a claim, not a
+    guarantee: a server can ignore ``response_format``, and the repair path stays the proof.
+    ``constrained`` is recorded so the failure rate can be read per decoding mode.
 
     It routes through :func:`generate_structured` rather than re-implementing validate-then-repair,
     which also gives that function its first caller outside its own tests — it was written for this
@@ -271,7 +278,9 @@ def _enforce_schema(
     except ValueError as exc:
         from examlops import data as _pdb
 
-        _pdb.record_structured_output_event("failed", model=comp.model, tenant=tenant)
+        _pdb.record_structured_output_event(
+            "failed", model=comp.model, tenant=tenant, constrained=constrained
+        )
         raise StructuredOutputError(f"response is not JSON: {exc}") from exc
 
     comp.parsed = generate_structured(
@@ -281,6 +290,7 @@ def _enforce_schema(
         max_repairs=max_repairs,
         model=comp.model,
         tenant=tenant,
+        constrained=constrained,
     )
 
 
@@ -448,6 +458,7 @@ class GatewayClient:
                 # that does not fit is a miss, not an error — the model has not been asked.
                 try:
                     if response_schema is not None:
+                        # A cache hit is replayed text, never a constrained decode.
                         _enforce_schema(
                             cached, response_schema, tenant=self.tenant, max_repairs=max_repairs
                         )
@@ -462,8 +473,16 @@ class GatewayClient:
 
         errors: list[str] = []
         for name, backend in candidates:
+            # ADR 0035 clause 1: a backend that can constrain its decoder is *given* the schema,
+            # so the model can only emit text that fits it. One that cannot is asked as before and
+            # the answer is validated (and repaired) afterwards. Either way the caller gets a valid
+            # object or a typed error — the constraint is never taken on trust.
+            constrained = response_schema is not None and bool(
+                getattr(backend, "constrains_schema", False)
+            )
+            call_kw = {**kw, "response_schema": response_schema} if constrained else kw
             try:
-                raw = backend(model, messages, **kw)
+                raw = backend(model, messages, **call_kw)
                 comp = _coerce(raw, model, name)
             except MediaNotAllowed:
                 # R-V5: a policy denial on the *request* is not a backend failure —
@@ -505,7 +524,13 @@ class GatewayClient:
             # response is the one validated — otherwise the object handed back could contain the
             # text the guardrail just removed. Before the cache, so only a valid object is stored.
             if response_schema is not None:
-                _enforce_schema(comp, response_schema, tenant=self.tenant, max_repairs=max_repairs)
+                _enforce_schema(
+                    comp,
+                    response_schema,
+                    tenant=self.tenant,
+                    max_repairs=max_repairs,
+                    constrained=constrained,
+                )
 
             if self.cache_store is not None and use_cache:
                 self.cache_store(model, messages, comp)
@@ -698,6 +723,10 @@ def engine_backend(model_name: str, config: Any = None, *, label: str | None = N
 
     def _backend(model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
         sampling = {k: v for k, v in kw.items() if k in _SAMPLING_KEYS}
+        # ADR 0035 clause 1: the schema rides with the sampling knobs, and only to an engine that
+        # can act on it — this filter is otherwise where a constraint silently disappears.
+        if kw.get("response_schema") is not None and getattr(engine, "constrains_schema", False):
+            sampling["response_schema"] = kw["response_schema"]
         try:
             if supports_chat(engine):
                 # R-V4: a chat-capable engine receives the messages untouched, so
@@ -719,6 +748,11 @@ def engine_backend(model_name: str, config: Any = None, *, label: str | None = N
 
     _backend.health = engine.health  # type: ignore[attr-defined]
     _backend.engine = engine  # type: ignore[attr-defined]
+    # ADR 0035 clause 1: whether this engine can hold the model to a JSON schema while decoding.
+    # Read through the telemetry wrapper, which delegates what it does not instrument.
+    _backend.constrains_schema = bool(  # type: ignore[attr-defined]
+        getattr(engine, "constrains_schema", False)
+    )
     return _backend
 
 

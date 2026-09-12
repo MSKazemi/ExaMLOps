@@ -273,6 +273,20 @@ def _sampling_kwargs(kw: dict[str, Any]) -> dict[str, Any]:
     return {k: kw[k] for k in _SAMPLING_KEYS if kw.get(k) is not None}
 
 
+def schema_response_format(schema: dict[str, Any], *, name: str = "response") -> dict[str, Any]:
+    """The OpenAI-compatible ``response_format`` that **constrains** a server to ``schema``.
+
+    ADR 0035 clause 1's decoding half: the server compiles the schema into a grammar and can only
+    emit text that fits it, instead of being asked in prose and checked afterwards. One function,
+    because every server path sends the same body — ``vllm serve``, and any other OpenAI-compatible
+    endpoint. ``strict`` is what makes the constraint binding rather than a hint.
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "schema": schema, "strict": True},
+    }
+
+
 # ── `vllm serve` argv (R-V6) ──────────────────────────────────────────────────
 
 

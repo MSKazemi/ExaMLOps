@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — structured output is now constrained at the model, not only checked afterwards (ADR 0035)
+
+- When a model is asked for a JSON schema (`response_schema`), backends that support it are now
+  given the schema itself, so the model can only produce text that fits. A `vllm serve` endpoint —
+  or any OpenAI-compatible one — receives `response_format` with the schema and `strict: true`;
+  vLLM's in-process engine receives guided-decoding sampling parameters. Backends that cannot do
+  this, such as the echo engine, are asked exactly as before.
+- The answer is still validated and repaired in both cases. A server can ignore the field, so the
+  platform never treats the constraint as a guarantee on its own.
+- Each attempt now records whether it was constrained, so `structured_output_stats()` reports
+  `constrained` next to `valid`, `repaired` and `failed`. A backend that claims to constrain but
+  needs repairs is therefore visible. A cache hit is replayed text, so it counts as unconstrained.
+
 ### Added — data contracts are tested in CI (ADR 0005)
 
 - Every data contract now declares, beside it, the rows it must accept and rows it must reject

@@ -128,22 +128,27 @@ def generate_structured(
     max_repairs: int = 1,
     model: str = "-",
     tenant: str = "default",
+    constrained: bool = False,
 ) -> Any:
     """Generate an object that is **guaranteed** to validate against ``schema`` (R1/R2).
 
     Validate → (repair + revalidate up to ``max_repairs``) → else raise. Each attempt's
-    outcome is metered for the structured-output failure rate (R8).
+    outcome is metered for the structured-output failure rate (R8). ``constrained`` says whether
+    the schema constrained the decoder (ADR 0035 clause 1) or only judged the answer, so the
+    failure rate can be read per decoding mode — a constrained backend that still needs repairs
+    is not honouring the constraint.
     """
     obj = generate_fn(prompt)
+    meter = {"model": model, "tenant": tenant, "constrained": constrained}
     if not validate_object(obj, schema):
-        platform_db.record_structured_output_event("valid", model=model, tenant=tenant)
+        platform_db.record_structured_output_event("valid", **meter)
         return obj
     for _ in range(max_repairs):
         obj = repair_object(obj, schema)
         if not validate_object(obj, schema):
-            platform_db.record_structured_output_event("repaired", model=model, tenant=tenant)
+            platform_db.record_structured_output_event("repaired", **meter)
             return obj
-    platform_db.record_structured_output_event("failed", model=model, tenant=tenant)
+    platform_db.record_structured_output_event("failed", **meter)
     raise StructuredOutputError(
         f"output failed schema validation after {max_repairs} repair(s): "
         f"{validate_object(obj, schema)}"

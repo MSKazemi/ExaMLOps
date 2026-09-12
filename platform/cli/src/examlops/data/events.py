@@ -484,13 +484,20 @@ def record_routing_event(
 
 
 def record_structured_output_event(
-    outcome: str, *, model: str | None = None, tenant: str = "default"
+    outcome: str,
+    *,
+    model: str | None = None,
+    tenant: str = "default",
+    constrained: bool = False,
 ) -> None:
+    """Record one structured-output attempt. ``constrained`` says whether the schema constrained
+    the decoder (ADR 0035 clause 1) or only judged the answer afterwards."""
     init_db()
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO structured_output_events (model, tenant, outcome) VALUES (?,?,?)",
-            (model, tenant, outcome),
+            "INSERT INTO structured_output_events (model, tenant, outcome, constrained) "
+            "VALUES (?,?,?,?)",
+            (model, tenant, outcome, int(constrained)),
         )
 
 
@@ -549,12 +556,19 @@ def store_reasoning_trace(
 
 
 def structured_output_stats() -> dict[str, int]:
+    """Counts per outcome, plus ``constrained``: how many of them decoded under the schema
+    rather than being checked after the fact (ADR 0035 clause 1)."""
     init_db()
     with get_db() as conn:
         rows = conn.execute(
             "SELECT outcome, COUNT(*) AS n FROM structured_output_events GROUP BY outcome"
         ).fetchall()
-    return {r["outcome"]: r["n"] for r in rows}
+        constrained = conn.execute(
+            "SELECT COUNT(*) AS n FROM structured_output_events WHERE constrained=1"
+        ).fetchone()
+    stats = {r["outcome"]: r["n"] for r in rows}
+    stats["constrained"] = constrained["n"] if constrained else 0
+    return stats
 
 
 install_write_retry(__name__)

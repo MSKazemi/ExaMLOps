@@ -1846,6 +1846,8 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "signal_type": "TEXT",
         "signal_method": "TEXT",
     },
+    # ADR 0035 clause 1: did the schema constrain the decoder, or only judge the answer?
+    "structured_output_events": {"constrained": "INTEGER NOT NULL DEFAULT 0"},
     # A5 data contracts (ADR 0005): revision/stage/score facets on the quality table.
     "data_quality_checks": {
         "revision": "TEXT",

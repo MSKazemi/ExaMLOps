@@ -32,7 +32,33 @@ it still fails does it raise `StructuredOutputError` (R2). Agent tool-call args 
 citations use this so their structure is never "hopefully valid" (R3).
 
 Every attempt is metered as `valid` / `repaired` / `failed`, giving a structured-output
-failure rate (R8).
+failure rate (R8), together with whether the decoder was constrained (below).
+
+## Constrained decoding — the model cannot produce a wrong shape
+
+Repair reaches a valid object by rewriting a wrong answer. A **constraint** means the wrong answer
+was never possible: the server compiles the schema into a grammar and can only emit text that fits
+it. `GatewayClient.chat(..., response_schema=…)` uses it whenever the backend can:
+
+| Backend | What it is sent |
+|---|---|
+| `vllm-server` — a running `vllm serve`, or any OpenAI-compatible endpoint | `response_format: {"type": "json_schema", "json_schema": {"name": "response", "schema": …, "strict": true}}` |
+| `vllm-inproc` — vLLM's offline API | `SamplingParams(guided_decoding=GuidedDecodingParams(json=…))` |
+| anything else (`echo`, a plain callable, SGLang) | nothing — it is asked as before |
+
+An engine declares the capability with `constrains_schema = True`, and `engine_backend` carries
+that to the gateway, so a backend is handed a schema only when it can act on it.
+
+**The constraint is never taken on trust.** Validation and repair run afterwards either way: a
+server can ignore `response_format`, and a caller's guarantee must not rest on a field the
+platform did not enforce itself. A constrained answer that still needs repair is therefore
+visible rather than hidden — `structured_output_stats()` counts `constrained` alongside
+`valid` / `repaired` / `failed`, so a backend that claims the capability and does not honour it
+shows up as repairs on constrained calls.
+
+Two deliberate limits: a **cache hit** is replayed text, never a constrained decode, so it is
+counted as unconstrained; and the schema travels as one field — it never leaks into the sampling
+knobs sent to the server.
 
 ### `exa gateway schema test`
 

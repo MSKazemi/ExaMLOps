@@ -28,7 +28,12 @@ import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
-from examlops.engines.config import Completion, EngineConfig, _sampling_kwargs
+from examlops.engines.config import (
+    Completion,
+    EngineConfig,
+    _sampling_kwargs,
+    schema_response_format,
+)
 from examlops.engines.media import flatten_messages, normalize_content
 
 _DEFAULT_TIMEOUT = float(os.getenv("EXAMLOPS_VLLM_TIMEOUT", "120"))
@@ -45,6 +50,10 @@ class VLLMServerEngine:
     ``base_url`` points at the server root (e.g. ``http://gpu-node-03:8000``); the
     ``/v1`` prefix is added here so callers configure one address, not two.
     """
+
+    #: This engine can hold the model to a JSON schema while it decodes (ADR 0035 clause 1),
+    #: so the gateway hands it the schema instead of only checking the answer afterwards.
+    constrains_schema = True
 
     name = "vllm-server"
 
@@ -126,6 +135,9 @@ class VLLMServerEngine:
             "messages": messages,
         }
         body.update(_sampling_kwargs(kw))
+        schema = kw.get("response_schema")
+        if schema is not None:  # ADR 0035 clause 1: constrain the decoder, do not ask nicely
+            body["response_format"] = schema_response_format(schema)
         return body
 
     # ── chat (R-V3: media parts forwarded verbatim) ───────────────────────────
