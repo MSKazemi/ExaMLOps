@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-09-12
+
 ### Fixed — project budgets now mean their period, and a breach announces itself
 
 - A project budget has a period (`monthly` by default), and the spend compared against it was
