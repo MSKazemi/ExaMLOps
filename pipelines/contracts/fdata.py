@@ -1,9 +1,9 @@
 """A5 — Data contract for the FData dataset (ADR 0005).
 
-Columns per the real parquet schema:
-``pclass`` (string: memory-bound/compute-bound), ``mbwidth`` (double memory
-bandwidth), ``embedding`` (list<float>, 384-dim). Versioned as code; bump
-``version`` on any change.
+Columns per the real parquet schema: ``pclass`` (strings memory-bound/compute-bound, checked
+as the ``string`` dtype family so it holds on pandas 2 and 3), ``mbwidth`` (double memory
+bandwidth), ``embedding`` (list<float>, 384-dim). Versioned as code; bump ``version`` on any
+change.
 """
 
 from __future__ import annotations
@@ -20,9 +20,11 @@ from pipelines.contracts import (
 
 CONTRACT = DataContract(
     dataset="FData",
-    version="1",
+    # v2: `pclass` is a *string* column, not an `object` one — under pandas 3 a parquet string
+    # column reads back as `str`, and v1's `dtype="object"` failed every run (BL-067).
+    version="2",
     checks=[
-        column_present("pclass", dtype="object"),
+        column_present("pclass", dtype="string"),
         categorical("pclass", ["memory-bound", "compute-bound"]),
         column_present("mbwidth"),
         in_range("mbwidth", low=0.0),

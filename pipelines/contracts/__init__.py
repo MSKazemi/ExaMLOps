@@ -132,10 +132,44 @@ def _run_checks(checks: list[Check], df: Any) -> tuple[list[dict[str, Any]], str
 # --- check builders (pure, dataframe-level) ----------------------------------
 
 
+#: Dtype *families*: ``dtype=`` names one of these to mean a kind of column rather than a dtype
+#: spelling. Anything else is matched as a substring of the dtype's name (``"float"`` accepts
+#: ``float32`` and ``float64``).
+STRING = "string"
+
+
+def _string_problem(col: Any) -> str | None:
+    """Why ``col`` is not a column of strings, or ``None`` when it is.
+
+    A column of strings is spelled three ways across the pandas versions a contract meets: ``object``
+    holding ``str`` values (pandas 2's default), ``string`` (``StringDtype``) and ``str`` (pandas
+    3's default — a parquet string column reads back as ``str``). Matching the spelling ``"object"``
+    breaks on the pandas 3 upgrade, and ``object`` also holds lists and mixed values. Nulls are
+    ignored; a categorical is not a string column. (``pd.api.types.is_string_dtype`` answers a
+    different question: it calls ``["a", None]`` not a string column and a categorical one.)
+    """
+    import pandas as pd  # noqa: PLC0415
+
+    if isinstance(col.dtype, pd.StringDtype):
+        return None
+    if str(col.dtype) != "object":
+        return f"dtype {col.dtype} is not a string dtype"
+    for value in col.dropna():
+        if not isinstance(value, str):
+            return f"holds a non-string value ({type(value).__name__})"
+    return None
+
+
 def column_present(column: str, dtype: str | None = None, severity: str = ERROR) -> Check:
+    """``column`` exists, and — with ``dtype`` — has that dtype: a family (``"string"``) or a
+    substring of the dtype's name."""
+
     def _fn(df: Any) -> tuple[bool, Any]:
         if column not in df.columns:
             return False, f"missing column '{column}'"
+        if dtype == STRING:
+            problem = _string_problem(df[column])
+            return (problem is None), (f"{column} {problem}" if problem else "ok")
         if dtype is not None:
             actual = str(df[column].dtype)
             if dtype not in actual:

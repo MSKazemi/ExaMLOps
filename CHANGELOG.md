@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the FData data contract would have blocked every training run on pandas 3
+
+- pandas 3 reads a Parquet string column as `str` rather than `object`. The FData contract checked
+  `pclass` with `dtype="object"`, so on pandas 3 that check would fail. It is an error-severity
+  check, so the training gate would have refused every FData run. This has been verified on
+  pandas 3.0.5. pandas stays below 3 for now because the `synth` extra (SDV) requires `pandas<3`.
+- `column_present(..., dtype="string")` now accepts any of the forms a string column takes: an
+  `object` column holding only strings, a `string` column, or pandas 3's `str` column. Nulls are
+  ignored. A categorical column is not treated as a string column. Other `dtype` values still
+  match as a substring of the dtype name.
+- The FData contract now uses `dtype="string"`, and its version is `2`.
+
 ## [0.58.0] - 2026-09-11
 
 ### Fixed — each lineage run now has one start and one end (ADR 0004, now Accepted)

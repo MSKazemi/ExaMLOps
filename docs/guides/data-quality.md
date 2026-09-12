@@ -20,7 +20,7 @@ from pipelines.contracts import (
 )
 
 CONTRACT = DataContract(dataset="FData", version="1", checks=[
-    column_present("pclass", dtype="object"),
+    column_present("pclass", dtype="string"),
     categorical("pclass", ["memory-bound", "compute-bound"]),
     in_range("mbwidth", low=0.0),
     not_null("mbwidth", max_null_rate=0.05, severity="warn"),
@@ -31,13 +31,18 @@ CONTRACT = DataContract(dataset="FData", version="1", checks=[
 
 | Check | Passes when | Notes |
 |---|---|---|
-| `column_present(col, dtype=None)` | the column exists (and its dtype name contains `dtype`) | `dtype="float"` accepts `float32` and `float64` |
+| `column_present(col, dtype=None)` | the column exists (and its dtype matches `dtype`) | `dtype="string"` is a *family*: `object` holding only `str`, `string`, or pandas 3's `str` — nulls ignored, categoricals not strings. Any other value matches as a substring of the dtype's name: `dtype="float"` accepts `float32` and `float64` |
 | `not_null(col, max_null_rate=0.0)` | the share of nulls is at most the ceiling | an empty column has no nulls; emptiness is `min_rows`'s question |
 | `in_range(col, low=None, high=None)` | every non-null value is within `[low, high]` | both ends inclusive; either may be open |
 | `categorical(col, allowed)` | every non-null value is in `allowed` | |
 | `embedding_dim(col, dim)` | **every** non-null value is a sequence of exactly `dim` numbers | a column with no non-null values fails |
 | `min_rows(n)` | the table has at least `n` rows | on a bounded dataplane sample, the table's real row count is judged |
 | `fresh_within(col, max_age)` | the newest timestamp is no older than `max_age` (`"24h"`, `"7d"`, a `timedelta`) | naive timestamps are UTC; a value that is not a timestamp fails the check rather than being dropped |
+
+!!! warning "Declare a string column as the string family, not as object"
+    pandas 2 reads a parquet string column as `object`; pandas 3 reads it as `str`. A contract that
+    matched the spelling `"object"` fails every run on pandas 3 — the FData contract did, until its
+    version 2. `"object"` also matches lists and mixed values, which a string column must not hold.
 
 A check that is not on the list can be written by hand — `Check(name, severity, fn)` where `fn`
 takes the dataframe and returns `(passed, observed)`.
