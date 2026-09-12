@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-09-12
+
 ### Fixed — v0.59.0's images were quarantined by three new perl CVEs
 
 - **The release gate blocked six of the seven images**: `perl-base` 5.40.1-6 in the pinned base
