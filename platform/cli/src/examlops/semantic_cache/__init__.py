@@ -14,6 +14,7 @@ Wires into the B2 gateway via its existing ``cache_lookup``/``cache_store`` hook
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import time
 from collections.abc import Callable
@@ -73,10 +74,32 @@ class CacheEntry:
     cost_usd: float = 0.0
 
 
+#: Params that change what a model returns, and so must change the cache namespace. A caller
+#: pinning a ``seed`` for reproducibility, capping ``max_tokens``, or asking for a JSON schema is
+#: asking a different question than the same prompt without them.
+_KEY_PARAMS = ("temperature", "max_tokens", "top_p", "stop", "seed", "response_schema")
+
+
 def _params_key(model: str, params: dict[str, Any]) -> str:
-    temp = params.get("temperature", 0.0)
-    max_tokens = params.get("max_tokens", 0)
-    return f"{model}|t={temp}|m={max_tokens}"
+    """The namespace part for one model and its request params (ADR 0018 clause 2).
+
+    Every param that shapes the answer is in the key, canonically encoded. It used to be
+    ``temperature`` and ``max_tokens`` only, so a request pinning a ``seed``, capping the length
+    or asking for a JSON schema could be served an entry made under different ones.
+    """
+    parts = []
+    for name in _KEY_PARAMS:
+        if name not in params or params[name] is None:
+            continue
+        value = params[name]
+        if not isinstance(value, str | int | float | bool):
+            # A schema (or any structured param): a stable digest, so the key stays short and
+            # ordering inside the object cannot split one namespace in two.
+            value = hashlib.sha256(
+                json.dumps(value, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+        parts.append(f"{name}={value}")
+    return f"{model}|" + "|".join(parts)
 
 
 def namespace(
@@ -198,8 +221,14 @@ class SemanticCache:
 def bind_to_gateway(cache: SemanticCache, tenant: str = "default"):
     """Return (cache_lookup, cache_store) callables matching the B2 gateway hook signatures.
 
-    The gateway calls ``cache_lookup(model, messages)`` and
-    ``cache_store(model, messages, completion)``; params default to temperature 0.
+    The gateway calls ``cache_lookup(model, messages, params)`` and
+    ``cache_store(model, messages, completion, params)``, where ``params`` are the request's own
+    sampling params and schema.
+
+    Both of the correctness controls ADR 0018 asks for live here, and both were lost before: the
+    binding passed a fixed ``{"temperature": 0.0}``, so every request shared one namespace
+    whatever it actually asked for (clause 2), and :func:`is_cacheable` — the temperature bypass
+    of clause 3 — was never consulted, so a request asking for variety was answered from cache.
     """
 
     def _prompt(messages: list) -> str | None:
@@ -212,22 +241,31 @@ def bind_to_gateway(cache: SemanticCache, tenant: str = "default"):
         content = messages[-1].get("content", "") if messages else ""
         return content if isinstance(content, str) else None
 
-    def lookup(model: str, messages: list) -> Any | None:
-        prompt = _prompt(messages)
-        if prompt is None:
+    def _params(params: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The request's params, or ``None`` when this request must not use the cache."""
+        params = dict(params or {})
+        if not is_cacheable(params, bypass_temperature=cache.bypass_temperature):
             return None
-        comp, _sim = cache.lookup(prompt, model, {"temperature": 0.0}, tenant)
+        return params
+
+    def lookup(model: str, messages: list, params: dict[str, Any] | None = None) -> Any | None:
+        prompt, keyed = _prompt(messages), _params(params)
+        if prompt is None or keyed is None:
+            return None
+        comp, _sim = cache.lookup(prompt, model, keyed, tenant)
         return getattr(comp, "text", comp) if comp is not None else None
 
-    def store(model: str, messages: list, completion: Any) -> None:
-        prompt = _prompt(messages)
-        if prompt is None:
+    def store(
+        model: str, messages: list, completion: Any, params: dict[str, Any] | None = None
+    ) -> None:
+        prompt, keyed = _prompt(messages), _params(params)
+        if prompt is None or keyed is None:
             return
         cache.store(
             prompt,
             getattr(completion, "text", completion),
             model,
-            {"temperature": 0.0},
+            keyed,
             tenant,
             tokens=getattr(completion, "completion_tokens", 0),
             cost_usd=getattr(completion, "cost_usd", 0.0),

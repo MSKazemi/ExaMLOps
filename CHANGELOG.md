@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — the semantic cache mixed up requests that asked for different things
+
+- The gateway keyed every cached answer as if it had been asked at `temperature=0`, so one cache
+  namespace served every request. A request pinning a `seed` for reproducibility, capping
+  `max_tokens`, or asking for a JSON schema could be answered with an entry stored under different
+  settings. The cache now keys on the request's own parameters — temperature, max tokens, top-p,
+  stop, seed and the response schema.
+- A request above the bypass temperature (0.5 by default) is no longer served from the cache, nor
+  stored in it. Asking for variety and getting the same answer every time was the opposite of what
+  was intended, and the rule existed but was never reached from the gateway.
+- `chat(..., no_cache=True)` skips the cache in both directions. The flag is never sent to a model
+  backend.
+- Cache hooks now receive the request parameters as a last argument. A hook taking only
+  `(model, messages)` keeps working and warns once that it can only key on the prompt.
+- Per-tenant isolation is unchanged: it was already correct.
+
 ### Added — structured output is now constrained at the model, not only checked afterwards (ADR 0035)
 
 - When a model is asked for a JSON schema (`response_schema`), backends that support it are now

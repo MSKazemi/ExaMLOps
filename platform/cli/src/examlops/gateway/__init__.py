@@ -12,12 +12,15 @@ degrades to a configured last-resort backend if the gateway is unreachable (R11)
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import json
 import os
 import re
 import secrets
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -371,6 +374,42 @@ def _guard_messages(
     return out
 
 
+def _cache_params(kw: dict[str, Any], response_schema: dict[str, Any] | None) -> dict[str, Any]:
+    """The parts of a request that change its answer, for the cache namespace (ADR 0018 cl. 2)."""
+    params = {k: v for k, v in kw.items() if k in _SAMPLING_KEYS and v is not None}
+    if response_schema is not None:
+        params["response_schema"] = response_schema
+    return params
+
+
+@functools.cache
+def _hook_takes_params(hook: Any) -> bool:
+    """Whether a cache hook accepts the request params. Warns once per hook that does not.
+
+    Inspected rather than assumed so an older two-argument hook keeps working instead of dying
+    on a TypeError — while saying, once, that it cannot isolate namespaces by params.
+    """
+    try:
+        signature = inspect.signature(hook)
+    except (TypeError, ValueError):  # a builtin or C callable: assume the current contract
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()):
+        return True
+    if "params" in signature.parameters:
+        return True
+    warnings.warn(
+        f"cache hook {getattr(hook, '__qualname__', hook)!r} takes no `params`: every request "
+        "shares one cache namespace whatever sampling params or schema it asked for "
+        "(ADR 0018 clause 2). Add a `params` argument.",
+        stacklevel=3,
+    )
+    return False
+
+
+def _call_cache_hook(hook: Any, *args: Any, params: dict[str, Any]) -> Any:
+    return hook(*args, params=params) if _hook_takes_params(hook) else hook(*args)
+
+
 def _cacheable(messages: list[dict[str, Any]]) -> bool:
     """Whether the semantic cache can key this request: every message is plain text.
 
@@ -389,8 +428,13 @@ class GatewayClient:
     virtual_key: str | None = None
     tenant: str = "default"
     last_resort: Backend | None = None  # R11 degrade path
-    cache_lookup: Callable[[str, list], Any] | None = None  # B3 hook
-    cache_store: Callable[[str, list, Completion], None] | None = None
+    # B3 hooks. They take the request's params as a last argument — the sampling knobs and the
+    # response schema — because the cache namespace depends on them (ADR 0018 clause 2) and the
+    # temperature bypass (clause 3) cannot be decided without them. A hook that takes only
+    # (model, messages) still works and is called without them, with a warning: it can only key
+    # on the prompt, which is how one namespace ends up serving every request.
+    cache_lookup: Callable[..., Any] | None = None
+    cache_store: Callable[..., None] | None = None
     #: D8 guardrail for this client. ``"auto"`` resolves from ``EXAMLOPS_GUARDRAIL_MODE`` on first
     #: use (ADR 0026 clause 3); pass an explicit ``Guardrail`` to override, or ``None`` to disable.
     guardrail: Any = "auto"
@@ -408,6 +452,7 @@ class GatewayClient:
         prompt_ref: str | None = None,
         response_schema: dict[str, Any] | None = None,
         max_repairs: int = 1,
+        no_cache: bool = False,
         **kw: Any,
     ) -> Completion:
         """Route one chat request.
@@ -420,6 +465,9 @@ class GatewayClient:
         ``response_schema`` (ADR 0035 clause 1) makes the response a **validated object**:
         ``Completion.parsed`` holds it, and a response that cannot be made to validate raises
         ``StructuredOutputError`` rather than returning unchecked text.
+
+        ``no_cache`` skips the semantic cache for this request in both directions (ADR 0018
+        clause 3) — neither answered from it nor stored in it. It is never sent to a backend.
         """
         from examlops.data.finops import add_key_spend
         from examlops.data.gateway import record_gateway_call
@@ -447,10 +495,12 @@ class GatewayClient:
             # Prepend, never replace: the caller's own system message still applies.
             messages = [{"role": "system", "content": template}, *messages]
 
-        # B3 semantic-cache hook (optional; caller API unchanged, R9).
-        use_cache = _cacheable(messages)
+        # B3 semantic-cache hook (optional; caller API unchanged, R9). The request's own params
+        # decide the namespace and whether the cache applies at all (ADR 0018 clauses 2 and 3).
+        cache_params = _cache_params(kw, response_schema)
+        use_cache = _cacheable(messages) and not no_cache
         if self.cache_lookup is not None and use_cache:
-            hit = self.cache_lookup(model, messages)
+            hit = _call_cache_hook(self.cache_lookup, model, messages, params=cache_params)
             if hit is not None:
                 cached = Completion(text=hit, model=model, backend="cache", cached=True)
                 # The cache is keyed on the prompt, not on the schema, so an entry may have been
@@ -533,7 +583,7 @@ class GatewayClient:
                 )
 
             if self.cache_store is not None and use_cache:
-                self.cache_store(model, messages, comp)
+                _call_cache_hook(self.cache_store, model, messages, comp, params=cache_params)
             return comp
 
         # The caller got an error, so the SLI must see one: a request that failed everywhere used

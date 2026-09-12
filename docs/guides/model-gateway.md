@@ -145,11 +145,22 @@ spec `design/vision/specs/B3-semantic-caching.md`.
   requires similarity ≥ threshold (conservative default 0.85). Production uses a local
   embedder + Redis/Qdrant (B5); the fallback is an in-process cosine search over a
   deterministic token-hash embedding (no vector DB needed).
-- **Isolation** (R3): the cache namespace is `tenant :: model | temperature | max_tokens`, so
-  different tenants (D6), models, or params never collide.
-- **Bypass** (R5): requests above the bypass temperature (default 0.5), with an explicit
-  no-cache signal, or any side-effecting agent turn are neither served from nor written to
-  the cache.
+- **Isolation** (R3): the namespace is `tenant :: model | params`, where *params* are every part
+  of the request that changes the answer — `temperature`, `max_tokens`, `top_p`, `stop`, `seed`
+  and the `response_schema` (as a digest, so two spellings of one schema are one namespace). A
+  request pinning a seed, capping the length or asking for a schema is a different question from
+  the same prompt without them, and is never served an entry stored under different ones.
+- **Bypass** (R5): a request above the bypass temperature (default 0.5), or one passing
+  `no_cache=True`, is neither served from the cache nor written to it — a caller asking for
+  variety must not be handed the same answer every time.
+
+!!! warning "Fixed after v0.58.0 — the gateway used to key every request as `temperature=0`"
+    The isolation and bypass rules above lived in `SemanticCache` and were lost at the gateway
+    binding, which passed a fixed `{"temperature": 0.0}` and never consulted the bypass rule. One
+    namespace therefore served every request. If you bind your own hooks, take the request params
+    as a third argument (`cache_lookup(model, messages, params)` /
+    `cache_store(model, messages, completion, params)`); a two-argument hook still works, and warns
+    once that it can only key on the prompt.
 - **Eviction**: entries have a TTL and the cache enforces a max size (oldest-first).
 - **Savings** (R7): every hit/miss is recorded to `platform_db.cache_events` with tokens +
   cost saved; C1 spans carry `cache_hit`.
