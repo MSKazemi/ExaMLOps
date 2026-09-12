@@ -176,7 +176,48 @@ exa --json data validate FData --path ./data/FData          # machine-readable p
 ```
 
 `exa data validate` exits non-zero on an error-severity violation, so it can gate a CI job or a
-promotion script as it stands.
+promotion script as it stands:
+
+```yaml
+# in your site's pipeline, before training or promotion
+- run: exa data validate FData --path ./data/FData --revision "$DATASET_REVISION"
+```
+
+## Contract tests
+
+A contract is code, and code nothing runs drifts. Each contract declares, beside it, the rows it
+must **accept** and rows it must **reject**:
+
+```python
+from pipelines.contracts import ContractExamples
+
+EXAMPLES = ContractExamples(
+    valid=[{"pclass": "memory-bound", "mbwidth": 12.5, "embedding": [0.1] * 384}],
+    invalid=[
+        ([{"pclass": "io-bound", "mbwidth": 1.0, "embedding": [0.1] * 384}], "categorical:pclass"),
+        ([{"pclass": "memory-bound", "mbwidth": -1.0, "embedding": [0.1] * 384}], "range:mbwidth"),
+    ],
+)
+```
+
+Each `invalid` entry names the check that must catch it, so an example cannot pass by failing for
+an unrelated reason.
+
+`tests/unit/test_data_contract_examples.py` runs them in CI — the blocking step ADR 0005 clause 4
+asks for. It runs every contract's examples through both engines, and then end to end through the
+real `exa data validate` on Parquet: exit 0 for the accepted rows, exit 1 for the rejected ones,
+and a `data_quality_checks` row with the score either way. Every contract must ship examples; one
+that does not fails the guard.
+
+**What this can and cannot prove.** It proves a contract still accepts the data it describes and
+still rejects what it must — the failure that a green suite would otherwise hide, and exactly how
+the `pclass` dtype check would have refused every row on pandas 3. It cannot say anything about
+*your* data: that is what `exa data validate` in your own pipeline is for, and what the training
+gate does on every run.
+
+An example of a **mixed** column (a number among the strings) is checked against the contract
+directly rather than through the CLI: Parquet gives a column one type, so such a frame exists only
+in memory — which a dataplane frame can be.
 
 ## Quality score & SLOs
 

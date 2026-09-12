@@ -351,6 +351,37 @@ def validate_request(
     return (not errors, errors)
 
 
+# --- examples: what this contract accepts, and what it must reject -----------
+
+
+@dataclass
+class ContractExamples:
+    """Rows a contract must accept, and rows it must reject (ADR 0005 clause 4).
+
+    A contract is code, and code that is never exercised drifts: FData's `pclass` check was
+    written against pandas 2's `object` spelling and would have refused every row on pandas 3
+    (BL-067), which no test would have caught, because nothing ran the contract against data it
+    is supposed to accept. Each contract therefore ships its own examples, and
+    ``tests/unit/test_data_contract_examples.py`` runs them in CI — the blocking step this clause
+    asks for. It needs no site data, and a site's own pipeline still runs ``exa data validate``
+    against the real thing.
+
+    ``valid`` is a list of rows (dicts) the contract must pass. Each entry of ``invalid`` is
+    ``(rows, check_name)``: the rows must fail, and ``check_name`` must be among the failures, so
+    an example cannot pass by failing for an unrelated reason.
+    """
+
+    valid: list[dict[str, Any]]
+    invalid: list[tuple[list[dict[str, Any]], str]] = field(default_factory=list)
+
+
+def load_examples(dataset: str) -> ContractExamples | None:
+    """The ``EXAMPLES`` declared beside a dataset's contract, if it has any."""
+    contract_module = _contract_module(dataset)
+    examples = getattr(contract_module, "EXAMPLES", None) if contract_module else None
+    return examples if isinstance(examples, ContractExamples) else None
+
+
 # --- contract resolution -----------------------------------------------------
 
 _REGISTRY: dict[str, DataContract] = {}
@@ -358,6 +389,18 @@ _REGISTRY: dict[str, DataContract] = {}
 
 def register_contract(contract: DataContract) -> None:
     _REGISTRY[contract.dataset.lower()] = contract
+
+
+def _contract_module(dataset: str) -> Any:
+    """The imported ``pipelines.contracts.<dataset>`` module, or ``None``."""
+    import importlib
+
+    for modname in (f"pipelines.contracts.{dataset.lower()}", f"pipelines.contracts.{dataset}"):
+        try:
+            return importlib.import_module(modname)
+        except ModuleNotFoundError:
+            continue
+    return None
 
 
 def load_contract(dataset: str) -> DataContract | None:
@@ -368,15 +411,9 @@ def load_contract(dataset: str) -> DataContract | None:
     key = dataset.lower()
     if key in _REGISTRY:
         return _REGISTRY[key]
-    import importlib
-
-    for modname in (f"pipelines.contracts.{key}", f"pipelines.contracts.{dataset}"):
-        try:
-            mod = importlib.import_module(modname)
-        except ModuleNotFoundError:
-            continue
-        contract = getattr(mod, "CONTRACT", None)
-        if isinstance(contract, DataContract):
-            register_contract(contract)
-            return contract
+    module = _contract_module(dataset)
+    contract = getattr(module, "CONTRACT", None) if module else None
+    if isinstance(contract, DataContract):
+        register_contract(contract)
+        return contract
     return None

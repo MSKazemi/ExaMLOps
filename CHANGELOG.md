@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — data contracts are tested in CI (ADR 0005)
+
+- Every data contract now declares, beside it, the rows it must accept and rows it must reject
+  (`ContractExamples`). Each rejection names the check that has to catch it, so an example cannot
+  pass by failing for some unrelated reason.
+- A new guard runs those examples on every CI run: through both contract engines, and end to end
+  through the real `exa data validate` on Parquet — exit 0 for accepted rows, exit 1 for rejected
+  ones, and a recorded quality score either way. A contract that ships no examples fails the guard.
+- This catches a contract that has started refusing the data it exists to describe, which is the
+  failure that would otherwise pass CI unnoticed and then block training. It says nothing about
+  any particular dataset: for that, run `exa data validate` in your own pipeline, which is what
+  the training gate does on every run.
+
 ### Fixed — the FData data contract would have blocked every training run on pandas 3
 
 - pandas 3 reads a Parquet string column as `str` rather than `object`. The FData contract checked

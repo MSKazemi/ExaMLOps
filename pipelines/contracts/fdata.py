@@ -9,6 +9,7 @@ change.
 from __future__ import annotations
 
 from pipelines.contracts import (
+    ContractExamples,
     DataContract,
     categorical,
     column_present,
@@ -32,5 +33,24 @@ CONTRACT = DataContract(
         column_present("embedding"),
         embedding_dim("embedding", 384),
         min_rows(1),
+    ],
+)
+
+
+def _row(pclass: str = "memory-bound", mbwidth: float = 12.5, dim: int = 384) -> dict:
+    return {"pclass": pclass, "mbwidth": mbwidth, "embedding": [0.1] * dim}
+
+
+#: What this contract must accept, and what it must reject (ADR 0005 clause 4). Run in CI by
+#: `tests/unit/test_data_contract_examples.py` through `exa data validate`, so a contract cannot
+#: quietly start refusing the data it exists to describe.
+EXAMPLES = ContractExamples(
+    valid=[_row(), _row("compute-bound", 0.0), _row("memory-bound", 900.0)],
+    invalid=[
+        ([{"mbwidth": 1.0, "embedding": [0.1] * 384}], "column:pclass"),
+        ([_row("io-bound")], "categorical:pclass"),
+        ([_row(mbwidth=-1.0)], "range:mbwidth"),
+        ([_row(dim=383)], "embedding_dim:embedding"),
+        ([_row(), {"pclass": 7, "mbwidth": 1.0, "embedding": [0.1] * 384}], "column:pclass"),
     ],
 )
