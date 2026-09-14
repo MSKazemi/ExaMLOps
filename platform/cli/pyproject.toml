@@ -170,7 +170,7 @@ dataplane-kafka = [
 # the whole workspace, so an uncapped floor here would make the lock unsatisfiable.
 dataplane-service = [
     "fastapi>=0.136.3,<0.137",
-    "uvicorn[standard]>=0.52",
+    "uvicorn[standard]>=0.52.4",
     "prometheus-client>=0.20",
 ]
 dataplane = [
