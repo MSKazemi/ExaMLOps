@@ -9,7 +9,7 @@ cryptography==50.0.1
 # The live stream's NATS backbone bridge (backbone.py, ADR 0124); unused unless
 # EXAMLOPS_EVENT_PUBLISHER=nats. Same pin as uv.lock's examlops[events].
 nats-py==2.15.0
-PyJWT==2.13.0
+PyJWT==2.14.0
 alembic==1.19.2
 aioboto3==15.5.0
 PyYAML==6.0.3
