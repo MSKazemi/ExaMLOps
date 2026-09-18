@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — every published page is loaded in a browser, and the site is whole
+
+`mkdocs build --strict` checks the links between pages; nothing checked what a page then asks the
+browser for. An image that moved, a stylesheet a theme upgrade renamed, a script that throws, a
+diagram the renderer refused, a formula left as TeX — each is invisible to the build and plainly
+visible to a reader, and two invalid diagrams were once published for months before anyone opened
+the page.
+
+- `tests/integration/test_docs_site_pages_are_whole.py` loads all 145 pages and reports, per page,
+  any response of 400 or worse, any console error, any unrendered diagram, any visible TeX source
+  and any empty `href`. Opt-in (it needs a browser) and about three and a half minutes, so it is
+  not part of a gate.
+- **Result: 145 pages, no findings.** Each of the five checks was first demonstrated against a
+  deliberately broken build — a KaTeX stylesheet without its fonts, an unparseable diagram, a
+  missing image, KaTeX's scripts removed, an injected empty link — because a sweep that finds
+  nothing is otherwise a claim about the detector rather than about the site.
+
 ### Changed — the documentation serves its maths renderer too, and now contacts no CDN at all
 
 KaTeX was the last third-party asset a reader's browser fetched (`cdn.jsdelivr.net/npm/katex@…`).

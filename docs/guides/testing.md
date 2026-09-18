@@ -281,6 +281,25 @@ loaded from an `http(s)://` URL, mermaid first, a missing package failing the bu
 The browser test asserts what a reader's browser actually does: the only host any page still
 reaches is `api.github.com`, Material's own repository widget.
 
+## Is the published site whole?
+
+`mkdocs build --strict` checks the links *between* pages. Nothing checked what a page then asks the
+browser for — an image that moved, a stylesheet a theme upgrade renamed, a script that throws, a
+diagram the renderer refused, a formula left as TeX source. All of those are invisible to the build
+and plainly visible to a reader, and this repository has been bitten once already: two invalid
+diagrams were published for months before anyone opened the page.
+
+`tests/integration/test_docs_site_pages_are_whole.py` loads **every** page (145 of them) in a
+browser and reports, per page, any response of 400 or worse, any console error, any unrendered
+diagram, any visible TeX source, and any empty `href`. It is opt-in and takes about three and a
+half minutes, so it is not part of any gate — it is what you run to answer "is the site whole".
+
+The first run reported nothing, and **a sweep that finds nothing is a claim about the detector**,
+so each of the five checks was demonstrated against a deliberately broken build first: a KaTeX
+stylesheet served without its fonts, an unparseable diagram, a missing image, KaTeX's scripts
+removed, and an injected `<a href="">`. All five fired. Only then was "145 pages, no findings"
+worth reporting.
+
 ## CI
 
 The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with
