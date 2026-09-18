@@ -195,6 +195,33 @@ and none of them needed an isolation fix to get there.
 whole job is to *mirror* the GitHub `examlops` job, and a mirror that runs the suite differently
 from CI is the failure it exists to prevent.
 
+## Documentation diagrams are checked by the renderer, not by a pattern
+
+`mkdocs build --strict` never reads a ` ```mermaid ` fence — the reader's browser renders it — so
+the build passes a diagram mermaid cannot parse and the reader gets a red error box. Eleven
+diagrams sat unchecked for months and two of them were broken.
+
+```bash
+make docs-mermaid        # every diagram in docs/, through mermaid's own grammar
+```
+
+`platform/ci/check_mermaid.py` extracts the fences and hands them to `mermaid.parse` in
+`platform/ci/mermaid/` — pinned to the major the site loads, which
+`tests/unit/test_docs_mermaid.py` asserts is still the one Material fetches, so a Material upgrade
+says to move the pin instead of quietly checking a grammar no reader runs. `make docs-build` calls
+it, and CI's docs job runs it directly.
+
+**Exit 2 — "the checker could not run" — is not success.** Locally that prints a red notice and
+lets the build finish (a contributor without node still gets docs); in CI it fails the step,
+because a check that passes because nothing ran is worse than no check.
+
+The reason this uses the library rather than a pattern of its own is worth keeping: mermaid's
+grammar is large, and an approximation fails in both directions. The defect that motivated it is a
+good example — a `;` inside an unquoted label is a *statement separator*, so the label ends there
+and the rest is a syntax error, while the same `;` inside a **quoted** label is ordinary text and
+renders fine. Both shapes exist in this repository's diagrams, and only the real parser tells them
+apart. The guard tests both directions on purpose.
+
 ## CI
 
 The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with

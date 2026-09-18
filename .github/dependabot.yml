@@ -124,6 +124,27 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
+  # The documentation's diagram checker (platform/ci/check_mermaid.py). Small, but it runs in CI
+  # and pulls 150 transitive packages, so it is watched like any other npm tree.
+  - package-ecosystem: "npm"
+    directory: "/platform/ci/mermaid"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      mermaid-checker:
+        update-types: ["minor", "patch"]
+    ignore:
+      # mermaid's major must be the one the published site renders with, which mkdocs-material
+      # fetches itself (11 today) — checking a grammar no reader runs would make this guard
+      # authoritative about nothing. `tests/unit/test_docs_mermaid.py` fails if the two disagree,
+      # so the major moves when Material moves, not before.
+      - dependency-name: "mermaid"
+        update-types: ["version-update:semver-major"]
+
   # Container base images. A Dockerfile that pins `image:tag@sha256:<digest>` (OpenSSF
   # Scorecard, Pinned-Dependencies) builds reproducibly, and Dependabot re-pins the digest when the
   # tag is re-published with patched layers, so a pin never freezes a known CVE in place.

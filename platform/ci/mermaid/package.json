@@ -1,0 +1,14 @@
+{
+  "name": "examlops-mermaid-check",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Parses the documentation's mermaid diagrams with the same renderer the published site loads, so an invalid one fails the build instead of rendering as an error box.",
+  "scripts": {
+    "check": "node check_fences.mjs"
+  },
+  "dependencies": {
+    "jsdom": "30.1.0",
+    "mermaid": "11.17.2"
+  }
+}

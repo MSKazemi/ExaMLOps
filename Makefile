@@ -95,7 +95,7 @@ endif
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
         preflight preflight-nopg \
         modelzoo-test agent-test \
-        docs-serve docs-build docs-cli docs-explore \
+        docs-serve docs-build docs-mermaid docs-cli docs-explore \
         bootstrap \
         _guard-uv _guard-python _guard-service
 
@@ -976,7 +976,23 @@ docs-build: install-dev ## Build MkDocs static site → site/ (strict: a broken 
 	@# shipped twenty dead links and the build said nothing. Warnings are zero as of
 	@# 2026-08-23; keep it that way by failing here rather than in a reader's browser.
 	@$(VENV)/bin/mkdocs build --clean --strict
+	@$(MAKE) --no-print-directory docs-mermaid
 	@printf "$(GREEN)Docs built: site/index.html$(RESET)\n"
+
+docs-mermaid: ## Parse every ```mermaid diagram in docs/ with the renderer the site loads
+	@# mkdocs never reads a mermaid fence — the browser does — so `build --strict` is happy with a
+	@# diagram that renders as a red error box for the reader. This runs the real grammar over all
+	@# of them. Exit 1 = a diagram is broken; exit 2 = the checker could not run, which is a
+	@# failure in CI (the docs job installs it) and a loud notice here, so a laptop without node
+	@# still builds docs but is never told the diagrams were checked when they were not.
+	@if [ ! -d platform/ci/mermaid/node_modules ] && command -v npm >/dev/null 2>&1; then \
+	  npm ci --silent --prefix platform/ci/mermaid >/dev/null 2>&1 || true; \
+	fi
+	@$(VENV)/bin/python platform/ci/check_mermaid.py; status=$$?; \
+	if [ $$status -eq 2 ]; then \
+	  printf "$(RED)The mermaid diagrams were NOT checked — install node, then: npm ci --prefix platform/ci/mermaid$(RESET)\n"; \
+	elif [ $$status -ne 0 ]; then exit $$status; fi
+
 
 docs-cli: install-dev ## Regenerate the full CLI reference from the live command tree
 	@$(VENV)/bin/exa docs --out docs/reference/cli-generated.md

@@ -5,6 +5,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the documentation's diagrams are parsed by the renderer that draws them
+
+`mkdocs build --strict` never reads a ` ```mermaid ` fence: the site renders diagrams in the
+reader's browser, so an invalid one costs nothing at build time and shows the reader a red error
+box. Eleven diagrams went unchecked for months and two of them were broken; four more were added
+since, and nothing had looked at them.
+
+- `make docs-mermaid` (also run by `make docs-build`, and by CI's docs job) parses every fence in
+  `docs/` with `mermaid.parse` — the same major version the published site loads, which
+  `tests/unit/test_docs_mermaid.py` asserts is still the version Material fetches, so an upgrade
+  says to move the pin rather than silently checking a grammar no reader runs.
+- A missing toolchain is reported as **exit 2, never as success**: locally that is a red notice and
+  the docs still build; in CI it fails the step. A check that passes because nothing ran is worse
+  than no check.
+- The guard tests its own teeth in both directions — three diagrams known to be invalid must be
+  refused, and a valid diagram of every type the documentation uses must be accepted.
+- **It found a broken diagram on its first run**, before it shipped: a `;` inside an unquoted
+  mermaid label is a statement separator, so the label ends there and the remainder is a syntax
+  error. The same `;` inside a *quoted* label is ordinary text and renders fine — both shapes exist
+  in these diagrams, which is exactly why this uses the real grammar instead of a pattern of its own.
+
+### Fixed — an SLO's status now covers the window the SLO declares (ADR 0023)
+
+An SLO is a target for an SLI **over a window** — that is the definition in the guide, the
+`--window 30d` on every spec, and what `exa slo generate` already ranged its alert rules over.
+`exa slo status` did not read it. It summed the newest 1000 samples whatever their age: a *count*,
+not a window, which means an hour on a busy SLO and half a year on a quiet one.
+
+Everything downstream inherited the error — the error budget, the burn rate, the `slo_breached`
+transition audit, and `exa pipeline promote`, which refuses a release when a gate-flagged budget is
+exhausted. A breach that ended a month ago still held the budget down and still blocked today's
+promotion; a 24-hour SLO could not answer about the last 24 hours.
+
+- The status is now measured over the spec's own window, and reports which one it used:
+  `exa slo status` gained a **Window** column, and `window`/`window_start` travel in `--json` and
+  in `SLOStatus.as_dict()`, so the period a number covers arrives with the number.
+- An SLO with no samples inside its window reads **NO DATA**, not a perfect score.
+- A spec with no window, or a window nothing can parse (`last month`), is measured over **30d** and
+  says so, rather than reporting nothing or silently measuring all of history.
+- The 1000-row cap stays, now as a bound on how much is read *inside* the window; a caller of
+  `slo_sli_ratio` that passes no `since` keeps the previous meaning.
+- Verified: `tests/unit/test_slo_status_window.py` (13 new), 88 SLO tests green, 5/5 mutations
+  killed.
+
 ### Fixed — an SLO's status now covers the window the SLO declares (ADR 0023)
 
 An SLO is a target for an SLI **over a window** — that is the definition in the guide, the
