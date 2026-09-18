@@ -138,8 +138,8 @@ async def list_versions(
         if reg_r.status_code == 200:
             _reg_aliases_loaded = True
             for entry in reg_r.json().get("registered_model", {}).get("aliases", []):
-                v = str(entry["version"])
-                version_aliases.setdefault(v, []).append(entry["alias"])
+                ver_key = str(entry["version"])
+                version_aliases.setdefault(ver_key, []).append(entry["alias"])
 
         # Fetch all model versions, following `next_page_token` — the same "by design" loop as
         # `examlops.serving_snapshot._registered_models`, which this platform already wrote once
