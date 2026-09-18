@@ -49,29 +49,6 @@ promotion; a 24-hour SLO could not answer about the last 24 hours.
 - Verified: `tests/unit/test_slo_status_window.py` (13 new), 88 SLO tests green, 5/5 mutations
   killed.
 
-### Fixed — an SLO's status now covers the window the SLO declares (ADR 0023)
-
-An SLO is a target for an SLI **over a window** — that is the definition in the guide, the
-`--window 30d` on every spec, and what `exa slo generate` already ranged its alert rules over.
-`exa slo status` did not read it. It summed the newest 1000 samples whatever their age: a *count*,
-not a window, which means an hour on a busy SLO and half a year on a quiet one.
-
-Everything downstream inherited the error — the error budget, the burn rate, the `slo_breached`
-transition audit, and `exa pipeline promote`, which refuses a release when a gate-flagged budget is
-exhausted. A breach that ended a month ago still held the budget down and still blocked today's
-promotion; a 24-hour SLO could not answer about the last 24 hours.
-
-- The status is now measured over the spec's own window, and reports which one it used:
-  `exa slo status` gained a **Window** column, and `window`/`window_start` travel in `--json` and
-  in `SLOStatus.as_dict()`, so the period a number covers arrives with the number.
-- An SLO with no samples inside its window reads **NO DATA**, not a perfect score.
-- A spec with no window, or a window nothing can parse (`last month`), is measured over **30d** and
-  says so, rather than reporting nothing or silently measuring all of history.
-- The 1000-row cap stays, now as a bound on how much is read *inside* the window; a caller of
-  `slo_sli_ratio` that passes no `since` keeps the previous meaning.
-- Verified: `tests/unit/test_slo_status_window.py` (13 new), 88 SLO tests green, 5/5 mutations
-  killed.
-
 ### Fixed — running the platform no longer writes into the repository it was run from
 
 - A scheduler adapter created its working directory the moment it was constructed, so simply
