@@ -37,6 +37,7 @@ build/
 .eggs/
 .pytest_cache/
 .mypy_cache/
+.cache/          # mkdocs-material's privacy plugin caches downloaded assets here
 .ruff_cache/
 .tox/
 .coverage
@@ -154,3 +155,8 @@ backups/
 .note.*
 .mohsen.note
 .mohsen.note.*
+
+# install bundle instance data when run from a checkout
+platform/infra/docker-compose/install/state/
+platform/infra/docker-compose/install/VERSION
+platform/infra/docker-compose/install/secrets/
