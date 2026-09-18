@@ -1683,7 +1683,7 @@ requires-dist = [
     { name = "sqlalchemy", marker = "extra == 'dataplane-sql'", specifier = ">=2.0" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'dataplane-service'", specifier = ">=0.52" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'dataplane-service'", specifier = ">=0.52.4" },
     { name = "vllm", marker = "extra == 'serving-vllm'", specifier = ">=0.8" },
 ]
 provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "fairness", "vector", "coordination", "events", "synth", "dataplane-sql", "dataplane-files", "dataplane-kafka", "dataplane-service", "dataplane"]
