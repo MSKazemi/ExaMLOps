@@ -165,6 +165,7 @@ updates:
   - package-ecosystem: "docker"
     directories:
       - "/platform/infra/docker-compose"
+      - "/platform/infra/docker-compose/identity"
       - "/platform/services/agent"
       - "/platform/services/control_plane"
       - "/platform/services/dataplane"

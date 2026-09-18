@@ -73,7 +73,19 @@ def test_every_repository_path_named_in_the_docs_exists():
     is pointing at a file rather than illustrating a shape: a path containing a wildcard, an
     ellipsis or a `<placeholder>` is prose.
     """
-    roots = ("tests/", "platform/", "serving/", "pipelines/", "usecases/", "design/", ".github/")
+    all_roots = (
+        "tests/",
+        "platform/",
+        "serving/",
+        "pipelines/",
+        "usecases/",
+        "design/",
+        ".github/",
+    )
+    roots = tuple(r for r in all_roots if (ROOT / r).is_dir())
+    assert roots, (
+        f"none of {all_roots} exist under {ROOT} — this guard would pass by scanning nothing"
+    )
     pattern = re.compile(r"`((?:" + "|".join(re.escape(r) for r in roots) + r")[A-Za-z0-9_./-]+)`")
     broken: list[str] = []
     pages = sorted((ROOT / "docs").rglob("*.md"))
@@ -82,6 +94,8 @@ def test_every_repository_path_named_in_the_docs_exists():
         for named in pattern.findall(page.read_text(encoding="utf-8")):
             if any(ch in named for ch in "*…<>") or named.endswith("/"):
                 continue  # a shape, not a path
+            if Path(named).name.startswith(".env"):
+                continue  # an operator-created config file — gitignored in every checkout
             if not (ROOT / named).exists():
                 broken.append(f"{page.relative_to(ROOT)} → {named}")
     assert not broken, "documentation names repository paths that do not exist:\n  " + "\n  ".join(

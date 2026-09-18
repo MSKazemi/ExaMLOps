@@ -154,9 +154,11 @@ def test_concurrent_relays_do_not_double_publish(db):
 
 
 def test_unimplemented_broker_skeletons_fail_loudly(monkeypatch):
+    """kafka is still a placeholder (`_BrokerSkeleton`); nats is real (ADR 0124) and is covered by
+    test_event_backbone.py instead — its failure mode without `nats-py` is a different message."""
     import examlops.events as events
 
-    for name in ("nats", "kafka"):
+    for name in ("kafka",):
         monkeypatch.setenv("EXAMLOPS_EVENT_PUBLISHER", name)
         events.reset_publisher()
         with pytest.raises(RuntimeError, match="not configured"):

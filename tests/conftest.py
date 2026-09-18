@@ -38,6 +38,15 @@ scope_schema_to_this_worker()
 _JOB_WORKDIR = tempfile.mkdtemp(prefix="examlops-test-jobs-")
 os.environ.setdefault("EXAMLOPS_HPC_WORKDIR", _JOB_WORKDIR)
 
+# Same rule, for the auto-backup hook wired into risky operations (backup restore, secrets rekey,
+# forced schema init, autopilot promote — `examlops.backup.auto.auto_backup_before`). Its default
+# out_dir is the relative `./backups`, so a suite run from the repository leaves bundles in it —
+# invisible locally once `.gitignore`'s `backups/` entry hides them, which is exactly why a stale
+# clone with none of those already present is what a fresh CI checkout catches and this repo does
+# not.
+_BACKUP_WORKDIR = tempfile.mkdtemp(prefix="examlops-test-backups-")
+os.environ.setdefault("EXAMLOPS_BACKUP_DIR", _BACKUP_WORKDIR)
+
 
 #: SQLite writes these beside a database while it is open. One belonging to a file that was
 #: already there is not this test's doing — on a dev host the live stack writes to the checkout's

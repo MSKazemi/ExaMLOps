@@ -212,7 +212,18 @@ def test_a_snapshot_carried_record_verifies_without_the_datastore(keys, monkeypa
 
 @pytest.fixture()
 def generator(monkeypatch):
+    """``pipelines.pipeline_generator`` pulls in the use-case pack, the only thing that imports
+    ``seanergys_modelzoo`` — an upstream library not vendored in the public tree (ADR 0094). CI
+    and the deploy node fetch it separately; skip rather than fail when it is absent."""
+    import os
+
     repo = Path(__file__).resolve().parents[2]
+    mz = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or (repo / "modelzoo"))
+    if not (mz / "seanergys_modelzoo").is_dir():
+        pytest.skip(
+            "seanergys_modelzoo not present — upstream library fetched at deploy/CI time. "
+            "Set EXAMLOPS_MODELZOO_DIR to a checkout to run these tests."
+        )
     for p in (str(repo), str(repo / "pipelines")):
         if p not in sys.path:
             sys.path.insert(0, p)
