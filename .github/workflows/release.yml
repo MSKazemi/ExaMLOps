@@ -81,6 +81,19 @@ jobs:
           set -euo pipefail
           python3 platform/ci/release_version.py notes "${TAG#v}" > release-notes.md
           echo "release notes: $(wc -l < release-notes.md) lines"
+          # GitHub's release body caps at 125000 characters (a CHANGELOG section this large is
+          # rare, but nothing previously guarded it): truncate with a pointer to the full section
+          # on the tagged commit rather than let `gh release create` reject the whole release.
+          limit=120000
+          size="$(wc -c < release-notes.md)"
+          if [ "$size" -gt "$limit" ]; then
+            { head -c "$limit" release-notes.md
+              printf '\n\n…\n\n**Notes truncated at GitHub'"'"'s release-body limit.** Full changelog: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+                "$GITHUB_REPOSITORY" "$TAG"
+            } > release-notes.truncated.md
+            mv release-notes.truncated.md release-notes.md
+            echo "release notes truncated: $size -> $(wc -c < release-notes.md) bytes"
+          fi
 
       # A tag on a commit that never reached main is a release of unreviewed code.
       - name: Tagged commit is on main
