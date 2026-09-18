@@ -90,8 +90,10 @@ def _run_deploy(args: list[str]) -> None:
 
 
 def _run_pytest(args: list[str]) -> None:
+    # `-p no:cacheprovider`: this runs in the operator's working directory, and a `.pytest_cache`
+    # left behind there is litter the platform put in someone else's repository.
     _output.run_external(
-        [sys.executable, "-m", "pytest", *args],
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
         not_found="pytest not found — run make install-dev or uv pip install -e '.[dev]'",
         failed="pytest exited with code {code}",
     )

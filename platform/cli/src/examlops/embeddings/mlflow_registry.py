@@ -53,13 +53,37 @@ def _client() -> Any:
     return MlflowClient(tracking_uri=uri)
 
 
+def _artifact_location(uri: str) -> str | None:
+    """Where a **local** tracking store should keep this experiment's artifacts, or ``None``.
+
+    ``None`` for a tracking *server* (``http(s)``, ``databricks``): the server owns its artifact
+    store — MinIO in the platform's Compose and Helm deployments — and a client that overrode it
+    would scatter artifacts outside it.
+
+    For a local store (``sqlite:``, ``file:``, a bare path) MLflow's default artifact root is
+    ``./mlruns``, i.e. relative to whatever directory the process happens to run in: a repository
+    checkout, a user's home, an HPC job's scratch. Artifacts are instance data, so they belong
+    under the data root (ADR 0128). With no data root configured the default is left alone, which
+    is the rule that layer follows everywhere: unset means unchanged.
+    """
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    if urlsplit(uri).scheme in ("http", "https", "databricks"):
+        return None
+    from examlops.lifecycle.datadir import data_path  # noqa: PLC0415
+
+    root = data_path("mlflow-artifacts", experiment_name())
+    return root.as_uri() if root else None
+
+
 def _experiment_id(client: Any, *, create: bool) -> str | None:
     exp = client.get_experiment_by_name(experiment_name())
     if exp is not None:
         return str(exp.experiment_id)
     if not create:
         return None
-    return str(client.create_experiment(experiment_name()))
+    location = _artifact_location(str(getattr(client, "tracking_uri", "") or ""))
+    return str(client.create_experiment(experiment_name(), artifact_location=location))
 
 
 def _card_from_run(run: Any) -> dict[str, Any] | None:

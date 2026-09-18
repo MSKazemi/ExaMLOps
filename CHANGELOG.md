@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — running the platform no longer writes into the repository it was run from
+
+- A scheduler adapter created its working directory the moment it was constructed, so simply
+  listing platform status made a `slurm_jobs/` or `flux_jobs/` folder in whatever directory the
+  command ran in. Adapters now create nothing until a job actually needs it.
+- The mock scheduler wrote its job folders *inside the installed package*
+  (`platform/infra/slurm-adapter/mock_hpc_jobs`). It now uses the cache directory. A real Slurm or
+  Flux adapter keeps its previous relative default, because those paths are handed to `sbatch
+  --output` and must resolve on the cluster.
+- New `EXAMLOPS_HPC_WORKDIR` says where an adapter keeps its own job files. On a cluster, point it
+  at a filesystem the compute nodes can see.
+- With a local MLflow tracking store, the encoder registry now keeps its artifacts under the
+  instance-data root instead of a `mlruns/` folder in the current directory. A tracking server
+  still owns its own artifact store, and with no data root configured nothing changes.
+- `exa pipeline validate`, which runs pytest, no longer leaves a `.pytest_cache` behind.
+- The unit suite now fails any test that leaves something in the checkout.
+
 ### Added — Apptainer guide for HPC nodes with no Docker daemon
 
 - `docs/guides/apptainer.md`: how to pull a released ExaMLOps image by digest and run it with

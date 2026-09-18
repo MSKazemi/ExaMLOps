@@ -66,18 +66,32 @@ def _to_fsd(time_str: str) -> str:
     return f"{h * 3600 + m * 60 + s}s"
 
 
+def _default_working_dir(kind: str) -> Path:
+    """The platform's one resolver for an adapter's job directory (``EXAMLOPS_HPC_WORKDIR``).
+
+    Degrades to the historical relative default when the ``examlops`` package is not importable —
+    these adapters are deployed standalone on a submit host.
+    """
+    try:
+        from examlops.scheduler_jobs import adapter_working_dir
+
+        return adapter_working_dir(kind)
+    except Exception:  # noqa: BLE001
+        return Path(f"{kind}_jobs")
+
+
 class FluxAdapter(BasePollingAdapter):
     """Real Flux adapter — runs ``flux`` over a RemoteExecutor."""
 
     def __init__(
         self,
         executor: RemoteExecutor,
-        working_dir: str = "flux_jobs",
+        working_dir: str | None = None,
         remote_workdir: str | None = None,
     ):
         self.executor = executor
-        self.working_dir = Path(working_dir)
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.working_dir = Path(working_dir) if working_dir else _default_working_dir("flux")
+        # Created on first use, not here: constructing an adapter must not write anything.
         # Root of per-job dirs on the (possibly remote) cluster.
         import os  # noqa: PLC0415
 
@@ -246,6 +260,7 @@ class FluxAdapter(BasePollingAdapter):
     def get_job_logs(self, job_id: str) -> str:
         remote_dir = self._jobdir.get(job_id, self._remote_workdir)
         remote_out = f"{remote_dir}/{job_id}.out"
+        self.working_dir.mkdir(parents=True, exist_ok=True)  # first actual use
         local = self.working_dir / f"{job_id}.out"
         try:
             self.executor.get(remote_out, str(local))

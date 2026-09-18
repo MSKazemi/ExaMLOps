@@ -22,15 +22,29 @@ import joblib
 from sklearn.ensemble import RandomForestRegressor
 
 
+def _default_working_dir(kind: str) -> Path:
+    """Delegate to the platform's one resolver, with the historical default as the fallback.
+
+    The adapters are importable without the ``examlops`` package on the path (they are deployed as
+    a standalone module on a submit host), so this degrades instead of failing.
+    """
+    try:
+        from examlops.scheduler_jobs import adapter_working_dir
+
+        return adapter_working_dir(kind)
+    except Exception:  # noqa: BLE001 - no examlops package here: keep the old behaviour
+        return Path(__file__).parent / "mock_hpc_jobs"
+
+
 class MockSlurmAdapter:
     """Simulates Slurm job submission and monitoring locally."""
 
     def __init__(self, working_dir: str | None = None, executor=None):
         # ``executor`` is accepted for interface parity with the real adapters and ignored.
-        if working_dir is None:
-            working_dir = Path(__file__).parent / "mock_hpc_jobs"
-        self.working_dir = Path(working_dir)
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.working_dir = Path(working_dir) if working_dir else _default_working_dir("mock")
+        # No mkdir here: constructing an adapter must not write anything. `get_adapter()` runs in
+        # `exa status`, in tests, in the dashboard — none of which is submitting a job. The
+        # directory is created when a job actually needs it, below.
         self._jobs: dict[str, dict] = {}
 
     # ── Public interface ───────────────────────────────────────────────────────

@@ -89,6 +89,19 @@ Two things in `tests/conftest.py` close it:
 If a test trips it, state what the test needs at the seam (as `test_rollback_registry` does with
 `_alias_version`) or point the store at `tmp_path`.
 
+**And no test leaves anything behind in it.** `_no_trace_in_the_checkout` compares the repository
+root before and after every test and fails the one that added an entry. Four did when the guard was
+written: `mlruns/` (MLflow artifacts), `slurm_jobs/` and `flux_jobs/` (scheduler working
+directories, created by merely *constructing* an adapter) and `.pytest_cache` (from the `exa`
+command that runs pytest). All four were invisible because a **machine-local** `.git/info/exclude`
+hid them — no repository carries that file, so on a fresh clone a whole-tree `add` would publish
+local run data and generated job scripts, which carry absolute local paths.
+
+The suite therefore points `EXAMLOPS_HPC_WORKDIR` at a temporary directory, and the guard keeps it
+that way. SQLite sidecars (`-wal`, `-shm`, `-journal`) of a file that was *already* there are
+ignored: on a dev host the live stack writes to the checkout's own `platform.db` while the suite
+runs, and blaming whichever test happened to be running would make the guard fail at random.
+
 ### What is deliberately *not* parallel
 
 `test:postgres` in CI runs single-process on purpose. Its workers would share one schema that the

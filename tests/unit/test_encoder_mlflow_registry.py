@@ -40,8 +40,12 @@ def mlflow_uri(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch, mlflow_uri):
+def _env(monkeypatch, mlflow_uri, tmp_path):
     monkeypatch.setenv("MLFLOW_TRACKING_URI", mlflow_uri)
+    # With a local (sqlite) tracking store MLflow's default artifact root is ./mlruns — relative to
+    # wherever the process runs, which for this suite is the checkout. The platform puts artifacts
+    # under the instance-data root instead (ADR 0128); giving it one keeps them in tmp.
+    monkeypatch.setenv("EXAMLOPS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("EXAMLOPS_ENCODER_MLFLOW_URI", raising=False)
     monkeypatch.setenv("EXAMLOPS_ENCODER_EXPERIMENT", f"encoders-{uuid.uuid4().hex[:8]}")
     monkeypatch.setenv("EXAMLOPS_ENCODER_REGISTRY", "mlflow")

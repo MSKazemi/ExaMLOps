@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -21,6 +22,61 @@ os.environ["_TYPER_FORCE_DISABLE_TERMINAL"] = "1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _STARTED: pytest.StashKey[float] = pytest.StashKey()
 sys.path.insert(0, str(REPO_ROOT / "platform" / "cli" / "src"))
+
+# Job directories go to a temporary place, never the checkout (BL-074). A scheduler adapter's
+# working directory holds job folders, generated scripts and logs — files carrying absolute local
+# paths. Their defaults are relative (`slurm_jobs`) or, for the mock, the cache directory, so a
+# suite run from the repository used to leave them in it. `_no_trace_in_the_checkout` below is the
+# guard that keeps it that way.
+_JOB_WORKDIR = tempfile.mkdtemp(prefix="examlops-test-jobs-")
+os.environ.setdefault("EXAMLOPS_HPC_WORKDIR", _JOB_WORKDIR)
+
+
+#: SQLite writes these beside a database while it is open. One belonging to a file that was
+#: already there is not this test's doing — on a dev host the live stack writes to the checkout's
+#: own `platform.db` while the suite runs, and a guard that blamed the running test for that would
+#: fail at random.
+_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _test_authored(new: set[str], before: set[str]) -> set[str]:
+    """The new entries a test is actually responsible for."""
+    return {
+        name
+        for name in new
+        if not any(name.endswith(suffix) and name[: -len(suffix)] in before for suffix in _SIDECARS)
+    }
+
+
+def assert_no_trace(before: set[str], root: Path) -> None:
+    """Fail when ``root`` gained an entry this test is responsible for.
+
+    A function rather than only fixture body, so a test can check the rule against its own
+    directory: driving it by repointing the fixture's root would make *this* test the one that
+    writes into the checkout.
+    """
+    left = sorted(_test_authored(set(os.listdir(root)) - before, before))
+    assert not left, (
+        f"this test left {left} in the checkout. Point it at tmp_path (or, for a scheduler, at "
+        "EXAMLOPS_HPC_WORKDIR, which this suite already sets) — the repository is not scratch space."
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_trace_in_the_checkout():
+    """A unit test leaves nothing behind in the repository.
+
+    Measured across the whole suite, four tests did: MLflow artifacts (`mlruns/`), two scheduler
+    job directories (`slurm_jobs/`, `flux_jobs/`) and a `.pytest_cache` from an `exa` command that
+    runs pytest. Each was invisible only because a *machine-local* ignore file hid it — a fresh
+    clone has none of those, so a whole-tree `add` on another machine would publish local run data
+    and generated scripts holding absolute paths. Failing here names the test that did it, in the
+    change that introduces it, instead of leaving it for a future `git status`.
+    """
+    before = set(os.listdir(REPO_ROOT))
+    yield
+    assert_no_trace(before, REPO_ROOT)
+
 
 # The checkout's own SQLite stores — on a dev host the live stack's. No test may open one: a unit
 # test copying or initialising them is a flake (they change under it) and reads private state.

@@ -65,17 +65,31 @@ _RESOURCE_FLAGS: dict[str, str] = {
 }
 
 
+def _default_working_dir(kind: str) -> Path:
+    """The platform's one resolver for an adapter's job directory (``EXAMLOPS_HPC_WORKDIR``).
+
+    Degrades to the historical relative default when the ``examlops`` package is not importable —
+    these adapters are deployed standalone on a submit host.
+    """
+    try:
+        from examlops.scheduler_jobs import adapter_working_dir
+
+        return adapter_working_dir(kind)
+    except Exception:  # noqa: BLE001
+        return Path(f"{kind}_jobs")
+
+
 class RealSlurmAdapter(BasePollingAdapter):
     """Real Slurm adapter — runs sbatch/squeue/sacct through a RemoteExecutor."""
 
     def __init__(
         self,
         executor: RemoteExecutor | None = None,
-        working_dir: str = "slurm_jobs",
+        working_dir: str | None = None,
     ):
         self.executor: RemoteExecutor = executor or LocalExecutor()
-        self.working_dir = Path(working_dir)
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.working_dir = Path(working_dir) if working_dir else _default_working_dir("slurm")
+        # Created on first use, not here: constructing an adapter must not write anything.
         self._jobdir_hint: str | None = None
 
     def submit_job(
@@ -118,6 +132,7 @@ class RealSlurmAdapter(BasePollingAdapter):
 
         # Default log paths next to this adapter's working dir so logs are easy to find
         if not resources or "output" not in resources:
+            self.working_dir.mkdir(parents=True, exist_ok=True)  # first actual use
             cmd.append(f"--output={self.working_dir / '%j.out'}")
         if not resources or "error" not in resources:
             cmd.append(f"--error={self.working_dir / '%j.err'}")
@@ -192,6 +207,7 @@ class RealSlurmAdapter(BasePollingAdapter):
             path = line.strip()
             if not path:
                 continue
+            self.working_dir.mkdir(parents=True, exist_ok=True)
             local = self.working_dir / f"{job_id}.out"
             try:
                 self.executor.get(path, str(local))

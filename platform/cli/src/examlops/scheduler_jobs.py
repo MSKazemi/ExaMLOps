@@ -73,6 +73,28 @@ def job_dir() -> Path:
     return Path(cache) / "examlops" / "jobs"
 
 
+def adapter_working_dir(kind: str) -> Path:
+    """Where an adapter keeps its own job files (logs, per-job folders) for scheduler ``kind``.
+
+    ``EXAMLOPS_HPC_WORKDIR`` wins, as ``<it>/<kind>`` — a cluster wants this on the shared
+    filesystem its compute nodes can see, and CI wants it in a temporary directory.
+
+    Unset, the **mock** scheduler uses the cache directory: it runs locally, and its historical
+    default was a folder *inside the installed package* (``platform/infra/slurm-adapter/
+    mock_hpc_jobs``), so a mock run wrote generated scripts and pickles into the checkout — files
+    holding absolute local paths, untracked but not ignored by anything committed, one whole-tree
+    ``add`` from being published. A real **slurm**/**flux** adapter keeps its relative default
+    (``slurm_jobs`` / ``flux_jobs``): those paths are passed to ``sbatch --output`` and must resolve
+    on the cluster, so the submit directory is the operator's choice to make, not ours to move.
+    """
+    configured = os.getenv("EXAMLOPS_HPC_WORKDIR")
+    if configured:
+        return Path(configured) / kind
+    if kind == "mock":
+        return job_dir().parent / "mock_hpc_jobs"
+    return Path(f"{kind}_jobs")
+
+
 def job_python() -> str:
     """The interpreter the job runs: ``EXAMLOPS_HPC_REMOTE_PYTHON``, else the remote repo's venv
     when ``EXAMLOPS_HPC_REMOTE_REPO`` is set, else this one (the mock and a shared filesystem)."""
