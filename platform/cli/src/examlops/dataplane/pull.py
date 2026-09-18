@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -22,6 +21,7 @@ from examlops.coordination import get_coordinator
 from examlops.data import dataplane as catalog
 from examlops.dataplane import store as st
 from examlops.dataplane.connectors import registry
+from examlops.dataplane.lease import LeaseHeartbeat
 from examlops.dataplane.metrics import observe_pull
 from examlops.dataplane.safety import redact, validate_name
 from examlops.dataplane.types import (
@@ -261,69 +261,20 @@ def _lease_ttl_s(limits: Limits) -> float:
     return limits.max_seconds or 3600.0
 
 
-class _LeaseHeartbeat:
-    """Keeps a held coordinator lock alive: re-takes it (same holder, same TTL — the coordinator's
-    own re-entrant renew) every ``ttl_s / 3`` on a daemon thread until :meth:`stop`.
+class _LeaseHeartbeat(LeaseHeartbeat):
+    """Backward-compatible name for :class:`examlops.dataplane.lease.LeaseHeartbeat` (moved there
+    in task A4 so stream leader election can reuse it too).
 
-    Without it the lease covered only the first TTL of a pull: once it lapsed a scheduled twin
-    could start and the reaper could fail the still-live pull. ``lost`` turns true when a renewal
-    is refused — another holder has the lock, because this process stalled past the lease — and
-    the owner must then not commit. A renewal that *errors* (a datastore hiccup) is retried on the
-    next beat; the lease still has two thirds of its TTL left.
+    A thin subclass rather than a plain ``_LeaseHeartbeat = LeaseHeartbeat`` re-export: this
+    module's own ``_HEARTBEAT_JOIN_S`` is bound here, at construction time, as the generic class's
+    ``join_s`` — reading it as a global inside code that (unlike the base class) lives in this
+    module, so ``pull.py``'s own tuning (and the existing test that monkeypatches
+    ``_HEARTBEAT_JOIN_S``) keeps working unchanged. Behaviour is otherwise identical to the base
+    class: same renew-every-``ttl_s/3`` loop, same ``lost`` flag, same ``stop()`` semantics.
     """
 
     def __init__(self, coord: Any, key: str, holder: str, ttl_s: float) -> None:
-        self._coord = coord
-        self._key = key
-        self._holder = holder
-        self._ttl_s = ttl_s
-        self.lost = False
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="dataplane-lease", daemon=True)
-
-    def start(self) -> _LeaseHeartbeat:
-        self._thread.start()
-        return self
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._ttl_s / 3.0):
-            try:
-                renewed = self._coord.try_lock(self._key, self._holder, ttl_s=self._ttl_s)
-            except Exception as exc:  # noqa: BLE001 — a transient error: try again next beat
-                logger.warning(
-                    "dataplane: could not renew the lease on %s: %s",
-                    self._key,
-                    redact(f"{type(exc).__name__}: {exc}"),
-                )
-                continue
-            if self._stop.is_set():
-                # stop() stopped waiting for this renewal and the owner may already have released
-                # the lock: give back what a late renewal just re-took (unlock is holder-checked).
-                if renewed:
-                    self._release()
-                return
-            if not renewed:
-                self.lost = True
-                logger.warning("dataplane: lost the lease on %s to another holder", self._key)
-                return
-
-    def _release(self) -> None:
-        try:
-            self._coord.unlock(self._key, self._holder)
-        except Exception as exc:  # noqa: BLE001 — the lease TTL frees it anyway
-            logger.warning(
-                "dataplane: could not release %s: %s",
-                self._key,
-                redact(f"{type(exc).__name__}: {exc}"),
-            )
-
-    def stop(self) -> None:
-        """Stop renewing. Waits up to ``_HEARTBEAT_JOIN_S`` for an in-flight renewal, so the
-        caller's release normally lands last; a renewal that outlasts the wait (a hung datastore)
-        releases the lock itself once it returns, so it can never keep a released lock."""
-        self._stop.set()
-        if self._thread.is_alive() and self._thread is not threading.current_thread():
-            self._thread.join(timeout=_HEARTBEAT_JOIN_S)
+        super().__init__(coord, key, holder, ttl_s, join_s=_HEARTBEAT_JOIN_S)
 
 
 def _row_to_def(row: dict[str, Any]) -> SourceDef:

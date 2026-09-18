@@ -1,11 +1,19 @@
 """Authentication for the dataplane service (ADR 0130 §9) — the control plane's fail-closed rules.
 
-Two ways in, checked in this order:
+Three ways in, checked in this order:
 
-* the static bearer ``DATAPLANE_TOKEN`` (a real, non-placeholder secret) — scopes ``read`` and
-  ``write``;
-* a token from a trusted data-center IdP (ADR 0120, ``examlops.iam``) — ``read`` for any mapped
-  role, ``write`` from ``operator`` up — after which the center's PDP may still veto the call.
+* the static bearer ``DATAPLANE_TOKEN`` (a real, non-placeholder secret) — scopes ``read``,
+  ``write`` and ``ingest``;
+* the optional static bearer ``DATAPLANE_INGEST_TOKEN`` (ADR 0131 d6) — scope ``ingest`` only, so
+  a producer that pushes stream messages holds a credential that can do nothing else;
+* a token from a trusted data-center IdP (ADR 0120, ``examlops.iam``) — ``read`` and ``ingest``
+  for any mapped role, ``write`` from ``operator`` up — after which the center's PDP may still
+  veto the call.
+
+``ingest`` (``POST /streams/{name}/messages``) is a write-like side effect — it runs a model — so
+it is never open: with nothing configured it answers 503. A federated caller's ``ingest`` scope
+is only a ticket to the project check (:func:`may_ingest`): it needs ``operator`` (the ``write``
+rule) or ``editor`` on the stream's project.
 
 A federated caller is further scoped to projects (spec §10, :func:`may_access_project`): with
 ``EXAMLOPS_MULTITENANCY`` on, a project's sources need ``viewer`` (read) / ``editor`` (write) on
@@ -13,10 +21,12 @@ A federated caller is further scoped to projects (spec §10, :func:`may_access_p
 authenticate with :func:`authenticate_read`/:func:`authenticate_write` and then call
 :func:`authorize_source` once the project is known (it may sit in the request body).
 
-With neither configured (``DATAPLANE_TOKEN`` unset or blank, no trust file) the service is a
-loopback-only deployment: reads are open and every write is refused (503). A token that is set but
-is a placeholder or too short is *not* "unset": with no working federation it closes every route
-(503). A trust file that fails to parse refuses federated tokens and nothing else, so the static
+With nothing configured (``DATAPLANE_TOKEN`` and ``DATAPLANE_INGEST_TOKEN`` unset or blank, no
+trust file) the service is a loopback-only deployment: reads are open and every write and ingest
+is refused (503). A configured ingest token alone is *not* "nothing configured": reads then need a
+credential too, and with no ``DATAPLANE_TOKEN`` or federation there is none (503). A token that is
+set but is a placeholder or too short is *not* "unset": with no working federation it closes every
+route (503). A trust file that fails to parse refuses federated tokens and nothing else, so the static
 token keeps working while the file is being fixed. Nothing here logs or returns a token.
 """
 
@@ -34,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 TOKEN_ENV = "DATAPLANE_TOKEN"
 STATIC_ACTOR = "dataplane-api"
+#: The optional ingest-only static bearer (ADR 0131 d6) and the actor it acts as.
+INGEST_TOKEN_ENV = "DATAPLANE_INGEST_TOKEN"
+INGEST_ACTOR = "dataplane-ingest"
+INGEST_DISABLED_DETAIL = f"dataplane ingest is disabled: set {TOKEN_ENV} or {INGEST_TOKEN_ENV}"
 
 # same rules as examlops.credentials (switch to it once that module is committed)
 MIN_SECRET_LENGTH = 16
@@ -108,6 +122,10 @@ def _secret() -> str:
     return os.getenv(TOKEN_ENV, "")
 
 
+def _ingest_secret() -> str:
+    return os.getenv(INGEST_TOKEN_ENV, "")
+
+
 def _token_state(secret: str) -> str:
     """``unset`` (absent or blank) | ``ok`` | ``invalid`` (set, but a placeholder or too short)."""
     if not secret.strip():
@@ -155,7 +173,9 @@ def _federated(token: str) -> Caller | None:
             f"Authenticated as {principal.actor}, but your identity provider grants no "
             "ExaMLOps role",
         )
-    scopes = {"read", "write"} if principal.has_role("operator") else {"read"}
+    # `ingest` for every mapped role is only a ticket to the project check: `may_ingest` then
+    # needs `operator` (the write rule) or `editor` on the stream's project.
+    scopes = {"read", "write", "ingest"} if principal.has_role("operator") else {"read", "ingest"}
     return Caller(
         actor=principal.actor,
         scopes=frozenset(scopes),
@@ -168,8 +188,8 @@ def auth_mode() -> str:
     """How this service authenticates right now, for the startup log and ``/health``.
 
     ``open`` (no token, no federation — reads open, writes refused) or a ``+``-joined subset of
-    ``static`` / ``token-invalid`` and ``federated`` / ``trust-file-invalid``. Never includes the
-    token or the trust file's parse error.
+    ``static`` / ``token-invalid``, ``ingest`` / ``ingest-token-invalid`` and ``federated`` /
+    ``trust-file-invalid``. Never includes a token or the trust file's parse error.
     """
     parts: list[str] = []
     token = _token_state(_secret())
@@ -177,6 +197,11 @@ def auth_mode() -> str:
         parts.append("static")
     elif token == "invalid":
         parts.append("token-invalid")
+    ingest = _token_state(_ingest_secret())
+    if ingest == "ok":
+        parts.append("ingest")
+    elif ingest == "invalid":
+        parts.append("ingest-token-invalid")
     iam_state = _iam_status()
     if iam_state == "ok":
         parts.append("federated")
@@ -186,18 +211,25 @@ def auth_mode() -> str:
 
 
 def _authenticate(authorization: str | None, required: str) -> Caller | None:
+    """``required`` is ``read``, ``write`` or ``ingest``. ``None`` only for an open read."""
     secret = _secret()
     token = _token_state(secret)
+    ingest_secret = _ingest_secret()
+    ingest = _token_state(ingest_secret)
     iam_state = _iam_status()
-    if token == "unset" and iam_state == "off":
+    if token == "unset" and ingest == "unset" and iam_state == "off":
         # The one open state: nothing configured at all (a loopback-only deployment).
         if required == "read":
             return None
+        if required == "ingest":  # it runs a model: never open
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, INGEST_DISABLED_DETAIL)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"dataplane writes are disabled: set {TOKEN_ENV} to a real secret",
         )
-    if token != "ok" and iam_state != "ok":
+    # The ingest token can authenticate only an ingest; for any other scope it is not a way in.
+    static_ok = token == "ok" or (required == "ingest" and ingest == "ok")
+    if not static_ok and iam_state != "ok":
         # Something is configured but nothing can authenticate. Fail closed — reads included:
         # a typo'd token or trust file must never be what opens the service. Neither the
         # token nor the trust file's parse error (it can quote a secret reference) is echoed.
@@ -205,6 +237,13 @@ def _authenticate(authorization: str | None, required: str) -> Caller | None:
             logger.debug("dataplane: refusing request, auth mode %s", auth_mode())
         if token == "invalid":
             detail = f"{TOKEN_ENV} is set but is a placeholder or too short"
+        elif required == "ingest" and ingest == "invalid":
+            detail = f"{INGEST_TOKEN_ENV} is set but is a placeholder or too short"
+        elif required == "ingest":
+            detail = (
+                f"dataplane authentication is not configured: set {TOKEN_ENV} or "
+                f"{INGEST_TOKEN_ENV}, or fix the identity-federation trust file"
+            )
         else:
             detail = (
                 f"dataplane authentication is not configured: set {TOKEN_ENV} or fix the "
@@ -214,7 +253,10 @@ def _authenticate(authorization: str | None, required: str) -> Caller | None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
     if token == "ok" and _bearer_matches(authorization, secret):
-        return Caller(actor=STATIC_ACTOR, scopes=frozenset({"read", "write"}))
+        return Caller(actor=STATIC_ACTOR, scopes=frozenset({"read", "write", "ingest"}))
+    if ingest == "ok" and _bearer_matches(authorization, ingest_secret):
+        # Matched whatever the route: a write route then refuses it on the missing scope (403).
+        return Caller(actor=INGEST_ACTOR, scopes=frozenset({"ingest"}))
     supplied = authorization.removeprefix("Bearer ").strip()
     caller = _federated(supplied) if iam_state == "ok" else None
     if caller is None:
@@ -340,6 +382,82 @@ def authorize_source(
         )
 
 
+# Streams (ADR 0131 d6) get the same one-answer deny as sources: nothing about the project, its
+# streams or the caller's own grants, whether or not the stream exists.
+STREAM_FORBIDDEN_DETAIL = "Denied: no access to this stream"
+
+
+def may_ingest(caller: Caller | None, project: str) -> bool:
+    """ADR 0131 d6: may this caller push messages to a stream of ``project`` (``""`` = global)?
+
+    The static credentials (``DATAPLANE_TOKEN``, ``DATAPLANE_INGEST_TOKEN``) may. A federated
+    caller needs either:
+
+    * ``operator`` or above — then exactly the source ``write`` rule applies
+      (:func:`may_access_project`): a global stream from ``operator`` up, a project's stream with
+      ``editor`` on it while ``EXAMLOPS_MULTITENANCY`` is on; or
+    * ``editor`` on the stream's own project — a relation in ``examlops.authz``, or a project role
+      of at least ``operator`` in the token's own project claims. This path is never granted by
+      multitenancy being *off* (which makes ``authz.check`` allow everything): the relation must
+      actually be held. A global stream has no project to be an editor of, so it needs operator.
+
+    ``caller is None`` (an open read) never reaches here: ingest is never open.
+    """
+    if caller is None or caller.identity is None:
+        return caller is not None
+    principal = caller.identity
+    if principal.has_role("operator"):
+        return may_access_project(caller, "write", project)
+    if not project:
+        return False
+    from examlops import authz, iam
+    from examlops.dataplane.safety import validate_name
+    from examlops.dataplane.types import SpecError
+
+    try:
+        validate_name(project, "project")
+    except SpecError:
+        return False  # not a project name (and `a/x` must never ride on a grant for `a`)
+    claimed = (getattr(principal, "projects", None) or {}).get(project)
+    if claimed and iam.ROLE_RANK.get(claimed, 0) >= iam.ROLE_RANK["operator"]:
+        return True
+    obj = f"project:{project}"
+    if authz.multitenancy_enabled():
+        return authz.check(principal.id, "editor", obj, actor=principal.actor)
+    return _holds_relation(principal.id, "editor", obj)
+
+
+def authorize_stream(
+    caller: Caller | None, request: Request, required: str, project: str, name: str | None = None
+) -> None:
+    """The authorisation of a stream-scoped route (``read``, ``write`` or ``ingest`` — the A8b
+    state/dead-letter routes pass ``write``, which :func:`may_access_project` handles like any
+    other scope; review M8), BEFORE the stream is looked up: the project check, then the center's PDP (action ``dataplane.<required>``) with the
+    real project as the resource. 403 :data:`STREAM_FORBIDDEN_DETAIL` on a project deny — one
+    answer for a stream that exists and one that does not (no existence oracle)."""
+    allowed = (
+        may_ingest(caller, project)
+        if required == "ingest"
+        else may_access_project(caller, required, project)
+    )
+    if not allowed:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, STREAM_FORBIDDEN_DETAIL)
+    if caller is not None and caller.identity is not None:
+        scope = project or "_global"
+        resource_id = f"{scope}/{name}" if name else scope
+        _authorize_pdp(
+            caller,
+            required,
+            {
+                "type": "dataplane",
+                "kind": "stream",
+                "id": resource_id,
+                "method": request.method,
+                "project": project,
+            },
+        )
+
+
 def require_read(
     request: Request, authorization: str | None = Header(default=None)
 ) -> Caller | None:
@@ -376,16 +494,34 @@ def authenticate_write(
     return caller
 
 
+def authenticate_ingest(
+    request: Request, authorization: str | None = Header(default=None)
+) -> Caller:
+    """Dependency for the push route (``POST /streams/{name}/messages``): authentication and the
+    ``ingest`` scope only. The route MUST then call :func:`authorize_stream` with ``"ingest"``."""
+    caller = _require("ingest", request, authorization, pdp=False)
+    if caller is None:  # unreachable: _authenticate never opens an ingest
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, INGEST_DISABLED_DETAIL)
+    return caller
+
+
 __all__ = [
     "FORBIDDEN_DETAIL",
+    "INGEST_ACTOR",
+    "INGEST_DISABLED_DETAIL",
+    "INGEST_TOKEN_ENV",
     "STATIC_ACTOR",
+    "STREAM_FORBIDDEN_DETAIL",
     "TOKEN_ENV",
     "Caller",
     "auth_mode",
+    "authenticate_ingest",
     "authenticate_read",
     "authenticate_write",
     "authorize_source",
+    "authorize_stream",
     "may_access_project",
+    "may_ingest",
     "require_read",
     "require_write",
 ]

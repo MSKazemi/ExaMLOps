@@ -5,6 +5,67 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the dataplane serves live inference streams: HTTP push and Kafka (ADR 0131)
+
+- **A stream is a named binding** of one inbound connector to one project's model and alias, held
+  in the new `dataplane_streams` catalog. Where a *source* turns `(connection, spec, watermark)`
+  into a snapshot that training pins to, a *stream* turns one inbound message into one inference
+  call, answered as it arrives. Streams are declared in the active pack's model YAML, under
+  `inference.streams`; the dataplane re-reads that list at startup and at most once a minute after
+  that.
+- **Two ways in.** `http` is served by the dataplane service itself: `POST
+  /streams/{name}/messages?project=` pushes one message and gets one answer in the same call, with
+  an `Idempotency-Key` header making a retried push safe for 600 seconds. `kafka` is a
+  consumer-group member that reads a topic and, with `options.reply_topic` set, answers on it.
+- **The binding's project, model and alias are authoritative, never the caller's.** A stream in
+  project `P` may bind model `M` only if `M` belongs to `P`; a stream with no project may bind only
+  an unscoped model, and a refusal never names the owning project. A message naming a different
+  model is rejected, and one naming a different alias is rejected too unless the binding opted in
+  with `options.allow_alias_override` — a caller must not be able to choose which model version
+  answers it, nor which alias's drift window its prediction lands in. A pack sync never overwrites
+  a stream an operator defined, and removing an entry from the YAML disables the stream rather than
+  deleting it, remembering the state to restore if it comes back.
+- **Kafka delivery is at least once, with a dead-letter queue.** An offset is stored only once its
+  message is terminal: answered (the reply produced and confirmed) or dead-lettered (the database
+  row written, plus the `dlq_topic` copy and the failure reply where configured). A message that
+  keeps failing past `limits.max_attempts` is dead-lettered as `retries_exhausted`; one that falls
+  out of the log while parked for a retry is dead-lettered as `expired_from_log` rather than
+  silently dropped. Dead letters are listable, replayable and purgeable over HTTP. A payload is
+  stored only when the binding opts in, at most 256 KiB, UTF-8 only, with secrets and personal data
+  redacted first; reading one needs the `write` scope and is itself audited. Rows are pruned after
+  `EXAMLOPS_DATAPLANE_DLQ_RETENTION_DAYS` (7 by default).
+- **Telemetry and drift come after the reply, never before it.** Embedding statistics and the
+  input-drift baseline feed are computed at ingress and handed to a bounded, drop-on-full spool, so
+  a slow database cannot slow an answer down. Only a genuine `model` outcome counts as a drift
+  failure and only `ok` as a success; a transport failure, a deadline, a shed request or a
+  validation error never touches drift. When a model's failure rate over its window trips the
+  threshold, the aggregator asks the existing retrain trigger to run, honouring that model's own
+  `drift_auto_retrain` cooldown, and audits the suppression when no dataset is configured.
+- **Process roles, leader election and a bounded drain.** `EXAMLOPS_DATAPLANE_ROLE` splits the
+  service into `all` (the default), `api` (routes and the pull scheduler, no connectors) and
+  `streams` (connectors plus `/health`, `/ready` and `/metrics`). A connector that cannot balance
+  itself across replicas runs under a fenced lease, so a stalled replica can never overlap with the
+  one that took over; Kafka does not need it, because its consumer group already balances
+  partitions. Shutdown is one deadline (`EXAMLOPS_DATAPLANE_DRAIN_SECONDS`, 20 by default, also
+  given to uvicorn): stop taking work, finish what is in flight, flush drift and telemetry, release
+  the leases. Compose gives the service `stop_grace_period: 30s` so the drain is not cut short.
+- **A new `ingest` scope, and a token that holds only it.** Push is never open: with neither a
+  token nor identity federation it answers 503. `DATAPLANE_TOKEN` now grants read, write and
+  ingest; the optional `DATAPLANE_INGEST_TOKEN` grants ingest alone, so a producer can push without
+  being able to read the catalog, pause a stream or replay a dead letter. A caller without access
+  gets one fixed 403 whether or not the stream exists.
+- **Runtime controls.** `POST /streams/{name}/state` sets a binding to `enabled`, `paused` or
+  `disabled`. Pausing a Kafka stream pauses its assignment in place — it keeps polling, keeps its
+  group membership and its lease, and resumes exactly where it stopped; a push stream answers 503
+  while paused and 404 while disabled. Twelve `dataplane_stream_*` metric families cover requests
+  by outcome, latency, in-flight, sheds, telemetry drops and failures, connector state, expired
+  messages, consumer lag, dead letters and the embedding gauges.
+- **Not in this release:** no `exa` command for streams, no dashboard page, no SeanerBUS req/res
+  connector, and no alerts or runbook for the new metrics — those land in later batches. There is
+  also no HTTP route yet to define a stream: the library write path exists and is tenancy-checked
+  and audited, but the model YAML is the only way in today. The operator documentation is the new
+  "Live streams" section of the [dataplane guide](docs/guides/dataplane.md).
+
 ## [0.59.1] - 2026-09-12
 
 ### Fixed — v0.59.0's images were quarantined by three new perl CVEs

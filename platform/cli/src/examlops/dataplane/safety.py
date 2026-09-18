@@ -90,9 +90,16 @@ _KV_VALUE = re.compile(r"[^&\s;]+")
 _SECRET_JSON = re.compile(rf'"([\w-]{{1,{_MAX_KEY_LEN}}})"\s*:\s*"([^"]*)"')
 
 
-def _is_secret_key(key: str) -> bool:
+def is_secret_key(key: str) -> bool:
+    """Does ``key`` name a credential? The one key-shape rule :func:`redact` uses, public so a
+    structured redactor (the dead-letter payload walk, A7b) applies the same rule to a parsed
+    document instead of keeping a second copy of the vocabulary."""
     lowered = key.lower()
     return any(alt in lowered for alt in _KEY_ALT)
+
+
+#: The pre-A7b private name, kept so this module's own call sites read unchanged.
+_is_secret_key = is_secret_key
 
 
 # `Authorization: Bearer ...` / `X-Api-Key: ...` style headers dumped into an error string.

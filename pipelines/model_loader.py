@@ -7,11 +7,32 @@ pipeline_generator.py and other system components.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+#: Env gate for the legacy seanerbus_uuid -> stream shim (E15). Default OFF, mirrors
+#: examlops.dataplane.streams.bindings._LEGACY_ENV — kept as a literal here, not imported, because
+#: this module runs on HPC nodes that may not carry the platform package at all.
+_LEGACY_SEANERBUS_ENV = "EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID"
+
+#: Mirrors examlops.dataplane.streams.types.StreamLimits' field defaults. Duplicated (not
+#: imported — see module docstring) so a stream entry with no ``limits`` block normalizes to the
+#: same values on both sides; test_dataplane_streams_catalog.py's parity test is the drift guard.
+_DEFAULT_STREAM_LIMITS: dict[str, Any] = {
+    "max_in_flight": 64,
+    "rate_per_min": 0,
+    "deadline_ms": None,
+    "max_bytes": 1_048_576,
+    "max_attempts": 5,
+}
+
+
+def _use_legacy_seanerbus_shim() -> bool:
+    return (os.getenv(_LEGACY_SEANERBUS_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -132,3 +153,62 @@ def scan_model_yamls(models_dir: Path) -> list[ModelYAMLConfig]:
     return [
         load_model_yaml(f) for f in sorted(models_dir.glob("*.yaml")) if not f.stem.startswith("_")
     ]
+
+
+def normalize_inference_streams(model_yaml: ModelYAMLConfig) -> list[dict[str, Any]]:
+    """Normalize ``inference.streams`` (+ the legacy ``seanerbus_uuid`` shim) into a list of plain
+    dicts with defaults applied.
+
+    This is the pure, ``examlops.dataplane``-import-free twin of
+    ``examlops.dataplane.streams.bindings.yaml_streams`` — this module runs on HPC nodes, which may
+    not carry the platform package (``examlops``) at all, only ``examlops-pipelines``. The two are
+    kept in agreement by ``tests/unit/test_dataplane_streams_catalog.py``'s parity test.
+
+    Each dict has keys: ``name``, ``connector``, ``model``, ``alias``, ``address``, ``connection``,
+    ``options``, ``limits`` — no ``project`` (this module has no notion of tenancy; that is a
+    dataplane-layer concern one level up) and no ``state``/``origin`` (catalog-only concerns).
+    """
+    model = model_yaml.name
+    raw_streams = (model_yaml.inference or {}).get("streams") or []
+    out: list[dict[str, Any]] = []
+    for entry in raw_streams:
+        name = entry.get("name")
+        connector = entry.get("connector")
+        if not name or not connector:
+            raise ValueError(
+                f"inference.streams entry for model {model!r} needs 'name' and 'connector'"
+            )
+        raw_limits = entry.get("limits") or {}
+        out.append(
+            {
+                "name": str(name),
+                "connector": str(connector),
+                "model": model,
+                "alias": entry.get("alias") or "Production",
+                "address": entry.get("address") or "",
+                "connection": entry.get("connection"),
+                "options": dict(entry.get("options") or {}),
+                "limits": {
+                    **_DEFAULT_STREAM_LIMITS,
+                    **{k: v for k, v in raw_limits.items() if k in _DEFAULT_STREAM_LIMITS},
+                },
+            }
+        )
+    if (
+        _use_legacy_seanerbus_shim()
+        and model_yaml.seanerbus_uuid
+        and not any(s["connector"] == "seanerbus" for s in out)
+    ):
+        out.append(
+            {
+                "name": f"{model}-seanerbus",
+                "connector": "seanerbus",
+                "model": model,
+                "alias": "Production",
+                "address": str(model_yaml.seanerbus_uuid),
+                "connection": None,
+                "options": {},
+                "limits": dict(_DEFAULT_STREAM_LIMITS),
+            }
+        )
+    return out

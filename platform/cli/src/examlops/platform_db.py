@@ -967,6 +967,71 @@ def init_db(*, force: bool = False) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_dataplane_pulls_source
                 ON dataplane_pulls(project, source, id);
+            -- Plan 2 (ADR 0130/0131) task A6 — stream catalog: named inbound-connector
+            -- bindings (Kafka/HTTP push/SeanerBUS req-res) that route a live request to a
+            -- project/model/alias. PK (project, name) mirrors dataplane_sources; project
+            -- ''  (displayed '_global') is the unscoped default, same convention as the
+            -- source registry above. options_json/limits_json mirror spec_json/limits_json
+            -- on dataplane_sources (serialised StreamBinding.options / StreamLimits).
+            CREATE TABLE IF NOT EXISTS dataplane_streams (
+                project        TEXT NOT NULL DEFAULT '',
+                name           TEXT NOT NULL,
+                connector      TEXT NOT NULL,
+                model          TEXT NOT NULL,
+                alias          TEXT NOT NULL DEFAULT 'Production',
+                address        TEXT NOT NULL DEFAULT '',
+                connection     TEXT,
+                options_json   TEXT NOT NULL DEFAULT '{}',
+                limits_json    TEXT NOT NULL DEFAULT '{}',
+                state          TEXT NOT NULL DEFAULT 'enabled',
+                state_reason   TEXT,
+                origin         TEXT NOT NULL DEFAULT 'api',
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                created_by     TEXT,
+                created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dataplane_streams_model
+                ON dataplane_streams(project, model);
+            -- Plan 2 (ADR 0131 section 5) task A7b - stream dead letters: messages an
+            -- asynchronous stream connector (Kafka) could not process. Metadata always; the
+            -- payload only when the binding opts in (options.dlq_store_payload), at most
+            -- 256 KiB, UTF-8 only, redacted (secrets + PII) before it is written - sha256 and
+            -- size describe the ORIGINAL bytes. error is redacted, at most 1024 chars. The
+            -- UNIQUE origin key makes a redelivered dead letter update its row, not add one
+            -- (ruling R15); NULL origin columns (a source with no offset) never conflict, since
+            -- NULLs are distinct in a UNIQUE constraint on SQLite and Postgres alike.
+            -- replay_claim/replay_claimed_at hold one replay at a time. project '' is the
+            -- unscoped default, as on dataplane_streams; every read filters on project.
+            CREATE TABLE IF NOT EXISTS dataplane_stream_dead_letters (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                project           TEXT NOT NULL DEFAULT '',
+                stream            TEXT NOT NULL,
+                reason            TEXT NOT NULL,
+                error             TEXT NOT NULL DEFAULT '',
+                attempts          INTEGER NOT NULL DEFAULT 0,
+                sha256            TEXT,
+                size              INTEGER NOT NULL DEFAULT 0,
+                origin_json       TEXT NOT NULL DEFAULT '{}',
+                origin_topic      TEXT,
+                origin_partition  INTEGER,
+                origin_offset     INTEGER,
+                payload           TEXT,
+                payload_encoding  TEXT,
+                payload_truncated INTEGER NOT NULL DEFAULT 0,
+                created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                replayed_at       DATETIME,
+                replayed_by       TEXT,
+                replay_claim      TEXT,
+                replay_claimed_at DATETIME,
+                UNIQUE (project, stream, origin_topic, origin_partition, origin_offset)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dataplane_stream_dead_letters_stream
+                ON dataplane_stream_dead_letters(project, stream, id);
+            CREATE INDEX IF NOT EXISTS idx_dataplane_stream_dead_letters_created
+                ON dataplane_stream_dead_letters(created_at);
             -- Next-Gen 40 · A7 — synthetic dataset gate record (ADR 0042). One row per
             -- generated synthetic revision: the generator config + fidelity/privacy scores
             -- and whether it passed the release gate. The `synthetic=1` flag lives on the

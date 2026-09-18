@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 _MAX_OUTCOMES = 1000
 # The fields of a pending pull a caller may see (the lock key and source key stay internal).
 _VIEW_KEYS: tuple[str, ...] = ("id", "project", "source", "trigger_kind")
+#: Seconds between two stream dead-letter retention runs (Plan 2 task A7b).
+DLQ_PRUNE_INTERVAL_S = 3600.0
 
 
 def parse_timestamp(value: Any) -> float | None:
@@ -105,6 +107,8 @@ class Scheduler:
         # row exists (connector not installed, say) is retried once per interval, not per tick.
         self._attempted: dict[str, float] = {}
         self._futures: set[Future[None]] = set()
+        # When the last dead-letter retention run started (``tick``'s clock); None: not yet.
+        self._dlq_pruned_at: float | None = None
 
     # ── what is due ──────────────────────────────────────────────────────────
 
@@ -138,7 +142,8 @@ class Scheduler:
 
         Also reaps interrupted pulls first (task 22a) — cheap (one query) when nothing is stuck,
         and it is what turns a row a crashed process left `running` back into `failed` without
-        waiting for the whole service to restart.
+        waiting for the whole service to restart. And, at most once an hour, prunes stream dead
+        letters past their retention (:meth:`prune_dead_letters`).
         """
         from examlops.dataplane.pull import reap_interrupted_pulls
 
@@ -147,6 +152,7 @@ class Scheduler:
         except Exception as exc:  # noqa: BLE001 — a datastore hiccup must not stop scheduling
             logger.warning("dataplane: could not reap interrupted pulls: %s", _safe_error(exc))
         now = time.time() if now is None else now
+        self.prune_dead_letters(now)
         queued: list[str] = []
         for src in self.due_sources(now):
             with self._mu:
@@ -159,6 +165,23 @@ class Scheduler:
             if pull_id:
                 queued.append(pull_id)
         return queued
+
+    def prune_dead_letters(self, now: float) -> int | None:
+        """Delete stream dead letters older than ``EXAMLOPS_DATAPLANE_DLQ_RETENTION_DAYS`` (one
+        audited ``DELETE``, :func:`examlops.dataplane.streams.dlq.prune`) — at most once per
+        :data:`DLQ_PRUNE_INTERVAL_S`, failed runs included, so a datastore outage costs one
+        warning an hour. The count deleted, or ``None`` when skipped or failed; never raises."""
+        last = self._dlq_pruned_at
+        if last is not None and 0 <= now - last < DLQ_PRUNE_INTERVAL_S:
+            return None
+        self._dlq_pruned_at = now
+        try:
+            from examlops.dataplane.streams.dlq import prune
+
+            return prune()
+        except Exception as exc:  # noqa: BLE001 — retention must not stop scheduling
+            logger.warning("dataplane: could not prune stream dead letters: %s", _safe_error(exc))
+            return None
 
     # ── queueing ─────────────────────────────────────────────────────────────
 

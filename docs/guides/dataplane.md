@@ -413,6 +413,287 @@ when freshness passes twice that value. Alerts on these metrics (`DataplaneDown`
 `exa dataplane pull <source> --remote` is the CLI-side view of the same API — see
 [Pull and inspect](#pull-and-inspect) above.
 
+## Live streams
+
+Everything above is the batch half of the dataplane: connect, pull, pin. This section covers the
+other half: live inference requests, served one at a time instead of pulled on a schedule.
+
+### What a stream is
+
+A stream is a named binding of one inbound connector to one project's model and alias, held in
+the `dataplane_streams` catalog. A source turns `(connection, spec, watermark)` into a snapshot
+that training pins to later; a stream turns one inbound message into one inference call, answered
+(or dead-lettered) as it arrives. A stream never writes to the snapshot store, and it has no
+schedule: it runs continuously while its connector is up.
+
+### The two ways in
+
+Two connector kinds exist today:
+
+- **`http`** is served synchronously by the dataplane service itself. `POST
+  /streams/{name}/messages?project=` pushes one message and gets one answer in the same call.
+- **`kafka`** is a long-running consumer-group member that reads a topic and, when
+  `options.reply_topic` is set, answers on it.
+
+Two things some readers may expect are not here yet: a SeanerBUS req/res connector, and any `exa`
+command for streams. There is also no HTTP route yet to register a stream. The write path exists
+in the library (`examlops.dataplane.streams.bindings.define_stream`, tenancy-checked and audited),
+but nothing outside the pack sync calls it in this release. In practice, today, you define a
+stream in the active pack's model YAML, under `inference.streams`. The stream supervisor reads
+that list on its own: once at startup, then at most once a minute after that (it also re-syncs
+whenever the pack changes on disk).
+
+### Defining a stream
+
+A worked example, an HTTP push stream and a Kafka stream on the same model:
+
+```yaml
+# usecases/<pack>/models/JPCP.yaml
+inference:
+  streams:
+    - name: jpcp-live
+      connector: http
+      alias: Production
+      options:
+        passthrough: ["num_nodes"]
+
+    - name: jpcp-live-kafka
+      connector: kafka
+      alias: Production
+      address: jpcp.requests
+      connection: kafka-prod
+      options:
+        reply_topic: jpcp.replies
+        dlq_topic: jpcp.dlq
+        dlq_store_payload: false
+        start: earliest
+        allow_alias_override: false
+      limits:
+        max_in_flight: 64
+        rate_per_min: 0
+        deadline_ms: 2000
+        max_bytes: 1048576
+        max_attempts: 5
+      state: enabled
+```
+
+Top-level fields:
+
+- **`name`** and **`connector`** are required. `connector` is `http` or `kafka` (a third-party
+  stream connector, once one is installed, is named the same way).
+- **`address`** is the Kafka topic name. It is ignored for an `http` stream: the push route
+  matches on the stream's own `name` in the URL, not on this field.
+- **`connection`** names a Named Connection. A `kafka` stream needs one of kind `kafka`; an
+  `http` stream needs none (it has no outbound connection of its own).
+- **`alias`** is the MLflow alias the stream serves (`Production`, `Canary` or `Staging`).
+  Defaults to `Production`.
+- **`state`** is `enabled`, `paused` or `disabled`. Defaults to `enabled`.
+
+`options` (all optional):
+
+- **`passthrough`**: a list of payload keys copied into the model request verbatim, in addition
+  to the fields the model's own input schema asks for. This is what lets a message carry a field
+  a model needs but does not declare (`num_nodes`, say) without the request being rejected.
+  Default: none.
+- **`reply_topic`** (`kafka` only): the topic a reply is published to. With none set, a Kafka
+  stream never publishes an answer; it only consumes.
+- **`dlq_topic`** (`kafka` only): a topic a dead-lettered message's raw bytes are also copied to,
+  with headers naming the error, the stream and the attempt count. Independent of the database
+  dead-letter record described below, which is always written regardless of this setting.
+- **`dlq_store_payload`**: whether a dead letter's payload is stored in the database (see
+  [Operating it](#operating-it)). Default: `false`. Metadata (reason, error, size, digest, origin)
+  is always stored either way.
+- **`start`** (`kafka` only): `earliest` (default) or `latest`. It applies only to a partition
+  the consumer group has never committed an offset for: `latest` starts it at the current log end
+  instead of replaying history. A partition that already has a committed offset always resumes
+  from it, whatever this says.
+- **`allow_alias_override`**: whether a caller may name an alias other than the binding's own.
+  Default: `false`. See [The request path](#the-request-path) for why this defaults off.
+
+`limits` (all optional):
+
+- **`max_in_flight`**: concurrent requests admitted at once for this stream. Default `64`.
+- **`rate_per_min`**: a per-minute cap; `0` (the default) means unlimited.
+- **`deadline_ms`**: the time budget handed to the model service. `null` (the default) means no
+  stream-imposed deadline; a caller's own budget (an HTTP header, on push) can still apply.
+- **`max_bytes`**: the largest message body admitted. Default `1048576` (1 MiB); an HTTP push
+  is additionally capped by the service-wide `EXAMLOPS_DATAPLANE_PUSH_MAX_BYTES`, whichever is
+  smaller.
+- **`max_attempts`**: how many times a Kafka message is retried before it is dead-lettered as
+  `retries_exhausted`. Default `5`. Push has no attempts of its own: the caller retries and the
+  `Idempotency-Key` header keeps a retry from being served twice.
+
+### Tenancy
+
+A stream's project is not a setting of its own: it comes from the model's own YAML file, its
+top-level `project:` key (the same key [project-scoped serving](projects-workspaces.md) already
+uses). Every stream declared under one model's `inference.streams` shares that model's project,
+unset meaning the unscoped default (shown as `_global`).
+
+A stream in project `P` may bind model `M` only if `M` actually belongs to project `P` (checked
+against the project's own model membership, not merely echoed from the YAML); a stream with no
+project may only bind a model that belongs to no project at all. A stream naming a model outside
+its own project's membership is refused when it is defined.
+
+A stream declared in a model YAML belongs to the pack (`origin: pack`) and cannot be changed
+through the API (there is none yet, but the rule already holds for the library's write path):
+edit the YAML instead. The reverse holds too: a pack sync never overwrites a stream an operator
+defined some other way. Removing a stream's entry from the model YAML does not delete it. The next
+sync disables it, remembering whether it was `enabled` or `paused` beforehand, and restores that
+same state if the entry comes back later. A stream a human already disabled, for any other reason,
+is left alone by the sync either way.
+
+### The request path
+
+Every message, whichever connector delivered it, takes the same path: check the model and alias,
+validate the payload and build the request body, admit it (in-flight and rate limits), call the
+model service, then answer. Only after the answer is on its way does the stream count it: first
+telemetry, then drift.
+
+The binding's **model and alias are authoritative**, never the caller's. A message naming a
+different model is rejected outright; a message naming a different alias is rejected too, unless
+`options.allow_alias_override` is `true` and the name is one of `Production`, `Canary` or
+`Staging`. This defaults off on purpose: a caller must never be able to choose which model
+*version* answers its request, nor which alias's drift window its prediction lands in. A canary
+producer that could name `Production` would push that window over its threshold with traffic
+nobody meant to count there.
+
+Only two outcomes ever feed drift: `model` (the model itself failed on the input) counts as a
+failure, and `ok` counts as a success, unless it carried no prediction, in which case it counts
+as a failure too. Every other outcome, validation errors, a shed request, a transport failure, a
+deadline, an unknown stream, an unexpected error, never touches drift. Telemetry (the embedding
+stats and the input-drift baseline feed) is offered only for `ok`.
+
+### Delivery semantics
+
+**HTTP push is synchronous.** The caller gets the answer in the response. Send an
+`Idempotency-Key` header (1-200 visible ASCII characters) to make a retried push safe: a replay
+of a key already seen within 600 seconds is served again but not counted a second time, and the
+answer carries `Idempotent-Replayed: true`.
+
+**Kafka is at least once.** An offset is stored only once its message reaches a terminal result:
+answered (the reply produced and its delivery confirmed, when `reply_topic` is set) or
+dead-lettered (the database record written, plus its `dlq_topic` copy and failure reply when
+those are configured). Concretely, an offset is stored only after the reply has been delivered
+*and* the telemetry for it has been queued: nothing is skipped by a crash between the two. A
+message that keeps failing past `limits.max_attempts` is dead-lettered as `retries_exhausted`. A
+message parked for a retry that then falls out of the log before it can be re-fetched (retention,
+compaction, an explicit delete) is dead-lettered as `expired_from_log` instead, and never
+silently dropped.
+
+What an HTTP caller sees, by outcome:
+
+| Outcome | Status | Meaning |
+|---|---|---|
+| `ok` | 200 | served; the body carries the prediction |
+| `validation` | 422 | the message is not valid for this stream (bad JSON, a bad envelope, or a schema mismatch) |
+| oversize body | 413 | larger than the stream's (or the service's) byte cap |
+| unknown stream, not a push stream, or model/alias not served | 404 | (a caller without access to the stream gets 403 instead, never this) |
+| stream paused | 503, `Retry-After: 30` | an operator paused it; try again later |
+| service draining | 503, `Retry-After: 5` | the process is shutting down; retry against another replica |
+| local shed (in-flight or rate limit) | 429, `Retry-After` | this stream's own admission control, not the model service |
+| upstream overloaded | 503, `Retry-After` | the model service itself is over capacity |
+| deadline | 504 | the inference budget ran out |
+| transport | 502 | the model service could not be reached or answered |
+| model | 500 | the model itself failed on this input (not the caller's fault) |
+| unexpected | 500 | the platform surprised itself; treat it as a bug report |
+
+### Running it
+
+`EXAMLOPS_DATAPLANE_ROLE` decides which parts of the dataplane service one process runs: `all`
+(default) runs everything; `api` mounts the source, pull and stream routes, including push, but
+runs no stream connectors; `streams` runs only the connectors (Kafka today) and serves
+`/health`, `/ready` and `/metrics`. A single-host deployment runs `all`; a larger one splits push
+onto `api` replicas and the long-running connectors onto `streams` replicas.
+
+A connector marked `singleton: true`, one that does not already balance itself across replicas, is
+leader-elected: at most one replica runs it at a time, under a lease with a fencing token, so a
+stalled or slow replica can never overlap with the one that took over. Kafka does not need this
+(`singleton: false`) because its consumer group already balances partitions across however many
+replicas run `streams`; the mechanism exists for a future connector, such as a SeanerBUS req/res
+one, that has no such group of its own.
+
+Shutdown is a graceful drain, bounded by `EXAMLOPS_DATAPLANE_DRAIN_SECONDS` (default 20): the
+process stops taking new work, lets in-flight pushes and Kafka commits finish, flushes drift and
+telemetry, then releases any leader leases it holds. Keep this below the orchestrator's own stop
+grace period, or the process is killed mid-flush.
+
+Two tokens govern access: `DATAPLANE_TOKEN` (read, write and ingest) and the optional
+`DATAPLANE_INGEST_TOKEN`, which can only push messages and nothing else. Issue the ingest token
+to a producer that should never be able to read the catalog, pause a stream or replay a dead
+letter. Both need identity federation or a real secret to do anything beyond an open, loopback-
+only read; see [Security](#security) above for the exact rules, which apply to streams unchanged.
+
+### Operating it
+
+`POST /streams/{name}/state` sets a binding to `enabled`, `paused` or `disabled` (the `write`
+scope). What pausing does depends on the connector: a Kafka stream's assignment is paused in
+place, so its consumer keeps polling, keeps its group membership, and keeps a leader lease if it
+holds one, resuming exactly where it left off; a connector with no such seam is stopped outright
+and started fresh once re-enabled. An HTTP push stream has no running connector to pause: the
+push route itself checks the binding's state on every request and answers 503 while paused.
+Disabling a stream stops it the same way disabling a pack entry does, and a push to it then
+answers 404, exactly as if the stream did not exist.
+
+Dead letters live in the database, one row per message a stream could not deliver:
+
+```bash
+curl "http://localhost:18010/streams/jpcp-live/dead-letters?limit=20" \
+    -H "Authorization: Bearer $DATAPLANE_TOKEN"
+
+curl -X POST "http://localhost:18010/streams/jpcp-live/dead-letters/42/replay" \
+    -H "Authorization: Bearer $DATAPLANE_TOKEN"
+
+curl -X DELETE "http://localhost:18010/streams/jpcp-live/dead-letters?older_than=P7D" \
+    -H "Authorization: Bearer $DATAPLANE_TOKEN"
+```
+
+Listing and fetching one dead letter never returns its payload by default; a payload is stored at
+all only when the binding opts in (`options.dlq_store_payload`), and even then only up to 256 KiB,
+only when it is valid UTF-8, and only after secrets and personal data are redacted. Reading a
+stored payload needs the `write` scope and `include_payload=true` together, and is itself audited
+(a read of a payload is a read of message content, not a routine list). Replaying a dead letter
+re-offers its stored message to the stream's own ingress; a dead letter with no stored payload
+cannot be replayed. A dead letter's retention is `EXAMLOPS_DATAPLANE_DLQ_RETENTION_DAYS` (default
+7 days); the dataplane service's own scheduler prunes older rows automatically, and
+`DELETE /streams/{name}/dead-letters?older_than=` purges one stream's dead letters on demand.
+
+### Metrics
+
+Every series is prefixed `dataplane_stream_` and carries `project`/`stream` labels unless noted:
+
+- **`requests_total`**: requests by outcome, also labelled `connector` and `model`.
+- **`request_duration_seconds`**: admission to reply, a histogram.
+- **`in_flight`**: requests currently holding an in-flight permit.
+- **`shed_total`**: requests refused by this stream's own admission control, by reason
+  (`in_flight` or `rate`).
+- **`telemetry_dropped_total`**: telemetry records the spool refused because it was full.
+- **`telemetry_failed_total`**: telemetry records the sink failed to persist (no labels: a sink
+  failure is process-wide, not a property of one stream).
+- **`connector_state`**: one-hot gauge of a stream's current connector state, labelled `state`.
+- **`messages_expired_total`**: Kafka messages dead-lettered because they left the log while
+  parked for a retry.
+- **`consumer_lag`**: a Kafka stream's distance from a partition's high watermark, labelled
+  `partition`.
+- **`dead_letters_total`**: dead letters recorded, by reason.
+- **`embedding_{norm,mean,std}`** and **`embedding_{norm,mean,std}_baseline`**: the latest
+  request's embedding summary and the recorded baseline, labelled `model` only (not
+  project/stream).
+
+Alerts and a runbook for these series are not written yet; they land with the rest of the
+deployment wiring in a later batch.
+
+### What is not here yet
+
+- No `exa` command for streams: no create, list, pause, dead-letter, or anything else.
+- No dashboard page for streams.
+- No SeanerBUS req/res connector (the model YAML's `seanerbus_uuid` legacy shim is unrelated and
+  gated behind its own environment variable).
+- No HTTP route to define or edit a stream: `inference.streams` in the model YAML is the only way
+  in for now.
+- No NATS (or other external) telemetry sink: telemetry is written to `platform.db` only.
+- No alerts or runbook for the `dataplane_stream_*` metrics above.
+
 ## Plugins
 
 A third-party connector registers under the `exa.dataplane.connectors` entry-point group; it runs

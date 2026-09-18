@@ -778,6 +778,7 @@ def test_every_route_but_the_open_ones_is_authenticated(client):
     from fastapi.routing import APIRoute
 
     from examlops.dataplane.service.auth import (
+        authenticate_ingest,
         authenticate_read,
         authenticate_write,
         require_read,
@@ -786,8 +787,9 @@ def test_every_route_but_the_open_ones_is_authenticated(client):
 
     open_routes = {"/health", "/ready", "/metrics"}
     docs_routes = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
-    scoped = {authenticate_read, authenticate_write}  # the route itself must authorise
-    writes = {require_write, authenticate_write}
+    # the route itself must authorise the project (ADR 0131: push is `ingest`, never open)
+    scoped = {authenticate_read, authenticate_write, authenticate_ingest}
+    writes = {require_write, authenticate_write, authenticate_ingest}  # a write or an ingest
 
     def calls(dependant):
         for dep in dependant.dependencies:
@@ -806,14 +808,22 @@ def test_every_route_but_the_open_ones_is_authenticated(client):
         assert guards, f"{where} has no auth dependency"
         if set(route.methods) - {"GET", "HEAD"}:  # anything that can change state, or reach out
             assert guards & writes, f"{where} is not write"
-        if route.path.startswith(("/sources/{name}", "/pulls/")):
+        if route.path.startswith(("/sources/{name}", "/pulls/", "/streams/{name}")):
             assert guards & scoped, f"{where} is source-scoped but not project-authorised"
         if guards & scoped:
-            assert "authorize_source(" in inspect.getsource(route.endpoint), (
-                f"{where} authenticates without authorising the source's project"
+            # a stream route authorises with `authorize_stream` (the push route hands it to the
+            # threadpool, `run_in_threadpool(authorize_stream, …)`), a source route with
+            # `authorize_source(`
+            needle = (
+                "authorize_stream" if route.path.startswith("/streams") else "authorize_source("
+            )
+            assert needle in inspect.getsource(route.endpoint), (
+                f"{where} authenticates without authorising the project"
             )
         checked += 1
-    assert checked == 10  # the guard is inspecting the real route table
+    # the guard is inspecting the real route table: 10 source/pull routes + 3 stream routes (A8)
+    # + 5 runtime-control/dead-letter stream routes (A8b: state, dead-letters list/get/purge/replay)
+    assert checked == 18
 
 
 def test_the_center_pdp_can_veto_a_write(federated, monkeypatch):

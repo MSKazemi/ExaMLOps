@@ -295,6 +295,7 @@ services:
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-dataplane:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-dataplane
     mem_limit: ${DATAPLANE_MEM_LIMIT:-2g}
+    stop_grace_period: 30s
     environment:
       DATAPLANE_PORT: "8010"
       DATAPLANE_TOKEN: ${DATAPLANE_TOKEN:-}
