@@ -95,7 +95,7 @@ backup = [
 # `vllm serve` process, so the GPU dependency lives in that process, not in the CLI.
 # Referenced by engines/__init__.py's error message and docs/guides/llm-serving-engines.md.
 serving-vllm = [
-    "vllm>=0.8",
+    "vllm>=0.28.0",
 ]
 # SGLang engine (RadixAttention, structured output). GPU host only; lazily imported.
 serving-sglang = [
