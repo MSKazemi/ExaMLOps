@@ -81,7 +81,7 @@ finops = [
 # data-center IdP tokens, `exa auth login`, the dashboard's SSO and the control plane's federated
 # bearer path. PyJWT is imported lazily, so the core CLI works without it.
 oidc = [
-    "pyjwt>=2.13",
+    "pyjwt>=2.14.0",
 ]
 # Whole-platform backup — object-store (MinIO/S3) tier + off-site replication
 # (examlops.backup.objects_tier / remote). boto3 is lazily imported; the control-plane
@@ -95,7 +95,7 @@ backup = [
 # `vllm serve` process, so the GPU dependency lives in that process, not in the CLI.
 # Referenced by engines/__init__.py's error message and docs/guides/llm-serving-engines.md.
 serving-vllm = [
-    "vllm>=0.8",
+    "vllm>=0.28.0",
 ]
 # SGLang engine (RadixAttention, structured output). GPU host only; lazily imported.
 serving-sglang = [
@@ -175,7 +175,7 @@ dataplane-kafka = [
 # the whole workspace, so an uncapped floor here would make the lock unsatisfiable.
 dataplane-service = [
     "fastapi>=0.136.3,<0.137",
-    "uvicorn[standard]>=0.52",
+    "uvicorn[standard]>=0.52.4",
     "prometheus-client>=0.20",
 ]
 dataplane = [
