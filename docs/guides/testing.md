@@ -250,6 +250,30 @@ production origin and degrade to raw text on a local build, a preview deploy or 
 domain — two of them did exactly that in the probe. For the site's other third-party assets, whose
 references *are* in HTML and CSS, that plugin rewrites relatively and works.
 
+### Nobody else watches the reader
+
+That plugin *is* the right tool for the assets whose references live in HTML and CSS, and it is now
+enabled for them. Every page used to fetch the site's typeface from `fonts.googleapis.com` and
+`fonts.gstatic.com` — six requests carrying the reader's IP address and the page they were reading
+to a third party, which for the public documentation of a European research project is a
+data-protection question before it is a supply-chain one. The fonts are now served from this site;
+the typography is unchanged.
+
+Its two exclusions are deliberate and each says why beside itself in `mkdocs.yml`, because an
+exclusion that outlives its reason is just a hole:
+
+* **mermaid**, served by the hook above — localising it again would ship a second, unused 3.5 MB
+  copy behind an absolute URL; and
+* **KaTeX**, whose stylesheet names its ~60 font files with *relative* urls that the plugin does not
+  follow. Localising the stylesheet alone left every `fonts/KaTeX_*.woff2` 404ing and the maths
+  rendering in a fallback face — the formulae were still *there*, which is why a request count
+  alone would have called that configuration a success. It stays on its pinned CDN version until
+  the whole package is served.
+
+`tests/unit/test_docs_privacy_plugin.py` holds the plugin on and every third-party URL explained;
+the browser test asserts that the only hosts a page still reaches are the two the configuration
+names.
+
 ## CI
 
 The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with

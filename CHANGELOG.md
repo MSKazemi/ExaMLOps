@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — the documentation site stops sending readers to Google for its typeface
+
+Every page fetched `IBM Plex Sans` and `IBM Plex Mono` from `fonts.googleapis.com` and
+`fonts.gstatic.com` — **six requests per page**, each carrying the reader's IP address and the page
+they were reading to a third party. For the public documentation of a European research project
+that is a data-protection question before it is a supply-chain one.
+
+- mkdocs-material's `privacy` plugin now downloads those assets at build time and serves them from
+  this site. Measured in a headless browser: **6 Google requests per page before, 0 after**, with
+  the typography unchanged.
+- Its two exclusions each carry their reason in `mkdocs.yml`, and a guard
+  (`tests/unit/test_docs_privacy_plugin.py`) fails if any third-party URL there loses its
+  explanation:
+  - **mermaid** is served by `docs/overrides/mermaid_hook.py`; localising it again would ship a
+    second, unused 3.5 MB copy behind an absolute URL.
+  - **KaTeX** stays on its pinned CDN version for now. The plugin localises its stylesheet but not
+    the ~60 font files that stylesheet names with *relative* urls, so every `fonts/KaTeX_*.woff2`
+    404s and the maths renders in a fallback face — **the formulae still appear**, which is exactly
+    why a request-count check would have called that configuration a success. Serving the whole
+    package is tracked separately.
+- The plugin's download cache (`.cache/`) joins `.pytest_cache/` and `.mypy_cache/` in
+  `.gitignore`, so a docs build leaves nothing new in the checkout.
+
 ### Changed — the documentation site serves its diagram renderer itself
 
 mkdocs-material's bundle loaded mermaid from `https://unpkg.com/mermaid@11/dist/mermaid.min.js`

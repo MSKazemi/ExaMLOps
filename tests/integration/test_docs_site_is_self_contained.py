@@ -1,28 +1,32 @@
-"""A built documentation page asks no CDN for its diagram renderer — measured, in a browser.
+"""A built documentation page contacts no third party — measured, in a browser.
 
-This is the test that decided the design, and it is kept because it is the only one that can
-observe the thing that matters: what a reader's browser actually fetches. Config assertions
-(`tests/unit/test_docs_no_cdn_mermaid.py`) cannot see a race in Material's lazy loader, and
+These are the tests that decided the design, and they are kept because they observe the only thing
+that matters: what a reader's browser actually fetches. Config assertions
+(`tests/unit/test_docs_no_cdn_mermaid.py`, `tests/unit/test_docs_privacy_plugin.py`) cannot see a
+race in Material's lazy loader or a stylesheet whose own fonts never arrived, and
 `mkdocs build --strict` is happy either way.
 
-What it measured, against real builds of this repository:
+What they measured, against real builds of this repository:
 
-| build | requests to unpkg.com | diagrams |
+| build | third-party requests per page | rendering |
 |---|---|---|
-| before | 2 (the floating tag, then its redirect) | render |
-| with the hook | 0 | render, identically |
+| before | 2 to unpkg.com (mermaid), 6 to Google Fonts | fine |
+| with the hook and the privacy plugin | none | identical |
 
-It also rejected the obvious alternative. Material's `privacy` plugin does download the file at
-build time, but rewrites the reference to an **absolute** `site_url` address, so diagrams render
-on the production origin and degrade to raw text on a local build, a preview deploy, or the
-github.io domain — which the same probe showed as two diagrams left as text.
+They also rejected two plausible-looking answers. Material's `privacy` plugin does download
+mermaid, but rewrites that reference **absolutely** against `site_url` — because the URL is built
+inside a JavaScript bundle — so diagrams render on the production origin and degrade to raw text on
+a local build, a preview deploy or the github.io domain; the probe showed two diagrams as text. And
+letting it localise KaTeX left every `fonts/KaTeX_*.woff2` 404ing, because that stylesheet names
+them with relative urls the plugin does not follow: the maths still appeared, in the wrong face,
+which no request count would have revealed.
 
 Opt-in: it needs playwright and a browser, neither of which is a test dependency of this project.
 
     uv venv /tmp/pw && uv pip install --python /tmp/pw/bin/python playwright pytest mkdocs-material
     /tmp/pw/bin/python -m playwright install chromium-headless-shell
     /tmp/pw/bin/python -m pytest --noconftest \\
-        tests/integration/test_docs_site_has_no_cdn_mermaid.py
+        tests/integration/test_docs_site_is_self_contained.py
 
 `--noconftest` because a throwaway environment holds a browser, not this project: `tests/conftest.py`
 imports the platform itself. In the project's own environment the file is collected normally and
@@ -109,6 +113,32 @@ def test_no_page_fetches_mermaid_from_a_cdn(served):
     reached = sorted({url.split("/")[2] for url in external if "mermaid" in url})
 
     assert not reached, f"the diagram renderer was fetched from {reached}"
+
+
+def test_no_page_asks_google_for_the_typeface(served):
+    """Every page used to make six of these, carrying the reader's IP and the page they were on to
+    a third party. For the public documentation of a European research project that is a
+    data-protection question before it is a supply-chain one."""
+    external, _ = _visit(served)
+
+    google = sorted({url.split("/")[2] for url in external if "fonts.g" in url})
+
+    assert not google, f"the typeface was fetched from {google}"
+
+
+def test_the_only_third_party_left_is_the_one_the_config_explains(served):
+    """A drifting list of "known exceptions" is how a privacy guarantee rots. The exceptions are
+    named here so that adding one means editing a test that says why:
+
+    * `api.github.com` — Material's own repository widget, a deliberate keep; and
+    * `cdn.jsdelivr.net` — KaTeX, which cannot be localised until its fonts travel with it
+      (BL-078), and which `mkdocs.yml` explains beside the URL.
+    """
+    external, _ = _visit(served)
+
+    hosts = sorted({url.split("/")[2] for url in external})
+
+    assert hosts == [] or set(hosts) <= {"api.github.com", "cdn.jsdelivr.net"}, hosts
 
 
 def test_every_diagram_is_rendered_rather_than_left_as_text(served):
