@@ -418,17 +418,21 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: platform/ci/mermaid/package-lock.json
+          cache-dependency-path: |
+            platform/ci/mermaid/package-lock.json
+            platform/ci/katex/package-lock.json
 
-      - name: Install the mermaid checker
-        run: npm ci --prefix platform/ci/mermaid
+      - name: Install the pinned front-end assets
+        run: |
+          npm ci --prefix platform/ci/mermaid
+          npm ci --prefix platform/ci/katex
 
       - name: Build (strict)
         run: mkdocs build --clean --strict
 
-      # Two jobs in one install. The site SERVES mermaid from this package (the build fails
-      # without it, rather than silently letting Material fetch it from unpkg in every reader's
-      # browser), and the parse check below reads the diagrams with it. mkdocs never reads a
+      # Two jobs in one install. The site SERVES these packages — mermaid and KaTeX — so the
+      # build fails without them rather than silently falling back to unpkg and jsdelivr in every
+      # reader's browser, and the parse check below reads the diagrams with the same mermaid. mkdocs never reads a
       # ```mermaid fence itself — the reader's browser renders it — so the strict build passes a
       # diagram mermaid cannot parse, and the reader gets a red error box.
       # Eleven diagrams went unchecked for months and two of them were broken. This parses every

@@ -124,6 +124,20 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
+  # The maths renderer the documentation serves (docs/overrides/docs_assets_hook.py). Readers
+  # load it from this site, so a stale pin here is what actually runs in their browser.
+  - package-ecosystem: "npm"
+    directory: "/platform/ci/katex"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      katex:
+        update-types: ["minor", "patch"]
+
   # The documentation's diagram checker (platform/ci/check_mermaid.py). Small, but it runs in CI
   # and pulls 150 transitive packages, so it is watched like any other npm tree.
   - package-ecosystem: "npm"

@@ -68,20 +68,15 @@ plugins:
   # reader's IP and the page they were on, to fonts.googleapis.com and fonts.gstatic.com).
   - privacy:
       assets_exclude:
-        # Material's bundle names this URL internally; docs/overrides/mermaid_hook.py already
+        # Material's bundle names this URL internally; docs/overrides/docs_assets_hook.py already
         # serves our own pinned copy, so localising it would ship a second, unused 3.5 MB file.
         - unpkg.com/mermaid@*
-        # KaTeX's stylesheet references its ~60 font files with RELATIVE urls, which this plugin
-        # does not follow — localising the stylesheet alone leaves every `fonts/KaTeX_*.woff2`
-        # 404ing and the maths rendering in a fallback face. Verified in a browser. Lifting this
-        # means serving the whole package instead (BL-078), not deleting the line.
-        - cdn.jsdelivr.net/npm/katex@*
 
 # Pages without `description:` front matter get one from their own first paragraph, instead of all
 # sharing site_description (tests/unit/test_docs_description_hook.py).
 hooks:
   - docs/overrides/seo_hooks.py
-  - docs/overrides/mermaid_hook.py
+  - docs/overrides/docs_assets_hook.py
 
 extra:
   social:
@@ -101,12 +96,12 @@ extra_css:
   - assets/explore/css/explore.css
   # KaTeX for the Algorithms pages (pymdownx.arithmatex below). Pinned, so a KaTeX release can
   # never change how a published formula renders; without it the TeX source shows instead.
-  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.css
+  - assets/katex/katex.min.css
 
 extra_javascript:
   # First, and deliberately so: mkdocs-material's bundle loads the diagram renderer from
   # unpkg.com unless `mermaid` is already defined, which puts a floating third-party major
-  # in every reader's browser. docs/overrides/mermaid_hook.py adds this file to the build
+  # in every reader's browser. docs/overrides/docs_assets_hook.py adds this file to the build
   # from the pinned package the diagram check parses with.
   - assets/js/mermaid.min.js
   - assets/explore/js/xm-flow.js
@@ -122,12 +117,8 @@ extra_javascript:
   - assets/explore/js/scenes/roadmap.js
   - assets/explore/js/xm-atlas.js
   - assets/explore/js/xm-roadmap.js
-  # Still third-party, and the last of them: the privacy plugin cannot localise KaTeX, because
-  # its stylesheet names ~60 font files with relative urls it does not follow — serving the
-  # stylesheet alone leaves the maths in a fallback face. Serving the whole package is BL-078.
-  # Pinned to an exact version, so at least what runs cannot change under us.
-  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.js
-  - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/contrib/auto-render.min.js
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js
   - assets/javascripts/katex.js
 
 markdown_extensions:

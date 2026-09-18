@@ -227,8 +227,8 @@ apart. The guard tests both directions on purpose.
 That pinned package is also what the site *serves*. Material's bundle loads the renderer from
 `https://unpkg.com/mermaid@11/dist/mermaid.min.js` unless `mermaid` is already defined — a floating
 major, from a third party, executing in every reader's browser, with Subresource Integrity
-impossible against a moving tag. `docs/overrides/mermaid_hook.py` adds the pinned file to the build
-and `mkdocs.yml` loads it first, so Material never reaches for the network, and the version a
+impossible against a moving tag. `docs/overrides/docs_assets_hook.py` adds the pinned file to the
+build and `mkdocs.yml` loads it first, so Material never reaches for the network, and the version a
 reader runs is by construction the version CI parsed.
 
 A missing `node_modules` **fails the build**, for the same reason exit 2 is not success: building
@@ -247,8 +247,7 @@ The same probe rejected the obvious alternative. Material's `privacy` plugin doe
 at build time, but rewrites this particular reference to an **absolute** `site_url` address, because
 the URL lives inside a JavaScript bundle rather than in HTML or CSS. Diagrams then render on the
 production origin and degrade to raw text on a local build, a preview deploy or the github.io
-domain — two of them did exactly that in the probe. For the site's other third-party assets, whose
-references *are* in HTML and CSS, that plugin rewrites relatively and works.
+domain — two of them did exactly that in the probe.
 
 ### Nobody else watches the reader
 
@@ -259,20 +258,28 @@ to a third party, which for the public documentation of a European research proj
 data-protection question before it is a supply-chain one. The fonts are now served from this site;
 the typography is unchanged.
 
-Its two exclusions are deliberate and each says why beside itself in `mkdocs.yml`, because an
-exclusion that outlives its reason is just a hole:
+Its one exclusion is deliberate and says why beside itself in `mkdocs.yml`, because an exclusion
+that outlives its reason is just a hole: **mermaid** is served by the hook above, so localising it
+again would ship a second, unused 3.5 MB copy behind an absolute URL.
 
-* **mermaid**, served by the hook above — localising it again would ship a second, unused 3.5 MB
-  copy behind an absolute URL; and
-* **KaTeX**, whose stylesheet names its ~60 font files with *relative* urls that the plugin does not
-  follow. Localising the stylesheet alone left every `fonts/KaTeX_*.woff2` 404ing and the maths
-  rendering in a fallback face — the formulae were still *there*, which is why a request count
-  alone would have called that configuration a success. It stays on its pinned CDN version until
-  the whole package is served.
+**KaTeX** used to be a second exclusion, and the story is worth keeping. Letting the plugin localise
+it produced a build that looked finished from every angle a cheap check can see — stylesheet and
+script served locally, zero external requests, formulae still on the page — while all ~60
+`fonts/KaTeX_*.woff2` 404'd, because that stylesheet names them with *relative* urls the plugin does
+not follow, and the maths rendered in a fallback face. It is now served whole by the same hook, with
+its directory layout intact so those urls resolve, and the exclusion is gone rather than left behind
+as dead configuration.
 
-`tests/unit/test_docs_privacy_plugin.py` holds the plugin on and every third-party URL explained;
-the browser test asserts that the only hosts a page still reaches are the two the configuration
-names.
+That failure also decided how the browser test asks the question.
+`getComputedStyle(...).fontFamily` reports the family the CSS *declares* — `KaTeX_Math` in the
+working build and in the broken one alike, an assertion that cannot fail. `document.fonts.check()`
+separates them: true with five KaTeX faces loaded, false with none.
+
+`tests/unit/test_docs_assets_are_local.py` holds the configuration (the hook registered, nothing
+loaded from an `http(s)://` URL, mermaid first, a missing package failing the build) and
+`tests/unit/test_docs_privacy_plugin.py` holds the plugin on with every third-party URL explained.
+The browser test asserts what a reader's browser actually does: the only host any page still
+reaches is `api.github.com`, Material's own repository widget.
 
 ## CI
 

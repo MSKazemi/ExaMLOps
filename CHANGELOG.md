@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — the documentation serves its maths renderer too, and now contacts no CDN at all
+
+KaTeX was the last third-party asset a reader's browser fetched (`cdn.jsdelivr.net/npm/katex@…`).
+It is now served from this site, pinned in `platform/ci/katex` and added to the build by
+`docs/overrides/docs_assets_hook.py` — which also serves mermaid, so one hook, one rule: **if a
+pinned package is missing the build stops**, because the alternative is a site that quietly returns
+to a CDN and nobody finds out.
+
+- Measured in a headless browser against real builds: the only host any page still reaches is
+  `api.github.com` (Material's own repository widget). Diagrams and typography are unchanged.
+- **The whole package is served, not the three referenced files.** `katex.min.css` names its ~60
+  font files with *relative* urls, so the directory layout is the contract: serving the stylesheet
+  alone leaves every `fonts/KaTeX_*.woff2` 404ing and the maths in a fallback face — with the
+  formulae still on the page, which is why an earlier configuration that did exactly that looked
+  successful.
+- That near-miss also fixed the test: `getComputedStyle(...).fontFamily` returns the *declared*
+  family and read `KaTeX_Math` in the working and the broken build alike — an assertion that could
+  not fail. The browser test now asks `document.fonts.check()`, which reads true with five KaTeX
+  faces loaded and false with none.
+- `docs/overrides/mermaid_hook.py` becomes `docs_assets_hook.py` and is table-driven over both
+  assets; it validates every package before generating any file, so a missing one is reported
+  whichever is declared first. `make docs-assets-deps` installs both, and both CI pipelines install
+  before building.
+
 ### Changed — the documentation site stops sending readers to Google for its typeface
 
 Every page fetched `IBM Plex Sans` and `IBM Plex Mono` from `fonts.googleapis.com` and

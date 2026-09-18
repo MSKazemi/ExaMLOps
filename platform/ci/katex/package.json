@@ -1,0 +1,9 @@
+{
+  "name": "examlops-docs-katex",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The maths renderer the documentation serves. Pinned here so a reader's browser never fetches it from a CDN; docs/overrides/docs_assets_hook.py copies it into the build.",
+  "dependencies": {
+    "katex": "0.18.7"
+  }
+}

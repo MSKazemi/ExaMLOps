@@ -10,8 +10,8 @@ What they measured, against real builds of this repository:
 
 | build | third-party requests per page | rendering |
 |---|---|---|
-| before | 2 to unpkg.com (mermaid), 6 to Google Fonts | fine |
-| with the hook and the privacy plugin | none | identical |
+| before | 2 to unpkg.com (mermaid), 6 to Google Fonts, 3 to jsdelivr (KaTeX) | fine |
+| now | none but `api.github.com` (Material's repo widget) | identical |
 
 They also rejected two plausible-looking answers. Material's `privacy` plugin does download
 mermaid, but rewrites that reference **absolutely** against `site_url` — because the URL is built
@@ -19,7 +19,14 @@ inside a JavaScript bundle — so diagrams render on the production origin and d
 a local build, a preview deploy or the github.io domain; the probe showed two diagrams as text. And
 letting it localise KaTeX left every `fonts/KaTeX_*.woff2` 404ing, because that stylesheet names
 them with relative urls the plugin does not follow: the maths still appeared, in the wrong face,
-which no request count would have revealed.
+which no request count would have revealed. KaTeX is therefore served whole, with its directory
+layout intact so those relative urls resolve.
+
+That last failure is also why `test_the_maths_has_its_own_typeface` asks the **FontFaceSet** rather
+than computed style. `getComputedStyle(...).fontFamily` returns the family the CSS *declares*, which
+reads `KaTeX_Math` whether or not the file behind it ever loaded — it was identical in the working
+and the broken build, and would have been an assertion that cannot fail. `document.fonts.check()`
+answers the real question and separates them: true with 5 KaTeX faces loaded, false with 0.
 
 Opt-in: it needs playwright and a browser, neither of which is a test dependency of this project.
 
@@ -46,16 +53,20 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MERMAID_PACKAGE = REPO_ROOT / "platform" / "ci" / "mermaid" / "node_modules" / "mermaid"
+PACKAGES = (
+    REPO_ROOT / "platform" / "ci" / "mermaid" / "node_modules" / "mermaid",
+    REPO_ROOT / "platform" / "ci" / "katex" / "node_modules" / "katex",
+)
 
 playwright_api = pytest.importorskip("playwright.sync_api", reason="pip install playwright")
 
 pytestmark = pytest.mark.skipif(
-    not MERMAID_PACKAGE.is_dir(), reason="npm ci --prefix platform/ci/mermaid"
+    not all(package.is_dir() for package in PACKAGES),
+    reason="npm ci --prefix platform/ci/mermaid && npm ci --prefix platform/ci/katex",
 )
 
-#: A page carrying diagrams, and the site root, which carries the hero animation's own.
-PAGES = ("/guides/architecture/", "/")
+#: A page carrying diagrams, the site root (the hero animation's own), and a page of mathematics.
+PAGES = ("/guides/architecture/", "/", "/algorithms/carbon-aware-placement/")
 
 
 @pytest.fixture(scope="module")
@@ -138,7 +149,39 @@ def test_the_only_third_party_left_is_the_one_the_config_explains(served):
 
     hosts = sorted({url.split("/")[2] for url in external})
 
-    assert hosts == [] or set(hosts) <= {"api.github.com", "cdn.jsdelivr.net"}, hosts
+    assert set(hosts) <= {"api.github.com"}, hosts
+
+
+def test_the_maths_has_its_own_typeface(served):
+    """KaTeX's stylesheet names ~60 font files with relative urls. Serving the stylesheet without
+    them leaves the formulae on the page in a fallback face — visible to a reader, invisible to a
+    request count, and the exact state a previous configuration shipped into a build.
+
+    Asked of the FontFaceSet, because computed style reports the declared family either way.
+    """
+    with playwright_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        failed: list[str] = []
+        page.on("requestfailed", lambda request: failed.append(request.url))
+        page.on(
+            "response",
+            lambda response: failed.append(response.url) if response.status >= 400 else None,
+        )
+        page.goto(f"{served}/algorithms/carbon-aware-placement/", wait_until="load")
+        page.wait_for_timeout(4000)
+        fonts = page.evaluate(
+            "async () => { await document.fonts.ready; return {"
+            " usable: document.fonts.check('16px KaTeX_Math'),"
+            " loaded: [...document.fonts].filter(f => f.status === 'loaded')"
+            "          .filter(f => f.family.startsWith('KaTeX')).length,"
+            " formulae: document.querySelectorAll('.katex').length } }"
+        )
+        browser.close()
+
+    assert fonts["formulae"] > 0, "the page under test has no mathematics on it any more"
+    assert fonts["usable"] and fonts["loaded"] > 0, f"the maths is in a fallback face: {fonts}"
+    assert not failed, f"assets the page asked for and did not get: {sorted(set(failed))[:5]}"
 
 
 def test_every_diagram_is_rendered_rather_than_left_as_text(served):

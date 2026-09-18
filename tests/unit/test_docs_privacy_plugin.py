@@ -5,17 +5,18 @@ typeface from `fonts.googleapis.com` and `fonts.gstatic.com`, carrying the reade
 the page they were reading to a third party. Material's `privacy` plugin downloads those assets at
 build time and serves them from this site instead; after enabling it, no page requests either host.
 
-The plugin is not a blanket answer, which is why its exclusions are guarded rather than merely
-written down. It rewrites references it finds in HTML and CSS, so:
+The plugin is not a blanket answer, which is why its one exclusion is guarded rather than merely
+written down. It rewrites references it finds in HTML and CSS, and both limits were met here:
 
-* a URL built inside a JavaScript bundle is rewritten **absolutely** against `site_url` — which is
-  why mermaid is served by `docs/overrides/mermaid_hook.py` and excluded here; and
-* a stylesheet that names its own assets with **relative** urls is localised without them — KaTeX's
-  `fonts/KaTeX_*.woff2` all 404'd in that configuration and the maths lost its typeface.
+* a URL built inside a **JavaScript bundle** is rewritten *absolutely* against `site_url`, so
+  mermaid is served by `docs/overrides/docs_assets_hook.py` and excluded from the plugin; and
+* a stylesheet that names its own assets with **relative** urls is localised without them — every
+  `fonts/KaTeX_*.woff2` 404'd in that configuration and the maths silently lost its typeface while
+  the formulae stayed on the page. KaTeX is therefore served whole by the same hook, and its
+  exclusion is now *gone*, which is its own assertion below: dead configuration that reads like a
+  live decision is how the next person learns the wrong rule.
 
-Both exclusions are therefore deliberate, and both are temporary in different ways: the first ends
-if Material stops bundling that URL, the second when the package is served whole (BL-078). A guard
-that only checked "the plugin is on" would let either silently become a lie.
+A guard that only checked "the plugin is on" would let any of that silently become a lie.
 """
 
 from __future__ import annotations
@@ -103,30 +104,21 @@ def test_mermaid_is_excluded_because_the_site_serves_its_own():
     assert any("unpkg.com/mermaid" in pattern for pattern in _privacy().get("assets_exclude", []))
 
 
-def test_katex_is_excluded_until_its_fonts_travel_with_it():
-    """The plugin localises the stylesheet but not the `fonts/` it names relatively. Removing this
-    line without serving the whole package puts the maths back in a fallback face."""
-    assert any("katex" in pattern for pattern in _privacy().get("assets_exclude", []))
+def test_katex_is_no_longer_excluded_because_it_is_no_longer_remote():
+    """It used to be, and the exclusion was load-bearing: the plugin localises `katex.min.css` but
+    not the ~60 font files it names with *relative* urls, so localising the stylesheet alone left
+    every `fonts/KaTeX_*.woff2` 404ing and the maths in a fallback face.
 
+    The site now serves the whole package (`docs/overrides/docs_assets_hook.py`), so the exclusion
+    has nothing to exclude. Keeping it would be dead configuration that reads like a live decision —
+    and would quietly permit a future jsdelivr reference to stay remote."""
+    exclusions = _privacy().get("assets_exclude", [])
 
-def test_no_external_asset_is_referenced_that_is_not_accounted_for():
-    """The plugin covers what the *pages* reference; these two lists are configuration, and a new
-    CDN URL added here would be localised silently — except for the excluded ones, which would
-    not. So every external URL left in them must be one the exclusions name on purpose."""
-    config = _config()
-    excluded = " ".join(_privacy().get("assets_exclude", []))
-    external = [
-        url
-        for key in ("extra_css", "extra_javascript")
-        for url in (config.get(key) or [])
-        if isinstance(url, str) and url.startswith(("http://", "https://"))
-    ]
-
-    unaccounted = [
-        url for url in external if not any(part in url for part in ("katex",) if part in excluded)
-    ]
-
-    assert not unaccounted, (
-        "external URLs in mkdocs.yml that the privacy plugin will localise or that nothing "
-        f"explains: {unaccounted}"
+    assert not any("katex" in pattern for pattern in exclusions), (
+        f"KaTeX is served from this site now; this exclusion is dead: {exclusions}"
     )
+
+
+# What `mkdocs.yml` itself loads is asserted in `test_docs_assets_are_local.py`, which owns the
+# "nothing comes from a third party" claim for both lists; repeating it here would give two places
+# to update and one of them would rot.
