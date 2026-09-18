@@ -73,8 +73,15 @@ def _env(service: dict) -> dict[str, str]:
 
 
 def _env_template_hosts() -> set[str]:
+    """Hosts named in this directory's ``.env.example`` — deliberately private
+    (``.dualgit/public.carveout``: it duplicates the root template and documents
+    site-specific defaults). Absent on a public-only checkout; contributes nothing
+    to the graph there rather than failing, same as a service with no ``.env`` values."""
+    path = D / ".env.example"
+    if not path.exists():
+        return set()
     hosts: set[str] = set()
-    for line in (D / ".env.example").read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             hosts |= _hosts_in(line.split("=", 1)[1])
     return hosts

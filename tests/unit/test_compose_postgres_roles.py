@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tests.unit._guard_deps import scan_files
@@ -75,7 +76,13 @@ def test_ownership_moves_per_object_not_with_reassign_owned():
 
 
 def test_the_variables_are_in_the_env_template():
-    template = (D / ".env.example").read_text(encoding="utf-8")
+    path = D / ".env.example"
+    if not path.exists():
+        pytest.skip(
+            "this directory's .env.example is deliberately private "
+            "(.dualgit/public.carveout) — absent on a public-only checkout"
+        )
+    template = path.read_text(encoding="utf-8")
     for prefix in SERVICES.values():
         assert f"{prefix}_DB_USER=" in template and f"{prefix}_DB_PASSWORD=" in template
     assert "DASHBOARD_DB_NAME=" in template
