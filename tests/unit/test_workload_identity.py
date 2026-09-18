@@ -8,6 +8,9 @@ a verifier that accepts HS256 can be fooled into treating a public key as the sh
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac as hmac_lib
 import json
 import time
 
@@ -17,6 +20,27 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
 from examlops import workload_identity as wi
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _unverified_jwt(header: dict, payload: dict, secret: bytes = b"") -> str:
+    """Build a JWT by hand, bypassing PyJWT's own encode-time key checks.
+
+    ``wi.verify`` refuses on the header's ``alg`` alone, before ever touching a key
+    (workload_identity.py's algorithm allowlist check runs before signature verification), so
+    the signature bytes never need to be valid — only present. Newer PyJWT versions refuse to
+    build an HS256 token whose "secret" looks like key material (GHSA — key-confusion hardening),
+    which would otherwise make `jwt.encode` itself block the very attack this test simulates.
+    """
+    header_b64 = _b64url(json.dumps(header).encode())
+    payload_b64 = _b64url(json.dumps(payload).encode())
+    signing_input = f"{header_b64}.{payload_b64}".encode()
+    sig = hmac_lib.new(secret, signing_input, hashlib.sha256).digest() if secret else b""
+    return f"{header_b64}.{payload_b64}.{_b64url(sig)}"
+
 
 DOMAIN = "examlops.internal"
 AUD = "control-plane"
@@ -76,21 +100,20 @@ def test_the_x509_key_of_the_bundle_does_not_verify_jwts(keys):
 
 
 def test_hmac_and_none_are_refused(keys):
-    """Key confusion: HS256 'signed' with the public key as the secret must not verify."""
+    """Key confusion: HS256 'signed' with the public key as the secret must not verify.
+
+    Built by hand (`_unverified_jwt`), not `jwt.encode`: PyJWT now refuses to construct an
+    HS256 token whose secret looks like key material, which would otherwise block the attack
+    this test simulates before `wi.verify` ever saw it. `wi.verify` refuses on the header's
+    `alg` alone, before checking any signature, so a well-formed-but-unverifiable token still
+    exercises the real code path.
+    """
     public_pem = keys["bundle"].read_text()
-    hmac = jwt.encode(
-        {"sub": f"spiffe://{DOMAIN}/a", "aud": [AUD], "exp": int(time.time()) + 60},
-        public_pem,
-        algorithm="HS256",
-        headers={"kid": "k1"},
-    )
+    claims = {"sub": f"spiffe://{DOMAIN}/a", "aud": [AUD], "exp": int(time.time()) + 60}
+    hmac = _unverified_jwt({"alg": "HS256", "kid": "k1"}, claims, public_pem.encode())
     with pytest.raises(wi.WorkloadIdentityError, match="not allowed"):
         wi.verify(hmac, AUD)
-    unsigned = jwt.encode(
-        {"sub": f"spiffe://{DOMAIN}/a", "aud": [AUD], "exp": int(time.time()) + 60},
-        None,
-        algorithm="none",
-    )
+    unsigned = _unverified_jwt({"alg": "none"}, claims)
     with pytest.raises(wi.WorkloadIdentityError, match="not allowed"):
         wi.verify(unsigned, AUD)
 
