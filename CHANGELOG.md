@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — release verification no longer depends on a third-party cosign installer
+
+- `.github/workflows/release-verify.yml` installed cosign with `sigstore/cosign-installer`, which
+  makes its own network call to fetch a KMS verification bundle. That call failed on 2026-09-12
+  (`curl: (35) Recv failure: Connection reset by peer`), failing the whole job before a single
+  release check had run — the v0.59.1 release itself was fine; only the verification tooling
+  flaked.
+- cosign is now downloaded and checksum-verified in the same step as oras and Helm, with
+  `curl --retry` on every download, so a reset connection retries instead of failing the run.
+- Verified: the exact download/checksum/install sequence, run standalone against the real
+  releases, installs cosign v3.1.3, oras 1.3.4 and Helm v3.22.0 — the same versions the workflow
+  already pinned — and all three report their version correctly.
+
 ### Added — the dataplane serves live inference streams: HTTP push and Kafka (ADR 0131)
 
 - **A stream is a named binding** of one inbound connector to one project's model and alias, held

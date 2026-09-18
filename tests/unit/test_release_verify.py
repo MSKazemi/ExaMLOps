@@ -67,15 +67,22 @@ def test_the_tag_is_validated_and_never_expanded_into_a_script():
 
 
 def test_its_tools_are_pinned_and_checksum_verified():
+    """cosign, oras and Helm are all downloaded and checksum-verified in one step — no
+    third-party installer action, after sigstore/cosign-installer's own network call failed here
+    on 2026-09-12 (curl: (35) Recv failure) before any release check had run."""
     env = VERIFY["env"]
     assert env["COSIGN_VERSION"].startswith("v3."), "the script's offline flags are cosign v3's"
     assert env["HELM_VERSION"] == RELEASE["env"]["HELM_VERSION"], "verify with the Helm it ships"
-    installer = next(
-        s for s in _steps() if s.get("uses", "").startswith("sigstore/cosign-installer@")
+    assert not any(s.get("uses", "").startswith("sigstore/cosign-installer@") for s in _steps()), (
+        "cosign-installer's own download is a flake this workflow doesn't need to inherit"
     )
-    assert installer["with"]["cosign-release"] == "${{ env.COSIGN_VERSION }}"
-    install = next(s for s in _steps() if "oras" in s.get("name", "").lower())["run"]
-    assert install.count("sha256sum -c") == 2, "oras and helm are each checked against their sums"
+    install = next(s for s in _steps() if "cosign" in s.get("name", "").lower())["run"]
+    assert install.count("sha256sum -c") == 3, (
+        "cosign, oras and helm are each checked against their sums"
+    )
+    assert "--retry" in install, "a reset connection during the download must not fail the run"
+    for tool in ("cosign", "oras", "helm"):
+        assert f"/usr/local/bin/{tool}" in install, f"{tool} must land on PATH"
 
 
 def test_the_script_keeps_the_checks_that_caught_real_defects():
