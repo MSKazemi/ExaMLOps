@@ -183,7 +183,6 @@ nav:
       - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
       - Set up a Project from the Dashboard: tutorials/dashboard-project-setup.md
       - Skipper Long-Term Memory: tutorials/skipper-memory.md
-      - Anomaly Detection E2E: tutorials/demoanomaly-e2e-demo.md
   - Next-Gen 40:
       - Data & reproducibility:
           - Data versioning: guides/data-versioning.md
