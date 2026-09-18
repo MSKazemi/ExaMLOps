@@ -81,7 +81,7 @@ finops = [
 # data-center IdP tokens, `exa auth login`, the dashboard's SSO and the control plane's federated
 # bearer path. PyJWT is imported lazily, so the core CLI works without it.
 oidc = [
-    "pyjwt>=2.13",
+    "pyjwt>=2.14.0",
 ]
 # Whole-platform backup — object-store (MinIO/S3) tier + off-site replication
 # (examlops.backup.objects_tier / remote). boto3 is lazily imported; the control-plane

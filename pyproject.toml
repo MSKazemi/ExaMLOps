@@ -63,7 +63,7 @@ dev = [
     "pytest-watcher>=0.6",  # `make watch` — re-runs the scoped tests on every save,
                             # the feedback layer below `make test-fast`.
     "httpx>=0.24",        # HTTP client for integration tests
-    "ruff==0.16.6",     # pinned: ruff's formatter evolves between releases; an exact
+    "ruff==0.16.7",     # pinned: ruff's formatter evolves between releases; an exact
                         # pin keeps `ruff format --check` deterministic in CI (the
                         # loose `>=0.4` let CI install a newer ruff than the code was
                         # formatted with, breaking the pipeline on every release).
@@ -81,7 +81,7 @@ dev = [
                         # `examlops[finops]` extra, but CI installs only root `.[dev]`;
                         # without it here 17 provider/policy tests that exercise the
                         # expression path fail in CI (ProviderError) while passing locally.
-    "pyjwt>=2.13",      # IdP token validation (examlops.iam, ADR 0120; examlops.oidc shim).
+    "pyjwt>=2.14.0",      # IdP token validation (examlops.iam, ADR 0120; examlops.oidc shim).
                         # The runtime dep is the optional `examlops[oidc]` extra, but CI
                         # installs only root `.[dev]`; without it here tests/unit/test_oidc.py
                         # fails collection with ModuleNotFoundError: No module named 'jwt'.
