@@ -15,7 +15,10 @@ xgboost==3.2.0
 numpy
 boto3>=1.43.92
 # Open Inference Protocol v2 over gRPC (serving/oip_grpc, ADR 0126): its generated stubs need
-# grpcio >= 1.80 and protobuf >= 6.31.1 at run time; httpx calls the REST implementation.
+# grpcio >= 1.80 and protobuf >= 6.31.1 at run time; httpx calls the REST implementation. The
+# stubs are the modern "NO CHECKED-IN PROTOBUF GENCODE" style (dynamic upb runtime), so they
+# tolerate a newer protobuf major than the one that generated them — verified against 7.36.2
+# (tests/unit/test_oip_grpc.py, 56/56) before this floor moved across the 6->7 boundary.
 grpcio>=1.83.1
-protobuf>=6.31.1,<7
+protobuf>=7.36.1,<8
 httpx>=0.28.1
