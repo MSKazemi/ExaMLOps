@@ -95,7 +95,7 @@ endif
         ci ci-modelzoo ci-infra ci-examlops ci-agent \
         preflight preflight-nopg \
         modelzoo-test agent-test \
-        docs-serve docs-build docs-mermaid docs-cli docs-explore \
+        docs-serve docs-build docs-mermaid mermaid-deps docs-cli docs-explore \
         bootstrap \
         _guard-uv _guard-python _guard-service
 
@@ -975,6 +975,10 @@ docs-build: install-dev ## Build MkDocs static site → site/ (strict: a broken 
 	@# design/adr/*.md, which is outside docs_dir and never published, so the built site
 	@# shipped twenty dead links and the build said nothing. Warnings are zero as of
 	@# 2026-08-23; keep it that way by failing here rather than in a reader's browser.
+	@# The site serves mermaid itself (docs/overrides/mermaid_hook.py), so the package has to be
+	@# there before the build: without it the hook stops the build rather than let the published
+	@# site fall back to fetching the renderer from a CDN in every reader's browser.
+	@$(MAKE) --no-print-directory mermaid-deps
 	@$(VENV)/bin/mkdocs build --clean --strict
 	@$(MAKE) --no-print-directory docs-mermaid
 	@printf "$(GREEN)Docs built: site/index.html$(RESET)\n"
@@ -985,14 +989,21 @@ docs-mermaid: ## Parse every ```mermaid diagram in docs/ with the renderer the s
 	@# of them. Exit 1 = a diagram is broken; exit 2 = the checker could not run, which is a
 	@# failure in CI (the docs job installs it) and a loud notice here, so a laptop without node
 	@# still builds docs but is never told the diagrams were checked when they were not.
-	@if [ ! -d platform/ci/mermaid/node_modules ] && command -v npm >/dev/null 2>&1; then \
-	  npm ci --silent --prefix platform/ci/mermaid >/dev/null 2>&1 || true; \
-	fi
+	@$(MAKE) --no-print-directory mermaid-deps
 	@$(VENV)/bin/python platform/ci/check_mermaid.py; status=$$?; \
 	if [ $$status -eq 2 ]; then \
 	  printf "$(RED)The mermaid diagrams were NOT checked — install node, then: npm ci --prefix platform/ci/mermaid$(RESET)\n"; \
 	elif [ $$status -ne 0 ]; then exit $$status; fi
 
+
+mermaid-deps: ## Install the pinned mermaid the site serves and the diagram check parses with
+	@# One pinned copy for both jobs. Silent when it is already there, and never fatal on its own:
+	@# the two callers say what a missing toolchain means for them (the build stops, the check
+	@# reports exit 2), which is the only place that judgement belongs.
+	@if [ ! -d platform/ci/mermaid/node_modules ] && command -v npm >/dev/null 2>&1; then \
+	  printf "$(BOLD)Installing the pinned mermaid (platform/ci/mermaid)...$(RESET)\n"; \
+	  npm ci --silent --prefix platform/ci/mermaid >/dev/null 2>&1 || true; \
+	fi
 
 docs-cli: install-dev ## Regenerate the full CLI reference from the live command tree
 	@$(VENV)/bin/exa docs --out docs/reference/cli-generated.md

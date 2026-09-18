@@ -68,6 +68,7 @@ plugins:
 # sharing site_description (tests/unit/test_docs_description_hook.py).
 hooks:
   - docs/overrides/seo_hooks.py
+  - docs/overrides/mermaid_hook.py
 
 extra:
   social:
@@ -90,6 +91,11 @@ extra_css:
   - https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.css
 
 extra_javascript:
+  # First, and deliberately so: mkdocs-material's bundle loads the diagram renderer from
+  # unpkg.com unless `mermaid` is already defined, which puts a floating third-party major
+  # in every reader's browser. docs/overrides/mermaid_hook.py adds this file to the build
+  # from the pinned package the diagram check parses with.
+  - assets/js/mermaid.min.js
   - assets/explore/js/xm-flow.js
   - assets/explore/js/scenes/system.js
   - assets/explore/js/scenes/prediction.js

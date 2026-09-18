@@ -222,6 +222,34 @@ and the rest is a syntax error, while the same `;` inside a **quoted** label is 
 renders fine. Both shapes exist in this repository's diagrams, and only the real parser tells them
 apart. The guard tests both directions on purpose.
 
+### The same copy the readers run
+
+That pinned package is also what the site *serves*. Material's bundle loads the renderer from
+`https://unpkg.com/mermaid@11/dist/mermaid.min.js` unless `mermaid` is already defined — a floating
+major, from a third party, executing in every reader's browser, with Subresource Integrity
+impossible against a moving tag. `docs/overrides/mermaid_hook.py` adds the pinned file to the build
+and `mkdocs.yml` loads it first, so Material never reaches for the network, and the version a
+reader runs is by construction the version CI parsed.
+
+A missing `node_modules` **fails the build**, for the same reason exit 2 is not success: building
+anyway would 404 the asset, leave `mermaid` undefined and quietly restore the CDN fetch on the
+published site.
+
+Measured rather than assumed, in a headless browser against real builds — which is what
+`tests/integration/test_docs_site_has_no_cdn_mermaid.py` keeps (opt-in; it needs a browser):
+
+| build | requests to unpkg.com | diagrams |
+|---|---|---|
+| before | 2 — the floating tag, then its redirect | render |
+| with the hook | 0 | render, identically |
+
+The same probe rejected the obvious alternative. Material's `privacy` plugin does download the file
+at build time, but rewrites this particular reference to an **absolute** `site_url` address, because
+the URL lives inside a JavaScript bundle rather than in HTML or CSS. Diagrams then render on the
+production origin and degrade to raw text on a local build, a preview deploy or the github.io
+domain — two of them did exactly that in the probe. For the site's other third-party assets, whose
+references *are* in HTML and CSS, that plugin rewrites relatively and works.
+
 ## CI
 
 The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with

@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — the documentation site serves its diagram renderer itself
+
+mkdocs-material's bundle loaded mermaid from `https://unpkg.com/mermaid@11/dist/mermaid.min.js`
+unless `mermaid` was already defined. That put a **floating major from a third party** into every
+reader's browser: the file could change under us at any time, Subresource Integrity is impossible
+against a moving tag, unpkg saw every reader's IP and page, and a CDN outage or a breaking 11.x
+release would have broken every diagram with the reader as the first to know.
+
+- `docs/overrides/mermaid_hook.py` adds the renderer to the build from the **same pinned package**
+  `platform/ci/check_mermaid.py` parses the diagrams with, and `mkdocs.yml` loads it first, so
+  Material never reaches for the network. The version readers run and the version CI validates
+  cannot drift apart — previously a test could only detect that drift after the fact.
+- A missing `node_modules` **fails the build**. Building anyway would 404 the asset, leave
+  `mermaid` undefined and silently restore the CDN fetch on the published site.
+- Nothing is written into `docs/`: the file is added to the build in memory, so the source tree
+  carries no 3.5 MB generated blob.
+- Measured in a headless browser against real builds, and kept as
+  `tests/integration/test_docs_site_has_no_cdn_mermaid.py` (opt-in): **2 requests to unpkg.com
+  before, 0 after**, with the diagrams rendering identically.
+- Material's `privacy` plugin was tried and rejected for this asset: it downloads the file but
+  rewrites this reference to an **absolute** `site_url` address, because the URL lives inside a
+  JavaScript bundle rather than in HTML or CSS — diagrams then render only on the production
+  origin and degrade to raw text on a local build, a preview deploy or the github.io domain.
+
 ### Added — the documentation's diagrams are parsed by the renderer that draws them
 
 `mkdocs build --strict` never reads a ` ```mermaid ` fence: the site renders diagrams in the

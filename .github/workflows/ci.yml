@@ -413,14 +413,6 @@ jobs:
       - name: Install MkDocs
         run: python -m pip install --quiet -r platform/ci/requirements-docs.txt
 
-      - name: Build (strict)
-        run: mkdocs build --clean --strict
-
-      # mkdocs never reads a ```mermaid fence — the reader's browser renders it — so the strict
-      # build above passes a diagram mermaid cannot parse, and the reader gets a red error box.
-      # Eleven diagrams went unchecked for months and two of them were broken. This parses every
-      # one with the same major version the site loads. Not mirrored in .gitlab-ci.yml: that job
-      # runs on python:3.12-slim with no node, and GitHub is the release authority (ADR 0129).
       - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -431,6 +423,17 @@ jobs:
       - name: Install the mermaid checker
         run: npm ci --prefix platform/ci/mermaid
 
+      - name: Build (strict)
+        run: mkdocs build --clean --strict
+
+      # Two jobs in one install. The site SERVES mermaid from this package (the build fails
+      # without it, rather than silently letting Material fetch it from unpkg in every reader's
+      # browser), and the parse check below reads the diagrams with it. mkdocs never reads a
+      # ```mermaid fence itself — the reader's browser renders it — so the strict build passes a
+      # diagram mermaid cannot parse, and the reader gets a red error box.
+      # Eleven diagrams went unchecked for months and two of them were broken. This parses every
+      # one with the same major version the site loads. Not mirrored in .gitlab-ci.yml: that job
+      # runs on python:3.12-slim with no node, and GitHub is the release authority (ADR 0129).
       # Exit 2 (the checker could not run) fails this step too: a diagram check that silently
       # passes because nothing ran is worse than no check at all.
       - name: Diagrams parse

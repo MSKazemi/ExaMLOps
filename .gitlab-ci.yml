@@ -332,6 +332,10 @@ test:docs:
     - when: never
   script:
     - pip install --quiet mkdocs-material mkdocs-minify-plugin
+    # The site serves its own mermaid (docs/overrides/mermaid_hook.py), so the build needs the
+    # pinned package; it fails loudly rather than falling back to a CDN in the reader's browser.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs npm
+    - npm ci --prefix platform/ci/mermaid
     - mkdocs build --clean --strict
   artifacts:
     paths: [site/]
